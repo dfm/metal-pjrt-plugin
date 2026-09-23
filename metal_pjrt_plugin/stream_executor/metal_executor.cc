@@ -16,6 +16,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/mutex.h"
+#include "metal_pjrt_plugin/blas/metal_blas.h"  // [metal-blas]
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/tsl/platform/errors.h"
@@ -52,6 +53,17 @@ MetalExecutor::~MetalExecutor() = default;
 
 absl::Status MetalExecutor::Init() {
   return ToAbsl(rt::Device::Create(device_ordinal(), &device_));
+}
+
+// [metal-blas] ---------------------------------------------------------------
+// BLAS
+
+blas::BlasSupport* MetalExecutor::AsBlas() {
+  absl::MutexLock lock(&mu_);
+  if (blas_ == nullptr && device_ != nullptr) {
+    blas_ = std::make_unique<MetalBlas>(device_.get());
+  }
+  return blas_.get();
 }
 
 // ---------------------------------------------------------------------------

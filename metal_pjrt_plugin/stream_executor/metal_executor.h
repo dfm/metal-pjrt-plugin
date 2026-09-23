@@ -15,6 +15,7 @@
 #include "absl/synchronization/mutex.h"
 #include "absl/types/span.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "xla/stream_executor/blas.h"  // [metal-blas]
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/event.h"
@@ -87,6 +88,10 @@ class MetalExecutor : public gpu::GpuExecutor {
   static absl::StatusOr<std::unique_ptr<DeviceDescription>>
   CreateDeviceDescription(int device_ordinal);
 
+  // [metal-blas] MPS-backed BLAS/BlasLt (metal_pjrt_plugin/blas), created
+  // lazily, one per executor.
+  blas::BlasSupport* AsBlas() override;
+
   metal_pjrt::rt::Device* device() const { return device_.get(); }
 
   using StreamExecutor::Allocate;
@@ -106,6 +111,7 @@ class MetalExecutor : public gpu::GpuExecutor {
   absl::flat_hash_map<const void*, LoadedModule> modules_ ABSL_GUARDED_BY(mu_);
   absl::flat_hash_map<uint64_t, std::weak_ptr<DeviceAddressBase>>
       shared_constants_ ABSL_GUARDED_BY(mu_);
+  std::unique_ptr<blas::BlasSupport> blas_ ABSL_GUARDED_BY(mu_);  // [metal-blas]
 };
 
 }  // namespace metal

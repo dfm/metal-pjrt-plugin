@@ -1,0 +1,63 @@
+package(default_visibility = ["//visibility:public"])
+
+# MPSMatrixMultiplication GEMM. Objective-C++ (ARC); the header is plain C++
+# and absl-free so the standalone test needs neither XLA nor absl. The .mm
+# source is compiled by cc_library's objc++-compile action (apple_support
+# toolchain); -ObjC++ keeps it Objective-C++ even if built as C++.
+cc_library(
+    name = "mps_gemm",
+    srcs = ["mps_gemm.mm"],
+    hdrs = ["mps_gemm.h"],
+    copts = [
+        "-ObjC++",
+        "-fobjc-arc",
+    ],
+    linkopts = [
+        "-framework Metal",
+        "-framework MetalPerformanceShaders",
+        "-framework Foundation",
+    ],
+    deps = ["//metal_pjrt_plugin/runtime:metal_runtime"],
+)
+
+# blas::BlasSupport + gpu::BlasLt for the Metal StreamExecutor.
+cc_library(
+    name = "metal_blas",
+    srcs = ["metal_blas.cc"],
+    hdrs = ["metal_blas.h"],
+    deps = [
+        ":mps_gemm",
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/stream_executor:blas",
+        "@xla//xla/stream_executor:device_address",
+        "@xla//xla/stream_executor:engine_options",
+        "@xla//xla/stream_executor:scratch_allocator",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor/gpu:gpu_blas_lt",
+    ],
+)
+
+# Standalone GEMM test against a CPU reference; needs a Metal device, so run
+# locally.
+cc_test(
+    name = "mps_gemm_test",
+    srcs = ["mps_gemm_test.mm"],
+    copts = [
+        "-ObjC++",
+        "-fobjc-arc",
+    ],
+    tags = [
+        "local",
+        "manual",
+    ],
+    deps = [
+        ":mps_gemm",
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+    ],
+)

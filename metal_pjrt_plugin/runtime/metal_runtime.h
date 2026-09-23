@@ -16,12 +16,15 @@
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
 #include <cstddef>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -198,6 +201,15 @@ class Stream {
                 const std::vector<KernelArg>& args,
                 uint32_t threadgroup_memory_bytes = 0);
 
+  // Encode work produced outside this runtime (e.g. Metal Performance
+  // Shaders) into the stream's open command buffer, in order with all other
+  // stream work. Ends the current compute encoder, then calls `encode` with the
+  // raw MTL::CommandBuffer* (as void*, so Objective-C++ callers can bridge it
+  // to id<MTLCommandBuffer>). `encode` must create, use and end its own
+  // encoders and must not commit the buffer or call back into this stream (the
+  // stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer.
+  Status EncodeExternal(std::function<Status(void* mtl_command_buffer)> encode);
+
   // Device-to-device copy and fill, via a blit encoder.
   Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
   Status Memset8(void* dst, uint8_t value, uint64_t size);
@@ -249,8 +261,26 @@ class Stream {
   MTL::CommandBuffer* cmd_ = nullptr;
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
+  // Committed but possibly still executing command buffers (retained).
+  // Synchronize waits for their completion, not just the fence signal, so
+  // callers may free resources immediately afterwards.
+  std::vector<MTL::CommandBuffer*> in_flight_;
   std::string last_error_;
   std::mutex mu_;
+
+  // Host work ordered on the stream: each task waits for the fence to reach
+  // wait_value, runs, then signals signal_value so later GPU work proceeds.
+  struct HostTask {
+    uint64_t wait_value;
+    std::function<void()> fn;
+    uint64_t signal_value;
+  };
+  void WorkerLoop();
+  std::thread worker_;
+  std::mutex work_mu_;
+  std::condition_variable work_cv_;
+  std::deque<HostTask> work_;
+  bool stop_ = false;
 };
 
 }  // namespace rt

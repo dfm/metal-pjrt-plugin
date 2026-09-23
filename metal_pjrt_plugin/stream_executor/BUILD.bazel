@@ -21,6 +21,7 @@ cc_library(
         "metal_stream.h",
     ],
     deps = [
+        "//metal_pjrt_plugin/blas:metal_blas",  # [metal-blas]
         "//metal_pjrt_plugin/runtime:constants_container",
         "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/base:core_headers",
@@ -34,6 +35,7 @@ cc_library(
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
+        "@xla//xla/stream_executor:blas",  # [metal-blas]
         "@xla//xla/stream_executor:device_address",
         "@xla//xla/stream_executor:device_description",
         "@xla//xla/stream_executor:event",

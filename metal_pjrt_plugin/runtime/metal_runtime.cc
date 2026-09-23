@@ -290,10 +290,7 @@ Status Event::WaitOnHost() {
     v = value_;
   }
   if (v == 0) return Status::Ok();
-  // Poll with a bounded spin then sleep; MTLSharedEvent has no blocking wait
-  // in metal-cpp older than macOS 15, so use the listener-free approach.
-  while (event_->signaledValue() < v) {
-    std::this_thread::yield();
+  while (!event_->waitUntilSignaledValue(v, /*milliseconds=*/1000)) {
   }
   return Status::Ok();
 }
@@ -302,17 +299,43 @@ Status Event::WaitOnHost() {
 // Stream
 
 Stream::Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence)
-    : device_(device), queue_(queue), fence_(fence) {}
+    : device_(device), queue_(queue), fence_(fence) {
+  worker_ = std::thread([this]() { WorkerLoop(); });
+}
 
 Stream::~Stream() {
   Synchronize();
+  {
+    std::lock_guard<std::mutex> lock(work_mu_);
+    stop_ = true;
+  }
+  work_cv_.notify_all();
+  if (worker_.joinable()) worker_.join();
   if (enc_) {
     enc_->endEncoding();
     enc_->release();
   }
   if (cmd_) cmd_->release();
+  for (MTL::CommandBuffer* cb : in_flight_) cb->release();
   fence_->release();
   queue_->release();
+}
+
+void Stream::WorkerLoop() {
+  while (true) {
+    HostTask task;
+    {
+      std::unique_lock<std::mutex> lock(work_mu_);
+      work_cv_.wait(lock, [this]() { return stop_ || !work_.empty(); });
+      if (work_.empty()) return;  // stop_ and drained
+      task = std::move(work_.front());
+      work_.pop_front();
+    }
+    while (!fence_->waitUntilSignaledValue(task.wait_value, 1000)) {
+    }
+    task.fn();
+    fence_->setSignaledValue(task.signal_value);
+  }
 }
 
 Status Stream::EnsureCommandBuffer() {
@@ -357,10 +380,22 @@ Status Stream::Commit() {
   // Synchronize/WaitForStream have a value to wait on.
   uint64_t v = SignalFence();
   cmd_->commit();
-  cmd_->release();
+  // Keep the (retained) buffer until it completes; prune finished ones.
+  in_flight_.push_back(cmd_);
   cmd_ = nullptr;
   ops_in_cmd_ = 0;
   last_committed_fence_value_ = v;
+  std::vector<MTL::CommandBuffer*> still_running;
+  for (MTL::CommandBuffer* cb : in_flight_) {
+    MTL::CommandBufferStatus st = cb->status();
+    if (st == MTL::CommandBufferStatusCompleted ||
+        st == MTL::CommandBufferStatusError) {
+      cb->release();
+    } else {
+      still_running.push_back(cb);
+    }
+  }
+  in_flight_.swap(still_running);
   return Status::Ok();
 }
 
@@ -373,8 +408,21 @@ Status Stream::Synchronize() {
   std::lock_guard<std::mutex> lock(mu_);
   Status s = Commit();
   if (!s.ok()) return s;
-  while (fence_->signaledValue() < last_committed_fence_value_) {
-    std::this_thread::yield();
+  // Wait for completion (not just the fence signal) so resources referenced
+  // by these command buffers may be freed by the caller right away.
+  for (MTL::CommandBuffer* cb : in_flight_) {
+    cb->waitUntilCompleted();
+    if (cb->status() == MTL::CommandBufferStatusError) {
+      NS::Error* err = cb->error();
+      last_error_ = "Metal command buffer failed: " + NSErrorToString(err);
+    }
+    cb->release();
+  }
+  in_flight_.clear();
+  if (!last_error_.empty()) {
+    std::string e;
+    e.swap(last_error_);
+    return Status(e);
   }
   return Status::Ok();
 }
@@ -407,6 +455,18 @@ Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
+  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
+  return Status::Ok();
+}
+
+Status Stream::EncodeExternal(
+    std::function<Status(void* mtl_command_buffer)> encode) {
+  std::lock_guard<std::mutex> lock(mu_);
+  Status s = EnsureCommandBuffer();
+  if (!s.ok()) return s;
+  EndEncoder();
+  s = encode(static_cast<void*>(cmd_));
+  if (!s.ok()) return s;
   if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
   return Status::Ok();
 }
@@ -470,15 +530,11 @@ Status Stream::HostCallback(std::function<void()> fn) {
   if (!s.ok()) return s;
   uint64_t done_value = ++fence_value_;
   uint64_t after_prior = last_committed_fence_value_;
-  MTL::SharedEvent* fence = fence_;
-  fence->retain();
-  // Run the host function on a helper thread once prior GPU work completes.
-  std::thread([fence, after_prior, done_value, fn = std::move(fn)]() {
-    while (fence->signaledValue() < after_prior) std::this_thread::yield();
-    fn();
-    fence->setSignaledValue(done_value);
-    fence->release();
-  }).detach();
+  {
+    std::lock_guard<std::mutex> lock(work_mu_);
+    work_.push_back(HostTask{after_prior, std::move(fn), done_value});
+  }
+  work_cv_.notify_one();
   cmd_->encodeWait(fence_, done_value);
   return Status::Ok();
 }
