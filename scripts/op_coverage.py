@@ -51,7 +51,7 @@ def _():
 @case("scan")
 def _():
     _, ys = jax.lax.scan(lambda c, x: (c + x, c * x), jnp.float32(1), jnp.arange(5, dtype=f32))
-    np.testing.assert_array_equal(np.asarray(ys), [0., 1., 4., 12., 32.])  # c: 1,1,2,4,7 -> c*x
+    np.testing.assert_array_equal(np.asarray(ys), [0., 1., 4., 12., 28.])
 @case("cond")
 def _():
     r = jax.lax.cond(True, lambda x: x + 1, lambda x: x - 1, jnp.float32(3))
