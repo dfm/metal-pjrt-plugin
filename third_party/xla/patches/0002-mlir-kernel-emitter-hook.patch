@@ -1,37 +1,10 @@
---- a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h
-+++ b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h
-@@ -17,6 +17,7 @@
- 
- #include <array>
- #include <cstdint>
-+#include <functional>
- #include <memory>
- #include <optional>
- #include <string>
-@@ -221,6 +222,15 @@
-     const std::string& entry_function_name, int unroll_factor,
-     mlir::MLIRContext& mlir_context, MlirKernelSource source);
- 
-+// Hook for out-of-tree backends that do not lower to LLVM GPU IR (Metal). When
-+// set and `device.device_vendor() == "Apple"`, CompileMlirToLlvm delegates to
-+// it. Set once during plugin initialization, before any compilation.
-+using MetalKernelHook = std::function<absl::StatusOr<LlvmKernelSource>(
-+    const se::DeviceDescription& device, const HloModule& hlo_module,
-+    const std::string& entry_function_name, int unroll_factor,
-+    mlir::MLIRContext& mlir_context, MlirKernelSource source)>;
-+void SetMetalKernelHook(MetalKernelHook hook);
-+
- std::unique_ptr<mlir::MLIRContext> CreateMlirContext();
- 
- }  // namespace xla::gpu
---- a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc
-+++ b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc
-@@ -652,12 +652,28 @@
- 
-   pm.addPass(emitters::createLowerToLLVMGPUPass(device));
+diff -ruN a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc
+--- a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc	2026-09-23 03:05:50
++++ b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc	2026-09-23 03:05:50
+@@ -654,10 +654,26 @@
    pm.addPass(mlir::createReconcileUnrealizedCastsPass());
-+}
-+
+ }
+ 
 +namespace {
 +MetalKernelHook& MetalKernelHookStorage() {
 +  static auto* hook = new MetalKernelHook();
@@ -41,8 +14,8 @@
 +
 +void SetMetalKernelHook(MetalKernelHook hook) {
 +  MetalKernelHookStorage() = std::move(hook);
- }
- 
++}
++
  absl::StatusOr<LlvmKernelSource> CompileMlirToLlvm(
      const se::DeviceDescription& device, const HloModule& hlo_module,
      const std::string& entry_function_name, int unroll_factor,
@@ -54,4 +27,31 @@
 +  }
    auto llvm_context = std::make_unique<llvm::LLVMContext>();
    mlir::OwningOpRef<mlir::ModuleOp> module = std::move(source).TakeModule();
+ 
+diff -ruN a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h
+--- a/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h	2026-09-23 03:05:50
++++ b/xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h	2026-09-23 03:05:50
+@@ -17,6 +17,7 @@
+ 
+ #include <array>
+ #include <cstdint>
++#include <functional>
+ #include <memory>
+ #include <optional>
+ #include <string>
+@@ -220,6 +221,15 @@
+     const se::DeviceDescription& device, const HloModule& hlo_module,
+     const std::string& entry_function_name, int unroll_factor,
+     mlir::MLIRContext& mlir_context, MlirKernelSource source);
++
++// Hook for out-of-tree backends that do not lower to LLVM GPU IR (Metal). When
++// set and `device.device_vendor() == "Apple"`, CompileMlirToLlvm delegates to
++// it. Set once during plugin initialization, before any compilation.
++using MetalKernelHook = std::function<absl::StatusOr<LlvmKernelSource>(
++    const se::DeviceDescription& device, const HloModule& hlo_module,
++    const std::string& entry_function_name, int unroll_factor,
++    mlir::MLIRContext& mlir_context, MlirKernelSource source)>;
++void SetMetalKernelHook(MetalKernelHook hook);
+ 
+ std::unique_ptr<mlir::MLIRContext> CreateMlirContext();
  
