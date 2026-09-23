@@ -1,0 +1,12 @@
+diff -ruN a/xla/backends/gpu/runtime/record_ffi.cc b/xla/backends/gpu/runtime/record_ffi.cc
+--- a/xla/backends/gpu/runtime/record_ffi.cc	2026-09-23 03:58:22
++++ b/xla/backends/gpu/runtime/record_ffi.cc	2026-09-23 03:58:22
+@@ -120,7 +120,7 @@
+     return argument_addresses_.size() + (shared_memory_bytes_ > 0);
+   }
+ 
+-  size_t number_of_shared_bytes() const override {
++  uint64_t number_of_shared_bytes() const override {
+     return shared_memory_bytes_;
+   }
+ 
