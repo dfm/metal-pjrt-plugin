@@ -1,0 +1,31 @@
+package(default_visibility = ["//visibility:public"])
+
+METAL_LINKOPTS = [
+    "-framework Metal",
+    "-framework Foundation",
+    "-framework QuartzCore",
+]
+
+cc_library(
+    name = "metal_runtime",
+    srcs = [
+        "metal_cpp_impl.cc",
+        "metal_runtime.cc",
+    ],
+    hdrs = ["metal_runtime.h"],
+    linkopts = METAL_LINKOPTS,
+    deps = ["@metal_cpp"],
+)
+
+cc_library(
+    name = "constants_container",
+    hdrs = ["constants_container.h"],
+)
+
+# Standalone smoke test; needs a Metal device, so run locally.
+cc_test(
+    name = "metal_runtime_test",
+    srcs = ["metal_runtime_test.cc"],
+    tags = ["local", "manual"],
+    deps = [":metal_runtime"],
+)

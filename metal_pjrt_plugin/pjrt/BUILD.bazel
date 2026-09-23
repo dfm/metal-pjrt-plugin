@@ -1,0 +1,42 @@
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "metal_platform_name",
+    hdrs = ["metal_platform_name.h"],
+    deps = ["@xla//xla/pjrt:pjrt_compiler"],
+)
+
+# Everything that must be linked into the plugin for the Metal platform to be
+# usable through XLA's stock GPU PJRT client and C API shim.
+cc_library(
+    name = "metal_plugin_deps",
+    deps = [
+        "//metal_pjrt_plugin/codegen:msl_kernel_hook",
+        "//metal_pjrt_plugin/compiler:metal_collectives",
+        "//metal_pjrt_plugin/compiler:metal_compiler",
+        "//metal_pjrt_plugin/compiler:metal_pjrt_compiler",
+        "//metal_pjrt_plugin/compiler:metal_transfer_manager",
+        "//metal_pjrt_plugin/compiler:ptx_custom_kernel_emitter_stub",
+        "//metal_pjrt_plugin/stream_executor:metal_platform",
+        "@xla//xla/backends/gpu/runtime:thunk_runtime_dependencies",
+        "@xla//xla/service/gpu:gpu_compiler",
+        "@xla//xla/service/gpu:gpu_executable",
+        "@xla//xla/service/gpu:gpu_transfer_manager",
+    ],
+)
+
+# The PJRT plugin shared library. GetPjrtApi() comes from XLA's GPU C API
+# shim (patched to report the "metal" platform on macOS).
+cc_binary(
+    name = "pjrt_c_api_metal_plugin.dylib",
+    linkopts = [
+        "-Wl,-exported_symbol,_GetPjrtApi",
+        "-Wl,-install_name,@rpath/pjrt_c_api_metal_plugin.dylib",
+        "-Wl,-undefined,error",
+    ],
+    linkshared = True,
+    deps = [
+        ":metal_plugin_deps",
+        "@xla//xla/pjrt/c:pjrt_c_api_gpu",
+    ],
+)

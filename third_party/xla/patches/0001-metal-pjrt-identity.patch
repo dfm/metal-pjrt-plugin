@@ -1,0 +1,207 @@
+diff -ruN a/xla/pjrt/c/BUILD b/xla/pjrt/c/BUILD
+--- a/xla/pjrt/c/BUILD	2026-09-23 02:47:10
++++ b/xla/pjrt/c/BUILD	2026-09-23 02:47:10
+@@ -34,6 +34,7 @@
+     "internal_visibility",
+ )
+ load("//xla/tsl/platform:rules_cc.bzl", "cc_library")
++load("//xla/tsl:tsl.bzl", "if_macos")
+ load(
+     "//xla/tsl/platform/default:cuda_build_defs.bzl",
+     "if_cuda_is_configured",
+@@ -629,7 +630,8 @@
+     local_defines = (
+         if_cuda_is_configured(["GOOGLE_CUDA=1"]) + if_rocm_is_configured([
+             "TENSORFLOW_USE_ROCM=1",
+-        ]) + if_sycl_is_configured(["TENSORFLOW_USE_SYCL=1"])
++        ]) + if_sycl_is_configured(["TENSORFLOW_USE_SYCL=1"]) +
++        if_macos(["TENSORFLOW_USE_METAL=1"])
+     ),
+     visibility = ["//visibility:public"],
+     deps = [
+diff -ruN a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc b/xla/pjrt/c/pjrt_c_api_gpu_internal.cc
+--- a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-23 02:47:10
++++ b/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-23 02:47:10
+@@ -85,6 +85,8 @@
+ #define PJRT_GPU_PLUGIN_PLATFORM_NAME "ROCM"
+ #elif TENSORFLOW_USE_SYCL
+ #define PJRT_GPU_PLUGIN_PLATFORM_NAME "ONEAPI"
++#elif TENSORFLOW_USE_METAL
++#define PJRT_GPU_PLUGIN_PLATFORM_NAME "METAL"
+ #else
+ #define PJRT_GPU_PLUGIN_PLATFORM_NAME "CUDA"
+ #endif
+@@ -340,6 +342,9 @@
+   } else if (plugin_platform == "ONEAPI") {
+     platform_id = xla::OneapiId();
+     platform_name = xla::OneapiName();
++  } else if (plugin_platform == "METAL") {
++    platform_id = xla::MetalId();
++    platform_name = xla::MetalName();
+   } else {
+     platform_id = xla::CudaId();
+     platform_name = xla::CudaName();
+diff -ruN a/xla/pjrt/gpu/BUILD b/xla/pjrt/gpu/BUILD
+--- a/xla/pjrt/gpu/BUILD	2026-09-23 02:47:10
++++ b/xla/pjrt/gpu/BUILD	2026-09-23 02:47:10
+@@ -20,7 +20,7 @@
+ load("//xla/pjrt/gpu:package_groups.bzl", "xla_gpu_internal_packages")
+ load("//xla/stream_executor:build_defs.bzl", "if_cuda_or_rocm")
+ load("//xla/tests:build_defs.bzl", "xla_test")
+-load("//xla/tsl:tsl.bzl", "if_google", "internal_visibility")
++load("//xla/tsl:tsl.bzl", "if_google", "if_macos", "internal_visibility")
+ load("//xla/tsl:tsl.default.bzl", "get_compatible_with_libtpu_portable", "get_compatible_with_portable")
+ load(
+     "//xla/tsl/platform:build_config.bzl",
+@@ -76,7 +76,7 @@
+     hdrs = ["se_gpu_pjrt_client.h"],
+     defines = if_cuda(["GOOGLE_CUDA=1"]) + if_rocm(["TENSORFLOW_USE_ROCM=1"]) + if_sycl([
+         "TENSORFLOW_USE_SYCL=1",
+-    ]),
++    ]) + if_macos(["TENSORFLOW_USE_METAL=1"]),
+     deps = [
+         ":gpu_helpers",
+         ":gpu_metrics",
+@@ -247,6 +247,13 @@
+         "//xla/service/gpu:gpu_executable_buffer_allocator",
+         "//xla/service/gpu:stream_executor_util",
+         "@local_config_sycl//sycl:sycl_headers",
++    ]) + if_macos([
++        # keep sorted
++        "//xla/backends/gpu/runtime:thunk_executor",
++        "//xla/service/gpu:gpu_compiler",
++        "//xla/service/gpu:gpu_executable",
++        "//xla/service/gpu:gpu_executable_buffer_allocator",
++        "//xla/service/gpu:stream_executor_util",
+     ]),
+ )
+ 
+diff -ruN a/xla/pjrt/gpu/se_gpu_pjrt_client.cc b/xla/pjrt/gpu/se_gpu_pjrt_client.cc
+--- a/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-23 02:47:10
++++ b/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-23 02:47:10
+@@ -145,7 +145,7 @@
+ #include "tsl/profiler/lib/traceme.h"
+ 
+ #if defined(GOOGLE_CUDA) || defined(TENSORFLOW_USE_ROCM) || \
+-    defined(TENSORFLOW_USE_SYCL)
++    defined(TENSORFLOW_USE_SYCL) || defined(TENSORFLOW_USE_METAL)
+ #include "xla/backends/gpu/runtime/thunk_executor.h"
+ #include "xla/debug_options_flags.h"
+ #include "xla/hlo/ir/hlo_input_output_alias_config.h"
+@@ -1192,7 +1192,7 @@
+ void StreamExecutorGpuRawClient::RecordMemoryStats(
+     LocalDeviceState* local_device_state) {
+ #if defined(GOOGLE_CUDA) || defined(TENSORFLOW_USE_ROCM) || \
+-    defined(TENSORFLOW_USE_SYCL)
++    defined(TENSORFLOW_USE_SYCL) || defined(TENSORFLOW_USE_METAL)
+   int64_t free_memory, total_memory;
+   if (local_device_state != nullptr) {
+     se::StreamExecutor* executor = local_device_state->executor();
+@@ -1875,6 +1875,8 @@
+   auto pjrt_platform_name = xla::RocmName();
+ #elif TENSORFLOW_USE_SYCL
+   auto pjrt_platform_name = xla::OneapiName();
++#elif TENSORFLOW_USE_METAL
++  auto pjrt_platform_name = xla::MetalName();
+ #else   // TENSORFLOW_USE_ROCM
+   auto pjrt_platform_name = xla::CudaName();
+ #endif  // TENSORFLOW_USE_ROCM
+@@ -2055,6 +2057,8 @@
+   auto platform_name = RocmName();
+ #elif TENSORFLOW_USE_SYCL
+   auto platform_name = SyclName();
++#elif TENSORFLOW_USE_METAL
++  auto platform_name = MetalName();
+ #else   // TENSORFLOW_USE_ROCM
+   auto platform_name = CudaName();
+ #endif  // TENSORFLOW_USE_ROCM
+@@ -2115,6 +2119,8 @@
+   auto platform_name = xla::RocmName();
+ #elif TENSORFLOW_USE_SYCL
+   auto platform_name = xla::SyclName();
++#elif TENSORFLOW_USE_METAL
++  auto platform_name = xla::MetalName();
+ #else   // TENSORFLOW_USE_ROCM
+   auto platform_name = xla::CudaName();
+ #endif  // TENSORFLOW_USE_ROCM
+@@ -2128,7 +2134,7 @@
+ }
+ 
+ #if defined(GOOGLE_CUDA) || defined(TENSORFLOW_USE_ROCM) || \
+-    defined(TENSORFLOW_USE_SYCL)
++    defined(TENSORFLOW_USE_SYCL) || defined(TENSORFLOW_USE_METAL)
+ 
+ static absl::StatusOr<PjRtStreamExecutorExecutionOutput> RunGpuAsync(
+     LocalExecutable& exec, PjRtStreamExecutorRawClient* raw_client,
+diff -ruN a/xla/pjrt/pjrt_compiler.h b/xla/pjrt/pjrt_compiler.h
+--- a/xla/pjrt/pjrt_compiler.h	2026-09-23 02:47:10
++++ b/xla/pjrt/pjrt_compiler.h	2026-09-23 02:47:10
+@@ -103,6 +103,13 @@
+ // TODO(intel-tf): Remove this function once Jaxlib is updated to use
+ // OneapId() instead of SyclId()
+ inline PjRtPlatformId SyclId() { return OneapiId(); }
++
++// Apple Metal (metal-pjrt-plugin).
++inline const char* MetalName() { return "metal"; }
++inline PjRtPlatformId MetalId() {
++  static const PjRtPlatformId kMetalId = tsl::Fingerprint64(MetalName());
++  return kMetalId;
++}
+ inline PjRtPlatformId TpuId() {
+   static const PjRtPlatformId kTpuId = tsl::Fingerprint64(TpuName());
+   return kTpuId;
+@@ -492,7 +499,8 @@
+ // Returns true if it's GPU id.
+ inline bool IsGpuId(PjRtPlatformId platform_id) {
+   return platform_id == xla::CudaId() || platform_id == xla::RocmId() ||
+-         platform_id == xla::SyclId();
++         platform_id == xla::SyclId() ||
++         platform_id == xla::MetalId();
+ }
+ 
+ // Returns true if it's CPU id.
+diff -ruN a/xla/service/BUILD b/xla/service/BUILD
+--- a/xla/service/BUILD	2026-09-23 02:47:10
++++ b/xla/service/BUILD	2026-09-23 02:47:10
+@@ -2,6 +2,7 @@
+ #   XLA service implementation.
+ 
+ load("@bazel_skylib//rules:build_test.bzl", "build_test")
++load("//xla/tsl:tsl.bzl", "if_macos")
+ load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
+ load("@local_config_rocm//rocm:build_defs.bzl", "if_rocm", "if_rocm_is_configured")
+ load("@local_config_sycl//sycl:build_defs.bzl", "if_sycl", "if_sycl_is_configured")
+@@ -1018,7 +1019,7 @@
+     hdrs = ["platform_util.h"],
+     local_defines = if_rocm(["TENSORFLOW_USE_ROCM=1"]) + if_sycl([
+         "TENSORFLOW_USE_SYCL=1",
+-    ]),
++    ]) + if_macos(["TENSORFLOW_USE_METAL=1"]),
+     deps = [
+         ":compiler",
+         "//xla:debug_options_flags",
+diff -ruN a/xla/service/gpu/gpu_executable.cc b/xla/service/gpu/gpu_executable.cc
+--- a/xla/service/gpu/gpu_executable.cc	2026-09-23 02:47:10
++++ b/xla/service/gpu/gpu_executable.cc	2026-09-23 02:47:10
+@@ -547,7 +547,8 @@
+   } else if (platform_id == se::sycl::kSyclPlatformId) {
+     // TODO: Add check.
+   } else {
+-    return Internal("Unknown platform");
++    VLOG(2) << "No compute capability check for platform "
++            << main_stream->parent()->GetPlatform()->Name();
+   }
+ 
+   return absl::OkStatus();
+diff -ruN a/xla/service/platform_util.cc b/xla/service/platform_util.cc
+--- a/xla/service/platform_util.cc	2026-09-23 02:47:10
++++ b/xla/service/platform_util.cc	2026-09-23 02:47:10
+@@ -75,6 +75,8 @@
+     return "rocm";
+ #elif TENSORFLOW_USE_SYCL
+     return "sycl";
++#elif TENSORFLOW_USE_METAL
++    return "metal";
+ #else
+     return "cuda";
+ #endif

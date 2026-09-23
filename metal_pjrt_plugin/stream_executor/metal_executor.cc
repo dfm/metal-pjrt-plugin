@@ -1,0 +1,386 @@
+#include "metal_pjrt_plugin/stream_executor/metal_executor.h"
+
+#include <cstdint>
+#include <cstring>
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <variant>
+#include <vector>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/string_view.h"
+#include "absl/synchronization/mutex.h"
+#include "metal_pjrt_plugin/runtime/constants_container.h"
+#include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/statusor.h"
+#include "metal_pjrt_plugin/stream_executor/metal_event.h"
+#include "metal_pjrt_plugin/stream_executor/metal_kernel.h"
+#include "metal_pjrt_plugin/stream_executor/metal_stream.h"
+#include "xla/stream_executor/device_description.h"
+#include "xla/stream_executor/generic_memory_allocation.h"
+#include "xla/stream_executor/generic_memory_allocator.h"
+#include "xla/stream_executor/kernel_spec.h"
+#include "xla/stream_executor/launch_dim.h"
+#include "xla/stream_executor/semantic_version.h"
+#include "tsl/platform/fingerprint.h"
+
+namespace stream_executor {
+namespace metal {
+
+namespace rt = metal_pjrt::rt;
+
+namespace {
+
+absl::Status ToAbsl(const rt::Status& s) {
+  if (s.ok()) return absl::OkStatus();
+  return absl::InternalError(s.message());
+}
+
+}  // namespace
+
+MetalExecutor::MetalExecutor(Platform* platform, int device_ordinal)
+    : gpu::GpuExecutor(platform, device_ordinal) {}
+
+MetalExecutor::~MetalExecutor() = default;
+
+absl::Status MetalExecutor::Init() {
+  return ToAbsl(rt::Device::Create(device_ordinal(), &device_));
+}
+
+// ---------------------------------------------------------------------------
+// Streams and events
+
+absl::StatusOr<std::unique_ptr<Stream>> MetalExecutor::CreateStream(
+    std::optional<std::variant<StreamPriority, int>> priority) {
+  TF_ASSIGN_OR_RETURN(auto stream, MetalStream::Create(this, priority));
+  {
+    absl::MutexLock lock(&mu_);
+    live_streams_.insert(stream.get());
+  }
+  return std::unique_ptr<Stream>(std::move(stream));
+}
+
+absl::StatusOr<std::unique_ptr<Event>> MetalExecutor::CreateEvent() {
+  std::unique_ptr<rt::Event> ev;
+  TF_RETURN_IF_ERROR(ToAbsl(device_->CreateEvent(&ev)));
+  return std::unique_ptr<Event>(new MetalEvent(std::move(ev)));
+}
+
+void MetalExecutor::DeallocateStream(Stream* stream) {
+  absl::MutexLock lock(&mu_);
+  live_streams_.erase(stream);
+}
+
+bool MetalExecutor::SynchronizeAllActivity() {
+  std::vector<Stream*> streams;
+  {
+    absl::MutexLock lock(&mu_);
+    streams.assign(live_streams_.begin(), live_streams_.end());
+  }
+  bool ok = true;
+  for (Stream* s : streams) {
+    if (!s->BlockHostUntilDone().ok()) ok = false;
+  }
+  return ok;
+}
+
+// ---------------------------------------------------------------------------
+// Memory
+
+DeviceAddressBase MetalExecutor::Allocate(uint64_t size, int64_t memory_space) {
+  // Every memory space is unified memory here; the space only matters to XLA's
+  // buffer coloring.
+  rt::Allocation a;
+  rt::Status s = device_->Allocate(size, &a);
+  if (!s.ok()) {
+    LOG(ERROR) << "Metal allocation of " << size << " bytes failed: "
+               << s.message();
+    return DeviceAddressBase();
+  }
+  return DeviceAddressBase(a.ptr, size);
+}
+
+void MetalExecutor::Deallocate(DeviceAddressBase* mem) {
+  if (mem == nullptr || mem->is_null()) return;
+  rt::Status s = device_->Deallocate(mem->opaque());
+  if (!s.ok()) LOG(ERROR) << "Metal deallocate failed: " << s.message();
+}
+
+absl::StatusOr<std::unique_ptr<MemoryAllocation>>
+MetalExecutor::HostMemoryAllocate(uint64_t size) {
+  rt::Allocation a;
+  TF_RETURN_IF_ERROR(ToAbsl(device_->Allocate(size, &a)));
+  return std::make_unique<GenericMemoryAllocation>(
+      a.ptr, size, [this](void* ptr, uint64_t) {
+        rt::Status s = device_->Deallocate(ptr);
+        if (!s.ok()) LOG(ERROR) << "Metal host free failed: " << s.message();
+      });
+}
+
+absl::StatusOr<std::unique_ptr<MemoryAllocator>>
+MetalExecutor::CreateMemoryAllocator(MemorySpace memory_space) {
+  switch (memory_space) {
+    case MemorySpace::kDevice:
+    case MemorySpace::kUnified:
+    case MemorySpace::kCollective:
+    case MemorySpace::kHost:
+      return std::make_unique<GenericMemoryAllocator>(
+          [this](uint64_t size) { return HostMemoryAllocate(size); });
+    default:
+      return absl::UnimplementedError(absl::StrFormat(
+          "Unsupported memory space %d", static_cast<int>(memory_space)));
+  }
+}
+
+absl::StatusOr<MemorySpace> MetalExecutor::GetPointerMemorySpace(
+    const void* ptr) {
+  rt::BufferRef ref;
+  if (device_->Resolve(ptr, &ref).ok()) return MemorySpace::kUnified;
+  return MemorySpace::kHost;
+}
+
+bool MetalExecutor::DeviceMemoryUsage(int64_t* free, int64_t* total) const {
+  int64_t t = static_cast<int64_t>(device_->info().recommended_working_set);
+  int64_t used = static_cast<int64_t>(device_->allocated_bytes());
+  *total = t;
+  *free = t > used ? t - used : 0;
+  return true;
+}
+
+absl::Status MetalExecutor::SynchronousMemcpy(DeviceAddressBase* device_dst,
+                                              const void* host_src,
+                                              uint64_t size) {
+  // Unified memory: make sure no in-flight GPU work touches the destination,
+  // then copy directly.
+  if (!SynchronizeAllActivity()) {
+    return absl::InternalError("SynchronousMemcpy: stream sync failed");
+  }
+  std::memcpy(device_dst->opaque(), host_src, size);
+  return absl::OkStatus();
+}
+
+absl::Status MetalExecutor::SynchronousMemcpy(void* host_dst,
+                                              const DeviceAddressBase& device_src,
+                                              uint64_t size) {
+  if (!SynchronizeAllActivity()) {
+    return absl::InternalError("SynchronousMemcpy: stream sync failed");
+  }
+  std::memcpy(host_dst, device_src.opaque(), size);
+  return absl::OkStatus();
+}
+
+absl::StatusOr<std::shared_ptr<DeviceAddressBase>>
+MetalExecutor::CreateOrShareConstant(Stream* stream,
+                                     absl::Span<const uint8_t> content) {
+  uint64_t key = tsl::Fingerprint64(
+      absl::string_view(reinterpret_cast<const char*>(content.data()),
+                        content.size()));
+  absl::MutexLock lock(&mu_);
+  auto it = shared_constants_.find(key);
+  if (it != shared_constants_.end()) {
+    if (auto existing = it->second.lock()) return existing;
+    shared_constants_.erase(it);
+  }
+  DeviceAddressBase mem = Allocate(content.size(), 0);
+  if (mem.is_null()) {
+    return absl::ResourceExhaustedError("failed to allocate shared constant");
+  }
+  std::memcpy(mem.opaque(), content.data(), content.size());
+  std::shared_ptr<DeviceAddressBase> owned(
+      new DeviceAddressBase(mem), [this](DeviceAddressBase* p) {
+        Deallocate(p);
+        delete p;
+      });
+  shared_constants_[key] = owned;
+  return owned;
+}
+
+absl::Status MetalExecutor::EnablePeerAccessTo(StreamExecutor* other) {
+  return absl::OkStatus();
+}
+
+bool MetalExecutor::CanEnablePeerAccessTo(StreamExecutor* other) {
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Kernels and modules
+
+absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
+    const KernelLoaderSpec& spec) {
+  if (!spec.has_cuda_cubin_in_memory()) {
+    return absl::InvalidArgumentError(
+        "Metal kernels must be provided as MSL source in the in-memory "
+        "binary field of the KernelLoaderSpec");
+  }
+  absl::Span<const uint8_t> bytes = spec.cuda_cubin_in_memory()->cubin_bytes;
+  std::string msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
+
+  MTL::Library* library = nullptr;
+  rt::Status s = device_->CompileLibrary(msl, &library);
+  if (!s.ok()) {
+    return absl::InternalError(absl::StrCat("kernel ", spec.kernel_name(),
+                                            ": ", s.message()));
+  }
+  std::unique_ptr<rt::Kernel> rt_kernel;
+  TF_RETURN_IF_ERROR(
+      ToAbsl(device_->CreateKernel(library, spec.kernel_name(), &rt_kernel)));
+
+  auto kernel = std::make_unique<MetalKernel>(this, std::move(rt_kernel),
+                                              spec.arity());
+  kernel->set_name(spec.kernel_name());
+  if (std::holds_alternative<KernelLoaderSpec::KernelArgsPackingFunc>(
+          spec.kernel_args_packing())) {
+    kernel->set_args_packing(
+        std::get<KernelLoaderSpec::KernelArgsPackingFunc>(
+            spec.kernel_args_packing()));
+  } else {
+    const auto& packing_spec =
+        std::get<KernelArgsPackingSpec>(spec.kernel_args_packing());
+    kernel->set_args_packing(
+        [packing_spec](const Kernel& kernel, const KernelArgs& args) {
+          const PackableKernelArgs& mem_args =
+              dynamic_cast<const PackableKernelArgs&>(args);
+          return packing_spec.BuildArguments(mem_args.packed_args(),
+                                             args.number_of_shared_bytes());
+        });
+  }
+  return std::unique_ptr<Kernel>(std::move(kernel));
+}
+
+void MetalExecutor::UnloadKernel(const Kernel* kernel) {
+  // Pipeline states are cached by the runtime device; nothing to do.
+}
+
+absl::StatusOr<ModuleHandle> MetalExecutor::LoadModule(
+    const MultiModuleLoaderSpec& spec) {
+  if (!spec.has_cuda_cubin_in_memory()) {
+    return absl::InvalidArgumentError(
+        "Metal modules must be constants containers in the in-memory binary "
+        "field");
+  }
+  absl::Span<const uint8_t> bytes = spec.cuda_cubin_in_memory();
+  const void* key = bytes.data();
+  absl::MutexLock lock(&mu_);
+  auto it = modules_.find(key);
+  if (it != modules_.end()) {
+    ++it->second.refcount;
+    return ModuleHandle(key);
+  }
+  std::vector<rt::ConstantBlob> blobs;
+  if (!rt::ParseConstants(bytes.data(), bytes.size(), &blobs)) {
+    return absl::InvalidArgumentError(
+        "Metal module bytes are not a valid constants container");
+  }
+  LoadedModule module;
+  module.refcount = 1;
+  for (const rt::ConstantBlob& b : blobs) {
+    DeviceAddressBase mem = Allocate(b.data.size(), 0);
+    if (mem.is_null() && !b.data.empty()) {
+      return absl::ResourceExhaustedError(
+          absl::StrCat("failed to allocate constant ", b.name));
+    }
+    if (!b.data.empty()) std::memcpy(mem.opaque(), b.data.data(), b.data.size());
+    module.symbols[b.name] = mem;
+  }
+  modules_[key] = std::move(module);
+  return ModuleHandle(key);
+}
+
+bool MetalExecutor::UnloadModule(ModuleHandle module_handle) {
+  absl::MutexLock lock(&mu_);
+  auto it = modules_.find(module_handle.id());
+  if (it == modules_.end()) return false;
+  if (--it->second.refcount > 0) return true;
+  for (auto& kv : it->second.symbols) Deallocate(&kv.second);
+  modules_.erase(it);
+  return true;
+}
+
+absl::StatusOr<DeviceAddressBase> MetalExecutor::GetSymbol(
+    const std::string& symbol_name, ModuleHandle module_handle) {
+  absl::MutexLock lock(&mu_);
+  auto it = modules_.find(module_handle.id());
+  if (it == modules_.end()) {
+    return absl::NotFoundError("Metal module not loaded");
+  }
+  auto sym = it->second.symbols.find(symbol_name);
+  if (sym == it->second.symbols.end()) {
+    return absl::NotFoundError(
+        absl::StrCat("symbol not found in Metal module: ", symbol_name));
+  }
+  return sym->second;
+}
+
+// ---------------------------------------------------------------------------
+// Device description
+
+absl::StatusOr<std::unique_ptr<DeviceDescription>>
+MetalExecutor::CreateDeviceDescription() const {
+  return CreateDeviceDescription(device_ordinal());
+}
+
+absl::StatusOr<std::unique_ptr<DeviceDescription>>
+MetalExecutor::CreateDeviceDescription(int device_ordinal) {
+  std::unique_ptr<rt::Device> dev;
+  TF_RETURN_IF_ERROR(ToAbsl(rt::Device::Create(device_ordinal, &dev)));
+  const rt::DeviceInfo& info = dev->info();
+
+  DeviceDescription desc;
+  desc.set_name(info.name);
+  desc.set_model_str(info.name);
+  desc.set_device_vendor("Apple");
+  desc.set_platform_version("Metal");
+  desc.set_driver_version(SemanticVersion{0, 0, 0});
+  desc.set_runtime_version(SemanticVersion{0, 0, 0});
+  desc.set_compile_time_toolkit_version(SemanticVersion{0, 0, 0});
+  desc.set_dnn_version(SemanticVersion{0, 0, 0});
+  desc.set_pci_bus_id(absl::StrCat("metal:", device_ordinal));
+  desc.set_numa_node(0);
+
+  // Thread geometry. Apple GPUs execute 32-wide SIMD groups; a threadgroup
+  // holds up to 1024 threads.
+  desc.set_threads_per_warp(info.simd_width);
+  desc.set_threads_per_block_limit(info.max_threads_per_threadgroup);
+  desc.set_threads_per_core_limit(info.max_threads_per_threadgroup);
+  desc.set_thread_dim_limit(ThreadDim(info.max_threads_per_threadgroup,
+                                      info.max_threads_per_threadgroup,
+                                      info.max_threads_per_threadgroup));
+  const int64_t kMaxGrid = (1ll << 31) - 1;
+  desc.set_block_dim_limit(BlockDim(kMaxGrid, kMaxGrid, kMaxGrid));
+  desc.set_max_blocks_per_multiprocessor(32);
+
+  // Memory. Threadgroup ("shared") memory is 32 KB on all Apple GPUs so far.
+  desc.set_shared_memory_per_block(info.threadgroup_memory_length);
+  desc.set_shared_memory_per_block_optin(info.threadgroup_memory_length);
+  desc.set_shared_memory_per_core(info.threadgroup_memory_length);
+  desc.set_reserved_shared_memory_per_block(0);
+  desc.set_registers_per_core_limit(65536);
+  desc.set_registers_per_block_limit(65536);
+  desc.set_device_address_bits(64);
+  desc.set_device_memory_size(info.recommended_working_set);
+  desc.set_l2_cache_size(8 << 20);
+  // Metal exposes neither bandwidth nor clocks; these only feed cost models.
+  desc.set_memory_bandwidth(100e9);
+  desc.set_clock_rate_ghz(1.4f);
+  desc.set_core_count(10);
+  desc.set_fpus_per_core(128);
+  desc.set_ecc_enabled(false);
+
+  // v1 reports an OneAPI compute capability so that GpuCompiler and the MLIR
+  // emitters take their SPIR-V (vendor-neutral) branches. The vendor string
+  // above is what identifies the device as Metal to our own code.
+  desc.set_oneapi_compute_capability(static_cast<uint32_t>(info.gpu_family));
+
+  return std::make_unique<DeviceDescription>(std::move(desc));
+}
+
+}  // namespace metal
+}  // namespace stream_executor

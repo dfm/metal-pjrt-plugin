@@ -27,5 +27,12 @@ def initialize():
     if path is None:
         logger.warning("metal PJRT plugin library not found; skipping registration")
         return
-    options = {}
+    # The plugin is XLA's GPU PJRT client; these are its client-creation
+    # options. "platform" selects the plain StreamExecutor allocator (no BFC
+    # pool), which is the right default for unified memory.
+    options = {
+        "platform_name": "metal",
+        "allocator": "platform",
+        "visible_devices": [0],
+    }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)

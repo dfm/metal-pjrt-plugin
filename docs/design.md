@@ -32,19 +32,29 @@ Intel's extension for OpenXLA did exactly this for SYCL out of tree.
 
 ## Codegen
 
-`GpuCompiler` bottoms out in LLVM IR. There is no LLVM Metal target. Options:
+`GpuCompiler` bottoms out in LLVM IR and there is no LLVM Metal target. The
+in-tree Intel compiler shows the shape of the plumbing (LLVM IR -> SPIR-V via
+`spirv_backend.cc`), but two facts rule out "translate the final IR":
 
-1. LLVM IR -> SPIR-V (LLVM's SPIRV backend, already enabled in XLA's LLVM
-   config) -> SPIRV-Cross -> MSL source -> `newLibraryWithSource` at runtime.
-   Every link is proven (Intel for the first, IREE for the second). Start here.
-2. Intercept XLA's MLIR emitters before LLVM and emit MSL text directly
-   (EmitC-style; MSL is C++-derived). Higher ceiling (simdgroup ops). Later.
-3. Emit AIR bitcode. Undocumented. No.
+- SPIRV-Cross only consumes shader-flavored SPIR-V; the LLVM backend emits
+  OpenCL-flavored kernel SPIR-V for pointer-based kernels.
+- MSL has no `goto` and no labeled statements (verified on this machine), so
+  turning a CFG back into C requires reconstructing structured control flow.
 
-Runtime shader compilation works with command-line tools only (verified on this
-machine: 192 ms to compile a trivial kernel from source). Compiled libraries
-need a persistent cache keyed by MSL hash, because 100 fused kernels at 200 ms
-each is an unacceptable first-run cost.
+XLA's MLIR emitters keep `scf.for`/`scf.if` structure until the
+second-to-last lowering pass, and MLIR ships an EmitC dialect with a C++
+printer. So the kernel path is: a hook in the MLIR kernel emitter runs the
+lowering pipeline up to (not including) SCFToControlFlow, converts what
+remains (func/scf/arith/math/vector/gpu plus the LLVM-dialect memory ops that
+LowerTensors introduced) to EmitC, and prints MSL. The text rides to
+`CompileTargetBinary` inside a stub LLVM module and becomes the kernel
+"binary"; the executor compiles it with `newLibraryWithSource` at load time.
+Details and the exact contract are in `docs/integration-notes.md`.
+
+Runtime shader compilation works with command-line tools only (verified:
+192 ms for a trivial kernel). Compiled libraries need a persistent cache keyed
+by MSL hash, because 100 fused kernels at 200 ms each is an unacceptable
+first-run cost.
 
 ## Library ops
 

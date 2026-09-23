@@ -35,6 +35,12 @@ bazel_dep(name = "xla")
 archive_override(
     module_name = "xla",
     integrity = "sha256-MsuAh9iDGKAfmXTq1iVOHKBtJj+hhH9hUDN5UlvUaJc=",
+    # Patches teach XLA about the Metal platform; see third_party/xla/README.md
+    # and the make_*_patch.sh scripts that regenerate them.
+    patch_strip = 1,
+    patches = [
+        "//third_party/xla/patches:0001-metal-pjrt-identity.patch",
+    ],
     strip_prefix = "xla-91888df6ce85102c30220e41d952065925e10886",
     urls = ["https://github.com/openxla/xla/archive/91888df6ce85102c30220e41d952065925e10886.tar.gz"],
 )
@@ -95,3 +101,18 @@ use_repo(
 )
 
 register_toolchains("@local_config_apple_cc_toolchains//:all")
+
+##############################################################
+# Non-module dependencies
+##############################################################
+
+http_archive = use_repo_rule("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
+
+# metal-cpp (macOS 26 SDK release). sha256 recorded 2026-09-23.
+http_archive(
+    name = "metal_cpp",
+    build_file = "//third_party:metal_cpp.BUILD",
+    sha256 = "4df3c078b9aadcb516212e9cb03004cbc5ce9a3e9c068fa3144d021db585a3a4",
+    strip_prefix = "metal-cpp",
+    urls = ["https://developer.apple.com/metal/cpp/files/metal-cpp_26.zip"],
+)
