@@ -1,0 +1,97 @@
+# metal-pjrt-plugin: a PJRT plugin for Apple Silicon built on XLA's GPU stack.
+#
+# This mirrors jax-ml/jax's MODULE.bazel at the jax-v0.11.2 tag, minus the
+# Python/CUDA/ROCm machinery a C++-only plugin does not need. Overrides
+# (patched abseil/protobuf/grpc, pinned XLA and rules_ml_toolchain) must live
+# in the root module, which is why they are repeated here rather than
+# inherited from XLA.
+#
+# Pins (keep in sync with third_party/PINS.md):
+#   jaxlib 0.11.2  ->  XLA 91888df6ce85102c30220e41d952065925e10886
+
+module(name = "metal_pjrt_plugin", version = "0.0.1")
+
+bazel_dep(name = "abseil-cpp", version = "20260526.0", repo_name = "com_google_absl")
+bazel_dep(name = "apple_support", version = "2.8.0")
+bazel_dep(name = "bazel_features", version = "1.50.0")
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "googletest", version = "1.17.0.bcr.2", repo_name = "com_google_googletest")
+bazel_dep(name = "grpc", version = "1.78.0", repo_name = "com_github_grpc_grpc")
+bazel_dep(name = "platforms", version = "1.1.0")
+bazel_dep(name = "protobuf", version = "32.1", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_cc", version = "0.2.20")
+bazel_dep(name = "rules_python", version = "2.2.0")
+bazel_dep(name = "zlib", version = "1.3.2")
+
+bazel_dep(name = "rules_ml_toolchain")
+archive_override(
+    module_name = "rules_ml_toolchain",
+    integrity = "sha256-AD+fcA+AoQ9wvsdh0AUpI30WpuIMBjEkyf/6mKjArzU=",
+    strip_prefix = "rules_ml_toolchain-c0eb2743b7b12b2bbcf0e1888e26d36ba6b093de",
+    urls = ["https://github.com/google-ml-infra/rules_ml_toolchain/archive/c0eb2743b7b12b2bbcf0e1888e26d36ba6b093de.tar.gz"],
+)
+
+bazel_dep(name = "xla")
+archive_override(
+    module_name = "xla",
+    integrity = "sha256-MsuAh9iDGKAfmXTq1iVOHKBtJj+hhH9hUDN5UlvUaJc=",
+    strip_prefix = "xla-91888df6ce85102c30220e41d952065925e10886",
+    urls = ["https://github.com/openxla/xla/archive/91888df6ce85102c30220e41d952065925e10886.tar.gz"],
+)
+
+single_version_override(
+    module_name = "grpc",
+    patch_strip = 1,
+    patches = ["//third_party/grpc:grpc.patch"],
+    version = "1.81.0",
+)
+
+# Fix transitive dependency graph error breaking `bazel mod show_repo --all_repos`
+bazel_dep(name = "envoy_api", version = "0.0.0-20260130-84e8436")
+
+single_version_override(
+    module_name = "protobuf",
+    patch_strip = 1,
+    patches = [
+        "//third_party/protobuf:protobuf_arena.patch",
+        "//third_party/protobuf:fix_message_lite_incomplete_type.patch",
+    ],
+    version = "32.1",
+)
+
+single_version_override(
+    module_name = "abseil-cpp",
+    patch_strip = 1,
+    patches = [
+        "//third_party/absl:btree.patch",
+        "//third_party/absl:raw_hash_set.patch",
+    ],
+    version = "20260526.0",
+)
+
+##############################################################
+# Repositories defined by XLA's module extensions that our own
+# BUILD files reference directly.
+##############################################################
+
+tsl_extension = use_extension("@xla//third_party/extensions:tsl.bzl", "tsl_extension")
+use_repo(tsl_extension, "tsl")
+
+llvm = use_extension("@xla//third_party/extensions:llvm.bzl", "llvm_extension")
+use_repo(llvm, "llvm-project")
+
+third_party = use_extension("@xla//third_party/extensions:third_party.bzl", "third_party_ext")
+use_repo(third_party, "stablehlo")
+
+##############################################################
+# Toolchains: local Apple clang via apple_support (no hermetic toolchain).
+##############################################################
+
+apple_cc_configure = use_extension("@apple_support//crosstool:setup.bzl", "apple_cc_configure_extension")
+use_repo(
+    apple_cc_configure,
+    "local_config_apple_cc",
+    "local_config_apple_cc_toolchains",
+)
+
+register_toolchains("@local_config_apple_cc_toolchains//:all")

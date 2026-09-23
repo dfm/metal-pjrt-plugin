@@ -1,0 +1,17 @@
+[project]
+name = "jax-metal-pjrt"
+version = "0.0.1"
+description = "Metal PJRT plugin for JAX on Apple Silicon (work in progress)"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
+
+[project.entry-points.jax_plugins]
+metal = "jax_plugins.metal"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["jax_plugins*"]

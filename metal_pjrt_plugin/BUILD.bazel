@@ -1,0 +1,8 @@
+# Plugin sources. Nothing here builds yet; the overnight spike builds XLA
+# targets directly (see scripts/build_spike.sh). Skeleton to be filled in:
+#
+#   stream_executor/   MetalPlatform, MetalExecutor, MetalStream, MetalEvent
+#   compiler/          MetalCompiler : xla::gpu::GpuCompiler
+#   pjrt/              GetPjrtApi() built on @xla//xla/pjrt/c:pjrt_c_api_gpu_internal
+#
+# package(default_visibility = ["//visibility:public"])

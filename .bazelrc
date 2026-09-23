@@ -1,0 +1,85 @@
+# Mirrors the flags jax-ml/jax uses for macOS arm64 builds (jax-v0.11.2), so
+# that action keys have a chance of hitting JAX's public read-only cache, plus
+# resource limits tuned for an 8 GB Apple Silicon laptop.
+
+common --enable_bzlmod --noenable_workspace
+common --check_direct_dependencies=warning
+common --incompatible_disallow_empty_glob=false
+common --announce_rc
+common --spawn_strategy=local
+common --enable_platform_specific_config
+common --experimental_cc_shared_library
+common --incompatible_enable_cc_toolchain_resolution
+common --incompatible_default_to_explicit_init_py
+common --repo_env USE_HERMETIC_CC_TOOLCHAIN=1
+common --http_timeout_scaling=3
+common --features=-external_include_paths
+common --host_features=-external_include_paths
+
+common:clang_local --noincompatible_enable_cc_toolchain_resolution
+common:clang_local --@rules_ml_toolchain//common:enable_hermetic_cc=False
+common:clang_local --repo_env USE_HERMETIC_CC_TOOLCHAIN=0
+
+common --define=grpc_no_ares=true
+common --define=tsl_link_protobuf=true
+common -c opt
+common --output_filter=DONT_MATCH_ANYTHING
+common --copt=-DMLIR_PYTHON_PACKAGE_PREFIX=jaxlib.mlir.
+common --copt=-DNB_DOMAIN=jax
+common --legacy_external_runfiles=false
+common --repo_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
+common --action_env=PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION=upb
+common --@rules_python//python/config_settings:precompile=force_disabled
+common --repo_env=USE_PYWRAP_RULES=True
+common --copt=-DGRPC_BAZEL_BUILD
+common --host_copt=-DGRPC_BAZEL_BUILD
+common --action_env=GRPC_BAZEL_RUNTIME=1
+common --experimental_repo_remote_exec
+
+# macOS: local Apple clang toolchain from apple_support.
+common:macos --config=posix
+common:macos --apple_platform_type=macos
+common:macos --linkopt=-Wl,-undefined,dynamic_lookup
+common:macos --host_linkopt=-Wl,-undefined,dynamic_lookup
+common:macos --config=clang_local
+common:macos --apple_crosstool_top=@local_config_apple_cc//:toolchain
+common:macos --crosstool_top=@local_config_apple_cc//:toolchain
+common:macos --host_crosstool_top=@local_config_apple_cc//:toolchain
+common:macos --repo_env=APPLE_SUPPORT_LAYERING_CHECK_BETA=0
+common:macos --config=clang
+
+common:posix --copt=-fvisibility=hidden
+common:posix --copt=-Wno-sign-compare
+common:posix --cxxopt=-std=c++17
+common:posix --host_cxxopt=-std=c++17
+
+common:clang --copt=-Wno-gnu-offsetof-extensions
+common:clang --copt=-Qunused-arguments
+common:clang --copt=-Werror=mismatched-tags
+common:clang --copt=-Wno-error=c23-extensions
+
+# No CUDA/ROCm/NCCL anywhere.
+common --define=no_nccl_support=true
+
+# ---------------------------------------------------------------------------
+# Resource limits for an 8 GB machine. The build is memory-bound: heavy XLA and
+# MLIR translation units peak at 1-2 GB each in clang, so keep concurrency low.
+# ---------------------------------------------------------------------------
+startup --host_jvm_args=-Xmx2500m
+common --jobs=3
+common --local_resources=memory=4500
+common --local_resources=cpu=6
+
+# Persistent caches: survive `bazel clean`, output-base wipes and XLA re-pins.
+common --disk_cache=~/.cache/metal-pjrt-plugin/bazel-disk
+common --repository_cache=~/.cache/metal-pjrt-plugin/bazel-repo
+
+# JAX's public read-only remote cache. Hits require identical action keys
+# (same XLA commit, same flags, same compiler version), so this is opportunistic.
+common:public_cache --remote_cache="https://storage.googleapis.com/jax-bazel-cache/" --remote_upload_local_results=false
+common:public_cache --remote_timeout=120s
+
+common:debug_symbols --strip=never --per_file_copt="metal_pjrt_plugin|xla/pjrt@-g3"
+common:debug --config=debug_symbols -c fastbuild
+
+try-import %workspace%/user.bazelrc
