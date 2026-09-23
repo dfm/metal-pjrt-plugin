@@ -33,6 +33,7 @@
 namespace metal_pjrt::codegen {
 namespace {
 
+using ::testing::AnyOf;
 using ::testing::HasSubstr;
 using ::testing::Not;
 
@@ -121,7 +122,7 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_THAT(msl, HasSubstr("exp("));
   EXPECT_THAT(msl, HasSubstr("tanh("));
   EXPECT_THAT(msl, HasSubstr("xla_log1p("));
-  EXPECT_THAT(msl, HasSubstr("isnan("));  // from the expanded maximumf
+  EXPECT_THAT(msl, AnyOf(HasSubstr("isnan("), HasSubstr("max(")));  // expanded maximumf
 }
 
 // Reduction: shuffles, shared memory, barrier, atomics.

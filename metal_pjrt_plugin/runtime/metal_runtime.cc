@@ -3,6 +3,7 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
+#include <cstdio>
 #include <cstring>
 #include <thread>
 #include <functional>
@@ -338,9 +339,22 @@ void Stream::WorkerLoop() {
   }
 }
 
+Status Stream::CheckAsyncError() {
+  std::lock_guard<std::mutex> lock(err_mu_);
+  if (async_error_.empty()) return Status::Ok();
+  return Status("Metal stream is in error state: " + async_error_);
+}
+
 Status Stream::EnsureCommandBuffer() {
   if (cmd_ != nullptr) return Status::Ok();
-  cmd_ = queue_->commandBufferWithUnretainedReferences();
+  Status err = CheckAsyncError();
+  if (!err.ok()) return err;
+  // Retained references: XLA frees device buffers as soon as the host no
+  // longer needs them and relies on the driver to keep memory alive until
+  // enqueued GPU work completes (as CUDA does). Metal only does that for
+  // retained command buffers; unretained ones fault with
+  // kIOGPUCommandBufferCallbackErrorInvalidResource.
+  cmd_ = queue_->commandBuffer();
   if (cmd_ == nullptr) return Status("Metal commandBuffer creation failed");
   cmd_->retain();
   ops_in_cmd_ = 0;
@@ -379,6 +393,32 @@ Status Stream::Commit() {
   // Every command buffer ends by signaling the stream timeline, so
   // Synchronize/WaitForStream have a value to wait on.
   uint64_t v = SignalFence();
+  // On failure, log, record the error and force-signal the fence and any
+  // events this buffer was supposed to signal, so waiters do not hang.
+  std::vector<std::pair<MTL::SharedEvent*, uint64_t>> signals;
+  signals.swap(pending_signals_);
+  for (auto& sv : signals) sv.first->retain();
+  MTL::SharedEvent* fence = fence_;
+  fence->retain();
+  cmd_->addCompletedHandler([this, v, fence, signals](MTL::CommandBuffer* cb) {
+    if (cb->status() == MTL::CommandBufferStatusError) {
+      std::string msg = NSErrorToString(cb->error());
+      fprintf(stderr, "[metal-pjrt] GPU command buffer failed: %s\n",
+              msg.c_str());
+      {
+        std::lock_guard<std::mutex> lock(err_mu_);
+        if (async_error_.empty()) async_error_ = msg;
+      }
+      if (fence->signaledValue() < v) fence->setSignaledValue(v);
+      for (auto& sv : signals) {
+        if (sv.first->signaledValue() < sv.second) {
+          sv.first->setSignaledValue(sv.second);
+        }
+      }
+    }
+    for (auto& sv : signals) sv.first->release();
+    fence->release();
+  });
   cmd_->commit();
   // Keep the (retained) buffer until it completes; prune finished ones.
   in_flight_.push_back(cmd_);
@@ -419,6 +459,10 @@ Status Stream::Synchronize() {
     cb->release();
   }
   in_flight_.clear();
+  {
+    Status err = CheckAsyncError();
+    if (!err.ok()) return err;
+  }
   if (!last_error_.empty()) {
     std::string e;
     e.swap(last_error_);
@@ -560,6 +604,7 @@ Status Stream::RecordEvent(Event* event) {
     v = ++event->value_;
   }
   cmd_->encodeSignalEvent(event->event_, v);
+  pending_signals_.emplace_back(event->event_, v);
   // Commit so a host or another stream waiting on the event can make progress.
   return Commit();
 }

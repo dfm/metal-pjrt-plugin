@@ -267,6 +267,13 @@ class Stream {
   std::vector<MTL::CommandBuffer*> in_flight_;
   std::string last_error_;
   std::mutex mu_;
+  // Events signaled by the open command buffer; on GPU error they are
+  // force-signaled so host waiters wake up instead of hanging.
+  std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
+  // Set by the completion handler of a failed command buffer; sticky.
+  std::mutex err_mu_;
+  std::string async_error_;
+  Status CheckAsyncError();
 
   // Host work ordered on the stream: each task waits for the fence to reach
   // wait_value, runs, then signals signal_value so later GPU work proceeds.

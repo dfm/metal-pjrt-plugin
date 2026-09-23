@@ -1,6 +1,6 @@
 """Quick op-coverage sweep on the Metal backend: each case runs in isolation
 and reports pass/fail with the first line of the error."""
-import sys, traceback
+import faulthandler, sys, traceback
 import numpy as np
 import jax, jax.numpy as jnp
 
@@ -112,11 +112,18 @@ def main():
     print("backend:", jax.default_backend())
     ok = 0
     for name, fn in CASES.items():
+        if name.startswith("SKIP"):
+            print(f"SKIP {name}", flush=True); continue
+        print(f"RUN  {name}", flush=True)
+        # A GPU-side hang would not return to Python; dump stacks and exit.
+        faulthandler.dump_traceback_later(180, exit=True)
         try:
-            fn(); ok += 1; print(f"PASS {name}")
+            fn(); ok += 1; print(f"PASS {name}", flush=True)
         except Exception as e:  # noqa
             msg = str(e).strip().splitlines()[0][:160] if str(e).strip() else type(e).__name__
-            print(f"FAIL {name}: {type(e).__name__}: {msg}")
+            print(f"FAIL {name}: {type(e).__name__}: {msg}", flush=True)
+        finally:
+            faulthandler.cancel_dump_traceback_later()
     print(f"{ok}/{len(CASES)} passed")
     return 0 if ok == len(CASES) else 1
 
