@@ -1,5 +1,5 @@
 // Standalone test for RunMpsGemm through a metal_pjrt::rt::Stream (no XLA, no
-// absl, no gtest). Objective-C++ only because mps_gemm.mm is; this file does
+// absl, no gtest). Objective-C++ only because mps_gemm_objc.cc is; this file does
 // not itself use Objective-C.
 //
 // Build and run (from the repository root):
@@ -8,8 +8,8 @@
 //     -framework MetalPerformanceShaders \
 //     metal_pjrt_plugin/runtime/metal_cpp_impl.cc \
 //     metal_pjrt_plugin/runtime/metal_runtime.cc \
-//     -x objective-c++ -fobjc-arc metal_pjrt_plugin/blas/mps_gemm.mm \
-//     metal_pjrt_plugin/blas/mps_gemm_test.mm -o /tmp/mps_gemm_test
+//     -x objective-c++ -fobjc-arc metal_pjrt_plugin/blas/mps_gemm_objc.cc \
+//     metal_pjrt_plugin/blas/mps_gemm_test_objc.cc -o /tmp/mps_gemm_test
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 
 #include <algorithm>

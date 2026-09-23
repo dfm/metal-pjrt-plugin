@@ -13,7 +13,7 @@
 #include <string>
 
 #if !__has_feature(objc_arc)
-#error "mps_gemm.mm must be compiled with -fobjc-arc"
+#error "mps_gemm_objc.cc must be compiled with -fobjc-arc"
 #endif
 
 namespace metal_pjrt {

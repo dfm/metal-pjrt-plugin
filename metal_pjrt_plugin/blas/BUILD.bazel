@@ -1,12 +1,12 @@
 package(default_visibility = ["//visibility:public"])
 
 # MPSMatrixMultiplication GEMM. Objective-C++ (ARC); the header is plain C++
-# and absl-free so the standalone test needs neither XLA nor absl. The .mm
-# source is compiled by cc_library's objc++-compile action (apple_support
-# toolchain); -ObjC++ keeps it Objective-C++ even if built as C++.
+# and absl-free so the standalone test needs neither XLA nor absl. cc_library
+# rejects the .mm extension, so the Objective-C++ sources are named *_objc.cc
+# and -ObjC++ forces the language.
 cc_library(
     name = "mps_gemm",
-    srcs = ["mps_gemm.mm"],
+    srcs = ["mps_gemm_objc.cc"],
     hdrs = ["mps_gemm.h"],
     copts = [
         "-ObjC++",
@@ -47,7 +47,7 @@ cc_library(
 # locally.
 cc_test(
     name = "mps_gemm_test",
-    srcs = ["mps_gemm_test.mm"],
+    srcs = ["mps_gemm_test_objc.cc"],
     copts = [
         "-ObjC++",
         "-fobjc-arc",

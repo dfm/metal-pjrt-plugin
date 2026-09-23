@@ -1,5 +1,5 @@
 // Plain C++ interface to a GEMM implemented with Metal Performance Shaders
-// (MPSMatrixMultiplication). The implementation (mps_gemm.mm) is
+// (MPSMatrixMultiplication). The implementation (mps_gemm_objc.cc) is
 // Objective-C++; this header is free of Objective-C and metal-cpp so it can be
 // included from ordinary C++ and XLA code. Metal objects cross the boundary as
 // void* (they are the same pointers metal-cpp wraps).
