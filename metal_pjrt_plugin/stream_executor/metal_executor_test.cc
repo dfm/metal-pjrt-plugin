@@ -19,6 +19,7 @@
 #include "xla/stream_executor/stream.h"
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/platform/statusor.h"
+#include "xla/tsl/lib/core/status_test_util.h"
 #include "xla/tsl/platform/test.h"
 
 namespace stream_executor {

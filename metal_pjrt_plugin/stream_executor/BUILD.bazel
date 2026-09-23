@@ -100,6 +100,7 @@ cc_test(
         "@xla//xla/stream_executor:stream",
         "@xla//xla/stream_executor:stream_executor_h",
         "@xla//xla/tsl/platform:statusor",
+        "@xla//xla/tsl/lib/core:status_test_util",
         "@xla//xla/tsl/platform:test",
         "@xla//xla/tsl/platform:test_main",
     ],
