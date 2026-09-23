@@ -1,0 +1,123 @@
+# Integration notes (XLA @ 91888df6, jaxlib 0.11.2)
+
+Source-verified facts that drive the implementation. Paths are relative to the
+XLA tree (`external/xla+` in the Bazel output base).
+
+## Identity
+
+- StreamExecutor platform: `PLATFORM_DEFINE_ID(kMetalPlatformId, METAL)`;
+  `Platform::Name()` is "METAL", canonical name "metal"
+  (`xla/service/platform_util.cc` lowercases unknown names).
+- PJRT platform: name "metal", id `tsl::Fingerprint64("metal")`.
+- Things keyed on identity that need registration from our code:
+  `Compiler::RegisterCompilerFactory(kMetalPlatformId, ...)`,
+  `TransferManager` for `kMetalPlatformId`,
+  `PjRtRegisterDefaultCompiler("metal", StreamExecutorGpuCompiler(MetalId, kMetalPlatformId))`,
+  `StreamExecutorPlatformIdMapping::Global().AddMapping(kMetalPlatformId, MetalId)`,
+  `XLA_COLLECTIVES_REGISTER("metal", "stub", 1, GpuCollectivesStub)`.
+- Things keyed on identity that need XLA patches (kept in `third_party/xla/patches/`):
+  1. `xla/pjrt/gpu/se_gpu_pjrt_client.cc:1874-1880` picks the PJRT platform
+     name by macro; add `TENSORFLOW_USE_METAL` -> "metal".
+  2. `xla/pjrt/pjrt_compiler.h:493` `IsGpuId` must include the metal id.
+  3. `xla/service/gpu/gpu_executable.cc:534-551` platform-id switch must
+     accept `kMetalPlatformId`.
+  4. `xla/service/gpu/BUILD` `ptx_custom_kernel_emitter` has no branch when no
+     GPU is configured: provide a stub `EmitPtxCustomKernelThunk`.
+  5. `xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc`
+     `CompileMlirToLlvm`: hook for the MSL emitter (see Codegen).
+- Compute capability: `GpuComputeCapability` is a closed variant of
+  Cuda/Rocm/OneAPI (`xla/stream_executor/device_description.h:98-178`).
+  Default-constructed reads as CUDA 0.0. v1 reports **OneAPI** so that the
+  SPIR-V/Intel branches are taken (scalar-only transpose, explicit NaN
+  propagation, command buffers off, `ExecutableAbiVersion` accepted, atomics
+  via the SPIRV path). Adding an Apple alternative is a later patch.
+
+## StreamExecutor contract (what MetalExecutor must implement)
+
+- Base: `gpu::GpuExecutor(Platform*, int ordinal)` (adds `device_ordinal()`).
+- Pure: `Init`, `CreateStream(priority)`, `CreateEvent`, `Allocate(size,
+  memory_space)`, `Deallocate`, `HostMemoryAllocate`, `SynchronizeAllActivity`,
+  `SynchronousMemcpy` x2, `DeallocateStream`, `EnablePeerAccessTo`,
+  `CanEnablePeerAccessTo`, `CreateDeviceDescription`.
+- Required by the PJRT client: `DeviceMemoryUsage` returns true;
+  `CreateMemoryAllocator(kCollective|kHost)`; `LoadKernel`, `UnloadKernel`,
+  `LoadModule`, `GetSymbol` (constants), `CreateOrShareConstant`.
+- Memory spaces (`memory_space.h`): kDevice=0, kUnified=1, kCollective=2,
+  kHost=5. XLA colors: default 0, collective 1, temp 2. With unified memory all
+  of these are the same shared MTLBuffer allocation.
+- Streams: `StreamCommon` subclass implementing `WaitFor(Stream*)`,
+  `WaitFor(Event*)`, `RecordEvent`, `Memcpy` x3, `MemZero`, `Memset32`,
+  `BlockHostUntilDone`, `DoHostCallbackWithStatus`, `platform_specific_handle`.
+  `LocalDeviceState` creates ~18 streams per device and asks for
+  `StreamPriority::Highest` on some (accept and ignore).
+- Events: `Event` subclass overriding `PollForStatus`.
+- Kernels: `Kernel` subclass with `Arity`, `GetMaxOccupiedBlocksPerCore`,
+  `Launch(thread, block, cluster, stream, KernelArgs)`. Args arrive as
+  `KernelArgsPackedArrayBase` with one 8-byte device pointer per argument in
+  HLO buffer order, no scalars, shared bytes usually 0.
+- Binary format: no generic loader spec exists; MSL source travels in
+  `KernelLoaderSpec::CreateOwningCudaCubinInMemorySpec(bytes, name, arity)`
+  exactly as SYCL smuggles SPIR-V. `LoadKernel` compiles the MSL and looks up
+  the function by `spec.kernel_name()`.
+- Metal limit: at most 31 buffer arguments per kernel. v1 errors above that;
+  later use an argument buffer of GPU addresses.
+- Types renamed: `DeviceAddressBase` (alias `DeviceMemoryBase`),
+  `MemorySpace` (alias `MemoryType`).
+
+## Compiler contract (MetalCompiler : GpuCompiler)
+
+Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
+- Ctor: `GpuCompiler(kMetalPlatformId, "spirv64-unknown-unknown", "")` so the
+  emitters take the SPIR branches (`target_util.cc`, `fusion_emitter.cc`).
+- Pure virtuals: `GetLLVMCommandLineOptions`, `AddPaddingForGpublasGemms`
+  (no-op), `OptimizeHloConvolutionCanonicalization` (no-op in v1: no conv),
+  `CompileTargetBinary(module_config, llvm::Module*, device_description,
+  relocatable, debug_module, shard)`.
+- `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`: base.
+- Kernels are compiled one module at a time via
+  `CompileSingleModule -> CompileTargetBinary`; result bytes become a
+  `CustomKernelThunk` with a cubin spec. `GpuExecutable::binary()` holds only
+  the constants module (`LoadModule` + `GetSymbol` per constant).
+- Registration: static initializer calling `Compiler::RegisterCompilerFactory`
+  in an `alwayslink` target.
+- Base `OptimizeHloPostLayoutAssignment` unconditionally rewrites dots into
+  `__cublas$gemm` custom calls (GemmThunk -> `StreamExecutor::AsBlas()`), so
+  matmul needs a `blas::BlasSupport` for Metal (MPS, Objective-C++).
+- Triton is gated off for non-CUDA/ROCm; cuDNN passes default to no-op.
+
+## Codegen: MLIR -> EmitC -> MSL
+
+- Emitter pipeline (`mlir_kernel_emitter.cc`): `AddLoopTransformationPasses`
+  then `AddLoweringPasses`: LowerTensors, SimplifyArith, SimplifyAffine,
+  ConvertIndexType, float conversions, ExpandFloatOps, SCFToControlFlow,
+  `createLowerToLLVMGPUPass(device)` (NVVM default, ROCDL, LLVM-SPV).
+- MSL has no `goto` and no labeled statements (verified), so we do not
+  translate the final CFG. Instead the hook runs the pipeline up to but not
+  including SCFToControlFlow, then converts func/scf/arith/math/vector/gpu and
+  the LLVM-dialect memory ops that LowerTensors introduced into EmitC, and
+  prints MSL. The kernel wrapper with `[[buffer(i)]]` and thread-id attributes
+  is generated as text around an EmitC-printed body function.
+- Thread ids are `gpu.thread_id/block_id/block_dim/grid_dim` with `xla.range`
+  attrs; barriers `gpu.barrier`; shuffles `gpu.shuffle`.
+- The MSL text is carried to `CompileTargetBinary` inside a stub `llvm::Module`
+  (a global string plus the declared kernel function), so no other XLA code
+  changes. `CompileTargetBinary` returns the MSL bytes as the "cubin".
+- The constants module is real LLVM IR with global initializers; the Metal
+  `CompileTargetBinary` serializes those into a private container that
+  `LoadModule`/`GetSymbol` understand.
+
+## PJRT client
+
+- `GetStreamExecutorGpuClient` builds `LocalDeviceState`s, allocators
+  (`kPlatform` is the simplest that works; `kBFC` needs the two
+  `CreateMemoryAllocator` kinds), and calls `GpuCollectives::Resolve(name)`
+  which CHECK-fails without a registration (hence the stub under "metal").
+- `//xla/service:gpu_plugin` is empty on macOS (all deps behind
+  `if_gpu_is_configured`), so our plugin target lists `gpu_compiler`,
+  `gpu_executable`, the transfer manager and thunk runtime deps explicitly.
+- Plugin dylib: copy the CPU plugin's macOS linkopts
+  (`-Wl,-exported_symbol,_GetPjrtApi`, `-install_name @rpath/...`).
+- Client must always pass `platform_name="metal"`; the topology path defaults
+  to "gpu" which canonicalizes to "cuda".
+- `MakeComputeCapabilityAttributeString` and `GpuPlatformVersionFromDevices`
+  return "unknown" for our device; harmless.
