@@ -79,3 +79,26 @@ cc_library(
     ],
     alwayslink = True,  # Registers itself with the PlatformManager.
 )
+
+cc_test(
+    name = "metal_executor_test",
+    srcs = ["metal_executor_test.cc"],
+    tags = ["local", "manual"],  # needs a Metal device
+    deps = [
+        ":metal_platform",
+        ":metal_platform_id",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@xla//xla/stream_executor:device_address",
+        "@xla//xla/stream_executor:kernel",
+        "@xla//xla/stream_executor:kernel_spec",
+        "@xla//xla/stream_executor:launch_dim",
+        "@xla//xla/stream_executor:module_spec",
+        "@xla//xla/stream_executor:platform_manager",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+        "@xla//xla/tsl/platform:statusor",
+        "@xla//xla/tsl/platform:test",
+        "@xla//xla/tsl/platform:test_main",
+    ],
+)
