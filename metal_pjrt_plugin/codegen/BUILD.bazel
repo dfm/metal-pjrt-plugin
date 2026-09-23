@@ -1,0 +1,125 @@
+# MLIR -> EmitC -> Metal Shading Language kernel code generation.
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "msl_kernel",
+    hdrs = ["msl_kernel.h"],
+)
+
+cc_library(
+    name = "msl_emitter",
+    srcs = ["msl_emitter.cc"],
+    hdrs = ["msl_emitter.h"],
+    deps = [
+        ":msl_kernel",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:AffineToStandard",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:ArithToEmitC",
+        "@llvm-project//mlir:ArithTransforms",
+        "@llvm-project//mlir:ComplexToStandard",
+        "@llvm-project//mlir:DialectUtils",
+        "@llvm-project//mlir:EmitCDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FuncToEmitC",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:SCFToEmitC",
+        "@llvm-project//mlir:Support",
+        "@llvm-project//mlir:TargetCpp",
+        "@llvm-project//mlir:TransformUtils",
+        "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@xla//xla/backends/gpu/codegen/emitters/transforms:passes",
+        "@xla//xla/codegen/emitters/transforms:convert_pure_call_ops_pass",
+        "@xla//xla/codegen/emitters/transforms:passes",
+        "@xla//xla/codegen/emitters/transforms:simplify_affine_pass",
+        "@xla//xla/codegen/emitters/transforms:simplify_arith_pass",
+        "@xla//xla/stream_executor:device_description",
+    ],
+)
+
+# Light-weight: used by the compiler's CompileTargetBinary.
+cc_library(
+    name = "msl_llvm_bridge",
+    srcs = ["msl_llvm_bridge.cc"],
+    hdrs = ["msl_llvm_bridge.h"],
+    deps = [
+        ":msl_kernel",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:Support",
+    ],
+)
+
+# Requires XLA patched with xla_patch/mlir_kernel_emitter_hook.patch.
+cc_library(
+    name = "msl_kernel_hook",
+    srcs = ["msl_kernel_hook.cc"],
+    hdrs = ["msl_kernel_hook.h"],
+    deps = [
+        ":msl_emitter",
+        ":msl_llvm_bridge",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@xla//xla:xla_proto_cc",
+        "@xla//xla/backends/gpu/codegen/emitters:mlir_kernel_emitter",
+        "@xla//xla/codegen:llvm_kernel_source",
+        "@xla//xla/codegen:mlir_kernel_source",
+        "@xla//xla/codegen/emitters/transforms:pass_pipelines",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/stream_executor:device_description",
+        "@xla//xla/tsl/framework/mlir:status_scoped_diagnostic_handler",
+    ],
+)
+
+cc_test(
+    name = "msl_emitter_test",
+    srcs = ["msl_emitter_test.cc"],
+    deps = [
+        ":msl_emitter",
+        ":msl_llvm_bridge",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//mlir:ArithDialect",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:GPUDialect",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:MathDialect",
+        "@llvm-project//mlir:Parser",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:UBDialect",
+        "@llvm-project//mlir:VectorDialect",
+        "@xla//xla/stream_executor:device_description",
+    ],
+)
+
+# Compiles MSL files with the system Metal compiler (needs a Metal device):
+#   bazel run //metal_pjrt_plugin/codegen:msl_syntax_check -- /abs/path/k.metal
+cc_binary(
+    name = "msl_syntax_check",
+    srcs = ["msl_syntax_check.cc"],
+    linkopts = [
+        "-framework Metal",
+        "-framework Foundation",
+    ],
+    tags = ["manual"],
+    deps = ["@metal_cpp"],
+)
