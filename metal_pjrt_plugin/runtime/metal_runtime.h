@@ -266,6 +266,11 @@ class Stream {
   // Number of dispatches encoded into the current open command buffer before
   // it is automatically committed.
   static constexpr int kMaxOpsPerCommandBuffer = 64;
+  // Also commit once this many threads have been dispatched into one command
+  // buffer (roughly tens of milliseconds of GPU work), so a batch of heavy
+  // kernels cannot approach the GPU watchdog timeout, especially under
+  // contention from other processes.
+  static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 29;
 
  private:
   friend class Device;
@@ -294,6 +299,7 @@ class Stream {
   MTL::CommandBuffer* cmd_ = nullptr;
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
+  uint64_t threads_in_cmd_ = 0;
   // Committed but possibly still executing command buffers (retained).
   // Synchronize waits for their completion, not just the fence signal, so
   // callers may free resources immediately afterwards.

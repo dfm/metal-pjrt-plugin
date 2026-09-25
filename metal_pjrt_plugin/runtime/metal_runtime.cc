@@ -404,7 +404,6 @@ absl::Status Stream::CheckAsyncError() {
 
 absl::Status Stream::EnsureCommandBuffer() {
   if (cmd_ != nullptr) return absl::OkStatus();
-  ABSL_RETURN_IF_ERROR(CheckAsyncError());
   // Retained references: XLA frees device buffers as soon as the host no
   // longer needs them and relies on the driver to keep memory alive until
   // enqueued GPU work completes (as CUDA does). Metal only does that for
@@ -417,6 +416,7 @@ absl::Status Stream::EnsureCommandBuffer() {
   }
   cmd_->retain();
   ops_in_cmd_ = 0;
+  threads_in_cmd_ = 0;
   return absl::OkStatus();
 }
 
@@ -494,6 +494,7 @@ absl::Status Stream::Commit() {
   in_flight_.push_back(cmd_);
   cmd_ = nullptr;
   ops_in_cmd_ = 0;
+  threads_in_cmd_ = 0;
   last_committed_fence_value_ = v;
   std::vector<MTL::CommandBuffer*> still_running;
   for (MTL::CommandBuffer* cb : in_flight_) {
@@ -535,14 +536,13 @@ absl::Status Stream::Synchronize() {
   std::lock_guard<std::mutex> elock(err_mu_);
   if (async_error_.ok()) async_error_ = first_failure;
   if (async_error_.ok()) return absl::OkStatus();
-  if (!async_error_reported_) {
-    async_error_reported_ = true;
-    return async_error_;
-  }
-  return absl::FailedPreconditionError(absl::StrCat(
-      "Metal stream on device ", device_->ordinal(),
-      " is in error state after an earlier GPU failure: ",
-      async_error_.message()));
+  // A failed command buffer does not take the device down (unlike a CUDA
+  // context error), so report the failure once, to the caller waiting on
+  // this work, and let the stream recover for subsequent work.
+  absl::Status error = async_error_;
+  async_error_ = absl::OkStatus();
+  async_error_reported_ = false;
+  return error;
 }
 
 bool UsesArgumentBuffer(const std::string& msl_source,
@@ -596,7 +596,12 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
+  threads_in_cmd_ += static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
+                     threadgroups.z * threads.x * threads.y * threads.z;
+  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
+      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
+    return Commit();
+  }
   return absl::OkStatus();
 }
 
@@ -645,7 +650,12 @@ absl::Status Stream::LaunchWithArgumentBuffer(
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
+  threads_in_cmd_ += static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
+                     threadgroups.z * threads.x * threads.y * threads.z;
+  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
+      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
+    return Commit();
+  }
   return absl::OkStatus();
 }
 
