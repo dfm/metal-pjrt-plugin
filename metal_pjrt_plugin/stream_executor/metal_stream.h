@@ -6,9 +6,11 @@
 #include <optional>
 #include <variant>
 
+#include "absl/base/thread_annotations.h"
 #include "absl/functional/any_invocable.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/synchronization/mutex.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/event.h"
@@ -23,6 +25,11 @@ class MetalExecutor;
 
 // A stream is one MTLCommandQueue (see runtime/metal_runtime.h for the
 // command-buffer batching policy).
+//
+// Error state: a failed GPU command buffer or a failed host callback (one
+// without an error_cb) puts the stream into the error state
+// (StreamCommon::CheckStatus, so ok() turns false) and BlockHostUntilDone
+// reports the failure from then on.
 class MetalStream : public StreamCommon {
  public:
   static absl::StatusOr<std::unique_ptr<MetalStream>> Create(
@@ -47,6 +54,11 @@ class MetalStream : public StreamCommon {
   absl::Status BlockHostUntilDone() override;
   absl::Status DoHostCallbackWithStatus(
       absl::AnyInvocable<absl::Status() &&> callback) override;
+  // With a non-null `error_cb`, a failing callback's status goes to error_cb
+  // instead of putting the stream into the error state.
+  absl::Status DoHostCallbackWithStatus(
+      absl::AnyInvocable<absl::Status() &&> callback,
+      absl::AnyInvocable<void(absl::Status) &&> error_cb) override;
 
   Stream::PlatformSpecificHandle platform_specific_handle() const override {
     return {rt_stream_.get()};
@@ -59,7 +71,14 @@ class MetalStream : public StreamCommon {
               std::optional<std::variant<StreamPriority, int>> priority,
               std::unique_ptr<metal_pjrt::rt::Stream> rt_stream);
 
+  // Records a failure: first one wins; also sets StreamCommon's error state.
+  void SetError(absl::Status status);
+
   MetalExecutor* executor_;
+  // First failure seen by a host callback; declared before rt_stream_ so it
+  // outlives the runtime stream's worker thread.
+  absl::Mutex error_mu_;
+  absl::Status error_ ABSL_GUARDED_BY(error_mu_);
   std::unique_ptr<metal_pjrt::rt::Stream> rt_stream_;
 };
 

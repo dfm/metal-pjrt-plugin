@@ -1,6 +1,6 @@
 // MPSMatrixMultiplication-backed GEMM. Objective-C++ with ARC; must not
 // include metal-cpp headers (they clash with <Metal/Metal.h>), so Metal objects
-// arrive as void* and are bridged here.
+// arrive as void* and are bridged here. absl is plain C++ and fine to use here.
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 
 #import <Metal/Metal.h>
@@ -11,6 +11,11 @@
 #include <mutex>
 #include <sstream>
 #include <string>
+
+#include "absl/status/status.h"
+#include "absl/status/status_macros.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 
 #if !__has_feature(objc_arc)
 #error "mps_gemm_objc.cc must be compiled with -fobjc-arc"
@@ -93,8 +98,19 @@ struct Stored {
   int64_t rows, cols;
 };
 
-rt::Status Invalid(const std::string& what, const GemmParams& p) {
-  return rt::Status("RunMpsGemm: " + what + ": " + GemmParamsDebugString(p));
+std::string Describe(absl::string_view what, const GemmParams& p) {
+  return absl::StrCat("RunMpsGemm: ", what, ": ", GemmParamsDebugString(p));
+}
+absl::Status Invalid(absl::string_view what, const GemmParams& p) {
+  return absl::InvalidArgumentError(Describe(what, p));
+}
+
+// "<description> (domain=<domain>, code=<code>)".
+std::string NSErrorToString(NSError* err) {
+  if (err == nil) return "unknown Metal error (no NSError)";
+  return absl::StrCat(err.localizedDescription.UTF8String, " (domain=",
+                      err.domain.UTF8String, ", code=",
+                      static_cast<int64_t>(err.code), ")");
 }
 
 Stored StoredA(const GemmParams& p) {
@@ -184,7 +200,7 @@ struct StagingPipelines {
   id<MTLComputePipelineState> copy_u16;
 };
 
-rt::Status GetStagingPipelines(id<MTLDevice> device, StagingPipelines* out) {
+absl::Status GetStagingPipelines(id<MTLDevice> device, StagingPipelines* out) {
   static std::mutex mu;
   static NSMutableDictionary* cache = nil;  // registryID -> NSArray of PSOs
   std::lock_guard<std::mutex> lock(mu);
@@ -196,16 +212,23 @@ rt::Status GetStagingPipelines(id<MTLDevice> device, StagingPipelines* out) {
     id<MTLLibrary> lib =
         [device newLibraryWithSource:@(kStagingMsl) options:nil error:&err];
     if (lib == nil) {
-      return rt::Status(std::string("RunMpsGemm: staging MSL failed: ") +
-                        (err ? err.localizedDescription.UTF8String : "?"));
+      return absl::InternalError(absl::StrCat(
+          "RunMpsGemm: compiling the staging kernels failed: ",
+          NSErrorToString(err)));
     }
     NSMutableArray* psos = [NSMutableArray array];
     for (NSString* name in @[ @"bf16_to_f32", @"f32_to_bf16", @"copy_u16" ]) {
-      id<MTLComputePipelineState> pso = [device
-          newComputePipelineStateWithFunction:[lib newFunctionWithName:name]
-                                        error:&err];
+      id<MTLFunction> fn = [lib newFunctionWithName:name];
+      if (fn == nil) {
+        return absl::InternalError(absl::StrCat(
+            "RunMpsGemm: staging kernel ", name.UTF8String, " not found"));
+      }
+      id<MTLComputePipelineState> pso =
+          [device newComputePipelineStateWithFunction:fn error:&err];
       if (pso == nil) {
-        return rt::Status("RunMpsGemm: staging pipeline creation failed");
+        return absl::InternalError(absl::StrCat(
+            "RunMpsGemm: creating the ", name.UTF8String,
+            " staging pipeline failed: ", NSErrorToString(err)));
       }
       [psos addObject:pso];
     }
@@ -215,15 +238,19 @@ rt::Status GetStagingPipelines(id<MTLDevice> device, StagingPipelines* out) {
   out->bf16_to_f32 = hit[0];
   out->f32_to_bf16 = hit[1];
   out->copy_u16 = hit[2];
-  return rt::Status::Ok();
+  return absl::OkStatus();
 }
 
 // Copies/converts the matrices of an operand between `in` and `out`, which
 // share ld/bs. For copy_u16 all quantities are in 16-bit words (scale element
 // counts by the element size / 2); for the conversions, in elements.
-void EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState> pso,
+absl::Status EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState> pso,
                    id<MTLBuffer> in, id<MTLBuffer> out, const StagingArgs& a) {
   id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
+  if (enc == nil) {
+    return absl::InternalError(
+        "RunMpsGemm: computeCommandEncoder creation failed for staging");
+  }
   [enc setComputePipelineState:pso];
   [enc setBuffer:in offset:0 atIndex:0];
   [enc setBuffer:out offset:0 atIndex:1];
@@ -231,9 +258,10 @@ void EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState> pso,
   [enc dispatchThreads:MTLSizeMake(a.cols, a.rows, a.batches)
       threadsPerThreadgroup:MTLSizeMake(32, 8, 1)];
   [enc endEncoding];
+  return absl::OkStatus();
 }
 
-rt::Status CheckParams(const GemmParams& p) {
+absl::Status CheckParams(const GemmParams& p) {
   if (p.m < 0 || p.n < 0 || p.k < 0 || p.batch_count < 0) {
     return Invalid("negative dimension", p);
   }
@@ -253,14 +281,15 @@ rt::Status CheckParams(const GemmParams& p) {
   for (const MpsOperand* x : {&p.a, &p.b, &p.c}) {
     if (x->offset % 2 != 0) return Invalid("misaligned operand offset", p);
   }
-  return rt::Status::Ok();
+  return absl::OkStatus();
 }
 
-rt::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
+absl::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
                          const GemmParams& p, NSMutableArray* keep_alive) {
   MPSDataType ta, tc;
   if (!ToMpsDataType(p.a.dtype, &ta) || !ToMpsDataType(p.c.dtype, &tc)) {
-    return Invalid("unsupported dtype", p);
+    // bf16 is staged to f32 before this point.
+    return absl::UnimplementedError(Describe("unsupported dtype", p));
   }
   const Stored sa = StoredA(p), sb = StoredB(p), sc{p.m, p.n};
   const int64_t ea = MpsDTypeSize(p.a.dtype), ec = MpsDTypeSize(p.c.dtype);
@@ -298,7 +327,10 @@ rt::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
      interiorColumns:static_cast<NSUInteger>(p.k)
                alpha:p.alpha
                 beta:p.beta];
-  if (kernel == nil) return Invalid("MPSMatrixMultiplication init failed", p);
+  if (kernel == nil) {
+    return absl::InternalError(
+        Describe("MPSMatrixMultiplication init failed", p));
+  }
 
   const int64_t calls = batched ? 1 : p.batch_count;
   for (int64_t i = 0; i < calls; ++i) {
@@ -312,7 +344,8 @@ rt::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
     MPSMatrix* mb = at(p.b, buf_b, ea, db);
     MPSMatrix* mc = at(p.c, buf_c, ec, dc);
     if (ma == nil || mb == nil || mc == nil) {
-      return Invalid("MPSMatrix init failed", p);
+      return absl::InternalError(
+          Describe(absl::StrCat("MPSMatrix init failed for batch ", i), p));
     }
     if (batched) {
       kernel.batchStart = 0;
@@ -327,22 +360,21 @@ rt::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
     [keep_alive addObject:mc];
   }
   [keep_alive addObject:kernel];
-  return rt::Status::Ok();
+  return absl::OkStatus();
 }
 
 }  // namespace
 
-rt::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
-                      const GemmParams& p) {
+absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
+                        const GemmParams& p) {
   if (mtl_command_buffer == nullptr) {
     return Invalid("null command buffer", p);
   }
-  rt::Status s = CheckParams(p);
-  if (!s.ok()) return s;
-  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return rt::Status::Ok();
+  ABSL_RETURN_IF_ERROR(CheckParams(p));
+  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
   if (p.k == 0) {
     // C = beta * C; MPS rejects interiorColumns == 0. XLA does not emit these.
-    return Invalid("k == 0 is not supported", p);
+    return absl::UnimplementedError(Describe("k == 0 is not supported", p));
   }
 
   id<MTLCommandBuffer> cmd =
@@ -351,7 +383,9 @@ rt::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
                              ? (__bridge id<MTLDevice>)mtl_device
                              : cmd.device;
   if (!MPSSupportsMTLDevice(device)) {
-    return Invalid("MPS does not support this device", p);
+    return absl::UnimplementedError(Describe(
+        absl::StrCat("MPS does not support device ", device.name.UTF8String),
+        p));
   }
   // The runtime's command buffers use unretained references; everything
   // created here is kept alive until the GPU is done with it.
@@ -376,25 +410,32 @@ rt::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
     id<MTLBuffer> tmp = nil;
   };
   auto stage = [&](MpsOperand& x, const Stored& st, bool load,
-                   Staged* out) -> rt::Status {
+                   Staged* out) -> absl::Status {
     const int64_t es = MpsDTypeSize(x.dtype);
     id<MTLBuffer> buf = (__bridge id<MTLBuffer>)x.buffer;
     const int64_t required = RequiredElems(x, st, batches, batched);
     const bool convert = x.dtype == MpsDType::kBF16;
     const bool too_short =
         buf.length < x.offset + static_cast<uint64_t>(required * es);
-    if (!convert && !too_short) return rt::Status::Ok();
+    if (!convert && !too_short) return absl::OkStatus();
     if (!have_pipes) {
-      rt::Status ps = GetStagingPipelines(device, &pipes);
-      if (!ps.ok()) return ps;
+      ABSL_RETURN_IF_ERROR(GetStagingPipelines(device, &pipes));
       have_pipes = true;
     }
     const MpsDType staged_dtype = convert ? MpsDType::kF32 : x.dtype;
     const int64_t staged_es = MpsDTypeSize(staged_dtype);
-    id<MTLBuffer> tmp = [device
-        newBufferWithLength:static_cast<NSUInteger>(required * staged_es)
-                    options:MTLResourceStorageModePrivate];
-    if (tmp == nil) return Invalid("staging buffer allocation failed", p);
+    const int64_t tmp_bytes = required * staged_es;
+    id<MTLBuffer> tmp =
+        [device newBufferWithLength:static_cast<NSUInteger>(tmp_bytes)
+                            options:MTLResourceStorageModePrivate];
+    if (tmp == nil) {
+      return absl::ResourceExhaustedError(Describe(
+          absl::StrFormat("allocating a %d-byte staging buffer failed "
+                          "(maxBufferLength %d, current allocated size %d)",
+                          tmp_bytes, device.maxBufferLength,
+                          device.currentAllocatedSize),
+          p));
+    }
     [keep_alive addObject:tmp];
     // In 16-bit words for copies, in elements for conversions.
     const uint64_t w = convert ? 1 : static_cast<uint64_t>(es / 2);
@@ -404,35 +445,35 @@ rt::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
                      static_cast<uint32_t>(st.rows),
                      static_cast<uint32_t>(batches), 0};
     if (load) {
-      EncodeStaging(cmd, convert ? pipes.bf16_to_f32 : pipes.copy_u16, buf,
-                    tmp, args);
+      ABSL_RETURN_IF_ERROR(EncodeStaging(
+          cmd, convert ? pipes.bf16_to_f32 : pipes.copy_u16, buf, tmp, args));
     }
     out->active = true;
     out->tmp = tmp;
     x.buffer = (__bridge void*)tmp;
     x.offset = 0;
     x.dtype = staged_dtype;
-    return rt::Status::Ok();
+    return absl::OkStatus();
   };
   Staged ga, gb, gc;
   const Stored sc{p.m, p.n};
-  s = stage(q.a, StoredA(p), /*load=*/true, &ga);
-  if (s.ok()) s = stage(q.b, StoredB(p), /*load=*/true, &gb);
+  ABSL_RETURN_IF_ERROR(stage(q.a, StoredA(p), /*load=*/true, &ga));
+  ABSL_RETURN_IF_ERROR(stage(q.b, StoredB(p), /*load=*/true, &gb));
   // A staged C is only read for beta * C; the write-back below touches just
   // the matrix elements, so skipping the load cannot clobber row padding.
-  if (s.ok()) s = stage(q.c, sc, /*load=*/p.beta != 0.0, &gc);
-  if (s.ok()) s = EncodeMpsGemm(device, cmd, q, keep_alive);
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(stage(q.c, sc, /*load=*/p.beta != 0.0, &gc));
+  ABSL_RETURN_IF_ERROR(EncodeMpsGemm(device, cmd, q, keep_alive));
   if (gc.active) {
     const bool to_bf16 = p.c.dtype == MpsDType::kBF16;
     const uint64_t w = to_bf16 ? 1 : static_cast<uint64_t>(MpsDTypeSize(p.c.dtype) / 2);
     StagingArgs args{0, p.c.offset / 2, p.c.ld * w, p.c.batch_stride * w,
                      static_cast<uint32_t>(p.n * w), static_cast<uint32_t>(p.m),
                      static_cast<uint32_t>(batches), 0};
-    EncodeStaging(cmd, to_bf16 ? pipes.f32_to_bf16 : pipes.copy_u16, gc.tmp,
-                  (__bridge id<MTLBuffer>)p.c.buffer, args);
+    ABSL_RETURN_IF_ERROR(
+        EncodeStaging(cmd, to_bf16 ? pipes.f32_to_bf16 : pipes.copy_u16,
+                      gc.tmp, (__bridge id<MTLBuffer>)p.c.buffer, args));
   }
-  return rt::Status::Ok();
+  return absl::OkStatus();
 }
 
 }  // namespace blas

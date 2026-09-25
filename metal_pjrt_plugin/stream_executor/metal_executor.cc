@@ -11,6 +11,7 @@
 
 #include "absl/log/log.h"
 #include "absl/status/status.h"
+#include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -19,8 +20,6 @@
 #include "metal_pjrt_plugin/blas/metal_blas.h"  // [metal-blas]
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
-#include "xla/tsl/platform/errors.h"
-#include "xla/tsl/platform/statusor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_event.h"
 #include "metal_pjrt_plugin/stream_executor/metal_kernel.h"
 #include "metal_pjrt_plugin/stream_executor/metal_stream.h"
@@ -37,22 +36,14 @@ namespace metal {
 
 namespace rt = metal_pjrt::rt;
 
-namespace {
-
-absl::Status ToAbsl(const rt::Status& s) {
-  if (s.ok()) return absl::OkStatus();
-  return absl::InternalError(s.message());
-}
-
-}  // namespace
-
 MetalExecutor::MetalExecutor(Platform* platform, int device_ordinal)
     : gpu::GpuExecutor(platform, device_ordinal) {}
 
 MetalExecutor::~MetalExecutor() = default;
 
 absl::Status MetalExecutor::Init() {
-  return ToAbsl(rt::Device::Create(device_ordinal(), &device_));
+  ABSL_ASSIGN_OR_RETURN(device_, rt::Device::Create(device_ordinal()));
+  return absl::OkStatus();
 }
 
 // [metal-blas] ---------------------------------------------------------------
@@ -71,7 +62,7 @@ blas::BlasSupport* MetalExecutor::AsBlas() {
 
 absl::StatusOr<std::unique_ptr<Stream>> MetalExecutor::CreateStream(
     std::optional<std::variant<StreamPriority, int>> priority) {
-  TF_ASSIGN_OR_RETURN(auto stream, MetalStream::Create(this, priority));
+  ABSL_ASSIGN_OR_RETURN(auto stream, MetalStream::Create(this, priority));
   {
     absl::MutexLock lock(&mu_);
     live_streams_.insert(stream.get());
@@ -80,8 +71,7 @@ absl::StatusOr<std::unique_ptr<Stream>> MetalExecutor::CreateStream(
 }
 
 absl::StatusOr<std::unique_ptr<Event>> MetalExecutor::CreateEvent() {
-  std::unique_ptr<rt::Event> ev;
-  TF_RETURN_IF_ERROR(ToAbsl(device_->CreateEvent(&ev)));
+  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Event> ev, device_->CreateEvent());
   return std::unique_ptr<Event>(new MetalEvent(std::move(ev)));
 }
 
@@ -90,17 +80,27 @@ void MetalExecutor::DeallocateStream(Stream* stream) {
   live_streams_.erase(stream);
 }
 
-bool MetalExecutor::SynchronizeAllActivity() {
+absl::Status MetalExecutor::SynchronizeAllStreams() {
   std::vector<Stream*> streams;
   {
     absl::MutexLock lock(&mu_);
     streams.assign(live_streams_.begin(), live_streams_.end());
   }
-  bool ok = true;
+  absl::Status first_error;
   for (Stream* s : streams) {
-    if (!s->BlockHostUntilDone().ok()) ok = false;
+    absl::Status st = s->BlockHostUntilDone();
+    if (!st.ok() && first_error.ok()) first_error = st;
   }
-  return ok;
+  return first_error;
+}
+
+bool MetalExecutor::SynchronizeAllActivity() {
+  absl::Status s = SynchronizeAllStreams();
+  if (!s.ok()) {
+    LOG(ERROR) << "Metal device " << device_ordinal()
+               << ": synchronizing all streams failed: " << s;
+  }
+  return s.ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -109,30 +109,39 @@ bool MetalExecutor::SynchronizeAllActivity() {
 DeviceAddressBase MetalExecutor::Allocate(uint64_t size, int64_t memory_space) {
   // Every memory space is unified memory here; the space only matters to XLA's
   // buffer coloring.
-  rt::Allocation a;
-  rt::Status s = device_->Allocate(size, &a);
-  if (!s.ok()) {
-    LOG(ERROR) << "Metal allocation of " << size << " bytes failed: "
-               << s.message();
+  // StreamExecutor contract: failure is a null DeviceAddressBase, so the
+  // status is logged here.
+  absl::StatusOr<rt::Allocation> a = device_->Allocate(size);
+  if (!a.ok()) {
+    LOG(ERROR) << "Metal device " << device_ordinal() << ": allocating "
+               << size << " bytes (memory space " << memory_space
+               << ") failed: " << a.status();
     return DeviceAddressBase();
   }
-  return DeviceAddressBase(a.ptr, size);
+  return DeviceAddressBase(a->ptr, size);
 }
 
 void MetalExecutor::Deallocate(DeviceAddressBase* mem) {
   if (mem == nullptr || mem->is_null()) return;
-  rt::Status s = device_->Deallocate(mem->opaque());
-  if (!s.ok()) LOG(ERROR) << "Metal deallocate failed: " << s.message();
+  absl::Status s = device_->Deallocate(mem->opaque());
+  if (!s.ok()) {
+    LOG(ERROR) << "Metal device " << device_ordinal() << ": deallocating "
+               << mem->size() << " bytes at " << mem->opaque()
+               << " failed: " << s;
+  }
 }
 
 absl::StatusOr<std::unique_ptr<MemoryAllocation>>
 MetalExecutor::HostMemoryAllocate(uint64_t size) {
-  rt::Allocation a;
-  TF_RETURN_IF_ERROR(ToAbsl(device_->Allocate(size, &a)));
+  ABSL_ASSIGN_OR_RETURN(rt::Allocation a, device_->Allocate(size));
   return std::make_unique<GenericMemoryAllocation>(
-      a.ptr, size, [this](void* ptr, uint64_t) {
-        rt::Status s = device_->Deallocate(ptr);
-        if (!s.ok()) LOG(ERROR) << "Metal host free failed: " << s.message();
+      a.ptr, size, [this](void* ptr, uint64_t size) {
+        absl::Status s = device_->Deallocate(ptr);
+        if (!s.ok()) {
+          LOG(ERROR) << "Metal device " << device_ordinal()
+                     << ": freeing host allocation of " << size
+                     << " bytes at " << ptr << " failed: " << s;
+        }
       });
 }
 
@@ -153,8 +162,8 @@ MetalExecutor::CreateMemoryAllocator(MemorySpace memory_space) {
 
 absl::StatusOr<MemorySpace> MetalExecutor::GetPointerMemorySpace(
     const void* ptr) {
-  rt::BufferRef ref;
-  if (device_->Resolve(ptr, &ref).ok()) return MemorySpace::kUnified;
+  // Not an error: any pointer outside our allocations is host memory.
+  if (device_->Resolve(ptr).ok()) return MemorySpace::kUnified;
   return MemorySpace::kHost;
 }
 
@@ -171,9 +180,13 @@ absl::Status MetalExecutor::SynchronousMemcpy(DeviceAddressBase* device_dst,
                                               uint64_t size) {
   // Unified memory: make sure no in-flight GPU work touches the destination,
   // then copy directly.
-  if (!SynchronizeAllActivity()) {
-    return absl::InternalError("SynchronousMemcpy: stream sync failed");
+  if (size == 0) return absl::OkStatus();
+  if (device_dst == nullptr || device_dst->opaque() == nullptr ||
+      host_src == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "SynchronousMemcpy H2D of %d bytes: null pointer", size));
   }
+  ABSL_RETURN_IF_ERROR(SynchronizeAllStreams());
   std::memcpy(device_dst->opaque(), host_src, size);
   return absl::OkStatus();
 }
@@ -181,9 +194,12 @@ absl::Status MetalExecutor::SynchronousMemcpy(DeviceAddressBase* device_dst,
 absl::Status MetalExecutor::SynchronousMemcpy(void* host_dst,
                                               const DeviceAddressBase& device_src,
                                               uint64_t size) {
-  if (!SynchronizeAllActivity()) {
-    return absl::InternalError("SynchronousMemcpy: stream sync failed");
+  if (size == 0) return absl::OkStatus();
+  if (host_dst == nullptr || device_src.opaque() == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "SynchronousMemcpy D2H of %d bytes: null pointer", size));
   }
+  ABSL_RETURN_IF_ERROR(SynchronizeAllStreams());
   std::memcpy(host_dst, device_src.opaque(), size);
   return absl::OkStatus();
 }
@@ -202,7 +218,9 @@ MetalExecutor::CreateOrShareConstant(Stream* stream,
   }
   DeviceAddressBase mem = Allocate(content.size(), 0);
   if (mem.is_null()) {
-    return absl::ResourceExhaustedError("failed to allocate shared constant");
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal device %d: failed to allocate a %d-byte shared constant",
+        device_ordinal(), content.size()));
   }
   std::memcpy(mem.opaque(), content.data(), content.size());
   std::shared_ptr<DeviceAddressBase> owned(
@@ -235,15 +253,14 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
   absl::Span<const uint8_t> bytes = spec.cuda_cubin_in_memory()->cubin_bytes;
   std::string msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
-  MTL::Library* library = nullptr;
-  rt::Status s = device_->CompileLibrary(msl, &library);
-  if (!s.ok()) {
-    return absl::InternalError(absl::StrCat("kernel ", spec.kernel_name(),
-                                            ": ", s.message()));
+  absl::StatusOr<MTL::Library*> library = device_->CompileLibrary(msl);
+  if (!library.ok()) {
+    return absl::Status(library.status().code(),
+                        absl::StrCat("loading kernel ", spec.kernel_name(),
+                                     ": ", library.status().message()));
   }
-  std::unique_ptr<rt::Kernel> rt_kernel;
-  TF_RETURN_IF_ERROR(
-      ToAbsl(device_->CreateKernel(library, spec.kernel_name(), &rt_kernel)));
+  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> rt_kernel,
+                        device_->CreateKernel(*library, spec.kernel_name()));
 
   auto kernel = std::make_unique<MetalKernel>(this, std::move(rt_kernel),
                                               spec.arity());
@@ -288,16 +305,20 @@ absl::StatusOr<ModuleHandle> MetalExecutor::LoadModule(
   }
   std::vector<rt::ConstantBlob> blobs;
   if (!rt::ParseConstants(bytes.data(), bytes.size(), &blobs)) {
-    return absl::InvalidArgumentError(
-        "Metal module bytes are not a valid constants container");
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Metal module bytes (%d bytes) are not a valid constants container",
+        bytes.size()));
   }
   LoadedModule module;
   module.refcount = 1;
   for (const rt::ConstantBlob& b : blobs) {
     DeviceAddressBase mem = Allocate(b.data.size(), 0);
     if (mem.is_null() && !b.data.empty()) {
-      return absl::ResourceExhaustedError(
-          absl::StrCat("failed to allocate constant ", b.name));
+      // Release what this module already allocated.
+      for (auto& kv : module.symbols) Deallocate(&kv.second);
+      return absl::ResourceExhaustedError(absl::StrFormat(
+          "Metal device %d: failed to allocate %d bytes for module constant %s",
+          device_ordinal(), b.data.size(), b.name));
     }
     if (!b.data.empty()) std::memcpy(mem.opaque(), b.data.data(), b.data.size());
     module.symbols[b.name] = mem;
@@ -321,7 +342,9 @@ absl::StatusOr<DeviceAddressBase> MetalExecutor::GetSymbol(
   absl::MutexLock lock(&mu_);
   auto it = modules_.find(module_handle.id());
   if (it == modules_.end()) {
-    return absl::NotFoundError("Metal module not loaded");
+    return absl::NotFoundError(absl::StrFormat(
+        "Metal module %p not loaded (looking up symbol %s)",
+        module_handle.id(), symbol_name));
   }
   auto sym = it->second.symbols.find(symbol_name);
   if (sym == it->second.symbols.end()) {
@@ -341,8 +364,8 @@ MetalExecutor::CreateDeviceDescription() const {
 
 absl::StatusOr<std::unique_ptr<DeviceDescription>>
 MetalExecutor::CreateDeviceDescription(int device_ordinal) {
-  std::unique_ptr<rt::Device> dev;
-  TF_RETURN_IF_ERROR(ToAbsl(rt::Device::Create(device_ordinal, &dev)));
+  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Device> dev,
+                        rt::Device::Create(device_ordinal));
   const rt::DeviceInfo& info = dev->info();
 
   DeviceDescription desc;

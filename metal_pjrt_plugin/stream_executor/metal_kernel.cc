@@ -11,8 +11,7 @@
 #include "absl/strings/str_format.h"
 #include "absl/types/span.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
-#include "xla/tsl/platform/errors.h"
-#include "xla/tsl/platform/statusor.h"
+#include "absl/status/status_macros.h"
 #include "metal_pjrt_plugin/stream_executor/metal_executor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_stream.h"
 #include "xla/stream_executor/kernel_args.h"
@@ -46,7 +45,10 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
                                  Stream* stream, const KernelArgs& args) {
   if (cluster_dims.has_value() &&
       (cluster_dims->x != 1 || cluster_dims->y != 1 || cluster_dims->z != 1)) {
-    return absl::UnimplementedError("Metal kernels do not support clusters");
+    return absl::UnimplementedError(absl::StrFormat(
+        "kernel %s: thread block clusters (%d x %d x %d) are not supported on "
+        "Metal",
+        name(), cluster_dims->x, cluster_dims->y, cluster_dims->z));
   }
 
   std::vector<rt::KernelArg> rt_args;
@@ -63,7 +65,7 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
     const KernelArgsPackedArrayBase* use = packed;
     auto& pack = args_packing();
     if (pack && dynamic_cast<const PackableKernelArgs*>(&args) != nullptr) {
-      TF_ASSIGN_OR_RETURN(repacked, pack(*this, args));
+      ABSL_ASSIGN_OR_RETURN(repacked, pack(*this, args));
       use = repacked.get();
     }
     absl::Span<const void* const> addrs = use->argument_addresses();
@@ -75,7 +77,10 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
     }
     shared_bytes = use->number_of_shared_bytes();
   } else {
-    return absl::InvalidArgumentError("unsupported KernelArgs kind");
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "kernel %s: unsupported KernelArgs kind (expected device address "
+        "array or packed arguments)",
+        name()));
   }
 
   if (rt_args.size() != arity_) {
@@ -83,11 +88,11 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
         "kernel %s expects %u arguments, got %u", name(), arity_,
         rt_args.size()));
   }
-  if (rt_args.size() > 31) {
+  if (rt_args.size() > rt::Stream::kMaxBufferArgs) {
     return absl::UnimplementedError(absl::StrFormat(
-        "kernel %s has %u buffer arguments; Metal allows at most 31 (argument "
+        "kernel %s has %u buffer arguments; Metal allows at most %u (argument "
         "buffers not implemented yet)",
-        name(), rt_args.size()));
+        name(), rt_args.size(), rt::Stream::kMaxBufferArgs));
   }
 
   uint64_t threads_per_group = thread_dims.x * thread_dims.y * thread_dims.z;
@@ -105,10 +110,8 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
   rt::Dim3 threads{static_cast<uint32_t>(thread_dims.x),
                    static_cast<uint32_t>(thread_dims.y),
                    static_cast<uint32_t>(thread_dims.z)};
-  rt::Status s = metal_stream->rt_stream()->Launch(
+  return metal_stream->rt_stream()->Launch(
       *kernel_, groups, threads, rt_args, static_cast<uint32_t>(shared_bytes));
-  if (!s.ok()) return absl::InternalError(s.message());
-  return absl::OkStatus();
 }
 
 }  // namespace metal

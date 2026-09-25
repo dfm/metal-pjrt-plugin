@@ -21,11 +21,7 @@ class MetalEvent : public Event {
                                 : Event::Status::kPending;
   }
 
-  absl::Status Synchronize() override {
-    metal_pjrt::rt::Status s = event_->WaitOnHost();
-    if (!s.ok()) return absl::InternalError(s.message());
-    return absl::OkStatus();
-  }
+  absl::Status Synchronize() override { return event_->WaitOnHost(); }
 
   metal_pjrt::rt::Event* rt_event() const { return event_.get(); }
 

@@ -14,7 +14,15 @@ cc_library(
     ],
     hdrs = ["metal_runtime.h"],
     linkopts = METAL_LINKOPTS,
-    deps = ["@metal_cpp"],
+    deps = [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@metal_cpp",
+    ],
 )
 
 cc_library(
@@ -22,10 +30,19 @@ cc_library(
     hdrs = ["constants_container.h"],
 )
 
-# Standalone smoke test; needs a Metal device, so run locally.
+# Runtime test (no XLA); needs a Metal device, so run locally.
 cc_test(
     name = "metal_runtime_test",
     srcs = ["metal_runtime_test.cc"],
-    tags = ["local", "manual"],
-    deps = [":metal_runtime"],
+    tags = [
+        "local",
+        "manual",
+    ],
+    deps = [
+        ":metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
 )

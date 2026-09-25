@@ -23,8 +23,13 @@ XLA tree (`external/xla+` in the Bazel output base).
      accept `kMetalPlatformId`.
   4. `xla/service/gpu/BUILD` `ptx_custom_kernel_emitter` has no branch when no
      GPU is configured: provide a stub `EmitPtxCustomKernelThunk`.
-  5. `xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc`
-     `CompileMlirToLlvm`: hook for the MSL emitter (see Codegen).
+  5. `xla/service/gpu/gpu_compiler.{h,cc}`: `CompileToBackendResult` (private,
+     non-virtual) stack-allocates a `CubinCustomKernelCompiler` (`final`) and
+     passes it to `CompileModuleToLlvmIr` -> `IrEmitterContext`. Patch 0002
+     moves that construction into a protected virtual
+     `GpuCompiler::CreateKernelCompiler(LlvmIrCompiler, DeviceDescription,
+     DebugOptions, ThreadPool*)` whose default is unchanged, so `MetalCompiler`
+     can return a `MetalKernelCompiler` (see Codegen).
 - Compute capability: `GpuComputeCapability` is a closed variant of
   Cuda/Rocm/OneAPI (`xla/stream_executor/device_description.h:98-178`).
   Default-constructed reads as CUDA 0.0. v1 reports **OneAPI** so that the
@@ -91,8 +96,16 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   then `AddLoweringPasses`: LowerTensors, SimplifyArith, SimplifyAffine,
   ConvertIndexType, float conversions, ExpandFloatOps, SCFToControlFlow,
   `createLowerToLLVMGPUPass(device)` (NVVM default, ROCDL, LLVM-SPV).
+- Seam: the MLIR emitters call only
+  `ir_emitter_context.kernel_compiler()->CompileMlirToLlvm(...)`
+  (`mlir_kernel_emitter.cc`), and `KernelCompiler::CompileMlirToLlvm` is
+  virtual (`xla/backends/gpu/codegen/kernel_compiler.h`). `MetalKernelCompiler`
+  (`metal_pjrt_plugin/codegen/metal_kernel_compiler.{h,cc}`) overrides it and
+  delegates `Compile`/`CompileToTargetBinary`/`CompileTritonToLlvm` to an inner
+  `CubinCustomKernelCompiler`; `GpuCompiler` sets the pre-optimization hook on
+  the outer object, so the inner one's `LlvmIrCompiler` calls it.
 - MSL has no `goto` and no labeled statements (verified), so we do not
-  translate the final CFG. Instead the hook runs the pipeline up to but not
+  translate the final CFG. Instead `MetalKernelCompiler` runs the pipeline up to but not
   including SCFToControlFlow, then converts func/scf/arith/math/vector/gpu and
   the LLVM-dialect memory ops that LowerTensors introduced into EmitC, and
   prints MSL. The kernel wrapper with `[[buffer(i)]]` and thread-id attributes

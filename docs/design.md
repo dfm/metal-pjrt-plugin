@@ -43,7 +43,10 @@ in-tree Intel compiler shows the shape of the plumbing (LLVM IR -> SPIR-V via
 
 XLA's MLIR emitters keep `scf.for`/`scf.if` structure until the
 second-to-last lowering pass, and MLIR ships an EmitC dialect with a C++
-printer. So the kernel path is: a hook in the MLIR kernel emitter runs the
+printer. So the kernel path is: `MetalCompiler` supplies its own
+`KernelCompiler` (`MetalKernelCompiler`, via a virtual
+`GpuCompiler::CreateKernelCompiler` factory that is our one small codegen
+patch to XLA), whose `CompileMlirToLlvm` runs the
 lowering pipeline up to (not including) SCFToControlFlow, converts what
 remains (func/scf/arith/math/vector/gpu plus the LLVM-dialect memory ops that
 LowerTensors introduced) to EmitC, and prints MSL. The text rides to

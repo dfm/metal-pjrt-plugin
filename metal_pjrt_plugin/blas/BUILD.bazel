@@ -1,9 +1,8 @@
 package(default_visibility = ["//visibility:public"])
 
 # MPSMatrixMultiplication GEMM. Objective-C++ (ARC); the header is plain C++
-# and absl-free so the standalone test needs neither XLA nor absl. cc_library
-# rejects the .mm extension, so the Objective-C++ sources are named *_objc.cc
-# and -ObjC++ forces the language.
+# (absl only, no XLA). cc_library rejects the .mm extension, so the
+# Objective-C++ sources are named *_objc.cc and -ObjC++ forces the language.
 cc_library(
     name = "mps_gemm",
     srcs = ["mps_gemm_objc.cc"],
@@ -17,7 +16,12 @@ cc_library(
         "-framework MetalPerformanceShaders",
         "-framework Foundation",
     ],
-    deps = ["//metal_pjrt_plugin/runtime:metal_runtime"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+    ],
 )
 
 # blas::BlasSupport + gpu::BlasLt for the Metal StreamExecutor.
@@ -43,7 +47,7 @@ cc_library(
     ],
 )
 
-# Standalone GEMM test against a CPU reference; needs a Metal device, so run
+# GEMM test (no XLA) against a CPU reference; needs a Metal device, so run
 # locally.
 cc_test(
     name = "mps_gemm_test",
@@ -59,5 +63,9 @@ cc_test(
     deps = [
         ":mps_gemm",
         "//metal_pjrt_plugin/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
     ],
 )

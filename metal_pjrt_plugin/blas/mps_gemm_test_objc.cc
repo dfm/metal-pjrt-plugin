@@ -1,37 +1,34 @@
-// Standalone test for RunMpsGemm through a metal_pjrt::rt::Stream (no XLA, no
-// absl, no gtest). Objective-C++ only because mps_gemm_objc.cc is; this file does
-// not itself use Objective-C.
-//
-// Build and run (from the repository root):
-//   clang++ -std=c++17 -O1 -I . -I <metal-cpp> \
-//     -framework Metal -framework Foundation -framework QuartzCore \
-//     -framework MetalPerformanceShaders \
-//     metal_pjrt_plugin/runtime/metal_cpp_impl.cc \
-//     metal_pjrt_plugin/runtime/metal_runtime.cc \
-//     -x objective-c++ -fobjc-arc metal_pjrt_plugin/blas/mps_gemm_objc.cc \
-//     metal_pjrt_plugin/blas/mps_gemm_test_objc.cc -o /tmp/mps_gemm_test
+// Tests RunMpsGemm through a metal_pjrt::rt::Stream against a CPU reference
+// (no XLA). Objective-C++ only because mps_gemm_objc.cc is; this file does not
+// itself use Objective-C. Needs a Metal device.
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
 #include <cstring>
 #include <memory>
 #include <random>
 #include <string>
 #include <vector>
 
+#include <gmock/gmock.h>
+#include <gtest/gtest.h>
+#include "absl/status/status.h"
+#include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 
-using metal_pjrt::rt::Allocation;
-using metal_pjrt::rt::BufferRef;
-using metal_pjrt::rt::Device;
-using metal_pjrt::rt::Status;
-using metal_pjrt::rt::Stream;
-using namespace metal_pjrt::blas;
-
+namespace metal_pjrt {
+namespace blas {
 namespace {
+
+using ::absl_testing::IsOk;
+using ::absl_testing::StatusIs;
+using rt::Allocation;
+using rt::BufferRef;
+using rt::Device;
+using rt::Stream;
 
 uint16_t F32ToBf16(float f) {
   uint32_t u;
@@ -109,7 +106,7 @@ struct HostOp {
   }
 };
 
-Status MakeOp(Device* dev, int64_t rows, int64_t cols, int64_t pad,
+absl::Status MakeOp(Device* dev, int64_t rows, int64_t cols, int64_t pad,
               int64_t batches, bool broadcast, MpsDType t, uint64_t off_elems,
               bool tight, HostOp* op) {
   op->rows = rows;
@@ -124,27 +121,28 @@ Status MakeOp(Device* dev, int64_t rows, int64_t cols, int64_t pad,
   uint64_t elems = tight ? (nb - 1) * op->stride + (rows - 1) * op->ld + cols
                          : nb * rows * op->ld;
   uint64_t bytes = op->off_bytes + elems * es;
-  return dev->Allocate(bytes, &op->alloc);
+  absl::StatusOr<Allocation> a = dev->Allocate(bytes);
+  if (!a.ok()) return a.status();
+  op->alloc = *a;
+  return absl::OkStatus();
 }
 
-bool RunCase(Device* dev, Stream* stream, const Case& c) {
+void RunCase(Device* dev, Stream* stream, const Case& c) {
   // Logical row-major problem: C[b] (m x n) = alpha op(A) op(B) + beta C.
   // Stored shapes (row-major):
   const int64_t ar = c.ta ? c.k : c.m, ac = c.ta ? c.m : c.k;
   const int64_t br = c.tb ? c.n : c.k, bc = c.tb ? c.k : c.n;
+  SCOPED_TRACE(c.name);
   HostOp A, B, C;
-  Status s = MakeOp(dev, ar, ac, c.pad, c.batch, false, c.in,
-                    c.base_offset_elems, c.tight, &A);
-  if (s.ok())
-    s = MakeOp(dev, br, bc, c.pad, c.batch, c.broadcast_b, c.in,
-               c.base_offset_elems, c.tight, &B);
-  if (s.ok())
-    s = MakeOp(dev, c.m, c.n, c.pad, c.batch, false, c.out,
-               c.base_offset_elems, c.tight, &C);
-  if (!s.ok()) {
-    printf("FAIL %s: alloc: %s\n", c.name.c_str(), s.message().c_str());
-    return false;
-  }
+  ASSERT_THAT(MakeOp(dev, ar, ac, c.pad, c.batch, false, c.in,
+                     c.base_offset_elems, c.tight, &A),
+              IsOk());
+  ASSERT_THAT(MakeOp(dev, br, bc, c.pad, c.batch, c.broadcast_b, c.in,
+                     c.base_offset_elems, c.tight, &B),
+              IsOk());
+  ASSERT_THAT(MakeOp(dev, c.m, c.n, c.pad, c.batch, false, c.out,
+                     c.base_offset_elems, c.tight, &C),
+              IsOk());
   std::mt19937 rng(42);
   std::uniform_real_distribution<float> dist(-1.f, 1.f);
   auto fill = [&](HostOp& op) {
@@ -175,12 +173,11 @@ bool RunCase(Device* dev, Stream* stream, const Case& c) {
   std::vector<char> c_before(static_cast<char*>(C.alloc.ptr),
                              static_cast<char*>(C.alloc.ptr) + C.alloc.size);
   auto operand = [&](const HostOp& op, bool trans) {
-    BufferRef r;
-    Status st = dev->Resolve(op.data(), &r);
-    if (!st.ok()) printf("resolve failed: %s\n", st.message().c_str());
+    absl::StatusOr<BufferRef> r = dev->Resolve(op.data());
+    EXPECT_THAT(r, IsOk());
     MpsOperand o;
-    o.buffer = r.buffer;
-    o.offset = r.offset;
+    o.buffer = r.ok() ? r->buffer : nullptr;
+    o.offset = r.ok() ? r->offset : 0;
     o.ld = op.ld;
     o.batch_stride = op.stride;
     o.dtype = op.t;
@@ -207,14 +204,10 @@ bool RunCase(Device* dev, Stream* stream, const Case& c) {
     p = q;
   }
 
-  s = stream->EncodeExternal([&](void* cmd) {
-    return RunMpsGemm(nullptr, cmd, p);
-  });
-  if (s.ok()) s = stream->Synchronize();
-  if (!s.ok()) {
-    printf("FAIL %s: %s\n", c.name.c_str(), s.message().c_str());
-    return false;
-  }
+  ASSERT_THAT(stream->EncodeExternal(
+                  [&](void* cmd) { return RunMpsGemm(nullptr, cmd, p); }),
+              IsOk());
+  ASSERT_THAT(stream->Synchronize(), IsOk());
   double tol = (c.in == MpsDType::kF32 && c.out == MpsDType::kF32) ? 1e-4
                : (c.out == MpsDType::kBF16 || c.in == MpsDType::kBF16)
                    ? 3e-2 * std::sqrt(double(c.k))
@@ -242,30 +235,28 @@ bool RunCase(Device* dev, Stream* stream, const Case& c) {
     if (std::memcmp(C.alloc.ptr, c_before.data(), C.off_bytes) != 0)
       padding_ok = false;
   }
-  dev->Deallocate(A.alloc.ptr);
-  dev->Deallocate(B.alloc.ptr);
-  dev->Deallocate(C.alloc.ptr);
-  bool ok = max_err <= tol && padding_ok;
-  printf("%s %-40s max_err=%.3g tol=%.3g%s\n", ok ? "ok  " : "FAIL",
-         c.name.c_str(), max_err, tol, padding_ok ? "" : " (padding clobbered)");
-  return ok;
+  EXPECT_THAT(dev->Deallocate(A.alloc.ptr), IsOk());
+  EXPECT_THAT(dev->Deallocate(B.alloc.ptr), IsOk());
+  EXPECT_THAT(dev->Deallocate(C.alloc.ptr), IsOk());
+  EXPECT_LE(max_err, tol);
+  EXPECT_TRUE(padding_ok) << "row padding of C was clobbered";
 }
 
-}  // namespace
+class MpsGemmTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    absl::StatusOr<std::unique_ptr<Device>> dev = Device::Create(0);
+    ASSERT_THAT(dev, IsOk());
+    dev_ = *std::move(dev);
+    absl::StatusOr<std::unique_ptr<Stream>> stream = dev_->CreateStream();
+    ASSERT_THAT(stream, IsOk());
+    stream_ = *std::move(stream);
+  }
+  std::unique_ptr<Device> dev_;
+  std::unique_ptr<Stream> stream_;
+};
 
-int main() {
-  std::unique_ptr<Device> dev;
-  Status s = Device::Create(0, &dev);
-  if (!s.ok()) {
-    printf("no device: %s\n", s.message().c_str());
-    return 1;
-  }
-  std::unique_ptr<Stream> stream;
-  s = dev->CreateStream(&stream);
-  if (!s.ok()) {
-    printf("no stream: %s\n", s.message().c_str());
-    return 1;
-  }
+TEST_F(MpsGemmTest, MatchesCpuReference) {
   std::vector<Case> cases;
   auto add = [&](Case c) { cases.push_back(c); };
   for (bool ta : {false, true})
@@ -304,22 +295,29 @@ int main() {
     { Case c{nm + " padded broadcast TT", 6, 5, 4}; c.in = c.out = in; c.batch = 3; c.pad = 1; c.broadcast_b = true; c.ta = c.tb = true; c.alpha = 2.0; c.beta = 0.5; add(c); }
     { Case c{nm + " column-major 64", 64, 48, 80}; c.in = c.out = in; c.column_major = true; add(c); }
   }
-  int failures = 0;
-  for (const Case& c : cases) failures += RunCase(dev.get(), stream.get(), c) ? 0 : 1;
+  for (const Case& c : cases) RunCase(dev_.get(), stream_.get(), c);
+}
 
-  // Ordering with other stream work and command-buffer rollover: 150 GEMMs
-  // chained C <- A*C (identity A) plus 1 each time via beta and memset.
+// Ordering with other stream work and command-buffer rollover: 150 GEMMs
+// chained C <- A*C (identity A) plus 1 each time via beta and memset.
+TEST_F(MpsGemmTest, OrderingAndRollover) {
+  Device* dev = dev_.get();
+  Stream* stream = stream_.get();
   {
     const int64_t n = 16;
-    Allocation a, cbuf;
-    dev->Allocate(n * n * 4, &a);
-    dev->Allocate(n * n * 4, &cbuf);
+    absl::StatusOr<Allocation> a_or = dev->Allocate(n * n * 4);
+    absl::StatusOr<Allocation> c_or = dev->Allocate(n * n * 4);
+    ASSERT_THAT(a_or, IsOk());
+    ASSERT_THAT(c_or, IsOk());
+    Allocation a = *a_or, cbuf = *c_or;
     float* ap = static_cast<float*>(a.ptr);
     for (int64_t i = 0; i < n * n; ++i) ap[i] = (i / n == i % n) ? 1.f : 0.f;
     std::memset(cbuf.ptr, 0, n * n * 4);
-    BufferRef ra, rc;
-    dev->Resolve(a.ptr, &ra);
-    dev->Resolve(cbuf.ptr, &rc);
+    absl::StatusOr<BufferRef> ra_or = dev->Resolve(a.ptr);
+    absl::StatusOr<BufferRef> rc_or = dev->Resolve(cbuf.ptr);
+    ASSERT_THAT(ra_or, IsOk());
+    ASSERT_THAT(rc_or, IsOk());
+    BufferRef ra = *ra_or, rc = *rc_or;
     GemmParams p;
     p.m = p.n = p.k = n;
     p.alpha = 1.0;
@@ -327,7 +325,7 @@ int main() {
     p.a = {ra.buffer, ra.offset, n, 0, MpsDType::kF32, false};
     p.c = {rc.buffer, rc.offset, n, 0, MpsDType::kF32, false};
     p.b = p.c;
-    Status st;
+    absl::Status st;
     // Fill with 1.0f via host-ordered path, then 10 doublings, repeatedly.
     float expect = 0;
     for (int rep = 0; rep < 15 && st.ok(); ++rep) {
@@ -337,16 +335,45 @@ int main() {
             [&](void* cmd) { return RunMpsGemm(nullptr, cmd, p); });
       expect = 1024.f;
     }
-    if (st.ok()) st = stream->Synchronize();
-    bool ok = st.ok();
-    for (int64_t i = 0; ok && i < n * n; ++i)
-      ok = static_cast<float*>(cbuf.ptr)[i] == expect;
-    printf("%s %-40s %s\n", ok ? "ok  " : "FAIL", "ordering + 150 ops rollover",
-           st.message().c_str());
-    failures += ok ? 0 : 1;
-    dev->Deallocate(a.ptr);
-    dev->Deallocate(cbuf.ptr);
+    ASSERT_THAT(st, IsOk());
+    ASSERT_THAT(stream->Synchronize(), IsOk());
+    int bad = 0;
+    for (int64_t i = 0; i < n * n; ++i)
+      bad += static_cast<float*>(cbuf.ptr)[i] != expect;
+    EXPECT_EQ(bad, 0);
+    EXPECT_THAT(dev->Deallocate(a.ptr), IsOk());
+    EXPECT_THAT(dev->Deallocate(cbuf.ptr), IsOk());
   }
-  printf("%d failures\n", failures);
-  return failures == 0 ? 0 : 1;
 }
+
+TEST_F(MpsGemmTest, ErrorCodes) {
+  absl::StatusOr<Allocation> a = dev_->Allocate(4096);
+  ASSERT_THAT(a, IsOk());
+  absl::StatusOr<BufferRef> r = dev_->Resolve(a->ptr);
+  ASSERT_THAT(r, IsOk());
+  GemmParams p;
+  p.m = p.n = p.k = 4;
+  p.a = p.b = p.c = {r->buffer, 0, 4, 0, MpsDType::kF32, false};
+  auto run = [&](const GemmParams& q) {
+    return stream_->EncodeExternal(
+        [&](void* cmd) { return RunMpsGemm(nullptr, cmd, q); });
+  };
+  GemmParams bad = p;
+  bad.m = -1;
+  EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kInvalidArgument));
+  bad = p;
+  bad.a.ld = 1;
+  EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kInvalidArgument));
+  bad = p;
+  bad.k = 0;
+  EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kUnimplemented));
+  EXPECT_THAT(RunMpsGemm(nullptr, nullptr, p),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(p), IsOk());
+  EXPECT_THAT(stream_->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(a->ptr), IsOk());
+}
+
+}  // namespace
+}  // namespace blas
+}  // namespace metal_pjrt

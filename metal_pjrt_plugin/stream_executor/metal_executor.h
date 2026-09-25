@@ -99,6 +99,9 @@ class MetalExecutor : public gpu::GpuExecutor {
   using StreamExecutor::CreateStream;
 
  private:
+  // Blocks on every live stream; returns the first error.
+  absl::Status SynchronizeAllStreams();
+
   struct LoadedModule {
     int refcount = 0;
     absl::flat_hash_map<std::string, DeviceAddressBase> symbols;

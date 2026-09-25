@@ -3,20 +3,30 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
-#include <cstdio>
 #include <cstring>
-#include <thread>
 #include <functional>
-#include <sstream>
+#include <thread>
+
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/status/status_macros.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 
 namespace metal_pjrt {
 namespace rt {
 
 namespace {
 
+// "<description> (domain=<domain>, code=<code>)".
 std::string NSErrorToString(NS::Error* err) {
-  if (err == nullptr) return "unknown Metal error";
-  return err->localizedDescription()->utf8String();
+  if (err == nullptr) return "unknown Metal error (no NSError)";
+  NS::String* desc = err->localizedDescription();
+  NS::String* domain = err->domain();
+  return absl::StrCat(desc ? desc->utf8String() : "(no description)",
+                      " (domain=", domain ? domain->utf8String() : "?",
+                      ", code=", static_cast<int64_t>(err->code()), ")");
 }
 
 NS::String* Str(const std::string& s) {
@@ -30,9 +40,7 @@ std::string HashString(const std::string& s) {
     h ^= c;
     h *= 1099511628211ull;
   }
-  std::ostringstream os;
-  os << std::hex << h << "_" << s.size();
-  return os.str();
+  return absl::StrCat(absl::Hex(h), "_", s.size());
 }
 
 int HighestAppleFamily(MTL::Device* d) {
@@ -44,6 +52,12 @@ int HighestAppleFamily(MTL::Device* d) {
     if (d->supportsFamily(families[i])) return numbers[i];
   }
   return 0;
+}
+
+// Prefixes `context` to a non-OK status, keeping its code.
+absl::Status Annotate(const absl::Status& s, absl::string_view context) {
+  if (s.ok()) return s;
+  return absl::Status(s.code(), absl::StrCat(context, ": ", s.message()));
 }
 
 }  // namespace
@@ -77,13 +91,14 @@ int Device::VisibleDeviceCount() {
   return n;
 }
 
-Status Device::Create(int ordinal, std::unique_ptr<Device>* out) {
+absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   NS::Array* devices = MTL::CopyAllDevices();
-  if (devices == nullptr || ordinal < 0 ||
-      ordinal >= static_cast<int>(devices->count())) {
+  const int count = devices ? static_cast<int>(devices->count()) : 0;
+  if (ordinal < 0 || ordinal >= count) {
     if (devices) devices->release();
-    return Status("Metal device ordinal out of range: " +
-                  std::to_string(ordinal));
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Metal device ordinal %d out of range; %d device(s) visible", ordinal,
+        count));
   }
   MTL::Device* d = devices->object<MTL::Device>(ordinal);
   d->retain();
@@ -104,31 +119,40 @@ Status Device::Create(int ordinal, std::unique_ptr<Device>* out) {
   info.gpu_family = HighestAppleFamily(d);
   info.supports_metal4 = info.gpu_family >= 9;
   info.simd_width = 32;  // All Apple GPUs; confirmed per-pipeline on creation.
-  *out = std::move(dev);
-  return Status::Ok();
+  return dev;
 }
 
 Device::~Device() {
+  if (!allocations_.empty()) {
+    LOG(ERROR) << "Metal device " << ordinal_ << " destroyed with "
+               << allocations_.size() << " live allocation(s) totalling "
+               << allocated_bytes_ << " bytes; releasing them";
+  }
   for (auto& kv : pso_cache_) kv.second->release();
   for (auto& kv : library_cache_) kv.second->release();
   for (auto& kv : allocations_) kv.second.first->release();
   if (device_) device_->release();
 }
 
-Status Device::Allocate(uint64_t size, Allocation* out) {
+absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
+  const uint64_t requested = size;
   if (size == 0) size = 1;
   if (size > info_.max_buffer_length) {
-    return Status("allocation of " + std::to_string(size) +
-                  " bytes exceeds Metal maxBufferLength " +
-                  std::to_string(info_.max_buffer_length));
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal allocation of %d bytes exceeds the device's maxBufferLength of "
+        "%d bytes (device %d, %s)",
+        requested, info_.max_buffer_length, ordinal_, info_.name));
   }
   // Default (tracked) hazard mode: Metal orders dispatches touching the same
   // buffer for us. Untracked mode with manual barriers is a later optimization.
-  MTL::Buffer* buf = device_->newBuffer(
-      size, MTL::ResourceStorageModeShared);
+  MTL::Buffer* buf = device_->newBuffer(size, MTL::ResourceStorageModeShared);
   if (buf == nullptr) {
-    return Status("Metal newBuffer failed for " + std::to_string(size) +
-                  " bytes");
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal newBuffer failed for %d bytes on device %d (%s): %d bytes "
+        "already allocated, recommended working set %d bytes, maxBufferLength "
+        "%d bytes",
+        requested, ordinal_, info_.name, allocated_bytes(),
+        info_.recommended_working_set, info_.max_buffer_length));
   }
   void* ptr = buf->contents();
   {
@@ -136,44 +160,43 @@ Status Device::Allocate(uint64_t size, Allocation* out) {
     allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, size};
     allocated_bytes_ += size;
   }
-  out->ptr = ptr;
-  out->size = size;
-  return Status::Ok();
+  return Allocation{ptr, size};
 }
 
-Status Device::Deallocate(void* ptr) {
-  if (ptr == nullptr) return Status::Ok();
+absl::Status Device::Deallocate(void* ptr) {
+  if (ptr == nullptr) return absl::OkStatus();
   MTL::Buffer* buf = nullptr;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = allocations_.find(reinterpret_cast<uintptr_t>(ptr));
     if (it == allocations_.end()) {
-      return Status("Deallocate: pointer was not allocated by this device");
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Metal Deallocate: %p is not the start of an allocation on device %d",
+          ptr, ordinal_));
     }
     buf = it->second.first;
     allocated_bytes_ -= it->second.second;
     allocations_.erase(it);
   }
   buf->release();
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Device::Resolve(const void* ptr, BufferRef* out) const {
+absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   std::lock_guard<std::mutex> lock(mu_);
   uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
   auto it = allocations_.upper_bound(addr);
-  if (it == allocations_.begin()) {
-    return Status("Resolve: pointer not in any device allocation");
+  if (it != allocations_.begin()) {
+    --it;
+    uintptr_t base = it->first;
+    uint64_t size = it->second.second;
+    if (addr >= base && addr < base + size) {
+      return BufferRef{it->second.first, addr - base};
+    }
   }
-  --it;
-  uintptr_t base = it->first;
-  uint64_t size = it->second.second;
-  if (addr < base || addr >= base + size) {
-    return Status("Resolve: pointer not in any device allocation");
-  }
-  out->buffer = it->second.first;
-  out->offset = addr - base;
-  return Status::Ok();
+  return absl::InvalidArgumentError(absl::StrFormat(
+      "pointer %p is not inside any allocation on Metal device %d", ptr,
+      ordinal_));
 }
 
 uint64_t Device::allocated_bytes() const {
@@ -181,16 +204,13 @@ uint64_t Device::allocated_bytes() const {
   return allocated_bytes_;
 }
 
-Status Device::CompileLibrary(const std::string& msl_source,
-                              MTL::Library** out) {
+absl::StatusOr<MTL::Library*> Device::CompileLibrary(
+    const std::string& msl_source) {
   std::string key = HashString(msl_source);
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = library_cache_.find(key);
-    if (it != library_cache_.end()) {
-      *out = it->second;
-      return Status::Ok();
-    }
+    if (it != library_cache_.end()) return it->second;
   }
   NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   NS::Error* err = nullptr;
@@ -198,25 +218,32 @@ Status Device::CompileLibrary(const std::string& msl_source,
   opts->setFastMathEnabled(false);
   MTL::Library* lib = device_->newLibrary(Str(msl_source), opts, &err);
   opts->release();
-  Status status;
+  absl::StatusOr<MTL::Library*> result;
   if (lib == nullptr) {
-    status = Status("Metal shader compilation failed: " + NSErrorToString(err));
+    // The error lives in the autorelease pool; format it before draining.
+    result = absl::InternalError(absl::StrFormat(
+        "Metal shader compilation failed (%d bytes of MSL, key %s): %s",
+        msl_source.size(), key, NSErrorToString(err)));
   } else {
     std::lock_guard<std::mutex> lock(mu_);
     auto [it, inserted] = library_cache_.emplace(key, lib);
     if (!inserted) {
       lib->release();  // lost a race; use the cached one
     }
-    *out = it->second;
+    result = it->second;
   }
   pool->release();
-  return status;
+  return result;
 }
 
-Status Device::CreateKernel(MTL::Library* library, const std::string& function,
-                            std::unique_ptr<Kernel>* out) {
+absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
+    MTL::Library* library, const std::string& function) {
+  if (library == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("CreateKernel(", function, "): null library"));
+  }
   std::string key =
-      std::to_string(reinterpret_cast<uintptr_t>(library)) + ":" + function;
+      absl::StrCat(reinterpret_cast<uintptr_t>(library), ":", function);
   MTL::ComputePipelineState* pso = nullptr;
   {
     std::lock_guard<std::mutex> lock(mu_);
@@ -228,7 +255,8 @@ Status Device::CreateKernel(MTL::Library* library, const std::string& function,
     MTL::Function* fn = library->newFunction(Str(function));
     if (fn == nullptr) {
       pool->release();
-      return Status("Metal function not found in library: " + function);
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Metal function '", function, "' not found in library"));
     }
     NS::Error* err = nullptr;
     pso = device_->newComputePipelineState(fn, &err);
@@ -236,8 +264,9 @@ Status Device::CreateKernel(MTL::Library* library, const std::string& function,
     if (pso == nullptr) {
       std::string msg = NSErrorToString(err);
       pool->release();
-      return Status("Metal pipeline creation failed for " + function + ": " +
-                    msg);
+      return absl::InternalError(absl::StrCat(
+          "Metal compute pipeline creation failed for '", function, "': ",
+          msg));
     }
     pool->release();
     std::lock_guard<std::mutex> lock(mu_);
@@ -247,27 +276,34 @@ Status Device::CreateKernel(MTL::Library* library, const std::string& function,
       pso = it->second;
     }
   }
-  out->reset(new Kernel(pso, function));
-  return Status::Ok();
+  return std::make_unique<Kernel>(pso, function);
 }
 
-Status Device::CreateStream(std::unique_ptr<Stream>* out) {
+absl::StatusOr<std::unique_ptr<Stream>> Device::CreateStream() {
   MTL::CommandQueue* q = device_->newCommandQueue();
-  if (q == nullptr) return Status("Metal newCommandQueue failed");
+  if (q == nullptr) {
+    return absl::InternalError(absl::StrFormat(
+        "Metal newCommandQueue failed on device %d (%s)", ordinal_,
+        info_.name));
+  }
   MTL::SharedEvent* fence = device_->newSharedEvent();
   if (fence == nullptr) {
     q->release();
-    return Status("Metal newSharedEvent failed");
+    return absl::InternalError(absl::StrFormat(
+        "Metal newSharedEvent failed creating a stream fence on device %d",
+        ordinal_));
   }
-  out->reset(new Stream(this, q, fence));
-  return Status::Ok();
+  return std::unique_ptr<Stream>(new Stream(this, q, fence));
 }
 
-Status Device::CreateEvent(std::unique_ptr<Event>* out) {
+absl::StatusOr<std::unique_ptr<Event>> Device::CreateEvent() {
   MTL::SharedEvent* ev = device_->newSharedEvent();
-  if (ev == nullptr) return Status("Metal newSharedEvent failed");
-  out->reset(new Event(ev));
-  return Status::Ok();
+  if (ev == nullptr) {
+    return absl::InternalError(absl::StrFormat(
+        "Metal newSharedEvent failed creating an event on device %d",
+        ordinal_));
+  }
+  return std::unique_ptr<Event>(new Event(ev));
 }
 
 // ---------------------------------------------------------------------------
@@ -284,16 +320,18 @@ bool Event::IsComplete() const {
   return event_->signaledValue() >= v;
 }
 
-Status Event::WaitOnHost() {
+absl::Status Event::WaitOnHost() {
   uint64_t v;
   {
     std::lock_guard<std::mutex> lock(mu_);
     v = value_;
   }
-  if (v == 0) return Status::Ok();
+  if (v == 0) return absl::OkStatus();
+  // A failed command buffer force-signals its events (see Stream::Commit), so
+  // this cannot hang on GPU errors; the error is reported by the stream.
   while (!event_->waitUntilSignaledValue(v, /*milliseconds=*/1000)) {
   }
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
 // ---------------------------------------------------------------------------
@@ -305,7 +343,11 @@ Stream::Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence
 }
 
 Stream::~Stream() {
-  Synchronize();
+  absl::Status s = Synchronize();
+  if (!s.ok()) {
+    LOG(ERROR) << "Metal stream on device " << device_->ordinal()
+               << " had pending errors at destruction: " << s;
+  }
   {
     std::lock_guard<std::mutex> lock(work_mu_);
     stop_ = true;
@@ -339,37 +381,43 @@ void Stream::WorkerLoop() {
   }
 }
 
-Status Stream::CheckAsyncError() {
+absl::Status Stream::CheckAsyncError() {
   std::lock_guard<std::mutex> lock(err_mu_);
-  if (async_error_.empty()) return Status::Ok();
-  return Status("Metal stream is in error state: " + async_error_);
+  if (async_error_.ok()) return absl::OkStatus();
+  return absl::FailedPreconditionError(absl::StrCat(
+      "Metal stream on device ", device_->ordinal(),
+      " is in error state after an earlier GPU failure: ",
+      async_error_.message()));
 }
 
-Status Stream::EnsureCommandBuffer() {
-  if (cmd_ != nullptr) return Status::Ok();
-  Status err = CheckAsyncError();
-  if (!err.ok()) return err;
+absl::Status Stream::EnsureCommandBuffer() {
+  if (cmd_ != nullptr) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(CheckAsyncError());
   // Retained references: XLA frees device buffers as soon as the host no
   // longer needs them and relies on the driver to keep memory alive until
   // enqueued GPU work completes (as CUDA does). Metal only does that for
   // retained command buffers; unretained ones fault with
   // kIOGPUCommandBufferCallbackErrorInvalidResource.
   cmd_ = queue_->commandBuffer();
-  if (cmd_ == nullptr) return Status("Metal commandBuffer creation failed");
+  if (cmd_ == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "Metal commandBuffer creation failed on device ", device_->ordinal()));
+  }
   cmd_->retain();
   ops_in_cmd_ = 0;
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::EnsureComputeEncoder() {
-  Status s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+absl::Status Stream::EnsureComputeEncoder() {
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   if (enc_ == nullptr) {
     enc_ = cmd_->computeCommandEncoder(MTL::DispatchTypeSerial);
-    if (enc_ == nullptr) return Status("Metal computeCommandEncoder failed");
+    if (enc_ == nullptr) {
+      return absl::InternalError("Metal computeCommandEncoder creation failed");
+    }
     enc_->retain();
   }
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
 void Stream::EndEncoder() {
@@ -387,8 +435,8 @@ uint64_t Stream::SignalFence() {
   return fence_value_;
 }
 
-Status Stream::Commit() {
-  if (cmd_ == nullptr) return Status::Ok();
+absl::Status Stream::Commit() {
+  if (cmd_ == nullptr) return absl::OkStatus();
   EndEncoder();
   // Every command buffer ends by signaling the stream timeline, so
   // Synchronize/WaitForStream have a value to wait on.
@@ -400,25 +448,29 @@ Status Stream::Commit() {
   for (auto& sv : signals) sv.first->retain();
   MTL::SharedEvent* fence = fence_;
   fence->retain();
-  cmd_->addCompletedHandler([this, v, fence, signals](MTL::CommandBuffer* cb) {
-    if (cb->status() == MTL::CommandBufferStatusError) {
-      std::string msg = NSErrorToString(cb->error());
-      fprintf(stderr, "[metal-pjrt] GPU command buffer failed: %s\n",
-              msg.c_str());
-      {
-        std::lock_guard<std::mutex> lock(err_mu_);
-        if (async_error_.empty()) async_error_ = msg;
-      }
-      if (fence->signaledValue() < v) fence->setSignaledValue(v);
-      for (auto& sv : signals) {
-        if (sv.first->signaledValue() < sv.second) {
-          sv.first->setSignaledValue(sv.second);
+  const int ordinal = device_->ordinal();
+  cmd_->addCompletedHandler(
+      [this, v, fence, signals, ordinal](MTL::CommandBuffer* cb) {
+        if (cb->status() == MTL::CommandBufferStatusError) {
+          absl::Status error = absl::InternalError(absl::StrFormat(
+              "Metal command buffer failed on device %d (stream fence value "
+              "%d): %s",
+              ordinal, v, NSErrorToString(cb->error())));
+          LOG(ERROR) << error.message();
+          {
+            std::lock_guard<std::mutex> lock(err_mu_);
+            if (async_error_.ok()) async_error_ = error;
+          }
+          if (fence->signaledValue() < v) fence->setSignaledValue(v);
+          for (auto& sv : signals) {
+            if (sv.first->signaledValue() < sv.second) {
+              sv.first->setSignaledValue(sv.second);
+            }
+          }
         }
-      }
-    }
-    for (auto& sv : signals) sv.first->release();
-    fence->release();
-  });
+        for (auto& sv : signals) sv.first->release();
+        fence->release();
+      });
   cmd_->commit();
   // Keep the (retained) buffer until it completes; prune finished ones.
   in_flight_.push_back(cmd_);
@@ -436,58 +488,75 @@ Status Stream::Commit() {
     }
   }
   in_flight_.swap(still_running);
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::Flush() {
+absl::Status Stream::Flush() {
   std::lock_guard<std::mutex> lock(mu_);
   return Commit();
 }
 
-Status Stream::Synchronize() {
+absl::Status Stream::Synchronize() {
   std::lock_guard<std::mutex> lock(mu_);
-  Status s = Commit();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(Commit());
   // Wait for completion (not just the fence signal) so resources referenced
   // by these command buffers may be freed by the caller right away.
+  absl::Status first_failure;
   for (MTL::CommandBuffer* cb : in_flight_) {
     cb->waitUntilCompleted();
-    if (cb->status() == MTL::CommandBufferStatusError) {
-      NS::Error* err = cb->error();
-      last_error_ = "Metal command buffer failed: " + NSErrorToString(err);
+    if (cb->status() == MTL::CommandBufferStatusError && first_failure.ok()) {
+      first_failure = absl::InternalError(
+          absl::StrCat("Metal command buffer failed on device ",
+                       device_->ordinal(), ": ", NSErrorToString(cb->error())));
     }
     cb->release();
   }
   in_flight_.clear();
-  {
-    Status err = CheckAsyncError();
-    if (!err.ok()) return err;
+  // The completion handler may not have run yet; record the failure here too
+  // so the error state does not depend on that ordering.
+  std::lock_guard<std::mutex> elock(err_mu_);
+  if (async_error_.ok()) async_error_ = first_failure;
+  if (async_error_.ok()) return absl::OkStatus();
+  if (!async_error_reported_) {
+    async_error_reported_ = true;
+    return async_error_;
   }
-  if (!last_error_.empty()) {
-    std::string e;
-    e.swap(last_error_);
-    return Status(e);
-  }
-  return Status::Ok();
+  return absl::FailedPreconditionError(absl::StrCat(
+      "Metal stream on device ", device_->ordinal(),
+      " is in error state after an earlier GPU failure: ",
+      async_error_.message()));
 }
 
-Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-                      const std::vector<KernelArg>& args,
-                      uint32_t threadgroup_memory_bytes) {
+absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
+                            Dim3 threads, const std::vector<KernelArg>& args,
+                            uint32_t threadgroup_memory_bytes) {
+  size_t num_buffers = 0;
+  for (const KernelArg& a : args) num_buffers += a.is_buffer ? 1 : 0;
+  if (args.size() > kMaxBufferArgs) {
+    return absl::UnimplementedError(absl::StrFormat(
+        "Launch %s: %d arguments (%d buffers) exceed Metal's %d argument "
+        "table slots; argument buffers are not implemented",
+        kernel.name(), args.size(), num_buffers, kMaxBufferArgs));
+  }
   std::lock_guard<std::mutex> lock(mu_);
-  Status s = EnsureComputeEncoder();
-  if (!s.ok()) return s;
+  // Resolve before opening an encoder so a bad pointer encodes nothing.
+  std::vector<BufferRef> refs(args.size());
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (!args[i].is_buffer) continue;
+    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
+    if (!ref.ok()) {
+      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
+                                                    kernel.name(), i));
+    }
+    refs[i] = *ref;
+  }
+  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
   for (size_t i = 0; i < args.size(); ++i) {
     const KernelArg& a = args[i];
     if (a.is_buffer) {
-      BufferRef ref;
-      s = device_->Resolve(a.device_ptr, &ref);
-      if (!s.ok()) {
-        return Status("Launch " + kernel.name() + " arg " + std::to_string(i) +
-                      ": " + s.message());
-      }
-      enc_->setBuffer(ref.buffer, ref.offset, static_cast<NS::UInteger>(i));
+      enc_->setBuffer(refs[i].buffer, refs[i].offset,
+                      static_cast<NS::UInteger>(i));
     } else {
       enc_->setBytes(a.bytes.data(), a.bytes.size(),
                      static_cast<NS::UInteger>(i));
@@ -500,56 +569,79 @@ Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
   if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::EncodeExternal(
-    std::function<Status(void* mtl_command_buffer)> encode) {
+absl::Status Stream::EncodeExternal(
+    std::function<absl::Status(void* mtl_command_buffer)> encode) {
   std::lock_guard<std::mutex> lock(mu_);
-  Status s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
-  s = encode(static_cast<void*>(cmd_));
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(cmd_)));
   if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size) {
-  if (size == 0) return Status::Ok();
+absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
+                                          uint64_t size) {
+  if (size == 0) return absl::OkStatus();
   std::lock_guard<std::mutex> lock(mu_);
-  BufferRef d, s;
-  Status st = device_->Resolve(dst, &d);
-  if (!st.ok()) return st;
-  st = device_->Resolve(src, &s);
-  if (!st.ok()) return st;
-  st = EnsureCommandBuffer();
-  if (!st.ok()) return st;
-  EndEncoder();
-  MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
-  blit->copyFromBuffer(s.buffer, s.offset, d.buffer, d.offset, size);
-  blit->endEncoding();
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return Status::Ok();
-}
-
-Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
-  if (size == 0) return Status::Ok();
-  std::lock_guard<std::mutex> lock(mu_);
-  BufferRef d;
-  Status st = device_->Resolve(dst, &d);
-  if (!st.ok()) return st;
-  st = EnsureCommandBuffer();
-  if (!st.ok()) return st;
+  const std::string what =
+      absl::StrFormat("MemcpyDeviceToDevice(%p <- %p, %d bytes)", dst, src, size);
+  absl::StatusOr<BufferRef> d = device_->Resolve(dst);
+  if (!d.ok()) return Annotate(d.status(), absl::StrCat(what, " destination"));
+  absl::StatusOr<BufferRef> s = device_->Resolve(src);
+  if (!s.ok()) return Annotate(s.status(), absl::StrCat(what, " source"));
+  if (d->offset + size > d->buffer->length() ||
+      s->offset + size > s->buffer->length()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "%s runs past the end of an allocation (dst %d/%d, src %d/%d bytes)",
+        what, d->offset, d->buffer->length(), s->offset, s->buffer->length()));
+  }
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
-  blit->fillBuffer(d.buffer, NS::Range(d.offset, size), value);
+  if (blit == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("Metal blitCommandEncoder creation failed for ", what));
+  }
+  blit->copyFromBuffer(s->buffer, s->offset, d->buffer, d->offset, size);
   blit->endEncoding();
   if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
+absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
+  if (size == 0) return absl::OkStatus();
+  std::lock_guard<std::mutex> lock(mu_);
+  const std::string what =
+      absl::StrFormat("Memset8(%p, 0x%02x, %d bytes)", dst, value, size);
+  absl::StatusOr<BufferRef> d = device_->Resolve(dst);
+  if (!d.ok()) return Annotate(d.status(), what);
+  if (d->offset + size > d->buffer->length()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "%s runs past the end of its %d-byte allocation (offset %d)", what,
+        d->buffer->length(), d->offset));
+  }
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
+  EndEncoder();
+  MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
+  if (blit == nullptr) {
+    return absl::InternalError(
+        absl::StrCat("Metal blitCommandEncoder creation failed for ", what));
+  }
+  blit->fillBuffer(d->buffer, NS::Range(d->offset, size), value);
+  blit->endEncoding();
+  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
+  return absl::OkStatus();
+}
+
+absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
+  if (size % 4 != 0) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Memset32(%p, 0x%08x, %d bytes): size must be a multiple of 4", dst,
+        value, size));
+  }
   // Blit fill is byte-granular; a 32-bit pattern needs a kernel or a host
   // callback. Use the host path for correctness; a kernel can replace it.
   uint8_t b = static_cast<uint8_t>(value & 0xff);
@@ -563,15 +655,13 @@ Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
   });
 }
 
-Status Stream::HostCallback(std::function<void()> fn) {
+absl::Status Stream::HostCallback(std::function<void()> fn) {
   std::lock_guard<std::mutex> lock(mu_);
   // 1. Commit everything so far; it ends with a fence signal (value v).
-  Status s = Commit();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(Commit());
   // 2. Open a new command buffer whose first action is to wait on a value
   //    the host callback will signal after running.
-  s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   uint64_t done_value = ++fence_value_;
   uint64_t after_prior = last_committed_fence_value_;
   {
@@ -580,23 +670,37 @@ Status Stream::HostCallback(std::function<void()> fn) {
   }
   work_cv_.notify_one();
   cmd_->encodeWait(fence_, done_value);
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::MemcpyHostToDevice(void* dst, const void* src, uint64_t size) {
-  if (size == 0) return Status::Ok();
+absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
+                                        uint64_t size) {
+  if (size == 0) return absl::OkStatus();
+  if (dst == nullptr || src == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "MemcpyHostToDevice(%p <- %p, %d bytes): null pointer", dst, src,
+        size));
+  }
   return HostCallback([dst, src, size]() { std::memcpy(dst, src, size); });
 }
 
-Status Stream::MemcpyDeviceToHost(void* dst, const void* src, uint64_t size) {
-  if (size == 0) return Status::Ok();
+absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
+                                        uint64_t size) {
+  if (size == 0) return absl::OkStatus();
+  if (dst == nullptr || src == nullptr) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "MemcpyDeviceToHost(%p <- %p, %d bytes): null pointer", dst, src,
+        size));
+  }
   return HostCallback([dst, src, size]() { std::memcpy(dst, src, size); });
 }
 
-Status Stream::RecordEvent(Event* event) {
+absl::Status Stream::RecordEvent(Event* event) {
+  if (event == nullptr) {
+    return absl::InvalidArgumentError("RecordEvent: null event");
+  }
   std::lock_guard<std::mutex> lock(mu_);
-  Status s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   uint64_t v;
   {
@@ -609,36 +713,39 @@ Status Stream::RecordEvent(Event* event) {
   return Commit();
 }
 
-Status Stream::WaitForEvent(Event* event) {
+absl::Status Stream::WaitForEvent(Event* event) {
+  if (event == nullptr) {
+    return absl::InvalidArgumentError("WaitForEvent: null event");
+  }
   std::lock_guard<std::mutex> lock(mu_);
   uint64_t v;
   {
     std::lock_guard<std::mutex> elock(event->mu_);
     v = event->value_;
   }
-  if (v == 0) return Status::Ok();
-  Status s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+  if (v == 0) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   cmd_->encodeWait(event->event_, v);
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
-Status Stream::WaitForStream(Stream* other) {
-  if (other == this) return Status::Ok();
+absl::Status Stream::WaitForStream(Stream* other) {
+  if (other == nullptr) {
+    return absl::InvalidArgumentError("WaitForStream: null stream");
+  }
+  if (other == this) return absl::OkStatus();
   uint64_t v;
   {
     std::lock_guard<std::mutex> olock(other->mu_);
-    Status s = other->Commit();
-    if (!s.ok()) return s;
+    ABSL_RETURN_IF_ERROR(other->Commit());
     v = other->last_committed_fence_value_;
   }
   std::lock_guard<std::mutex> lock(mu_);
-  Status s = EnsureCommandBuffer();
-  if (!s.ok()) return s;
+  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   cmd_->encodeWait(other->fence_, v);
-  return Status::Ok();
+  return absl::OkStatus();
 }
 
 }  // namespace rt

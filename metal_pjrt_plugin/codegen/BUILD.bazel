@@ -61,11 +61,12 @@ cc_library(
     ],
 )
 
-# Requires XLA patched with xla_patch/mlir_kernel_emitter_hook.patch.
+# KernelCompiler that MetalCompiler returns from GpuCompiler::CreateKernelCompiler
+# (added by third_party/xla/patches/0002-gpu-compiler-kernel-compiler-factory.patch).
 cc_library(
-    name = "msl_kernel_hook",
-    srcs = ["msl_kernel_hook.cc"],
-    hdrs = ["msl_kernel_hook.h"],
+    name = "metal_kernel_compiler",
+    srcs = ["metal_kernel_compiler.cc"],
+    hdrs = ["metal_kernel_compiler.h"],
     deps = [
         ":msl_emitter",
         ":msl_llvm_bridge",
@@ -74,16 +75,26 @@ cc_library(
         "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:OrcJIT",
+        "@llvm-project//llvm:TargetParser",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Pass",
+        "@xla//xla:future",
         "@xla//xla:xla_proto_cc",
+        "@xla//xla/backends/gpu/codegen:cubin_custom_kernel_compiler",
+        "@xla//xla/backends/gpu/codegen:kernel_compiler",
         "@xla//xla/backends/gpu/codegen/emitters:mlir_kernel_emitter",
+        "@xla//xla/backends/gpu/codegen/triton:triton_kernel_source",
+        "@xla//xla/backends/gpu/runtime:thunk",
         "@xla//xla/codegen:llvm_kernel_source",
         "@xla//xla/codegen:mlir_kernel_source",
+        "@xla//xla/codegen/emitters:kernel_arguments",
         "@xla//xla/codegen/emitters/transforms:pass_pipelines",
+        "@xla//xla/codegen/xtile:block_level_parameters",
         "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/service/gpu:launch_dimensions",
         "@xla//xla/stream_executor:device_description",
         "@xla//xla/tsl/framework/mlir:status_scoped_diagnostic_handler",
+        "@xla//xla/tsl/platform:env",
     ],
 )
 

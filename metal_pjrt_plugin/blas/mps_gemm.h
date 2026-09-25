@@ -9,12 +9,10 @@
 #include <cstdint>
 #include <string>
 
-#include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "absl/status/status.h"
 
 namespace metal_pjrt {
 namespace blas {
-
-namespace rt = ::metal_pjrt::rt;
 
 enum class MpsDType { kF32, kF16, kBF16 };
 
@@ -58,10 +56,13 @@ void ColumnMajorToRowMajor(GemmParams* p);
 
 // Encodes the GEMM into `mtl_command_buffer` (id<MTLCommandBuffer>, not
 // committed, no encoder open). `mtl_device` may be null, in which case the
-// command buffer's device is used. Returns an error (and encodes nothing) for
-// unsupported dtypes or invalid shapes. Uses the runtime's absl-free Status so
-// that this library (and its standalone test) does not depend on absl.
-rt::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
+// command buffer's device is used. Errors: InvalidArgumentError for invalid
+// shapes, strides, offsets or null buffers; UnimplementedError for unsupported
+// cases (k == 0, dtype combinations, devices without MPS); InternalError when a
+// Metal/MPS object cannot be created; ResourceExhaustedError when a staging
+// buffer cannot be allocated. Staging work may already be encoded when an error
+// is returned; everything it references is kept alive.
+absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
                         const GemmParams& params);
 
 std::string GemmParamsDebugString(const GemmParams& p);

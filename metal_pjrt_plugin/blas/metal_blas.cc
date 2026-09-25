@@ -15,6 +15,7 @@
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/string_view.h"
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/blas.h"
@@ -30,11 +31,6 @@ namespace rt = ::metal_pjrt::rt;
 namespace mps = ::metal_pjrt::blas;
 
 namespace {
-
-absl::Status ToAbsl(const rt::Status& s) {
-  if (s.ok()) return absl::OkStatus();
-  return absl::InternalError(s.message());
-}
 
 bool Unsupported(const char* what) {
   LOG(ERROR) << "Metal BLAS: " << what << " is not implemented";
@@ -77,18 +73,19 @@ bool SupportedTypes(mps::MpsDType in, mps::MpsDType out) {
 
 // Resolves a raw device pointer into (MTLBuffer, byte offset).
 absl::Status Bind(rt::Device* device, const DeviceAddressBase& mem,
-                  mps::MpsOperand* op) {
+                  absl::string_view name, mps::MpsOperand* op) {
   if (mem.opaque() == nullptr) {
-    return absl::InvalidArgumentError("Metal BLAS: null operand");
-  }
-  rt::BufferRef ref;
-  rt::Status s = device->Resolve(mem.opaque(), &ref);
-  if (!s.ok()) {
     return absl::InvalidArgumentError(
-        absl::StrCat("Metal BLAS: ", s.message()));
+        absl::StrCat("Metal BLAS: operand ", name, " is null"));
   }
-  op->buffer = static_cast<void*>(ref.buffer);
-  op->offset = ref.offset;
+  absl::StatusOr<rt::BufferRef> ref = device->Resolve(mem.opaque());
+  if (!ref.ok()) {
+    return absl::Status(ref.status().code(),
+                        absl::StrCat("Metal BLAS: operand ", name, ": ",
+                                     ref.status().message()));
+  }
+  op->buffer = static_cast<void*>(ref->buffer);
+  op->offset = ref->offset;
   return absl::OkStatus();
 }
 
@@ -102,12 +99,13 @@ absl::Status Encode(rt::Device* device, Stream* stream,
                     const mps::GemmParams& params) {
   rt::Stream* rs = RtStream(stream);
   if (rs == nullptr) {
-    return absl::InternalError("Metal BLAS: stream has no Metal handle");
+    return absl::InvalidArgumentError(
+        "Metal BLAS: stream has no Metal handle (not a Metal stream?)");
   }
   VLOG(3) << "Metal BLAS: " << mps::GemmParamsDebugString(params);
-  return ToAbsl(rs->EncodeExternal([&](void* cmd) {
+  return rs->EncodeExternal([&](void* cmd) {
     return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
-  }));
+  });
 }
 
 // alpha/beta arrive as float for f16/bf16/f32 (the typed wrappers upcast
@@ -150,9 +148,9 @@ absl::Status MetalBlas::DoGemm(
   p.a = {nullptr, 0, lda, stride_a, in, transa != blas::Transpose::kNoTranspose};
   p.b = {nullptr, 0, ldb, stride_b, in, transb != blas::Transpose::kNoTranspose};
   p.c = {nullptr, 0, ldc, stride_c, out, false};
-  ABSL_RETURN_IF_ERROR(Bind(device_, a, &p.a));
-  ABSL_RETURN_IF_ERROR(Bind(device_, b, &p.b));
-  ABSL_RETURN_IF_ERROR(Bind(device_, *c, &p.c));
+  ABSL_RETURN_IF_ERROR(Bind(device_, a, "A", &p.a));
+  ABSL_RETURN_IF_ERROR(Bind(device_, b, "B", &p.b));
+  ABSL_RETURN_IF_ERROR(Bind(device_, *c, "C", &p.c));
   mps::ColumnMajorToRowMajor(&p);
   return Encode(device_, stream, p);
 }
@@ -219,7 +217,10 @@ absl::Status MetalBlas::DoBlasGemmStridedBatchedWithAlgorithm(
     const EngineOptions& engine_options,
     blas::ProfileResult* output_profile_result, blas::CallContext context) {
   if (type_a != type_b) {
-    return absl::UnimplementedError("Metal BLAS: mixed input types");
+    return absl::UnimplementedError(
+        absl::StrCat("Metal BLAS: mixed input types ",
+                     blas::DataTypeString(type_a), " x ",
+                     blas::DataTypeString(type_b)));
   }
   // MPS picks its own accumulation precision (f32 for f16/bf16 inputs as far
   // as we can tell); computation_type and algorithm are accepted and ignored.
@@ -369,9 +370,9 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
       args.c.opaque() != d.opaque()) {
     ABSL_RETURN_IF_ERROR(stream->MemcpyD2D(&d, args.c, d.size()));
   }
-  ABSL_RETURN_IF_ERROR(Bind(device_, a, &p.a));
-  ABSL_RETURN_IF_ERROR(Bind(device_, b, &p.b));
-  ABSL_RETURN_IF_ERROR(Bind(device_, d, &p.c));
+  ABSL_RETURN_IF_ERROR(Bind(device_, a, "A", &p.a));
+  ABSL_RETURN_IF_ERROR(Bind(device_, b, "B", &p.b));
+  ABSL_RETURN_IF_ERROR(Bind(device_, d, "D", &p.c));
 
   auto start = std::chrono::steady_clock::now();
   if (profile_result != nullptr) {

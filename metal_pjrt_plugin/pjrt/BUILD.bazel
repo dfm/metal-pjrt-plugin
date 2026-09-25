@@ -9,20 +9,8 @@ cc_library(
 # Everything that must be linked into the plugin for the Metal platform to be
 # usable through XLA's stock GPU PJRT client and C API shim.
 cc_library(
-    name = "metal_plugin_init",
-    srcs = ["metal_plugin_init.cc"],
-    deps = [
-        "//metal_pjrt_plugin/codegen:msl_kernel_hook",
-        "@xla//xla/stream_executor/platform:initialize",
-    ],
-    alwayslink = True,
-)
-
-cc_library(
     name = "metal_plugin_deps",
     deps = [
-        ":metal_plugin_init",
-        "//metal_pjrt_plugin/codegen:msl_kernel_hook",
         "//metal_pjrt_plugin/compiler:metal_collectives",
         "//metal_pjrt_plugin/compiler:metal_compiler",
         "//metal_pjrt_plugin/compiler:metal_pjrt_compiler",

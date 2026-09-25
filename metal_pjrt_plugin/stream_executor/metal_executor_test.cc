@@ -7,6 +7,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
@@ -122,6 +123,43 @@ TEST(MetalExecutorTest, ConstantsModule) {
   EXPECT_EQ(sym.size(), 8);
   EXPECT_FLOAT_EQ(static_cast<float*>(sym.opaque())[1], 2.0f);
   EXPECT_TRUE(executor->UnloadModule(handle));
+}
+
+TEST(MetalExecutorTest, HostCallbackErrorPoisonsStream) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+
+  // With an error_cb the failure goes there and the stream stays healthy.
+  TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+  absl::Status seen;
+  TF_ASSERT_OK(stream->DoHostCallbackWithStatus(
+      [] { return absl::DataLossError("handled"); },
+      [&seen](absl::Status s) { seen = std::move(s); }));
+  TF_ASSERT_OK(stream->BlockHostUntilDone());
+  EXPECT_EQ(seen.code(), absl::StatusCode::kDataLoss);
+  EXPECT_TRUE(stream->ok());
+
+  // Without one the stream enters the error state, sticky.
+  TF_ASSERT_OK(stream->DoHostCallbackWithStatus(
+      [] { return absl::DataLossError("boom"); }));
+  absl::Status s = stream->BlockHostUntilDone();
+  EXPECT_EQ(s.code(), absl::StatusCode::kDataLoss);
+  EXPECT_THAT(s.message(), ::testing::HasSubstr("boom"));
+  EXPECT_FALSE(stream->ok());
+  EXPECT_EQ(stream->BlockHostUntilDone().code(), absl::StatusCode::kDataLoss);
+}
+
+TEST(MetalExecutorTest, AllocationFailureReturnsNull) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+  DeviceAddressBase mem = executor->Allocate(uint64_t{1} << 62, 0);
+  EXPECT_TRUE(mem.is_null());
+  EXPECT_EQ(executor->HostMemoryAllocate(uint64_t{1} << 62).status().code(),
+            absl::StatusCode::kResourceExhausted);
 }
 
 }  // namespace

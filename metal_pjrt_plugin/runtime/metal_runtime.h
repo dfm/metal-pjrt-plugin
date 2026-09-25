@@ -1,5 +1,5 @@
-// Thin C++ runtime over Metal (via metal-cpp), independent of XLA so it can be
-// unit-tested standalone. The StreamExecutor adapter translates this API into
+// Thin C++ runtime over Metal (via metal-cpp), independent of XLA (it depends
+// only on absl) so it can be unit-tested standalone. The StreamExecutor adapter translates this API into
 // XLA's abstractions.
 //
 // Model:
@@ -12,6 +12,15 @@
 // a "device pointer" is the buffer's contents() address. XLA hands us raw
 // pointers, so Device keeps an address-ordered map to resolve a pointer back to
 // (buffer, offset).
+//
+// Errors are absl::Status with these codes:
+//   InternalError           a Metal API call failed (message carries the
+//                           NSError description, domain and code)
+//   ResourceExhaustedError  an allocation failed (requested size, limits)
+//   InvalidArgumentError    caller mistake (unknown pointer, bad size/args)
+//   UnimplementedError      known gap (e.g. more than 31 buffer arguments)
+//   FailedPreconditionError the stream is in the error state after an earlier
+//                           GPU failure
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
@@ -28,6 +37,9 @@
 #include <unordered_map>
 #include <vector>
 
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
+
 namespace MTL {
 class Device;
 class Buffer;
@@ -41,19 +53,6 @@ class SharedEvent;
 
 namespace metal_pjrt {
 namespace rt {
-
-// Minimal status type so this layer stays free of absl.
-class Status {
- public:
-  Status() = default;
-  explicit Status(std::string message) : message_(std::move(message)) {}
-  static Status Ok() { return Status(); }
-  bool ok() const { return message_.empty(); }
-  const std::string& message() const { return message_; }
-
- private:
-  std::string message_;
-};
 
 struct DeviceInfo {
   std::string name;
@@ -127,7 +126,7 @@ class Stream;
 
 class Device {
  public:
-  static Status Create(int ordinal, std::unique_ptr<Device>* out);
+  static absl::StatusOr<std::unique_ptr<Device>> Create(int ordinal);
   static int VisibleDeviceCount();
   ~Device();
   Device(const Device&) = delete;
@@ -139,20 +138,21 @@ class Device {
 
   // Memory. Allocations are shared-storage MTL::Buffers; freeing an address
   // that was not returned by Allocate is an error.
-  Status Allocate(uint64_t size, Allocation* out);
-  Status Deallocate(void* ptr);
+  absl::StatusOr<Allocation> Allocate(uint64_t size);
+  absl::Status Deallocate(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
-  Status Resolve(const void* ptr, BufferRef* out) const;
+  absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
   uint64_t allocated_bytes() const;
 
   // Compile Metal Shading Language source into a library, cached by content.
-  Status CompileLibrary(const std::string& msl_source, MTL::Library** out);
+  // The library is owned by the device's cache.
+  absl::StatusOr<MTL::Library*> CompileLibrary(const std::string& msl_source);
   // Create (or fetch cached) pipeline state for `function` in `library`.
-  Status CreateKernel(MTL::Library* library, const std::string& function,
-                      std::unique_ptr<Kernel>* out);
+  absl::StatusOr<std::unique_ptr<Kernel>> CreateKernel(
+      MTL::Library* library, const std::string& function);
 
-  Status CreateStream(std::unique_ptr<Stream>* out);
-  Status CreateEvent(std::unique_ptr<Event>* out);
+  absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
+  absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
 
  private:
   Device() = default;
@@ -178,7 +178,7 @@ class Event {
   // True once the last recorded value has been signaled.
   bool IsComplete() const;
   // Block the host until complete.
-  Status WaitOnHost();
+  absl::Status WaitOnHost();
 
  private:
   friend class Device;
@@ -197,9 +197,12 @@ class Stream {
 
   // Kernel launch. threadgroups = grid in threadgroup units, threads = per
   // threadgroup. Buffer args are resolved to (buffer, offset) here.
-  Status Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-                const std::vector<KernelArg>& args,
-                uint32_t threadgroup_memory_bytes = 0);
+  absl::Status Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
+                      const std::vector<KernelArg>& args,
+                      uint32_t threadgroup_memory_bytes = 0);
+
+  // Metal's per-stage buffer argument table has 31 slots.
+  static constexpr size_t kMaxBufferArgs = 31;
 
   // Encode work produced outside this runtime (e.g. Metal Performance
   // Shaders) into the stream's open command buffer, in order with all other
@@ -208,32 +211,36 @@ class Stream {
   // to id<MTLCommandBuffer>). `encode` must create, use and end its own
   // encoders and must not commit the buffer or call back into this stream (the
   // stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer.
-  Status EncodeExternal(std::function<Status(void* mtl_command_buffer)> encode);
+  absl::Status EncodeExternal(
+      std::function<absl::Status(void* mtl_command_buffer)> encode);
 
   // Device-to-device copy and fill, via a blit encoder.
-  Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
-  Status Memset8(void* dst, uint8_t value, uint64_t size);
-  Status Memset32(void* dst, uint32_t value, uint64_t size);
+  absl::Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
+  absl::Status Memset8(void* dst, uint8_t value, uint64_t size);
+  absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
 
   // Host transfers are ordered on the stream: they run in a host callback once
   // prior work completes, and later stream work waits for them. With unified
   // memory these are plain memcpys.
-  Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
-  Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
+  absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
+  absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
 
   // Run `fn` on the host once all previously enqueued work has completed;
   // subsequent stream work waits for it to finish.
-  Status HostCallback(std::function<void()> fn);
+  absl::Status HostCallback(std::function<void()> fn);
 
-  Status RecordEvent(Event* event);
-  Status WaitForEvent(Event* event);
+  absl::Status RecordEvent(Event* event);
+  absl::Status WaitForEvent(Event* event);
   // Make this stream wait for everything currently enqueued on `other`.
-  Status WaitForStream(Stream* other);
+  absl::Status WaitForStream(Stream* other);
 
-  // Commit any open work and block until the stream is idle.
-  Status Synchronize();
+  // Commit any open work and block until the stream is idle. Returns the GPU
+  // error (InternalError) the first time a failure is observed and
+  // FailedPreconditionError on every later call: the stream stays in the error
+  // state and also refuses new work.
+  absl::Status Synchronize();
   // Commit any open work without waiting.
-  Status Flush();
+  absl::Status Flush();
 
   // Number of dispatches encoded into the current open command buffer before
   // it is automatically committed.
@@ -244,11 +251,11 @@ class Stream {
   Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence);
 
   // Ensure an open command buffer/encoder exist.
-  Status EnsureCommandBuffer();
-  Status EnsureComputeEncoder();
+  absl::Status EnsureCommandBuffer();
+  absl::Status EnsureComputeEncoder();
   void EndEncoder();
   // Commit the current command buffer (if any).
-  Status Commit();
+  absl::Status Commit();
   // Signal/wait on the stream's private timeline (used for host callbacks and
   // cross-stream ordering).
   uint64_t SignalFence();
@@ -265,15 +272,18 @@ class Stream {
   // Synchronize waits for their completion, not just the fence signal, so
   // callers may free resources immediately afterwards.
   std::vector<MTL::CommandBuffer*> in_flight_;
-  std::string last_error_;
   std::mutex mu_;
   // Events signaled by the open command buffer; on GPU error they are
   // force-signaled so host waiters wake up instead of hanging.
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
-  // Set by the completion handler of a failed command buffer; sticky.
+  // First GPU failure (set by a failed command buffer's completion handler or
+  // by Synchronize); sticky. `async_error_reported_` is set once Synchronize
+  // has returned it.
   std::mutex err_mu_;
-  std::string async_error_;
-  Status CheckAsyncError();
+  absl::Status async_error_;
+  bool async_error_reported_ = false;
+  // FailedPreconditionError if the stream is in the error state.
+  absl::Status CheckAsyncError();
 
   // Host work ordered on the stream: each task waits for the fence to reach
   // wait_value, runs, then signals signal_value so later GPU work proceeds.

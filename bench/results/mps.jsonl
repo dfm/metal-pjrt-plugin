@@ -1,0 +1,21 @@
+{"backend": "jax-mps", "case": "elementwise chain 16M", "ms": 2.531, "best_ms": 2.196}
+{"backend": "jax-mps", "case": "reduce rows 4096x4096", "ms": 3.59, "best_ms": 3.223}
+{"backend": "jax-mps", "case": "reduce cols 4096x4096", "ms": 4.374, "best_ms": 3.541}
+{"backend": "jax-mps", "case": "reduce all 16M", "ms": 1.827, "best_ms": 1.404}
+{"backend": "jax-mps", "case": "softmax 8192x1024", "ms": 1.358, "best_ms": 1.213}
+{"backend": "jax-mps", "case": "layernorm fwd 8192x1024", "ms": 4.139, "best_ms": 3.708}
+{"backend": "jax-mps", "case": "layernorm fwd+bwd 8192x1024", "ms": 11.541, "best_ms": 10.859}
+{"backend": "jax-mps", "case": "transpose 4096x4096", "ms": 2.415, "best_ms": 2.184}
+{"backend": "jax-mps", "case": "cumsum 4096x4096 rows", "ms": 2.189, "best_ms": 1.832}
+{"backend": "jax-mps", "case": "adam 50x1M params", "ms": 13.464, "best_ms": 13.04}
+{"backend": "jax-mps", "case": "matmul f32 1024", "ms": 2.039, "best_ms": 1.734}
+{"backend": "jax-mps", "case": "matmul f32 2048", "ms": 8.105, "best_ms": 7.625}
+{"backend": "jax-mps", "case": "matmul f32 4096", "ms": 62.204, "best_ms": 56.596}
+{"backend": "jax-mps", "case": "matmul bf16 2048", "ms": 6.083, "best_ms": 5.911}
+{"backend": "jax-mps", "case": "batched matmul 16x512", "ms": 2.346, "best_ms": 2.192}
+{"backend": "jax-mps", "case": "attention fwd 8x8x512x64", "ms": 6.035, "best_ms": 5.536}
+{"backend": "jax-mps", "case": "attention fwd+bwd", "ms": 18.374, "best_ms": 18.013}
+{"backend": "jax-mps", "case": "nanoGPT fwd (loss)", "ms": 75.46, "best_ms": 74.127}
+{"backend": "jax-mps", "case": "nanoGPT train step", "ms": 275.927, "best_ms": 263.516}
+{"backend": "jax-mps", "case": "cnn fwd 32x32x32", "ms": 61.724, "best_ms": 28.789}
+{"backend": "jax-mps", "case": "cnn fwd+bwd", "ms": 7.217, "best_ms": 6.383}

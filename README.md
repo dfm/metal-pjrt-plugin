@@ -19,8 +19,9 @@ differs from the MLX-based approaches.
 - `metal_pjrt_plugin/stream_executor/`: the StreamExecutor platform.
 - `metal_pjrt_plugin/compiler/`: `MetalCompiler : GpuCompiler` and the
   registrations (compiler, transfer manager, collectives stub, PJRT compiler).
-- `metal_pjrt_plugin/codegen/`: MLIR -> EmitC -> MSL kernel emitter and the
-  hook into XLA's MLIR kernel emitter.
+- `metal_pjrt_plugin/codegen/`: MLIR -> EmitC -> MSL kernel emitter and
+  `MetalKernelCompiler`, the `KernelCompiler` that `MetalCompiler` hands to
+  XLA's emitters.
 - `metal_pjrt_plugin/blas/`: GEMM via Metal Performance Shaders.
 - `metal_pjrt_plugin/pjrt/`: the plugin dylib target.
 - `jax_plugins/metal/`: Python registration package modeled on
