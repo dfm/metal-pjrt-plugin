@@ -38,11 +38,11 @@ emitter's default case ("Unsupported instruction opcode").
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | BLAS thunk must reject; today those dtypes fail earlier |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | partial | MetalBlasLt returns Unimplemented for non-default epilogues; not hit in tests yet |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
-| sort, argsort, top_k, searchsorted, unique | bitonic sort, legacy LLVM IR (`thunk_emitter.cc:1957-2000`); TopK decomposes back to sort on OneAPI | NO | verified failing; also SortRewriter routes sorts over 16384 elements to CUB and fails at compile: set `xla_gpu_enable_cub_radix_sort=false` |
+| sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
-| cholesky | CholeskyExpander | OK for n <= 128 | larger blocks emit triangular-solve; verified n=8 |
-| triangular-solve | no expander on this path; default case in thunk emitter | NO | verified failing; fix is adding `TriangularSolveExpander` to MetalCompiler |
+| cholesky | CholeskyExpander | OK | larger than 128 emits triangular-solve, expanded too; verified n=8, 200 |
+| triangular-solve | `TriangularSolveExpander` in MetalCompiler's pre-layout hook | OK | verified incl. LU solve and n=200 Cholesky/solve |
 | QR, eigh custom calls | QrExpander / EighExpander | OK at XLA level | JAX's own lowering for eigh/svd has no rule for platform "metal"; separate issue |
 | fft | FftThunk (cuFFT) | NO | verified failing (complex reaches the emitter first) |
 | cuDNN conv / norm / attention | DNN thunks | not produced | conv rewriter is a no-op |
