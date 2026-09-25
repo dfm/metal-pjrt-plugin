@@ -123,6 +123,33 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `CompileTargetBinary` serializes those into a private container that
   `LoadModule`/`GetSymbol` understand.
 
+## FFI custom calls
+
+- Custom calls with `API_VERSION_TYPED_FFI` become `CustomCallThunk`s
+  (`xla/service/gpu/thunk_emitter.cc`), which look the handler up with
+  `ffi::FindHandler(target, platform_name)`; `platform_name` is the SE
+  platform name "METAL". Both registration and lookup go through
+  `PlatformUtil::CanonicalPlatformName` (`xla/ffi/ffi_registry.cc`), so
+  "METAL" and "metal" are the same key ("metal").
+- The registry is a static inside the plugin dylib's copy of XLA. Handlers in
+  `metal_pjrt_plugin/ffi` register with
+  `XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), name, "METAL", h)` in
+  an `alwayslink` library; nothing is needed from Python
+  (`jax.ffi.ffi_call(name, ...)` just emits the custom call). Handlers
+  compiled into another library (e.g. jaxlib's CUDA ones) are not visible.
+- Stream: bind `.Ctx<xla::ffi::Stream>()` (`xla/backends/gpu/ffi.h`) to get
+  the `se::Stream*`. `MetalStream::platform_specific_handle().stream` is the
+  `metal_pjrt::rt::Stream*` (so `PlatformStream<rt::Stream*>` also works) and
+  `stream->parent()` is the `MetalExecutor` owning the `rt::Device`.
+  `metal_pjrt::ffi::GetMetalContext` / `LaunchMsl` wrap this, with a kernel
+  cache keyed by (device, MSL source, function).
+- The backend config must be an MLIR dictionary (JAX writes it raw; our
+  rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
+- Handlers: `metal$softmax`, `metal$scan` (targets of MetalSoftmaxRewriter /
+  MetalScanRewriter), `metal$test_scale` (plumbing test,
+  `scripts/ffi_check.py`). `METAL_PJRT_DISABLE_REWRITES=softmax,scan|all`
+  turns the rewriters off.
+
 ## PJRT client
 
 - `GetStreamExecutorGpuClient` builds `LocalDeviceState`s, allocators

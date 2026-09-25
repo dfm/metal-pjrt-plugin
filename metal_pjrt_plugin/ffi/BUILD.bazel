@@ -1,0 +1,34 @@
+package(default_visibility = ["//visibility:public"])
+
+# XLA FFI support for the Metal platform: helpers plus the handlers the Metal
+# compiler's rewriters target (metal$softmax, metal$scan) and a test handler
+# (metal$test_scale). Handlers register statically, so this is alwayslink.
+cc_library(
+    name = "metal_ffi",
+    srcs = [
+        "metal_ffi.cc",
+        "scan_ffi.cc",
+        "softmax_ffi.cc",
+        "test_scale_ffi.cc",
+    ],
+    hdrs = ["metal_ffi.h"],
+    deps = [
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "//metal_pjrt_plugin/stream_executor:metal_executor",
+        "//metal_pjrt_plugin/stream_executor:metal_platform_id",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla:shape_util",
+        "@xla//xla/backends/gpu:ffi",
+        "@xla//xla/ffi",
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/stream_executor:platform",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+    ],
+    alwayslink = True,
+)

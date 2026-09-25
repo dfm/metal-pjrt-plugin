@@ -42,8 +42,10 @@ class MetalCompiler : public GpuCompiler {
  public:
   MetalCompiler();
 
-  // Forces the debug options the Metal backend depends on, then runs the
-  // stock GPU HLO pipeline.
+  // Forces the debug options the Metal backend depends on, runs
+  // MetalScanRewriter (it must see JAX's reduce-window scans before
+  // AssociativeScanRewriter / ReduceWindowRewriter in RunOptimizationPasses),
+  // then runs the stock GPU HLO pipeline.
   absl::StatusOr<std::unique_ptr<HloModule>> RunHloPasses(
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
       const CompileOptions& options) override;
@@ -56,6 +58,15 @@ class MetalCompiler : public GpuCompiler {
       se::dnn::VersionInfo dnn_version,
       const se::SemanticVersion& toolkit_version,
       CompilationStats* compilation_stats) override;
+
+  // Runs MetalSoftmaxRewriter (layouts are normalized by now and fusion has
+  // not run yet), then the stock post-layout pipeline.
+  absl::Status OptimizeHloPostLayoutAssignment(
+      HloModule* hlo_module, se::StreamExecutor* stream_exec,
+      const CompileOptions& options, const GpuTopology& gpu_topology,
+      const GpuAliasInfo* alias_info, tsl::thread::ThreadPool* thread_pool,
+      CompilationStats* compilation_stats,
+      mlir::MLIRContext* mlir_context) override;
 
   absl::Status AddConfigAssignerPass(
       HloPassPipeline* pipeline, HloModule* hlo_module,

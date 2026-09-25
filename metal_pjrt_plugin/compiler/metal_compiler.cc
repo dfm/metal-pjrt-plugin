@@ -1,6 +1,7 @@
 #include "metal_pjrt_plugin/compiler/metal_compiler.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <string>
@@ -11,6 +12,8 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
 #include "xla/tsl/platform/statusor.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -20,6 +23,8 @@
 #include "metal_pjrt_plugin/codegen/msl_llvm_bridge.h"
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
+#include "metal_pjrt_plugin/compiler/passes/scan_rewriter.h"
+#include "metal_pjrt_plugin/compiler/passes/softmax_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/sort_expander.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
@@ -82,6 +87,17 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
   return metal_pjrt::rt::SerializeConstants(blobs);
 }
 
+// METAL_PJRT_DISABLE_REWRITES=softmax,scan turns off the FFI-kernel rewriters
+// (for A/B comparisons and bisecting).
+bool RewriteEnabled(absl::string_view name) {
+  const char* env = std::getenv("METAL_PJRT_DISABLE_REWRITES");
+  if (env == nullptr) return true;
+  for (absl::string_view s : absl::StrSplit(env, ',')) {
+    if (s == name || s == "all") return false;
+  }
+  return true;
+}
+
 }  // namespace
 
 void ApplyMetalDefaults(DebugOptions& debug_options) {
@@ -118,7 +134,28 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
   ApplyMetalDefaults(module->mutable_config().mutable_debug_options());
+  if (RewriteEnabled("scan")) {
+    HloPassPipeline pipeline("metal-pre-optimization");
+    pipeline.AddPass<MetalScanRewriter>();
+    TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
+  }
   return GpuCompiler::RunHloPasses(std::move(module), stream_exec, options);
+}
+
+absl::Status MetalCompiler::OptimizeHloPostLayoutAssignment(
+    HloModule* hlo_module, se::StreamExecutor* stream_exec,
+    const CompileOptions& options, const GpuTopology& gpu_topology,
+    const GpuAliasInfo* alias_info, tsl::thread::ThreadPool* thread_pool,
+    CompilationStats* compilation_stats, mlir::MLIRContext* mlir_context) {
+  if (RewriteEnabled("softmax")) {
+    HloPassPipeline pipeline("metal-post-layout", compilation_stats);
+    pipeline.AddPass<MetalSoftmaxRewriter>();
+    pipeline.AddPass<HloDCE>();
+    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  }
+  return GpuCompiler::OptimizeHloPostLayoutAssignment(
+      hlo_module, stream_exec, options, gpu_topology, alias_info, thread_pool,
+      compilation_stats, mlir_context);
 }
 
 void MetalCompiler::AddPaddingForGpublasGemms(

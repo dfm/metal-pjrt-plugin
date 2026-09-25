@@ -7,6 +7,8 @@ cc_library(
     deps = [
         "//metal_pjrt_plugin/codegen:metal_kernel_compiler",
         "//metal_pjrt_plugin/codegen:msl_llvm_bridge",
+        "//metal_pjrt_plugin/compiler/passes:scan_rewriter",
+        "//metal_pjrt_plugin/compiler/passes:softmax_rewriter",
         "//metal_pjrt_plugin/compiler/passes:sort_expander",
         "//metal_pjrt_plugin/runtime:constants_container",
         "//metal_pjrt_plugin/stream_executor:metal_platform_id",

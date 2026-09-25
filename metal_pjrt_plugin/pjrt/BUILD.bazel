@@ -16,6 +16,7 @@ cc_library(
         "//metal_pjrt_plugin/compiler:metal_pjrt_compiler",
         "//metal_pjrt_plugin/compiler:metal_transfer_manager",
         "//metal_pjrt_plugin/compiler:ptx_custom_kernel_emitter_stub",
+        "//metal_pjrt_plugin/ffi:metal_ffi",
         "//metal_pjrt_plugin/stream_executor:metal_platform",
         "@xla//xla/backends/gpu/runtime:thunk_runtime_dependencies",
         "@xla//xla/service/gpu:gpu_compiler",

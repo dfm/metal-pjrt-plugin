@@ -24,12 +24,17 @@ cost), `bench/run_all.sh` to produce `bench/results/table.md`. Machine: M3,
    about 165 us for tiny programs, the same as jax-mps and MLX. One execution
    is one command buffer with all its dispatches, plus an empty command
    buffer on the event stream.
-4. **cumsum is 5 memory passes**: XLA's ReduceWindowRewriter builds a
-   hierarchical scan out of slices and adds. MLX has a single-pass scan
-   kernel. A Metal scan emitter is the fix (about 3x on this case).
-5. **softmax is 3 passes** (max reduce, sum reduce, elementwise); MLX fuses
-   it. XLA's fused softmax path is Triton-only. A Metal-specific rewrite to a
-   single row kernel would close the 1.5x gap.
+4. **cumsum was 5 memory passes**: XLA's ReduceWindowRewriter builds a
+   hierarchical scan out of slices and adds. `MetalScanRewriter` now turns
+   minor-dim cumsum/cumprod/cummax/cummin into one `metal$scan` FFI kernel.
+   GPU time for cumsum 4096x4096 f32 (METAL_PJRT_TRACE): 3.5 ms (5 kernels)
+   -> 1.46 ms (1 kernel, ~88 GB/s). Threadgroup size 64-512 made no
+   difference; 1024 exceeded the pipeline's limit (now clamped).
+5. **softmax was 3 passes** (max reduce, sum reduce, elementwise).
+   `MetalSoftmaxRewriter` now emits one `metal$softmax` kernel (online
+   max/sum, row re-read from cache). GPU time for softmax 8192x1024 f32:
+   1.45 ms -> 0.75 ms. Wall-clock numbers for both still need a rerun on an
+   idle GPU (the 2026-09-24 runs were disturbed by other GPU jobs timing out).
 6. **GEMM parity with MLX on f32** via MPS; bf16 is slower because MPS has
    no bf16 and we stage through f32 conversions.
 
@@ -43,8 +48,9 @@ elementwise chain and transpose within 1.3x; cumsum 3x behind; bf16 GEMM
 
 ## Next levers, in order
 
-1. Scan emitter (cumsum, cumprod, associative scans).
-2. Fused row softmax / log-softmax kernel.
+1. Scans over non-minor axes and few-long-row scans (a decoupled
+   look-back scan across threadgroups); logcumsumexp.
+2. Softmax with a fused producer/consumer or masking (attention).
 3. bf16 GEMM without staging (MLX-style steel kernels or Metal 4 primitives).
 4. Untracked hazard mode with explicit barriers (CPU-side encode cost).
 5. XLA launch-dimension and tiling heuristics tuned for Apple GPUs via a

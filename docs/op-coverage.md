@@ -28,7 +28,8 @@ emitter's default case ("Unsupported instruction opcode").
 |---|---|---|---|
 | elementwise, broadcast, reshape, transpose, slice, concat, iota, pad, reverse, map, clamp, select, convert, bitcast-convert, reduce-precision, compare | loop / transpose / concat MLIR emitters | OK | verified; f64 and complex excluded |
 | reduce | reduction MLIR emitter | OK | verified incl. 1M and column reductions |
-| reduce-window, cumulative ops | elemental MLIR (+ scan rewriters) | OK | verified |
+| reduce-window, cumulative ops | elemental MLIR (+ scan rewriters); cumsum/cumprod/cummax/cummin over the minor dim -> `MetalScanRewriter` -> `metal$scan` | OK | verified incl. reverse, f32/f16/bf16/s32 (`scripts/fused_kernels_check.py`) |
+| softmax / log-softmax over the minor dim | `MetalSoftmaxRewriter` -> `metal$softmax` (one kernel) | OK | verified f32/f16/bf16, n <= 16384 |
 | gather, dynamic-slice | elemental MLIR | OK | verified |
 | dynamic-update-slice | in-place DUS emitter or loop | OK | verified |
 | scatter | scatter MLIR emitter | OK | verified for f32; uses atomics, Metal has 32-bit atomics only, so 64-bit scatter-add is unverified |
@@ -58,7 +59,7 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| other custom calls (FFI) | need a handler registered for platform "metal" | NO | jaxlib registers GPU handlers for cuda/rocm only; also XLA's own assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, `metal$test_scale`); jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 
