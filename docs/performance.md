@@ -55,3 +55,21 @@ elementwise chain and transpose within 1.3x; cumsum 3x behind; bf16 GEMM
 4. Untracked hazard mode with explicit barriers (CPU-side encode cost).
 5. XLA launch-dimension and tiling heuristics tuned for Apple GPUs via a
    proper Apple compute capability.
+
+## Update 2026-09-25 (early morning)
+
+- Fused softmax and single-pass scan via FFI custom calls: kernel time 1.45 ->
+  0.75 ms (softmax 8192x1024) and 3.5 -> 1.46 ms (cumsum 4096x4096). Wall
+  clock not re-measured yet (see below).
+- Native bf16/f16 GEMM (simdgroup-matrix kernels ported from MLX's steel
+  design) is implemented but unverified on device.
+- **Caveat:** killing a `pytest -n 2` run of JAX's lax_test with SIGALRM left
+  worker processes stuck exiting inside the GPU driver, after which every
+  Metal command buffer in every process timed out (`kIOGPUCommandBuffer
+  CallbackErrorTimeout`). Measurements taken after that point are invalid; a
+  reboot clears it. Lesson: never kill GPU-using test workers with signals
+  while command buffers are in flight; use pytest timeouts per test instead.
+- Runtime changes prompted by this: a failed command buffer is now reported
+  once and the stream recovers (a stuck error state made whole test runs
+  fail), and command buffers are committed after 2^29 dispatched threads so a
+  batch of heavy kernels cannot approach the watchdog.
