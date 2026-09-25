@@ -31,6 +31,7 @@ cc_library(
     hdrs = ["metal_blas.h"],
     deps = [
         ":mps_gemm",
+        ":steel_gemm",
         "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
@@ -93,5 +94,43 @@ cc_test(
         "@xla//xla/tsl/lib/core:status_test_util",
         "@xla//xla/tsl/platform:statusor",
         "@xla//xla/tsl/platform:test_main",
+    ],
+)
+
+# Native f16/bf16 GEMM (MSL simdgroup-matrix kernels ported from MLX's steel
+# GEMM), JIT-compiled through the runtime. Plain C++ (metal-cpp).
+cc_library(
+    name = "steel_gemm",
+    srcs = ["steel_gemm.cc"],
+    hdrs = [
+        "steel_gemm.h",
+        "steel_gemm_msl.h",
+    ],
+    deps = [
+        ":mps_gemm",
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@metal_cpp",
+    ],
+)
+
+# Steel GEMM against a CPU reference; needs a Metal device.
+cc_test(
+    name = "steel_gemm_test",
+    srcs = ["steel_gemm_test.cc"],
+    tags = [
+        "local",
+        "manual",
+    ],
+    deps = [
+        ":mps_gemm",
+        ":steel_gemm",
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
     ],
 )

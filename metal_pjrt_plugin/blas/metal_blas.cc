@@ -17,6 +17,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
+#include "metal_pjrt_plugin/blas/steel_gemm.h"  // steel GEMM dispatch
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/blas.h"
 #include "xla/stream_executor/device_address.h"
@@ -103,6 +104,13 @@ absl::Status Encode(rt::Device* device, Stream* stream,
         "Metal BLAS: stream has no Metal handle (not a Metal stream?)");
   }
   VLOG(3) << "Metal BLAS: " << mps::GemmParamsDebugString(params);
+  // --- steel GEMM dispatch (steel_gemm.h) ---
+  // f16/bf16 inputs run on native MSL kernels (MPS has no bf16 and would stage
+  // through f32); METAL_PJRT_GEMM=mps|steel forces one backend.
+  if (mps::UseSteelGemm(params)) {
+    return mps::RunSteelGemm(device, rs, params);
+  }
+  // --- end steel GEMM dispatch ---
   return rs->EncodeExternal([&](void* cmd) {
     return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
   });
