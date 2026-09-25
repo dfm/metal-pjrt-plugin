@@ -16,11 +16,12 @@ namespace gpu {
 //
 // Each operand is transposed so the sort dimension is minor, flattened to
 // [B, n], padded to [B, N] (N = next power of two) and flattened to [B*N]. An
-// extra "original flat index" operand rides along. The network is a `while`
-// loop with a known trip count of log2(N)*(log2(N)+1)/2 whose body is one
-// elementwise compare-and-swap step: the partner of flat position f in
-// substage j is f ^ j (valid across rows because N is a power of two), fetched
-// with a 1-D gather. The comparator is inlined elementwise (falling back to a
+// extra "original flat index" operand rides along. The network's
+// log2(N)*(log2(N)+1)/2 substages run in a `while` loop with a known trip
+// count, two elementwise compare-and-swap substages per iteration (plus one
+// peeled step when the count is odd). In substage j the partner of flat
+// position f is f ^ j (valid across rows because N is a power of two),
+// fetched with a 1-D gather. The comparator is inlined elementwise (falling back to a
 // kMap when it contains non-elementwise ops) and made a strict total order by
 // breaking ties on the original index, so the result is always stable. Padded
 // elements (original position >= n) compare greater than every real element.

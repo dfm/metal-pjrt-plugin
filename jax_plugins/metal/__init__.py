@@ -42,11 +42,15 @@ def initialize():
         logger.warning("metal PJRT plugin library not found; skipping registration")
         return
     # The plugin is XLA's GPU PJRT client; these are its client-creation
-    # options. "platform" selects the plain StreamExecutor allocator (no BFC
-    # pool), which is the right default for unified memory.
+    # options. The BFC pool matters even with unified memory: a fresh
+    # MTLBuffer costs ~60 us/MB of page faults on first touch, so per-call
+    # allocation of outputs dominated memory-bound kernels. The pool grows on
+    # demand (no preallocation) up to memory_fraction of the working set.
     options = {
         "platform_name": "metal",
-        "allocator": "platform",
+        "allocator": os.environ.get("JAX_METAL_ALLOCATOR", "bfc"),
+        "preallocate": False,
+        "memory_fraction": float(os.environ.get("JAX_METAL_MEMORY_FRACTION", "0.7")),
         "visible_devices": [0],
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)

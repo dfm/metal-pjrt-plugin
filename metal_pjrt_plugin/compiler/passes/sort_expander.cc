@@ -197,35 +197,27 @@ absl::StatusOr<HloInstruction*> TotalLess(
   return b.Select(both, valid_less, b.Select(differ, va, idx_lt));
 }
 
-// Builds the while-loop body for one compare-and-swap substage. State layout:
-// (t, k, j, operand_0, ..., operand_{K-1}, original_index).
-absl::StatusOr<HloComputation*> BuildBody(HloModule* module,
-                                          const Shape& state_shape,
-                                          HloComputation* comparator,
-                                          int64_t num_operands, int64_t n,
-                                          int64_t pow2, int64_t m,
-                                          PrimitiveType itype) {
-  HloComputation::Builder builder("metal_sort_body");
-  builder.AddInstruction(
-      HloInstruction::CreateParameter(0, state_shape, "state"));
-  HloComputation* body = module->AddEmbeddedComputation(builder.Build());
-  HloInstruction* state = body->parameter_instruction(0);
-  FlatBuilder b(body, m, itype);
+struct NetworkState {
+  HloInstruction* k;  // current bitonic block size (scalar)
+  HloInstruction* j;  // current substage distance (scalar)
+  std::vector<HloInstruction*> arrays;  // operands..., original index
+};
 
-  auto gte = [&](int64_t i) {
-    return b.Add(HloInstruction::CreateGetTupleElement(state, i));
-  };
-  HloInstruction* t = gte(0);
-  HloInstruction* k = gte(1);
-  HloInstruction* j = gte(2);
-  std::vector<HloInstruction*> self;
-  for (int64_t i = 0; i < num_operands + 1; ++i) self.push_back(gte(3 + i));
+// Emits one compare-and-swap substage of the bitonic network into b.comp()
+// and advances (k, j) to the next substage.
+absl::StatusOr<NetworkState> EmitStep(FlatBuilder& b,
+                                      HloComputation* comparator,
+                                      int64_t num_operands, int64_t n,
+                                      int64_t pow2, const NetworkState& in) {
+  const PrimitiveType itype = b.index_type();
+  const int64_t m = b.m();
+  const std::vector<HloInstruction*>& self = in.arrays;
 
   HloInstruction* pos =
       b.Add(HloInstruction::CreateIota(b.ArrayShape(itype), 0));
-  HloInstruction* jb = b.Broadcast(j);
+  HloInstruction* jb = b.Broadcast(in.j);
   HloInstruction* km =
-      b.Broadcast(b.Binary(HloOpcode::kAnd, k, b.ScalarIndex(pow2 - 1)));
+      b.Broadcast(b.Binary(HloOpcode::kAnd, in.k, b.ScalarIndex(pow2 - 1)));
   HloInstruction* partner_pos = b.Binary(HloOpcode::kXor, pos, jb);
   HloInstruction* partner_idx = b.Add(HloInstruction::CreateReshape(
       ShapeUtil::MakeShape(itype, {m, 1}), partner_pos));
@@ -262,19 +254,51 @@ absl::StatusOr<HloComputation*> BuildBody(HloModule* module,
   HloInstruction* take_partner =
       b.Compare(Comparison::Direction::kNe, want_min, self_less);
 
-  std::vector<HloInstruction*> outs;
+  NetworkState out;
   HloInstruction* one = b.ScalarIndex(1);
-  HloInstruction* j_is_one = b.Compare(Comparison::Direction::kEq, j, one);
-  outs.push_back(b.Binary(HloOpcode::kAdd, t, one));
-  outs.push_back(
-      b.Select(j_is_one, b.Binary(HloOpcode::kShiftLeft, k, one), k));
-  outs.push_back(b.Select(j_is_one, k,
-                          b.Binary(HloOpcode::kShiftRightLogical, j, one)));
+  HloInstruction* j_is_one = b.Compare(Comparison::Direction::kEq, in.j, one);
+  out.k = b.Select(j_is_one, b.Binary(HloOpcode::kShiftLeft, in.k, one), in.k);
+  out.j = b.Select(j_is_one, in.k,
+                   b.Binary(HloOpcode::kShiftRightLogical, in.j, one));
   for (size_t i = 0; i < self.size(); ++i) {
-    outs.push_back(b.Select(take_partner, partner[i], self[i]));
+    out.arrays.push_back(b.Select(take_partner, partner[i], self[i]));
   }
-  HloInstruction* root = b.Add(HloInstruction::CreateTuple(outs));
-  body->set_root_instruction(root);
+  return out;
+}
+
+// Builds the while-loop body, which runs two substages per iteration: the
+// gathers make each step's output unable to share its input's buffer, so a
+// single-step body would need a copy per array per iteration. With two steps
+// the second one can write into the (dead) loop-carried buffers.
+// State layout: (iteration, k, j, operand_0, ..., operand_{K-1}, orig_index).
+absl::StatusOr<HloComputation*> BuildBody(HloModule* module,
+                                          const Shape& state_shape,
+                                          HloComputation* comparator,
+                                          int64_t num_operands, int64_t n,
+                                          int64_t pow2, int64_t m,
+                                          PrimitiveType itype) {
+  HloComputation::Builder builder("metal_sort_body");
+  builder.AddInstruction(
+      HloInstruction::CreateParameter(0, state_shape, "state"));
+  HloComputation* body = module->AddEmbeddedComputation(builder.Build());
+  HloInstruction* state = body->parameter_instruction(0);
+  FlatBuilder b(body, m, itype);
+
+  auto gte = [&](int64_t i) {
+    return b.Add(HloInstruction::CreateGetTupleElement(state, i));
+  };
+  HloInstruction* iter = gte(0);
+  NetworkState s;
+  s.k = gte(1);
+  s.j = gte(2);
+  for (int64_t i = 0; i < num_operands + 1; ++i) s.arrays.push_back(gte(3 + i));
+  for (int step = 0; step < 2; ++step) {
+    TF_ASSIGN_OR_RETURN(s, EmitStep(b, comparator, num_operands, n, pow2, s));
+  }
+  std::vector<HloInstruction*> outs = {
+      b.Binary(HloOpcode::kAdd, iter, b.ScalarIndex(1)), s.k, s.j};
+  outs.insert(outs.end(), s.arrays.begin(), s.arrays.end());
+  body->set_root_instruction(b.Add(HloInstruction::CreateTuple(outs)));
   return body;
 }
 
@@ -327,7 +351,7 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   const int64_t m = batch * pow2;
   const PrimitiveType itype =
       m < std::numeric_limits<int32_t>::max() ? S32 : S64;
-  const int64_t trip_count = static_cast<int64_t>(log2) * (log2 + 1) / 2;
+  const int64_t num_steps = static_cast<int64_t>(log2) * (log2 + 1) / 2;
 
   // Move the sort dimension to the minor-most position.
   std::vector<int64_t> perm;
@@ -344,11 +368,10 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   auto* pad_dim = pad_config.add_dimensions();
   pad_dim->set_edge_padding_high(pow2 - n);
 
-  std::vector<HloInstruction*> init;
   FlatBuilder outer(comp, m, itype);
-  init.push_back(outer.ScalarIndex(0));  // t
-  init.push_back(outer.ScalarIndex(2));  // k
-  init.push_back(outer.ScalarIndex(1));  // j
+  NetworkState s;
+  s.k = outer.ScalarIndex(2);
+  s.j = outer.ScalarIndex(1);
   std::vector<int64_t> transposed_dims;
   for (int64_t d : perm) transposed_dims.push_back(shape.dimensions(d));
   for (HloInstruction* op : sort->operands()) {
@@ -363,27 +386,41 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
       TF_ASSIGN_OR_RETURN(x, MakePadHlo(x, zero, pad_config));
     }
     TF_ASSIGN_OR_RETURN(x, MakeReshapeHlo({m}, x));
-    init.push_back(x);
+    s.arrays.push_back(x);
   }
-  init.push_back(comp->AddInstruction(
+  s.arrays.push_back(comp->AddInstruction(
       HloInstruction::CreateIota(ShapeUtil::MakeShape(itype, {m}), 0)));
 
-  HloInstruction* init_tuple =
-      comp->AddInstruction(HloInstruction::CreateTuple(init));
-  const Shape& state_shape = init_tuple->shape();
-  TF_ASSIGN_OR_RETURN(
-      HloComputation * body,
-      BuildBody(module, state_shape, sort->to_apply(), num_operands, n, pow2,
-                m, itype));
-  HloComputation* cond =
-      BuildCondition(module, state_shape, trip_count, itype);
-  HloInstruction* loop = comp->AddInstruction(
-      HloInstruction::CreateWhile(state_shape, cond, body, init_tuple));
+  // An odd substage count leaves one step to run before the two-step loop.
+  if (num_steps % 2 == 1) {
+    TF_ASSIGN_OR_RETURN(s, EmitStep(outer, sort->to_apply(), num_operands, n,
+                                    pow2, s));
+  }
+  std::vector<HloInstruction*> sorted(s.arrays.begin(),
+                                      s.arrays.begin() + num_operands);
+  if (num_steps / 2 > 0) {
+    std::vector<HloInstruction*> init = {outer.ScalarIndex(0), s.k, s.j};
+    init.insert(init.end(), s.arrays.begin(), s.arrays.end());
+    HloInstruction* init_tuple =
+        comp->AddInstruction(HloInstruction::CreateTuple(init));
+    const Shape& state_shape = init_tuple->shape();
+    TF_ASSIGN_OR_RETURN(
+        HloComputation * body,
+        BuildBody(module, state_shape, sort->to_apply(), num_operands, n, pow2,
+                  m, itype));
+    HloComputation* cond =
+        BuildCondition(module, state_shape, num_steps / 2, itype);
+    HloInstruction* loop = comp->AddInstruction(
+        HloInstruction::CreateWhile(state_shape, cond, body, init_tuple));
+    for (int64_t i = 0; i < num_operands; ++i) {
+      TF_ASSIGN_OR_RETURN(sorted[i], MakeGetTupleElementHlo(loop, 3 + i));
+    }
+  }
 
   std::vector<HloInstruction*> outs;
   for (int64_t i = 0; i < num_operands; ++i) {
-    TF_ASSIGN_OR_RETURN(HloInstruction * x, MakeGetTupleElementHlo(loop, 3 + i));
-    TF_ASSIGN_OR_RETURN(x, MakeReshapeHlo({batch, pow2}, x));
+    TF_ASSIGN_OR_RETURN(HloInstruction * x,
+                        MakeReshapeHlo({batch, pow2}, sorted[i]));
     if (pow2 != n) {
       TF_ASSIGN_OR_RETURN(x, MakeSliceHlo(x, {0, 0}, {batch, n}, {1, 1}));
     }
