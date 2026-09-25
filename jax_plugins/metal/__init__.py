@@ -55,3 +55,6 @@ def initialize():
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)
     _default_compilation_cache()
+    # Lowering rules for primitives upstream only lowers on named platforms.
+    from jax_plugins.metal import lowerings
+    lowerings.register()

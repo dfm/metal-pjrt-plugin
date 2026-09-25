@@ -152,7 +152,7 @@ case("random uniform")(lambda: (lambda u: np.testing.assert_(0.45 < float(u.mean
 case("random normal")(lambda: (lambda u: np.testing.assert_(abs(float(u.std()) - 1) < 0.1))(jax.random.normal(jax.random.PRNGKey(2), (4096,))))
 case("random bits threefry")(lambda: ref(lambda k: jax.random.bits(k, (16,)).astype(f32), jax.random.PRNGKey(3)))
 case("random categorical/choice")(lambda: (lambda c: np.testing.assert_(c.shape == (100,)))(jax.random.choice(jax.random.PRNGKey(4), 10, (100,))))
-case("rng_bit_generator")(lambda: (lambda r: np.testing.assert_(r[1].shape == (8,)))(lax.rng_bit_generator(jnp.zeros(2, jnp.uint32), (8,), jnp.uint32)))
+case("rng_bit_generator")(lambda: (lambda r: np.testing.assert_(r[1].shape == (8,)))(lax.rng_bit_generator(jnp.zeros(4, jnp.uint32), (8,), jnp.uint32)))
 # ---- misc ----
 case("lax.erf_inv grad / custom_jvp")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(jax.nn.gelu(v)))(x), A(64)))
 case("jnp.linalg.norm")(lambda: ref(lambda x: jnp.linalg.norm(x, axis=1), A(8, 8)))
