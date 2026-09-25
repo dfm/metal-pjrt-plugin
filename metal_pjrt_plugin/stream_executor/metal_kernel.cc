@@ -88,11 +88,15 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
         "kernel %s expects %u arguments, got %u", name(), arity_,
         rt_args.size()));
   }
-  if (rt_args.size() > rt::Stream::kMaxBufferArgs) {
+  const size_t max_args = kernel_->uses_argument_buffer()
+                              ? rt::Stream::kMaxArgumentBufferArgs
+                              : rt::Stream::kMaxBufferArgs;
+  if (rt_args.size() > max_args) {
     return absl::UnimplementedError(absl::StrFormat(
-        "kernel %s has %u buffer arguments; Metal allows at most %u (argument "
-        "buffers not implemented yet)",
-        name(), rt_args.size(), rt::Stream::kMaxBufferArgs));
+        "kernel %s has %u buffer arguments; at most %u are supported%s", name(),
+        rt_args.size(), max_args,
+        kernel_->uses_argument_buffer() ? " (argument buffer)"
+                                        : " without an argument buffer"));
   }
 
   uint64_t threads_per_group = thread_dims.x * thread_dims.y * thread_dims.z;

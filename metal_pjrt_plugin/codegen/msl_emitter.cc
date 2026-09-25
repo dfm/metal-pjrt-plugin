@@ -2112,16 +2112,35 @@ absl::Status TopologicalFunctionOrder(
 }
 
 std::string KernelWrapper(const KernelInfo& info) {
-  std::string s = absl::StrCat("kernel void ", info.kernel_name, "(\n");
-  for (int i = 0; i < info.num_buffer_args; ++i) {
-    absl::StrAppend(&s, "    device char* xla_arg", i, " [[buffer(", i,
-                    ")]],\n");
+  // Metal's argument table has 31 buffer slots. Kernels with more buffer
+  // arguments take them through an argument buffer instead: [[buffer(0)]] is
+  // an array of 64-bit GPU addresses (MTLBuffer.gpuAddress + offset), one per
+  // argument, and the runtime makes the buffers resident with useResource.
+  // The marker comment tells the loader (MetalExecutor::LoadKernel) which
+  // convention the kernel uses.
+  const bool arg_buffer = info.num_buffer_args > kMaxDirectBufferArgs;
+  std::string s;
+  if (arg_buffer) absl::StrAppend(&s, kArgumentBufferMarker, "\n");
+  absl::StrAppend(&s, "kernel void ", info.kernel_name, "(\n");
+  if (arg_buffer) {
+    absl::StrAppend(&s, "    constant ulong* xla_args [[buffer(0)]],\n");
+  } else {
+    for (int i = 0; i < info.num_buffer_args; ++i) {
+      absl::StrAppend(&s, "    device char* xla_arg", i, " [[buffer(", i,
+                      ")]],\n");
+    }
   }
   absl::StrAppend(&s,
                   "    uint3 xla_tid [[thread_position_in_threadgroup]],\n"
                   "    uint3 xla_bid [[threadgroup_position_in_grid]],\n"
                   "    uint3 xla_bdim [[threads_per_threadgroup]],\n"
                   "    uint3 xla_gdim [[threadgroups_per_grid]]) {\n");
+  if (arg_buffer) {
+    for (int i = 0; i < info.num_buffer_args; ++i) {
+      absl::StrAppend(&s, "  device char* xla_arg", i,
+                      " = (device char*)xla_args[", i, "];\n");
+    }
+  }
   for (const SharedArray& a : info.shared) {
     absl::StrAppend(&s, "  threadgroup uint4 ", a.name, "[",
                     std::max<int64_t>(1, (a.bytes + 15) / 16), "];\n");

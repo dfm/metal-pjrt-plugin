@@ -18,7 +18,8 @@
 //                           NSError description, domain and code)
 //   ResourceExhaustedError  an allocation failed (requested size, limits)
 //   InvalidArgumentError    caller mistake (unknown pointer, bad size/args)
-//   UnimplementedError      known gap (e.g. more than 31 buffer arguments)
+//   UnimplementedError      known gap (e.g. more than 31 buffer arguments
+//                           for a kernel without an argument buffer)
 //   FailedPreconditionError the stream is in the error state after an earlier
 //                           GPU failure
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
@@ -102,6 +103,18 @@ struct KernelArg {
   std::vector<uint8_t> bytes;
 };
 
+// MSL kernels whose source contains this marker take their buffer arguments
+// through an argument buffer: [[buffer(0)]] is `constant ulong*`, one 64-bit
+// GPU address (MTLBuffer.gpuAddress + offset) per argument. Used for kernels
+// with more buffer arguments than Metal's argument table holds. Must match
+// codegen::kArgumentBufferMarker (codegen/msl_kernel.h).
+inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
+
+// True when kernel `kernel_name` in `msl_source` uses the argument-buffer
+// convention (the marker line immediately precedes `kernel void <name>(`).
+bool UsesArgumentBuffer(const std::string& msl_source,
+                        const std::string& kernel_name);
+
 class Kernel {
  public:
   Kernel(MTL::ComputePipelineState* pso, std::string name)
@@ -112,6 +125,10 @@ class Kernel {
 
   MTL::ComputePipelineState* pso() const { return pso_; }
   const std::string& name() const { return name_; }
+  // See kArgumentBufferMarker. Launch then packs all (buffer) arguments into
+  // one setBytes payload of GPU addresses and marks the buffers resident.
+  bool uses_argument_buffer() const { return uses_argument_buffer_; }
+  void set_uses_argument_buffer(bool v) { uses_argument_buffer_ = v; }
   uint32_t max_total_threads_per_threadgroup() const;
   uint32_t thread_execution_width() const;
   uint32_t static_threadgroup_memory_length() const;
@@ -119,6 +136,7 @@ class Kernel {
  private:
   MTL::ComputePipelineState* pso_;
   std::string name_;
+  bool uses_argument_buffer_ = false;
 };
 
 class Event;
@@ -201,8 +219,11 @@ class Stream {
                       const std::vector<KernelArg>& args,
                       uint32_t threadgroup_memory_bytes = 0);
 
-  // Metal's per-stage buffer argument table has 31 slots.
+  // Metal's per-stage buffer argument table has 31 slots. Kernels using an
+  // argument buffer (Kernel::uses_argument_buffer) take up to
+  // kMaxArgumentBufferArgs buffer arguments (4 KB of setBytes payload).
   static constexpr size_t kMaxBufferArgs = 31;
+  static constexpr size_t kMaxArgumentBufferArgs = 4096 / sizeof(uint64_t);
 
   // Encode work produced outside this runtime (e.g. Metal Performance
   // Shaders) into the stream's open command buffer, in order with all other
@@ -249,6 +270,11 @@ class Stream {
  private:
   friend class Device;
   Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence);
+
+  absl::Status LaunchWithArgumentBuffer(const Kernel& kernel,
+                                        Dim3 threadgroups, Dim3 threads,
+                                        const std::vector<KernelArg>& args,
+                                        uint32_t threadgroup_memory_bytes);
 
   // Ensure an open command buffer/encoder exist.
   absl::Status EnsureCommandBuffer();

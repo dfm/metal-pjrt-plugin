@@ -3,6 +3,8 @@
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
 
+#include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <thread>
@@ -18,6 +20,16 @@ namespace metal_pjrt {
 namespace rt {
 
 namespace {
+
+// METAL_PJRT_TRACE=1 logs one line per committed command buffer with its op
+// count and GPU execution time. Diagnostic only.
+bool TraceEnabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("METAL_PJRT_TRACE");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  return enabled;
+}
 
 // "<description> (domain=<domain>, code=<code>)".
 std::string NSErrorToString(NS::Error* err) {
@@ -449,8 +461,14 @@ absl::Status Stream::Commit() {
   MTL::SharedEvent* fence = fence_;
   fence->retain();
   const int ordinal = device_->ordinal();
+  const int traced_ops = ops_in_cmd_;
   cmd_->addCompletedHandler(
-      [this, v, fence, signals, ordinal](MTL::CommandBuffer* cb) {
+      [this, v, fence, signals, ordinal, traced_ops](MTL::CommandBuffer* cb) {
+        if (TraceEnabled()) {
+          LOG(ERROR) << "[metal-trace] stream " << this << " cb#" << v
+                    << " ops=" << traced_ops << " gpu_ms="
+                    << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
+        }
         if (cb->status() == MTL::CommandBufferStatusError) {
           absl::Status error = absl::InternalError(absl::StrFormat(
               "Metal command buffer failed on device %d (stream fence value "
@@ -527,11 +545,21 @@ absl::Status Stream::Synchronize() {
       async_error_.message()));
 }
 
+bool UsesArgumentBuffer(const std::string& msl_source,
+                        const std::string& kernel_name) {
+  return msl_source.find(absl::StrCat(kArgumentBufferMarker, "\nkernel void ",
+                                      kernel_name, "(")) != std::string::npos;
+}
+
 absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
                             Dim3 threads, const std::vector<KernelArg>& args,
                             uint32_t threadgroup_memory_bytes) {
   size_t num_buffers = 0;
   for (const KernelArg& a : args) num_buffers += a.is_buffer ? 1 : 0;
+  if (kernel.uses_argument_buffer()) {
+    return LaunchWithArgumentBuffer(kernel, threadgroups, threads, args,
+                                    threadgroup_memory_bytes);
+  }
   if (args.size() > kMaxBufferArgs) {
     return absl::UnimplementedError(absl::StrFormat(
         "Launch %s: %d arguments (%d buffers) exceed Metal's %d argument "
@@ -561,6 +589,55 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
       enc_->setBytes(a.bytes.data(), a.bytes.size(),
                      static_cast<NS::UInteger>(i));
     }
+  }
+  if (threadgroup_memory_bytes > 0) {
+    enc_->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);
+  }
+  enc_->dispatchThreadgroups(
+      MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
+      MTL::Size(threads.x, threads.y, threads.z));
+  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
+  return absl::OkStatus();
+}
+
+absl::Status Stream::LaunchWithArgumentBuffer(
+    const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
+    const std::vector<KernelArg>& args, uint32_t threadgroup_memory_bytes) {
+  if (args.size() > kMaxArgumentBufferArgs) {
+    return absl::UnimplementedError(absl::StrFormat(
+        "Launch %s: %d buffer arguments exceed the argument-buffer limit of %d",
+        kernel.name(), args.size(), kMaxArgumentBufferArgs));
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  std::vector<uint64_t> addrs(std::max<size_t>(args.size(), 1), 0);
+  std::vector<MTL::Buffer*> resident;
+  for (size_t i = 0; i < args.size(); ++i) {
+    if (!args[i].is_buffer) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Launch %s argument %d: kernels with an argument buffer take only "
+          "buffer arguments",
+          kernel.name(), i));
+    }
+    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
+    if (!ref.ok()) {
+      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
+                                                    kernel.name(), i));
+    }
+    addrs[i] = ref->buffer->gpuAddress() + ref->offset;
+    if (std::find(resident.begin(), resident.end(), ref->buffer) ==
+        resident.end()) {
+      resident.push_back(ref->buffer);
+    }
+  }
+  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
+  enc_->setComputePipelineState(kernel.pso());
+  enc_->setBytes(addrs.data(), addrs.size() * sizeof(uint64_t), 0);
+  // Buffers reached only through GPU addresses must be made resident (and
+  // visible to hazard tracking) explicitly.
+  if (!resident.empty()) {
+    enc_->useResources(
+        reinterpret_cast<const MTL::Resource* const*>(resident.data()),
+        resident.size(), MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
   }
   if (threadgroup_memory_bytes > 0) {
     enc_->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);

@@ -117,6 +117,165 @@ double ReadScale(const void* p, blas::DataType scale_type) {
   return *static_cast<const float*>(p);
 }
 
+// ---------------------------------------------------------------------------
+// BlasLt epilogues
+//
+// cuBLASLt semantics (what XLA's GemmRewriter fuses, see
+// gemm_rewriter.cc FuseVectorBiasAdd / FuseReluActivation /
+// FuseGeluActivation):
+//   D   = act(alpha * op(A) op(B) + beta * C + bias)
+//   aux = alpha * op(A) op(B) + beta * C + bias      (*WithAux only)
+// * bias is a vector with one element per index of the output's most minor
+//   physical dimension (cuBLASLt: per row of the column-major D), shared by
+//   all rows and batches; its element type is D's.
+// * GELU is the tanh approximation (the rewriter only matches
+//   0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))).
+// * SILU is x * sigmoid(x) (only fused on ROCm >= 7, supported anyway).
+// * aux has D's shape, element type, leading dimension and batch stride.
+//
+// After the MPS GEMM (which leaves alpha AB + beta C in D) one elementwise
+// kernel applies bias/activation in f32 and writes D (and aux).
+
+enum class Activation { kNone = 0, kReLU = 1, kGELU = 2, kSILU = 3 };
+
+struct EpilogueSpec {
+  bool bias = false;
+  Activation act = Activation::kNone;
+  bool aux = false;
+  bool trivial() const { return !bias && act == Activation::kNone; }
+};
+
+absl::StatusOr<EpilogueSpec> DecodeEpilogue(gpu::BlasLt::Epilogue e) {
+  using E = gpu::BlasLt::Epilogue;
+  EpilogueSpec s;
+  switch (e) {
+    case E::kDefault:
+      break;
+    case E::kReLU:
+      s.act = Activation::kReLU;
+      break;
+    case E::kBias:
+      s.bias = true;
+      break;
+    case E::kBiasThenReLU:
+      s.bias = true;
+      s.act = Activation::kReLU;
+      break;
+    case E::kGELU:
+      s.act = Activation::kGELU;
+      break;
+    case E::kGELUWithAux:
+      s.act = Activation::kGELU;
+      s.aux = true;
+      break;
+    case E::kBiasThenGELU:
+      s.bias = true;
+      s.act = Activation::kGELU;
+      break;
+    case E::kBiasThenGELUWithAux:
+      s.bias = true;
+      s.act = Activation::kGELU;
+      s.aux = true;
+      break;
+    case E::kSILU:
+      s.act = Activation::kSILU;
+      break;
+    case E::kSILUWithAux:
+      s.act = Activation::kSILU;
+      s.aux = true;
+      break;
+    case E::kBiasThenSILU:
+      s.bias = true;
+      s.act = Activation::kSILU;
+      break;
+    case E::kBiasThenSILUWithAux:
+      s.bias = true;
+      s.act = Activation::kSILU;
+      s.aux = true;
+      break;
+    default:
+      return absl::UnimplementedError(
+          absl::StrCat("Metal BlasLt: epilogue ", static_cast<int>(e),
+                       " is not supported"));
+  }
+  return s;
+}
+
+// Must match the `EpiParams` struct in the generated MSL.
+struct EpilogueParams {
+  uint32_t m;             // rows (row-major view)
+  uint32_t n;             // columns == bias length
+  uint64_t ld;            // elements between rows of D / aux
+  uint64_t batch_stride;  // elements between batches of D / aux
+};
+
+constexpr char kEpilogueKernelName[] = "xla_metal_gemm_epilogue";
+
+std::string EpilogueSource(mps::MpsDType t, const EpilogueSpec& e) {
+  std::string storage, load, store;
+  switch (t) {
+    case mps::MpsDType::kF32:
+      storage = "float";
+      load = "inline float ld_(float v) { return v; }\n";
+      store = "inline float st_(float v) { return v; }\n";
+      break;
+    case mps::MpsDType::kF16:
+      storage = "half";
+      load = "inline float ld_(half v) { return float(v); }\n";
+      store = "inline half st_(float v) { return half(v); }\n";
+      break;
+    case mps::MpsDType::kBF16:
+      // Raw bits; round to nearest even, NaN stays (quiet) NaN.
+      storage = "ushort";
+      load =
+          "inline float ld_(ushort v) {\n"
+          "  return as_type<float>(uint(v) << 16);\n}\n";
+      store =
+          "inline ushort st_(float v) {\n"
+          "  uint u = as_type<uint>(v);\n"
+          "  if (isnan(v)) return ushort((u >> 16) | 0x40u);\n"
+          "  u += 0x7fffu + ((u >> 16) & 1u);\n"
+          "  return ushort(u >> 16);\n}\n";
+      break;
+  }
+  std::string act;
+  switch (e.act) {
+    case Activation::kNone:
+      act = "  return x;\n";
+      break;
+    case Activation::kReLU:
+      // max() would drop NaN; cuBLAS/XLA's max propagates it.
+      act = "  return isnan(x) ? x : (x > 0.0f ? x : 0.0f);\n";
+      break;
+    case Activation::kGELU:
+      act =
+          "  const float k = 0.7978845608028654f;  // sqrt(2/pi)\n"
+          "  return 0.5f * x * (1.0f + precise::tanh(k * (x + 0.044715f * x "
+          "* x * x)));\n";
+      break;
+    case Activation::kSILU:
+      act = "  return x / (1.0f + precise::exp(-x));\n";
+      break;
+  }
+  return absl::StrCat(
+      "#include <metal_stdlib>\nusing namespace metal;\n", load, store,
+      "inline float act_(float x) {\n", act, "}\n",
+      "struct EpiParams { uint m; uint n; ulong ld; ulong batch_stride; };\n",
+      "kernel void ", kEpilogueKernelName, "(\n",
+      "    device ", storage, "* d [[buffer(0)]],\n",
+      "    device const ", storage, "* bias [[buffer(1)]],\n",
+      "    device ", storage, "* aux [[buffer(2)]],\n",
+      "    constant EpiParams& p [[buffer(3)]],\n",
+      "    uint3 gid [[thread_position_in_grid]]) {\n",
+      "  if (gid.x >= p.n || gid.y >= p.m) return;\n",
+      "  ulong i = ulong(gid.z) * p.batch_stride + ulong(gid.y) * p.ld + "
+      "gid.x;\n",
+      "  float x = ld_(d[i]);\n",
+      e.bias ? "  x += ld_(bias[gid.x]);\n" : "",
+      e.aux ? "  aux[i] = st_(x);\n" : "",
+      "  d[i] = st_(act_(x));\n}\n");
+}
+
 }  // namespace
 
 // ---------------------------------------------------------------------------
@@ -266,11 +425,7 @@ absl::Status MetalBlas::GetVersion(std::string* version) {
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
     const gpu::GemmConfig& cfg, Epilogue epilogue) const {
-  if (epilogue != Epilogue::kDefault) {
-    return absl::UnimplementedError(
-        absl::StrCat("Metal BlasLt: epilogue ", static_cast<int>(epilogue),
-                     " is not supported"));
-  }
+  ABSL_ASSIGN_OR_RETURN(EpilogueSpec epi, DecodeEpilogue(epilogue));
   if (cfg.alpha.imag() != 0.0) {
     return absl::UnimplementedError("Metal BlasLt: complex alpha");
   }
@@ -349,7 +504,21 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   p.a = operand(lhs, ta);
   p.b = operand(rhs, tb);
   p.c = operand(out, tout);  // row-major after the swap above
-  return std::make_unique<MatmulPlan>(device_, p, swap);
+  if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
+
+  // Epilogue kernel over the row-major view of D: the bias index is the
+  // column (the stored minor dimension), aux shares D's layout.
+  if (m > UINT32_MAX || n > UINT32_MAX || batch > 65535) {
+    return absl::UnimplementedError(absl::StrCat(
+        "Metal BlasLt: epilogue on a ", batch, "x", m, "x", n, " output"));
+  }
+  ABSL_ASSIGN_OR_RETURN(MTL::Library * lib,
+                        device_->CompileLibrary(EpilogueSource(tout, epi)));
+  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> kernel,
+                        device_->CreateKernel(lib, kEpilogueKernelName));
+  return std::make_unique<MatmulPlan>(
+      device_, p, swap, std::shared_ptr<rt::Kernel>(std::move(kernel)),
+      epi.bias, epi.aux);
 }
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
@@ -380,6 +549,7 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
     start = std::chrono::steady_clock::now();
   }
   absl::Status s = Encode(device_, stream, p);
+  if (s.ok() && epilogue_kernel_ != nullptr) s = RunEpilogue(stream, args);
   if (profile_result != nullptr) {
     if (s.ok()) s = stream->BlockHostUntilDone();
     profile_result->set_is_valid(s.ok());
@@ -390,6 +560,57 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
             .count());
   }
   return s;
+}
+
+absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
+    Stream* stream, const gpu::BlasLt::MemoryArgs& args) const {
+  const mps::GemmParams& p = params_;
+  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
+  const uint64_t elem = mps::MpsDTypeSize(p.c.dtype);
+  const uint64_t batch_stride = p.batch_count > 1 ? p.c.batch_stride : 0;
+  // Extent of D (and aux) in elements.
+  const uint64_t extent = (p.batch_count - 1) * batch_stride +
+                          (p.m - 1) * static_cast<uint64_t>(p.c.ld) + p.n;
+  if (args.d.size() < extent * elem) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Metal BlasLt epilogue: D has ", args.d.size(), " bytes, need ",
+        extent * elem));
+  }
+  const void* bias = args.d.opaque();
+  if (has_bias_) {
+    if (args.bias.opaque() == nullptr ||
+        args.bias.size() < static_cast<uint64_t>(p.n) * elem) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Metal BlasLt epilogue: bias buffer (", args.bias.size(),
+          " bytes) must hold ", p.n, " elements of ",
+          mps::MpsDTypeName(p.c.dtype)));
+    }
+    bias = args.bias.opaque();
+  }
+  void* aux = args.d.opaque();
+  if (has_aux_) {
+    if (args.aux.opaque() == nullptr || args.aux.size() < extent * elem) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Metal BlasLt epilogue: aux buffer (", args.aux.size(),
+          " bytes) smaller than the output (", extent * elem, " bytes)"));
+    }
+    aux = args.aux.opaque();
+  }
+  rt::Stream* rs = RtStream(stream);
+  if (rs == nullptr) {
+    return absl::InvalidArgumentError(
+        "Metal BlasLt: stream has no Metal handle (not a Metal stream?)");
+  }
+  EpilogueParams ep{static_cast<uint32_t>(p.m), static_cast<uint32_t>(p.n),
+                    static_cast<uint64_t>(p.c.ld), batch_stride};
+  constexpr uint32_t kTx = 32, kTy = 8;
+  rt::Dim3 groups{static_cast<uint32_t>((p.n + kTx - 1) / kTx),
+                  static_cast<uint32_t>((p.m + kTy - 1) / kTy),
+                  static_cast<uint32_t>(p.batch_count)};
+  return rs->Launch(*epilogue_kernel_, groups, rt::Dim3{kTx, kTy, 1},
+                    {rt::KernelArg::Buffer(args.d.opaque()),
+                     rt::KernelArg::Buffer(bias), rt::KernelArg::Buffer(aux),
+                     rt::KernelArg::Bytes(&ep, sizeof(ep))});
 }
 
 absl::StatusOr<std::vector<gpu::BlasLt::MatmulAlgorithm>>

@@ -261,6 +261,7 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
   }
   ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> rt_kernel,
                         device_->CreateKernel(*library, spec.kernel_name()));
+  rt_kernel->set_uses_argument_buffer(rt::UsesArgumentBuffer(msl, spec.kernel_name()));
 
   auto kernel = std::make_unique<MetalKernel>(this, std::move(rt_kernel),
                                               spec.arity());

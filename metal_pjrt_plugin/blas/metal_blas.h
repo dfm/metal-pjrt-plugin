@@ -12,8 +12,9 @@
 //
 // Supported: f32, f16, bf16 inputs; output of the same type, or f32 for
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
-// (including stride-0 broadcast). BlasLt epilogues other than kDefault,
-// complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
+// (including stride-0 broadcast); every BlasLt epilogue (bias, ReLU, GELU,
+// SiLU, with or without aux output) via a small MSL kernel run after the GEMM.
+// Complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
 #ifndef METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 #define METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 
@@ -47,9 +48,19 @@ class MetalBlasLt : public gpu::BlasLt {
    public:
     // `params` holds everything but buffers, in row-major form; operands
     // bind from MemoryArgs with a/b swapped when `swap_operands`.
+    // `epilogue_kernel` (null for kDefault) applies bias / activation to D
+    // after the GEMM and writes aux; see metal_blas.cc.
     MatmulPlan(metal_pjrt::rt::Device* device,
-               metal_pjrt::blas::GemmParams params, bool swap_operands)
-        : device_(device), params_(params), swap_operands_(swap_operands) {}
+               metal_pjrt::blas::GemmParams params, bool swap_operands,
+               std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel =
+                   nullptr,
+               bool has_bias = false, bool has_aux = false)
+        : device_(device),
+          params_(params),
+          swap_operands_(swap_operands),
+          epilogue_kernel_(std::move(epilogue_kernel)),
+          has_bias_(has_bias),
+          has_aux_(has_aux) {}
 
     absl::Status ExecuteOnStream(
         Stream* stream, const gpu::BlasLt::MemoryArgs& args,
@@ -63,6 +74,12 @@ class MetalBlasLt : public gpu::BlasLt {
     metal_pjrt::rt::Device* device_;
     metal_pjrt::blas::GemmParams params_;
     bool swap_operands_;
+    std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel_;
+    bool has_bias_;
+    bool has_aux_;
+
+    absl::Status RunEpilogue(Stream* stream,
+                             const gpu::BlasLt::MemoryArgs& args) const;
   };
 
   absl::Status Init() override { return absl::OkStatus(); }

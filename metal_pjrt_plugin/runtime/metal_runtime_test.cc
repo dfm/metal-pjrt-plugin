@@ -3,6 +3,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -176,6 +177,63 @@ TEST_F(MetalRuntimeTest, ErrorCodes) {
   // None of the rejected calls poisoned the stream.
   EXPECT_THAT(s->Synchronize(), IsOk());
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
+}
+
+// A kernel with more buffer arguments than Metal's argument table: the
+// arguments travel as GPU addresses in an argument buffer.
+TEST_F(MetalRuntimeTest, ArgumentBufferLaunch) {
+  constexpr int kInputs = 40;
+  constexpr uint32_t kN = 1000;
+  std::string msl =
+      "#include <metal_stdlib>\nusing namespace metal;\n";
+  msl += std::string(kArgumentBufferMarker) +
+         "\nkernel void sum_many(constant ulong* xla_args [[buffer(0)]],\n"
+         "    uint i [[thread_position_in_grid]]) {\n"
+         "  if (i >= " + std::to_string(kN) + ") return;\n"
+         "  float acc = 0;\n"
+         "  for (int j = 0; j < " + std::to_string(kInputs) + "; ++j) {\n"
+         "    acc += ((device const float*)xla_args[j])[i];\n"
+         "  }\n"
+         "  ((device float*)xla_args[" + std::to_string(kInputs) +
+         "])[i] = acc;\n}\n";
+  EXPECT_TRUE(UsesArgumentBuffer(msl, "sum_many"));
+  EXPECT_FALSE(UsesArgumentBuffer(kMsl, "axpy"));
+  absl::StatusOr<MTL::Library*> lib = dev_->CompileLibrary(msl);
+  ASSERT_THAT(lib, IsOk());
+  absl::StatusOr<std::unique_ptr<Kernel>> k =
+      dev_->CreateKernel(*lib, "sum_many");
+  ASSERT_THAT(k, IsOk());
+  (*k)->set_uses_argument_buffer(true);
+
+  // Half the inputs are separate allocations, the other half interior
+  // pointers into one shared allocation (duplicate MTLBuffers).
+  std::vector<void*> allocs;
+  auto* shared = static_cast<float*>(Alloc(kInputs / 2 * kN * sizeof(float)));
+  allocs.push_back(shared);
+  std::vector<KernelArg> args;
+  for (int j = 0; j < kInputs; ++j) {
+    float* p;
+    if (j % 2 == 0) {
+      p = static_cast<float*>(Alloc(kN * sizeof(float)));
+      allocs.push_back(p);
+    } else {
+      p = shared + (j / 2) * kN;
+    }
+    for (uint32_t i = 0; i < kN; ++i) p[i] = static_cast<float>(j + 1);
+    args.push_back(KernelArg::Buffer(p));
+  }
+  auto* out = static_cast<float*>(Alloc(kN * sizeof(float)));
+  allocs.push_back(out);
+  args.push_back(KernelArg::Buffer(out));
+
+  std::unique_ptr<Stream> s = NewStream();
+  ASSERT_THAT(s->Launch(**k, Dim3{(kN + 255) / 256, 1, 1}, Dim3{256, 1, 1},
+                        args),
+              IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  const float expected = kInputs * (kInputs + 1) / 2.0f;
+  for (uint32_t i = 0; i < kN; ++i) ASSERT_EQ(out[i], expected) << i;
+  for (void* p : allocs) EXPECT_THAT(dev_->Deallocate(p), IsOk());
 }
 
 }  // namespace
