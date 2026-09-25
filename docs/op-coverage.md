@@ -9,8 +9,9 @@ works. "Verified" means observed in `scripts/lax_coverage.py` on 2026-09-23
 1. **MLIR emitter kernels** (loop, reduction, transpose, concatenate, scatter,
    in-place dynamic-update-slice) translated to MSL. Everything the elemental
    MLIR emitter handles (`codegen/emitters/elemental_hlo_to_mlir.cc:938-1205`)
-   works, except f64 and complex element types, sub-byte integers, and
-   kernels with more than 31 buffer arguments (Metal's limit).
+   works, except f64 and complex element types and sub-byte integers.
+   Kernels with more than 31 buffer arguments (Metal's argument-table limit)
+   take them through an argument buffer of GPU addresses (up to 512).
 2. **GEMM** via the BlasLt thunk backed by Metal Performance Shaders. On an
    OneAPI-reporting device every dot the rewriter accepts becomes
    `__cublas$lt$matmul` (`gemm_rewriter.cc:2318`).
@@ -36,7 +37,7 @@ emitter's default case ("Unsupported instruction opcode").
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
 | dot, f16/bf16/f32 | BlasLt thunk over MPS | OK | verified incl. batched, int8/int32 fell back to elemental loops |
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | BLAS thunk must reject; today those dtypes fail earlier |
-| dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | partial | MetalBlasLt returns Unimplemented for non-default epilogues; not hit in tests yet |
+| dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | MPS GEMM + one MSL epilogue kernel (bias, relu / tanh-gelu / silu, aux); verified by `scripts/epilogue_check.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
 | sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
@@ -72,8 +73,8 @@ integers (s4/u4) are rejected by the emitter.
 1. Sort as an MSL kernel (unblocks sort, argsort, top_k, searchsorted, unique).
 2. `TriangularSolveExpander` in MetalCompiler (unblocks solve, LU, large Cholesky).
 3. `xla_gpu_enable_cub_radix_sort=false` by default.
-4. BlasLt epilogues, or disable the rewriter's epilogue fusion.
-5. Argument buffers for kernels with more than 31 buffers.
+4. ~~BlasLt epilogues~~ (done).
+5. ~~Argument buffers for kernels with more than 31 buffers~~ (done).
 6. bf16/f8 conversion rounding.
 7. Reject f64 and complex in the BLAS thunk explicitly.
 8. FFT (would need a Metal FFT library; MPS has none for arbitrary sizes).

@@ -64,8 +64,12 @@ XLA tree (`external/xla+` in the Bazel output base).
   `KernelLoaderSpec::CreateOwningCudaCubinInMemorySpec(bytes, name, arity)`
   exactly as SYCL smuggles SPIR-V. `LoadKernel` compiles the MSL and looks up
   the function by `spec.kernel_name()`.
-- Metal limit: at most 31 buffer arguments per kernel. v1 errors above that;
-  later use an argument buffer of GPU addresses.
+- Metal limit: at most 31 buffer arguments per kernel. Above that the emitter
+  writes `// xla_metal_argbuffer` before the kernel and takes
+  `constant ulong* xla_args [[buffer(0)]]` (one GPU address per argument,
+  cast to `device char*`); LoadKernel records this from the MSL text and
+  Stream::Launch packs `gpuAddress + offset` into a setBytes payload (<= 4 KB,
+  512 args) and calls `useResources` on the distinct MTLBuffers.
 - Types renamed: `DeviceAddressBase` (alias `DeviceMemoryBase`),
   `MemorySpace` (alias `MemoryType`).
 

@@ -129,18 +129,18 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
   std::vector<float> bias(bias_len);
   for (int64_t i = 0; i < bias_len; ++i) bias[i] = 0.5f * i - 1.0f;
 
-  gpu::GemmConfig cfg{};
-  cfg.lhs_layout = gpu::MatrixLayout(dtype, m, k, Order::kRowMajor, batch);
-  cfg.rhs_layout = gpu::MatrixLayout(dtype, k, n, Order::kRowMajor, batch);
-  cfg.output_layout = gpu::MatrixLayout(dtype, m, n, out_order, batch);
-  cfg.c_layout = cfg.output_layout;
+  const gpu::MatrixLayout out_layout(dtype, m, n, out_order, batch);
+  gpu::GemmConfig cfg{
+      gpu::MatrixLayout(dtype, m, k, Order::kRowMajor, batch),
+      gpu::MatrixLayout(dtype, k, n, Order::kRowMajor, batch), out_layout,
+      out_layout};
   cfg.alpha = 1.0;
   cfg.beta = 0.0;
   cfg.compute_precision = 0;
   cfg.precision_algorithm = xla::PrecisionConfig::ALG_UNSET;
   cfg.grad_x = cfg.grad_y = false;
   TF_ASSERT_OK_AND_ASSIGN(auto plan, lt->GetMatmulPlan(cfg, c.epilogue));
-  TF_ASSERT_OK_AND_ASSIGN(auto algos, plan->GetAlgorithms(stream.get(), 1, 0));
+  TF_ASSERT_OK_AND_ASSIGN(auto algos, plan->GetAlgorithms(1, 0));
   TF_ASSERT_OK(plan->SetAlgorithm(algos[0]));
 
   auto upload = [&](const std::vector<float>& v) {
@@ -148,19 +148,18 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
     DeviceAddressBase mem = executor->Allocate(bytes.size());
     EXPECT_FALSE(mem.is_null());
     EXPECT_TRUE(stream->Memcpy(&mem, bytes.data(), bytes.size()).ok());
+    // Host transfers are enqueued; keep `bytes` alive until done.
+    EXPECT_TRUE(stream->BlockHostUntilDone().ok());
     return mem;
   };
   const uint64_t out_bytes = batch * m * n * Size(dtype);
   DeviceAddressBase da = upload(a), db = upload(b), dbias = upload(bias);
   DeviceAddressBase dd = executor->Allocate(out_bytes);
   DeviceAddressBase daux = executor->Allocate(out_bytes);
-  gpu::BlasLt::MemoryArgs args{};
-  args.a = da;
-  args.b = db;
-  args.c = dd;
-  args.d = dd;
-  if (c.bias) args.bias = dbias;
-  if (c.aux) args.aux = daux;
+  const DeviceAddressBase none;
+  gpu::BlasLt::MemoryArgs args{da,    db,   dd,   dd,   c.bias ? dbias : none,
+                               c.aux ? daux : none,   none, none, none, none,
+                               {none}, none, nullptr};
   TF_ASSERT_OK(plan->ExecuteOnStream(stream.get(), args, nullptr));
   std::vector<uint8_t> hd(out_bytes), haux(out_bytes);
   TF_ASSERT_OK(stream->Memcpy(hd.data(), dd, out_bytes));
@@ -199,6 +198,7 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
 }
 
 const Case kCases[] = {
+    {Epilogue::kDefault, false, false, 0},
     {Epilogue::kReLU, false, false, 1},
     {Epilogue::kBias, true, false, 0},
     {Epilogue::kBiasThenReLU, true, false, 1},
