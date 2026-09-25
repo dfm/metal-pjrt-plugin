@@ -4,8 +4,8 @@ Modeled on jax_plugins/cuda/__init__.py. Not functional until the plugin
 shared library exists.
 """
 
-import importlib.metadata
 import logging
+import os
 import pathlib
 
 logger = logging.getLogger(__name__)
@@ -18,6 +18,20 @@ def _get_library_path() -> pathlib.Path | None:
     if candidate.exists():
         return candidate
     return None
+
+
+def _default_compilation_cache():
+    """XLA compilation dominates first-call latency (Metal's own shader cache
+    is system-wide already). Enable JAX's persistent cache unless configured."""
+    import jax
+    try:
+        if jax.config.jax_compilation_cache_dir is None:
+            cache = pathlib.Path(
+                os.environ.get("JAX_METAL_CACHE_DIR", pathlib.Path.home() / ".cache" / "jax_metal"))
+            cache.mkdir(parents=True, exist_ok=True)
+            jax.config.update("jax_compilation_cache_dir", str(cache))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("could not enable the persistent compilation cache: %s", e)
 
 
 def initialize():
@@ -36,3 +50,4 @@ def initialize():
         "visible_devices": [0],
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)
+    _default_compilation_cache()
