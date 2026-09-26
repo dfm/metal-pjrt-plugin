@@ -19,12 +19,14 @@ cc_library(
     ],
     linkopts = METAL_LINKOPTS,
     deps = [
+        "@com_google_absl//absl/container:inlined_vector",
         "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/types:span",
         "@metal_cpp",
     ],
 )
@@ -48,5 +50,19 @@ cc_test(
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# CPU-side dispatch cost microbenchmark; needs a Metal device, run locally
+# under scripts/device_lock.py.
+cc_binary(
+    name = "dispatch_bench",
+    srcs = ["dispatch_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        ":metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@metal_cpp",
     ],
 )

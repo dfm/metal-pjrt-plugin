@@ -6,6 +6,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_format.h"
@@ -51,7 +52,7 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
         name(), cluster_dims->x, cluster_dims->y, cluster_dims->z));
   }
 
-  std::vector<rt::KernelArg> rt_args;
+  absl::InlinedVector<rt::KernelArg, 16> rt_args;
   uint64_t shared_bytes = args.number_of_shared_bytes();
 
   if (auto* device_args = DynCast<KernelArgsDeviceAddressArray>(&args)) {

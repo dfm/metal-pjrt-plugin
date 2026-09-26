@@ -5,6 +5,7 @@
 #include <Metal/Metal.hpp>
 
 #include <algorithm>
+#include <mach/mach.h>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -30,6 +31,15 @@ bool TraceEnabled() {
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
   return enabled;
+}
+
+int MaxOpsPerCommandBuffer() {
+  static const int n = [] {
+    const char* v = std::getenv("METAL_PJRT_MAX_OPS");
+    int x = v ? std::atoi(v) : 0;
+    return x > 0 ? x : Stream::kMaxOpsPerCommandBuffer;
+  }();
+  return n;
 }
 
 // "<description> (domain=<domain>, code=<code>)".
@@ -139,7 +149,10 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     // allocation-time guard below refuses growth that would leave the system
     // without free memory, so a busy machine degrades to clean
     // RESOURCE_EXHAUSTED errors instead of swapping.
-    uint64_t budget = PhysicalMemoryBytes() / 4 * 3;
+    // Half of RAM: freed pool chunks stay resident (BFC only releases regions
+    // when growth is refused), and a GPU stalling on swapped-out pages is what
+    // trips the watchdog. Override with JAX_METAL_MEMORY_FRACTION (of this).
+    uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
     dev->memory_budget_ = budget;
     LOG(INFO) << "Metal device " << ordinal << " (" << info.name
@@ -199,6 +212,14 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         info_.recommended_working_set, info_.max_buffer_length));
   }
   void* ptr = buf->contents();
+  // METAL_PJRT_POISON_ALLOCATIONS=1 fills fresh device memory with 0xFF (NaN
+  // for floats, huge for ints) so reads of uninitialized memory are visible
+  // and deterministic instead of depending on what a recycled buffer held.
+  static const bool poison = [] {
+    const char* v = std::getenv("METAL_PJRT_POISON_ALLOCATIONS");
+    return v != nullptr && v[0] != '\0' && v[0] != '0';
+  }();
+  if (poison) std::memset(ptr, 0xFF, size);
   {
     std::lock_guard<std::mutex> lock(mu_);
     allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, size};
@@ -221,6 +242,7 @@ absl::Status Device::Deallocate(void* ptr) {
     buf = it->second.first;
     allocated_bytes_ -= it->second.second;
     allocations_.erase(it);
+    allocation_generation_.fetch_add(1, std::memory_order_acq_rel);
   }
   buf->release();
   return absl::OkStatus();
@@ -398,10 +420,12 @@ absl::Status Event::WaitOnHost() {
 
 Stream::Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence)
     : device_(device), queue_(queue), fence_(fence) {
+  device_->RegisterStream(this);
   worker_ = std::thread([this]() { WorkerLoop(); });
 }
 
 Stream::~Stream() {
+  device_->UnregisterStream(this);
   absl::Status s = Synchronize();
   if (!s.ok()) {
     LOG(ERROR) << "Metal stream on device " << device_->ordinal()
@@ -457,12 +481,16 @@ absl::Status Stream::EnsureCommandBuffer() {
   // enqueued GPU work completes (as CUDA does). Metal only does that for
   // retained command buffers; unretained ones fault with
   // kIOGPUCommandBufferCallbackErrorInvalidResource.
+  // Callers are XLA threads without an autorelease pool; without one the
+  // autoreleased command buffer would stay referenced until thread exit.
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   cmd_ = queue_->commandBuffer();
+  if (cmd_ != nullptr) cmd_->retain();
+  pool->release();
   if (cmd_ == nullptr) {
     return absl::InternalError(absl::StrCat(
         "Metal commandBuffer creation failed on device ", device_->ordinal()));
   }
-  cmd_->retain();
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
   return absl::OkStatus();
@@ -471,11 +499,13 @@ absl::Status Stream::EnsureCommandBuffer() {
 absl::Status Stream::EnsureComputeEncoder() {
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   if (enc_ == nullptr) {
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
     enc_ = cmd_->computeCommandEncoder(MTL::DispatchTypeSerial);
+    if (enc_ != nullptr) enc_->retain();
+    pool->release();
     if (enc_ == nullptr) {
       return absl::InternalError("Metal computeCommandEncoder creation failed");
     }
-    enc_->retain();
   }
   return absl::OkStatus();
 }
@@ -506,12 +536,19 @@ absl::Status Stream::Commit() {
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> signals;
   signals.swap(pending_signals_);
   for (auto& sv : signals) sv.first->retain();
+  std::vector<PendingWait> waits;
+  waits.swap(pending_waits_);
+  last_committed_waits_ = waits;
+  last_committed_signal_ = v;
+  for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
   fence->retain();
   const int ordinal = device_->ordinal();
   const int traced_ops = ops_in_cmd_;
+  gpu_pending_.fetch_add(1, std::memory_order_relaxed);
   cmd_->addCompletedHandler(
-      [this, v, fence, signals, ordinal, traced_ops](MTL::CommandBuffer* cb) {
+      [this, v, fence, signals, waits, ordinal,
+       traced_ops](MTL::CommandBuffer* cb) {
         if (TraceEnabled()) {
           LOG(ERROR) << "[metal-trace] stream " << this << " cb#" << v
                     << " ops=" << traced_ops << " gpu_ms="
@@ -523,6 +560,17 @@ absl::Status Stream::Commit() {
               "%d): %s",
               ordinal, v, NSErrorToString(cb->error())));
           LOG(ERROR) << error.message();
+          // Diagnostics: a timeout on a buffer with little GPU work usually
+          // means it sat on a wait whose signal never came. Say which.
+          for (const PendingWait& w : waits) {
+            LOG(ERROR) << "  this command buffer waited on " << w.kind
+                       << " event " << w.event << " for value " << w.value
+                       << "; its signaled value is now "
+                       << w.event->signaledValue();
+          }
+          LOG(ERROR) << "  ops in buffer: " << traced_ops << ", gpu time ms: "
+                     << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
+          device_->DumpStreams();
           {
             std::lock_guard<std::mutex> lock(err_mu_);
             if (async_error_.ok()) async_error_ = error;
@@ -543,7 +591,9 @@ absl::Status Stream::Commit() {
           }
         }
         for (auto& sv : signals) sv.first->release();
+        for (auto& w : waits) w.event->release();
         fence->release();
+        gpu_pending_.fetch_sub(1, std::memory_order_release);
       });
   cmd_->commit();
   // Keep the (retained) buffer until it completes; prune finished ones.
@@ -609,8 +659,41 @@ bool UsesArgumentBuffer(const std::string& msl_source,
                                       kernel_name, "(")) != std::string::npos;
 }
 
+absl::StatusOr<BufferRef> Stream::ResolveCached(const void* ptr) {
+  const uint64_t gen = device_->allocation_generation();
+  if (gen != resolve_cache_generation_) {
+    for (CachedRange& c : resolve_cache_) c = CachedRange();
+    resolve_cache_generation_ = gen;
+  }
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+  for (const CachedRange& c : resolve_cache_) {
+    if (addr - c.base < c.size) return BufferRef{c.buffer, addr - c.base};
+  }
+  absl::StatusOr<BufferRef> ref = device_->Resolve(ptr);
+  if (ref.ok()) {
+    CachedRange& c = resolve_cache_[resolve_cache_next_];
+    resolve_cache_next_ = (resolve_cache_next_ + 1) % kResolveCacheSize;
+    c.base = addr - ref->offset;
+    c.size = ref->buffer->length();
+    c.buffer = ref->buffer;
+  }
+  return ref;
+}
+
+absl::Status Stream::FinishOp(uint64_t work) {
+  threads_in_cmd_ += work;
+  ++ops_in_cmd_;
+  if (ops_in_cmd_ >= MaxOpsPerCommandBuffer() ||
+      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer ||
+      (ops_in_cmd_ >= kEarlyCommitOps &&
+       gpu_pending_.load(std::memory_order_acquire) == 0)) {
+    return Commit();
+  }
+  return absl::OkStatus();
+}
+
 absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
-                            Dim3 threads, const std::vector<KernelArg>& args,
+                            Dim3 threads, absl::Span<const KernelArg> args,
                             uint32_t threadgroup_memory_bytes) {
   size_t num_buffers = 0;
   for (const KernelArg& a : args) num_buffers += a.is_buffer ? 1 : 0;
@@ -626,10 +709,10 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   }
   std::lock_guard<std::mutex> lock(mu_);
   // Resolve before opening an encoder so a bad pointer encodes nothing.
-  std::vector<BufferRef> refs(args.size());
+  BufferRef refs[kMaxBufferArgs];
   for (size_t i = 0; i < args.size(); ++i) {
     if (!args[i].is_buffer) continue;
-    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
+    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
     if (!ref.ok()) {
       return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
                                                     kernel.name(), i));
@@ -654,18 +737,13 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  threads_in_cmd_ += static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
-                     threadgroups.z * threads.x * threads.y * threads.z;
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
-      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
-    return Commit();
-  }
-  return absl::OkStatus();
+  return FinishOp(static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
+                  threadgroups.z * threads.x * threads.y * threads.z);
 }
 
 absl::Status Stream::LaunchWithArgumentBuffer(
     const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-    const std::vector<KernelArg>& args, uint32_t threadgroup_memory_bytes) {
+    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
   if (args.size() > kMaxArgumentBufferArgs) {
     return absl::UnimplementedError(absl::StrFormat(
         "Launch %s: %d buffer arguments exceed the argument-buffer limit of %d",
@@ -681,7 +759,7 @@ absl::Status Stream::LaunchWithArgumentBuffer(
           "buffer arguments",
           kernel.name(), i));
     }
-    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
+    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
     if (!ref.ok()) {
       return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
                                                     kernel.name(), i));
@@ -708,13 +786,8 @@ absl::Status Stream::LaunchWithArgumentBuffer(
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  threads_in_cmd_ += static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
-                     threadgroups.z * threads.x * threads.y * threads.z;
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
-      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
-    return Commit();
-  }
-  return absl::OkStatus();
+  return FinishOp(static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
+                  threadgroups.z * threads.x * threads.y * threads.z);
 }
 
 absl::Status Stream::EncodeExternal(
@@ -723,8 +796,7 @@ absl::Status Stream::EncodeExternal(
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(cmd_)));
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return absl::OkStatus();
+  return FinishOp(kExternalOpWork);
 }
 
 absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
@@ -752,8 +824,7 @@ absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
   }
   blit->copyFromBuffer(s->buffer, s->offset, d->buffer, d->offset, size);
   blit->endEncoding();
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return absl::OkStatus();
+  return FinishOp(size / 4);  // about one thread per word
 }
 
 absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
@@ -777,8 +848,7 @@ absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
   }
   blit->fillBuffer(d->buffer, NS::Range(d->offset, size), value);
   blit->endEncoding();
-  if (++ops_in_cmd_ >= kMaxOpsPerCommandBuffer) return Commit();
-  return absl::OkStatus();
+  return FinishOp(size / 4);
 }
 
 absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
@@ -815,6 +885,7 @@ absl::Status Stream::HostCallback(std::function<void()> fn) {
   }
   work_cv_.notify_one();
   cmd_->encodeWait(fence_, done_value);
+  pending_waits_.push_back({fence_, done_value, "host-callback"});
   return absl::OkStatus();
 }
 
@@ -872,6 +943,7 @@ absl::Status Stream::WaitForEvent(Event* event) {
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   cmd_->encodeWait(event->event_, v);
+  pending_waits_.push_back({event->event_, v, "event"});
   return absl::OkStatus();
 }
 
@@ -890,7 +962,58 @@ absl::Status Stream::WaitForStream(Stream* other) {
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   cmd_->encodeWait(other->fence_, v);
+  pending_waits_.push_back({other->fence_, v, "stream"});
   return absl::OkStatus();
+}
+
+
+void Device::RegisterStream(Stream* s) {
+  std::lock_guard<std::mutex> lock(mu_);
+  live_streams_.push_back(s);
+}
+
+void Device::UnregisterStream(Stream* s) {
+  std::lock_guard<std::mutex> lock(mu_);
+  live_streams_.erase(std::remove(live_streams_.begin(), live_streams_.end(), s),
+                      live_streams_.end());
+}
+
+void Device::DumpStreams() {
+  std::vector<Stream*> streams;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    streams = live_streams_;
+  }
+  {
+    mach_task_basic_info info;
+    mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
+    uint64_t rss = 0;
+    if (task_info(mach_task_self(), MACH_TASK_BASIC_INFO,
+                  reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
+      rss = info.resident_size;
+    }
+    LOG(ERROR) << "  memory: pool " << (allocated_bytes() >> 20) << " MB of budget "
+               << (memory_budget_ >> 20) << " MB, process RSS " << (rss >> 20)
+               << " MB, reclaimable system memory "
+               << (ReclaimableMemoryBytes() >> 20) << " MB";
+  }
+  LOG(ERROR) << "  live streams on device " << ordinal_ << ": " << streams.size();
+  for (Stream* st : streams) LOG(ERROR) << "    " << st->DebugState();
+}
+
+std::string Stream::DebugState() {
+  // Called from a completion handler; do not take mu_ (the owner may hold it
+  // while blocked in Synchronize). Values are read racily, for diagnostics.
+  std::string out = absl::StrFormat(
+      "stream %p fence %p: next value %d, last committed %d, signaled %d, "
+      "open cb %s, host tasks pending %d; last committed cb waited on:",
+      this, fence_, fence_value_, last_committed_fence_value_,
+      fence_->signaledValue(), cmd_ ? "yes" : "no", work_.size());
+  for (const PendingWait& w : last_committed_waits_) {
+    absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
+                          w.event, w.value, w.event->signaledValue());
+  }
+  return out;
 }
 
 }  // namespace rt

@@ -25,6 +25,7 @@
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
+#include <atomic>
 #include <cstddef>
 #include <condition_variable>
 #include <cstdint>
@@ -38,8 +39,10 @@
 #include <unordered_map>
 #include <vector>
 
+#include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/types/span.h"
 
 namespace MTL {
 class Device;
@@ -100,7 +103,8 @@ struct KernelArg {
   }
   bool is_buffer = false;
   const void* device_ptr = nullptr;
-  std::vector<uint8_t> bytes;
+  // Inline so building a launch's arguments does not touch the heap.
+  absl::InlinedVector<uint8_t, 48> bytes;
 };
 
 // MSL kernels whose source contains this marker take their buffer arguments
@@ -173,6 +177,10 @@ class Device {
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
   uint64_t allocated_bytes() const;
+  // Bumped by every Deallocate; lets streams cache Resolve results.
+  uint64_t allocation_generation() const {
+    return allocation_generation_.load(std::memory_order_acquire);
+  }
 
   // Compile Metal Shading Language source into a library, cached by content.
   // The library is owned by the device's cache.
@@ -194,8 +202,16 @@ class Device {
   // Keyed by start address; value is the buffer and its size.
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
   uint64_t allocated_bytes_ = 0;
+  std::atomic<uint64_t> allocation_generation_{0};
   uint64_t memory_budget_ = 0;
   absl::Status lost_ = absl::OkStatus();
+  std::vector<Stream*> live_streams_;  // guarded by mu_; for diagnostics
+ public:
+  void RegisterStream(Stream* s);
+  void UnregisterStream(Stream* s);
+  // Log every live stream's DebugState (used when a command buffer times out).
+  void DumpStreams();
+ private:
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
 };
@@ -230,7 +246,7 @@ class Stream {
   // Kernel launch. threadgroups = grid in threadgroup units, threads = per
   // threadgroup. Buffer args are resolved to (buffer, offset) here.
   absl::Status Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-                      const std::vector<KernelArg>& args,
+                      absl::Span<const KernelArg> args,
                       uint32_t threadgroup_memory_bytes = 0);
 
   // Metal's per-stage buffer argument table has 31 slots. Kernels using an
@@ -277,14 +293,25 @@ class Stream {
   // Commit any open work without waiting.
   absl::Status Flush();
 
-  // Number of dispatches encoded into the current open command buffer before
-  // it is automatically committed.
-  static constexpr int kMaxOpsPerCommandBuffer = 32;
+  // Command buffer batching. Each command buffer costs a fixed amount of
+  // CPU and GPU-scheduler time (hundreds of microseconds on an M3), so
+  // workloads made of many tiny kernels (scans, while loops) need many
+  // dispatches per buffer. Policy: commit when the GPU has nothing of ours
+  // left to run and at least kEarlyCommitOps ops are encoded (keeps the GPU
+  // fed with low latency), or when kMaxOpsPerCommandBuffer ops or
+  // kMaxThreadsPerCommandBuffer thread-equivalents of work are encoded (the
+  // latter keeps each buffer far from the GPU watchdog). METAL_PJRT_MAX_OPS
+  // overrides the op cap.
+  static constexpr int kMaxOpsPerCommandBuffer = 1024;
+  static constexpr int kEarlyCommitOps = 16;
   // Also commit once this many threads have been dispatched into one command
   // buffer (roughly tens of milliseconds of GPU work), so a batch of heavy
   // kernels cannot approach the GPU watchdog timeout, especially under
   // contention from other processes.
   static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 27;
+  // Work charged for an op whose cost we cannot see (EncodeExternal, e.g. an
+  // MPS GEMM): at most 32 such ops per command buffer, as before batching.
+  static constexpr uint64_t kExternalOpWork = kMaxThreadsPerCommandBuffer / 32;
 
  private:
   friend class Device;
@@ -292,8 +319,15 @@ class Stream {
 
   absl::Status LaunchWithArgumentBuffer(const Kernel& kernel,
                                         Dim3 threadgroups, Dim3 threads,
-                                        const std::vector<KernelArg>& args,
+                                        absl::Span<const KernelArg> args,
                                         uint32_t threadgroup_memory_bytes);
+  // Device::Resolve with a small per-stream cache of recently used
+  // allocations (invalidated whenever anything is deallocated). Caller holds
+  // mu_.
+  absl::StatusOr<BufferRef> ResolveCached(const void* ptr);
+  // Account one encoded op of `work` thread-equivalents and commit the
+  // command buffer if the batching policy says so. Caller holds mu_.
+  absl::Status FinishOp(uint64_t work);
 
   // Ensure an open command buffer/encoder exist.
   absl::Status EnsureCommandBuffer();
@@ -314,6 +348,18 @@ class Stream {
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
+  // Committed command buffers whose completion handler has not run yet.
+  std::atomic<int> gpu_pending_{0};
+  // ResolveCached state (guarded by mu_).
+  struct CachedRange {
+    uintptr_t base = 0;
+    uint64_t size = 0;
+    MTL::Buffer* buffer = nullptr;
+  };
+  static constexpr int kResolveCacheSize = 8;
+  CachedRange resolve_cache_[kResolveCacheSize];
+  int resolve_cache_next_ = 0;
+  uint64_t resolve_cache_generation_ = ~0ull;
   // Committed but possibly still executing command buffers (retained).
   // Synchronize waits for their completion, not just the fence signal, so
   // callers may free resources immediately afterwards.
@@ -322,6 +368,21 @@ class Stream {
   // Events signaled by the open command buffer; on GPU error they are
   // force-signaled so host waiters wake up instead of hanging.
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
+  // Waits encoded into the open command buffer, kept for diagnostics.
+  struct PendingWait {
+    MTL::SharedEvent* event;
+    uint64_t value;
+    const char* kind;
+  };
+  std::vector<PendingWait> pending_waits_;
+  // Waits of the most recently committed command buffer (diagnostics).
+  std::vector<PendingWait> last_committed_waits_;
+  uint64_t last_committed_signal_ = 0;
+ public:
+  // Diagnostics: one line describing this stream's fence state and what its
+  // last committed command buffer waited on.
+  std::string DebugState();
+ private:
   // First GPU failure (set by a failed command buffer's completion handler or
   // by Synchronize); sticky. `async_error_reported_` is set once Synchronize
   // has returned it.
