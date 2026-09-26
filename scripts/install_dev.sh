@@ -10,5 +10,9 @@ fi
 SRC=bazel-bin/metal_pjrt_plugin/pjrt/pjrt_c_api_metal_plugin.dylib
 [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
 ln -sf "$(pwd)/$SRC" jax_plugins/metal/pjrt_c_api_metal_plugin.dylib
-python3 -m pip install -e . >/dev/null
+if [[ -x .venv/bin/python ]] && command -v uv >/dev/null; then
+  uv pip install --python .venv/bin/python -e . >/dev/null
+else
+  python3 -m pip install -e . >/dev/null
+fi
 echo "installed; try: JAX_PLATFORMS=metal python scripts/smoke_test.py"

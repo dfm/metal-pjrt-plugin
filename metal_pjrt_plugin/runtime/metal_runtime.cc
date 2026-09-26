@@ -5,6 +5,7 @@
 #include <Metal/Metal.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <mach/mach.h>
 #include <cstdlib>
 #include <cstring>
@@ -384,7 +385,7 @@ absl::StatusOr<std::unique_ptr<Event>> Device::CreateEvent() {
         "Metal newSharedEvent failed creating an event on device %d",
         ordinal_));
   }
-  return std::unique_ptr<Event>(new Event(ev));
+  return std::unique_ptr<Event>(new Event(this, ev));
 }
 
 // ---------------------------------------------------------------------------
@@ -410,7 +411,11 @@ absl::Status Event::WaitOnHost() {
   if (v == 0) return absl::OkStatus();
   // A failed command buffer force-signals its events (see Stream::Commit), so
   // this cannot hang on GPU errors; the error is reported by the stream.
-  while (!event_->waitUntilSignaledValue(v, /*milliseconds=*/1000)) {
+  while (!event_->waitUntilSignaledValue(v, /*milliseconds=*/200)) {
+    // Never wait forever once the device was reset: work committed after a
+    // reset may never run, and an unbounded wait leaves the process unable to
+    // exit (which is how the driver got wedged once).
+    ABSL_RETURN_IF_ERROR(device_->lost_status());
   }
   return absl::OkStatus();
 }
@@ -457,7 +462,19 @@ void Stream::WorkerLoop() {
       task = std::move(work_.front());
       work_.pop_front();
     }
-    while (!fence_->waitUntilSignaledValue(task.wait_value, 1000)) {
+    bool abandoned = false;
+    while (!fence_->waitUntilSignaledValue(task.wait_value, 200)) {
+      if (!device_->lost_status().ok()) {  // see Event::WaitOnHost
+        abandoned = true;
+        break;
+      }
+    }
+    if (abandoned) {
+      // Unblock any GPU wait on this task without running the callback.
+      if (fence_->signaledValue() < task.signal_value) {
+        fence_->setSignaledValue(task.signal_value);
+      }
+      continue;
     }
     task.fn();
     fence_->setSignaledValue(task.signal_value);
@@ -539,6 +556,8 @@ absl::Status Stream::Commit() {
   std::vector<PendingWait> waits;
   waits.swap(pending_waits_);
   last_committed_waits_ = waits;
+  last_committed_names_.swap(pending_names_);
+  pending_names_.clear();
   last_committed_signal_ = v;
   for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
@@ -628,7 +647,20 @@ absl::Status Stream::Synchronize() {
   // by these command buffers may be freed by the caller right away.
   absl::Status first_failure;
   for (MTL::CommandBuffer* cb : in_flight_) {
-    cb->waitUntilCompleted();
+    // Bounded wait: after a device reset, committed work may never run.
+    while (true) {
+      MTL::CommandBufferStatus st = cb->status();
+      if (st == MTL::CommandBufferStatusCompleted ||
+          st == MTL::CommandBufferStatusError) {
+        break;
+      }
+      if (!device_->lost_status().ok()) break;  // abandon it
+      if (fence_->signaledValue() >= last_committed_fence_value_) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      } else {
+        fence_->waitUntilSignaledValue(last_committed_fence_value_, 200);
+      }
+    }
     if (cb->status() == MTL::CommandBufferStatusError && first_failure.ok()) {
       first_failure = absl::InternalError(
           absl::StrCat("Metal command buffer failed on device ",
@@ -637,6 +669,8 @@ absl::Status Stream::Synchronize() {
     cb->release();
   }
   in_flight_.clear();
+  // Work abandoned above because the device was reset must not look done.
+  if (first_failure.ok()) first_failure = device_->lost_status();
   // The completion handler may not have run yet; record the failure here too
   // so the error state does not depend on that ordering.
   std::lock_guard<std::mutex> elock(err_mu_);
@@ -721,6 +755,7 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   }
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
+  pending_names_.push_back(kernel.name());
   for (size_t i = 0; i < args.size(); ++i) {
     const KernelArg& a = args[i];
     if (a.is_buffer) {
@@ -772,6 +807,7 @@ absl::Status Stream::LaunchWithArgumentBuffer(
   }
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
+  pending_names_.push_back(kernel.name());
   enc_->setBytes(addrs.data(), addrs.size() * sizeof(uint64_t), 0);
   // Buffers reached only through GPU addresses must be made resident (and
   // visible to hazard tracking) explicitly.
@@ -1012,6 +1048,11 @@ std::string Stream::DebugState() {
   for (const PendingWait& w : last_committed_waits_) {
     absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
                           w.event, w.value, w.event->signaledValue());
+  }
+  absl::StrAppendFormat(&out, "; kernels in last committed cb (%d):",
+                        last_committed_names_.size());
+  for (const std::string& name : last_committed_names_) {
+    absl::StrAppend(&out, " ", name);
   }
   return out;
 }

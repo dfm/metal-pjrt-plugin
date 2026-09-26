@@ -1736,6 +1736,124 @@ class CmpXchgLowering : public MslPattern<ml::AtomicCmpXchgOp> {
   }
 };
 
+// scf.while -> emitc.do. This replaces upstream's WhileLowering
+// (SCFToEmitC.cpp), which only writes the loop-carried variables back in the
+// lowering of the after-region's scf.yield and skips that step entirely when
+// the after region is a bare forwarding yield. That is exactly the shape of
+// XLA's compare-and-swap loops (float scatter min/max, atomic RMW emulation):
+// the "expected" value was never refreshed, so a thread that lost the race
+// retried with a stale value forever and tripped the GPU watchdog. This
+// version always lowers the after region and its yield.
+class WhileLowering : public mlir::OpConversionPattern<mlir::scf::WhileOp> {
+ public:
+  WhileLowering(const mlir::TypeConverter& tc, mlir::MLIRContext* ctx)
+      : OpConversionPattern(tc, ctx, /*benefit=*/2) {}
+
+  LogicalResult matchAndRewrite(
+      mlir::scf::WhileOp op, OpAdaptor adaptor,
+      mlir::ConversionPatternRewriter& rewriter) const override {
+    namespace emitc = mlir::emitc;
+    mlir::Location loc = op.getLoc();
+    mlir::MLIRContext* ctx = loc.getContext();
+    emitc::OpaqueAttr no_init = emitc::OpaqueAttr::get(ctx, "");
+    auto make_var = [&](Type t) -> Value {
+      return emitc::VariableOp::create(rewriter, loc,
+                                       emitc::LValueType::get(t), no_init);
+    };
+    auto load = [&](Value var) -> Value {
+      Type t = mlir::cast<emitc::LValueType>(var.getType()).getValueType();
+      return emitc::LoadOp::create(rewriter, loc, t, var).getResult();
+    };
+
+    // Result variables (one per while result) and loop-carried variables (one
+    // per init), the latter assigned from the inits before the loop.
+    llvm::SmallVector<Value> result_vars, loop_vars;
+    for (mlir::OpResult r : op.getResults()) {
+      Type t = getTypeConverter()->convertType(r.getType());
+      if (!t || mlir::isa<emitc::ArrayType>(t)) {
+        return rewriter.notifyMatchFailure(op, "result type");
+      }
+      result_vars.push_back(make_var(t));
+    }
+    for (Value init : adaptor.getInits()) {
+      Type t = init.getType();
+      if (mlir::isa<emitc::ArrayType>(t)) {
+        return rewriter.notifyMatchFailure(op, "array loop variable");
+      }
+      Value var = make_var(t);
+      emitc::AssignOp::create(rewriter, loc, var, init);
+      loop_vars.push_back(var);
+    }
+    Type i1 = rewriter.getI1Type();
+    Value cond_var = make_var(i1);
+
+    auto do_op = emitc::DoOp::create(rewriter, loc);
+    if (failed(rewriter.convertRegionTypes(&op.getBefore(),
+                                           *getTypeConverter(), nullptr)) ||
+        failed(rewriter.convertRegionTypes(&op.getAfter(),
+                                           *getTypeConverter(), nullptr))) {
+      return rewriter.notifyMatchFailure(op, "region types");
+    }
+
+    // Body: load loop vars, run the before region, store condition args into
+    // the result vars, then (if continuing) run the after region and store its
+    // yield back into the loop vars.
+    mlir::Block* body = rewriter.createBlock(&do_op.getBodyRegion());
+    rewriter.setInsertionPointToStart(body);
+    llvm::SmallVector<Value> before_args;
+    for (Value v : loop_vars) before_args.push_back(load(v));
+    rewriter.mergeBlocks(&op.getBefore().front(), body, before_args);
+
+    auto cond_op = mlir::cast<mlir::scf::ConditionOp>(body->getTerminator());
+    rewriter.setInsertionPoint(cond_op);
+    llvm::SmallVector<Value> cond_args;
+    for (Value a : cond_op.getArgs()) {
+      cond_args.push_back(rewriter.getRemappedValue(a));
+    }
+    for (auto [v, var] : llvm::zip(cond_args, result_vars)) {
+      emitc::AssignOp::create(rewriter, loc, var, v);
+    }
+    Value cond = rewriter.getRemappedValue(cond_op.getCondition());
+    emitc::AssignOp::create(rewriter, loc, cond_var, cond);
+
+    auto if_op = emitc::IfOp::create(rewriter, loc, cond, false, false);
+    mlir::Block* if_body = rewriter.createBlock(&if_op.getBodyRegion());
+    rewriter.mergeBlocks(&op.getAfter().front(), if_body, cond_args);
+    auto yield = mlir::cast<mlir::scf::YieldOp>(if_body->getTerminator());
+    rewriter.setInsertionPoint(yield);
+    llvm::SmallVector<Value> yielded;
+    if (failed(rewriter.getRemappedValues(yield.getOperands(), yielded))) {
+      return rewriter.notifyMatchFailure(op, "yield operands");
+    }
+    for (auto [v, var] : llvm::zip(yielded, loop_vars)) {
+      emitc::AssignOp::create(rewriter, loc, var, v);
+    }
+    emitc::YieldOp::create(rewriter, loc);
+    rewriter.eraseOp(yield);
+    rewriter.eraseOp(cond_op);
+
+    // Condition region: an expression that loads the flag.
+    mlir::Block* cond_block = rewriter.createBlock(&do_op.getConditionRegion());
+    rewriter.setInsertionPointToStart(cond_block);
+    auto expr = emitc::ExpressionOp::create(rewriter, loc, i1, cond_var,
+                                            /*do_not_inline=*/false);
+    mlir::Block* expr_block = rewriter.createBlock(&expr.getBodyRegion());
+    expr_block->addArgument(cond_var.getType(), loc);
+    rewriter.setInsertionPointToStart(expr_block);
+    Value flag = emitc::LoadOp::create(rewriter, loc, i1,
+                                       expr_block->getArgument(0));
+    emitc::YieldOp::create(rewriter, loc, flag);
+    rewriter.setInsertionPointToEnd(cond_block);
+    emitc::YieldOp::create(rewriter, loc, expr);
+
+    rewriter.setInsertionPointAfter(op);
+    llvm::SmallVector<Value> results;
+    for (Value v : result_vars) results.push_back(load(v));
+    rewriter.replaceOp(op, results);
+    return mlir::success();
+  }
+};
+
 class ExtractValueLowering : public MslPattern<ml::ExtractValueOp> {
  public:
   using MslPattern::MslPattern;
@@ -2231,6 +2349,7 @@ absl::StatusOr<MslKernel> EmitMslKernel(
   patterns.add<SmallFloatConstantLowering>(type_converter, ctx, &state,
                                            /*benefit=*/2);
   patterns.add<MathCallLowering>(type_converter, ctx);
+  patterns.add<WhileLowering>(type_converter, ctx);
 
   mlir::ConversionTarget target(*ctx);
   target.addLegalDialect<mlir::emitc::EmitCDialect>();

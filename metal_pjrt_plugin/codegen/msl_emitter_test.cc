@@ -4,6 +4,7 @@
 #include <fstream>
 #include <memory>
 #include <optional>
+#include <regex>
 #include <string>
 
 #include <gmock/gmock.h>
@@ -218,6 +219,59 @@ TEST_F(MslEmitterTest, BoundsCheckWithHelperFunction) {
   EXPECT_THAT(msl, Not(HasSubstr("static ")));
   // The helper must be defined before the kernel body that calls it.
   EXPECT_LT(msl.find("bounded_fn_add("), msl.find("bounded_impl("));
+}
+
+// Compare-and-swap loop as XLA emits it for float scatter min/max: an
+// scf.while whose after region is a bare forwarding yield. The loop-carried
+// "expected" value must be refreshed from the CAS result on every retry.
+constexpr char kCasLoop[] = R"mlir(
+module {
+  func.func @casmin(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %tid = gpu.thread_id x
+    %ii = arith.index_castui %tid : index to i32
+    %p = llvm.getelementptr inbounds %arg0[0, %ii] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<1024 x i32>
+    %v = llvm.load %arg1 : !llvm.ptr -> i32
+    %old = llvm.load %p : !llvm.ptr -> i32
+    %r = scf.while (%cur = %old) : (i32) -> i32 {
+      %new = arith.minsi %cur, %v : i32
+      %pair = llvm.cmpxchg %p, %cur, %new acq_rel monotonic : !llvm.ptr, i32
+      %val = llvm.extractvalue %pair[0] : !llvm.struct<(i32, i1)>
+      %ok = llvm.extractvalue %pair[1] : !llvm.struct<(i32, i1)>
+      %true = arith.constant true
+      %retry = arith.xori %ok, %true : i1
+      scf.condition(%retry) %val : i32
+    } do {
+    ^bb0(%x: i32):
+      scf.yield %x : i32
+    }
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, CasLoopRefreshesExpectedValue) {
+  absl::StatusOr<MslKernel> kernel = Emit(kCasLoop, "casmin");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  size_t do_pos = msl.find("do {");
+  ASSERT_NE(do_pos, std::string::npos) << msl;
+  size_t end_pos = msl.find("} while (", do_pos);
+  ASSERT_NE(end_pos, std::string::npos) << msl;
+  std::string body = msl.substr(do_pos, end_pos - do_pos);
+  // xla_cmpxchg(ptr, expected, desired): find the expected value's name and
+  // the loop variable it was loaded from.
+  std::smatch m;
+  ASSERT_TRUE(std::regex_search(body, m,
+                                std::regex(R"(xla_cmpxchg\(v\d+, (v\d+), )")))
+      << body;
+  std::string expected = m[1];
+  ASSERT_TRUE(std::regex_search(
+      body, m, std::regex("int32_t " + expected + R"( = (v\d+);)")))
+      << body;
+  std::string loop_var = m[1];
+  // The loop variable must be written back inside the loop body.
+  EXPECT_TRUE(std::regex_search(body, std::regex(loop_var + R"( = v\d+;)")))
+      << "loop variable " << loop_var << " never updated:\n"
+      << body;
 }
 
 // Vectorized loads/stores (VectorizeLoadsAndStores + LowerTensors output).

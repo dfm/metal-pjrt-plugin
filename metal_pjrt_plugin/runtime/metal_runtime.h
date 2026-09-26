@@ -231,7 +231,8 @@ class Event {
  private:
   friend class Device;
   friend class Stream;
-  explicit Event(MTL::SharedEvent* ev) : event_(ev) {}
+  Event(Device* device, MTL::SharedEvent* ev) : device_(device), event_(ev) {}
+  Device* device_;
   MTL::SharedEvent* event_;
   uint64_t value_ = 0;  // last recorded value; 0 means never recorded
   std::mutex mu_;
@@ -377,6 +378,9 @@ class Stream {
   std::vector<PendingWait> pending_waits_;
   // Waits of the most recently committed command buffer (diagnostics).
   std::vector<PendingWait> last_committed_waits_;
+  // Kernel names encoded into the open / last committed command buffer.
+  std::vector<std::string> pending_names_;
+  std::vector<std::string> last_committed_names_;
   uint64_t last_committed_signal_ = 0;
  public:
   // Diagnostics: one line describing this stream's fence state and what its
