@@ -212,7 +212,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   runs. `tests/test_compilation_cache.py` asserts the list is still there.
   The plugin sets `jax_compilation_cache_dir` to
   `~/.cache/jax_metal/compilation_cache` unless one is configured
-  (`JAX_COMPILATION_CACHE_DIR`, `jax.config`); JAX's own thresholds apply
+  (`JAX_COMPILATION_CACHE_DIR`, `jax.config`). The setting is process-wide:
+  installing the plugin turns the persistent cache on for every backend in
+  the process, CPU compiles included. JAX's own thresholds apply
   (only compiles over `jax_persistent_cache_min_compile_time_secs`, 1 s by
   default, are written). Executables with metal host callbacks bypass it
   (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`

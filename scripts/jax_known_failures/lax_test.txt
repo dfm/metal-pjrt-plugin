@@ -1,0 +1,72 @@
+# Known failures of JAX's tests/lax_test.py on metal, as run by
+# scripts/run_jax_tests.sh (JAX_NUM_GENERATED_CASES=3, x64 off, no
+# persistent compilation cache). One test id per line (without the file).
+# Baseline: 946 pass, 63 fail, 63 skipped.
+#
+# Causes: complex values (the MSL emitter rejects the
+# unrealized_conversion_cast; most of the list), int4, dot precision
+# algorithms the device lacks (ALG_DOT_*), the dce_sink FFI handler (not
+# registered for METAL), one EmitC conversion failure and one assertion.
+FunctionAccuracyTest::testSincInfinities
+LaxTest::test_constant_folding_complex_to_real_scan_regression
+LaxTest::test_dce_sink_prevents_xla_dce
+LaxTest::test_int4_binary_ops0
+LaxTest::test_int4_binary_ops1
+LaxTest::test_int4_binary_ops2
+LaxTest::test_int4_non_support_errors0
+LaxTest::test_int4_non_support_errors1
+LaxTest::test_int4_unary_ops0
+LaxTest::test_int4_unary_ops1
+LaxTest::test_int4_unary_ops2
+LaxTest::test_no_complex_to_real_cast_warning_in_transpose
+LaxTest::testConvertElementTypeNanToInt
+LaxTest::testConvGeneralDilated0
+LaxTest::testConvGeneralDilated0D2
+LaxTest::testConvGeneralDilatedLocal2
+LaxTest::testDotAlgorithm13
+LaxTest::testDotAlgorithm14
+LaxTest::testDotAlgorithm6
+LaxTest::testDotAlgorithm8
+LaxTest::testDotPreferredElement2
+LaxTest::testOp132
+LaxTest::testOp133
+LaxTest::testOp134
+LaxTest::testOp135
+LaxTest::testOp136
+LaxTest::testOp137
+LaxTest::testOp138
+LaxTest::testOp139
+LaxTest::testOp140
+LaxTest::testOp141
+LaxTest::testOp142
+LaxTest::testOp143
+LaxTest::testOp57
+LaxTest::testOp58
+LaxTest::testOp59
+LaxTest::testOp63
+LaxTest::testOp64
+LaxTest::testOp65
+LaxTest::testOpAgainstNumpy132
+LaxTest::testOpAgainstNumpy133
+LaxTest::testOpAgainstNumpy134
+LaxTest::testOpAgainstNumpy135
+LaxTest::testOpAgainstNumpy136
+LaxTest::testOpAgainstNumpy137
+LaxTest::testOpAgainstNumpy138
+LaxTest::testOpAgainstNumpy139
+LaxTest::testOpAgainstNumpy140
+LaxTest::testOpAgainstNumpy141
+LaxTest::testOpAgainstNumpy142
+LaxTest::testOpAgainstNumpy143
+LaxTest::testOpAgainstNumpy57
+LaxTest::testOpAgainstNumpy58
+LaxTest::testOpAgainstNumpy59
+LaxTest::testOpAgainstNumpy63
+LaxTest::testOpAgainstNumpy64
+LaxTest::testOpAgainstNumpy65
+LaxTest::testSortKeyVal2
+LazyConstantTest::testConvertElementTypeAvoidsCopies1
+LazyConstantTest::testLog1pNearOne
+LazyConstantTest::testUnaryWeakTypes_conj
+LazyConstantTest::testUnaryWeakTypes_imag
+LazyConstantTest::testUnaryWeakTypes_real

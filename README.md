@@ -47,7 +47,7 @@ scripts/install_dev.sh                       # builds the dylib, links it into j
 JAX_PLATFORMS=metal python scripts/smoke_test.py
 bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
-scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized (slow tests get a stack dump, never a kill)
+scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
 ```
 
