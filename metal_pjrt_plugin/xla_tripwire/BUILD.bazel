@@ -1,0 +1,35 @@
+load("@rules_python//python:defs.bzl", "py_test")
+
+# Pinned XLA sources snapshotted by tripwire.py (see its docstring).
+filegroup(
+    name = "xla_sources",
+    srcs = [
+        "@xla//xla/backends/gpu/codegen/emitters:mlir_kernel_emitter.cc",
+        "@xla//xla/backends/gpu/codegen/emitters:transpose.cc",
+        "@xla//xla/backends/gpu/runtime:command_buffer_conversion_pass.cc",
+        "@xla//xla/backends/gpu/transforms:gemm_rewriter.cc",
+        "@xla//xla/backends/gpu/transforms:priority_fusion.cc",
+        "@xla//xla/backends/gpu/transforms:topk_specializer.cc",
+        "@xla//xla/codegen/emitters:elemental_hlo_to_mlir.cc",
+        "@xla//xla/codegen/emitters/transforms:lower_tensors.cc",
+        "@xla//xla/codegen/emitters/transforms:vectorize_loads_stores.cc",
+        "@xla//xla/service:algorithm_util.cc",
+        "@xla//xla/service/gpu:gpu_compiler.cc",
+        "@xla//xla/stream_executor/abi:executable_abi_version.cc",
+    ],
+)
+
+py_test(
+    name = "xla_tripwire_test",
+    srcs = ["tripwire.py"],
+    args = [
+        "--golden",
+        "$(rootpath golden.txt)",
+        "$(rootpaths :xla_sources)",
+    ],
+    data = [
+        "golden.txt",
+        ":xla_sources",
+    ],
+    main = "tripwire.py",
+)

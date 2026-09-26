@@ -33,6 +33,9 @@ differs from the MLX-based approaches.
 - `metal_pjrt_plugin/ffi/`: FFI helpers and the softmax, scan and Python
   callback handlers.
 - `metal_pjrt_plugin/pjrt/`: the plugin dylib target.
+- `metal_pjrt_plugin/xla_tripwire/`: snapshots of the XLA code the plugin
+  relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
+  in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
 - `jax_plugins/metal/`: Python registration package modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
 - `tests/`: pytest suite (see below); `scripts/jax_known_failures/`: the

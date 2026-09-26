@@ -3,6 +3,13 @@
 Source-verified facts that drive the implementation. Paths are relative to the
 XLA tree (`external/xla+` in the Bazel output base).
 
+The load-bearing sites (OneAPI branches, the copied `AddLoweringPasses`
+prefix, assumptions of the plugin's HLO passes) are snapshotted by
+`//metal_pjrt_plugin/xla_tripwire:xla_tripwire_test`, which fails with a diff
+when a pin bump changes one; `metal_pjrt_plugin/xla_tripwire/oneapi_callsites.py`
+lists every `IsOneAPI()`/`IsIntelGpu()`/`is_sycl` line XLA-wide against a
+golden list. Both have an `--update` mode.
+
 ## Identity
 
 - StreamExecutor platform: `PLATFORM_DEFINE_ID(kMetalPlatformId, METAL)`;

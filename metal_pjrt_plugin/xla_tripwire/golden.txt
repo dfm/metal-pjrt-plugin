@@ -1,0 +1,276 @@
+### xla/backends/gpu/transforms/gemm_rewriter.cc @ gpu_version_.IsOneAPI()) && type == F64
+# why: No F64 epilogue fusion on OneAPI; blas_lt_support.h assumes f16/bf16/f32 epilogues only.
+bool SupportsEpilogueFusion(PrimitiveType type) {
+// ROCm/oneAPI doesn't support F64 epilogue fusion
+if ((gpu_version_.IsRocm() || gpu_version_.IsOneAPI()) && type == F64) {
+return false;
+}
+
+### xla/backends/gpu/transforms/gemm_rewriter.cc @ absl::StatusOr<absl::string_view> GetNonFp8GemmCustomCallTarget(
+# why: Every GEMM becomes __cublas$lt$matmul on OneAPI (MetalBlasLt is the only GEMM path).
+absl::StatusOr<absl::string_view> GetNonFp8GemmCustomCallTarget(
+const HloInstruction& instr,
+const GemmBackendConfig& gemm_backend_config) const {
+// TODO(intel-tf): For SYCL, we currently route all GEMMs to cublasLt.
+// We should check the capabilities and route accordingly.
+if (gpu_version_.IsOneAPI()) {
+return absl::string_view(kCublasLtMatmulCallTarget);
+}
+
+### xla/backends/gpu/transforms/topk_specializer.cc @ custom_call_target() != "TopK"
+# why: TopkSpecializer skips OneAPI, so TopkDecomposer turns TopK into a sort (CheckPostGemmRewriter).
+HloCustomCallInstruction* topk = DynCast<HloCustomCallInstruction>(inst);
+if (topk == nullptr || topk->custom_call_target() != "TopK" ||
+compute_capability_.IsOneAPI()) {
+return absl::OkStatus();
+}
+
+### xla/service/algorithm_util.cc @ const bool is_sycl = gpu_compute_capability.IsOneAPI();
+# why: bf16 dot algorithms allowed on OneAPI (ALG_DOT_BF16_BF16_F32*).
+const bool is_sycl = gpu_compute_capability.IsOneAPI();
+
+### xla/service/algorithm_util.cc @ if (!is_cuda_ge_ampere && !is_rocm_bf16 && !is_sycl)
+# why: ALG_DOT_BF16_BF16_F32 accepted on OneAPI.
+case PrecisionConfig::ALG_DOT_BF16_BF16_F32:
+if (!is_cuda_ge_ampere && !is_rocm_bf16 && !is_sycl) {
+return false;
+}
+
+### xla/service/algorithm_util.cc @ return (is_cuda_ge_ampere || is_rocm_bf16 || is_sycl) &&
+# why: ALG_DOT_BF16_BF16_F32_X3/X6/X9 accepted on OneAPI.
+case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X3:
+case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X6:
+case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X9:
+return (is_cuda_ge_ampere || is_rocm_bf16 || is_sycl) &&
+lhs_storage_type == rhs_storage_type && lhs_storage_type == F32 &&
+output_storage_type == F32;
+
+### xla/stream_executor/abi/executable_abi_version.cc @ if (device_description.gpu_compute_capability().IsOneAPI())
+# why: OneAPI ABI version; metal_pjrt_api.cc drops the AbiVersion extension so serialization works.
+if (device_description.gpu_compute_capability().IsOneAPI()) {
+return CreateForOneAPI(device_description);
+}
+
+### xla/codegen/emitters/transforms/lower_tensors.cc @ if (device_spec_.IsIntelGpu()) {
+# why: Atomic fadd lowers to the SPIR-V form, which the MSL emitter translates.
+device_spec_.gpu().rocm_compute_capability(),
+rewriter);
+}
+if (device_spec_.IsIntelGpu()) {
+return emitSPIRVAtomicFAdd(loc, modifier_arg, addr, rewriter);
+}
+return emitNVidiaAtomicFAdd(
+
+### xla/codegen/emitters/transforms/vectorize_loads_stores.cc @ if (device_spec_.IsIntelGpu() && (IsSubByteIntOrFloatType(element_type) ||
+# why: No sub-byte vector loads on OneAPI.
+if (device_spec_.IsIntelGpu() && (IsSubByteIntOrFloatType(element_type) ||
+has_sub_byte_trunc_user(op))) {
+return rewriter.notifyMatchFailure(
+op, "sub-byte types are not supported for vector loads on Intel GPU");
+
+### xla/codegen/emitters/transforms/vectorize_loads_stores.cc @ if (device_spec_.IsIntelGpu() && IsSubByteIntOrFloatType(element_type))
+# why: No sub-byte vector stores on OneAPI.
+if (device_spec_.IsIntelGpu() && IsSubByteIntOrFloatType(element_type)) {
+return rewriter.notifyMatchFailure(
+op,
+
+### xla/backends/gpu/codegen/emitters/transpose.cc @ bool use_scalar_ops = device.gpu_compute_capability().IsOneAPI() &&
+# why: Scalar shared-memory ops for sub-byte types on OneAPI.
+bool use_scalar_ops = device.gpu_compute_capability().IsOneAPI() &&
+elem_type.isIntOrFloat() &&
+elem_type.getIntOrFloatBitWidth() < 8;
+
+### xla/backends/gpu/runtime/command_buffer_conversion_pass.cc @ if (device_info.gpu_compute_capability().IsOneAPI()) {
+# why: No command buffers on OneAPI (ApplyMetalDefaults also clears them).
+if (device_info.gpu_compute_capability().IsOneAPI()) {
+config.enabled_commands.clear();
+return config;
+}
+
+### xla/service/gpu/gpu_compiler.cc @ if (gpu_version.IsOneAPI()) {
+# why: F4E2M1FN compares upcast on OneAPI.
+// TODO(intel-tf): Remove this once SPIR-V backend can lower fp4 compares.
+if (gpu_version.IsOneAPI()) {
+comparison_expander_upcasts.push_back({F4E2M1FN, F16});
+}
+
+### xla/service/gpu/gpu_compiler.cc @ pipeline.AddPass<TopkSpecializer>(gpu_version);
+# why: TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks.
+pipeline.AddPass<TopKSplitter>();
+pipeline.AddPass<TopkSpecializer>(gpu_version);
+pipeline.AddPass<TopkDecomposer>();
+
+### xla/service/gpu/gpu_compiler.cc @ // SortRewriter needs to run before StableSortExpander.
+# why: SortRewriter only with xla_gpu_enable_cub_radix_sort (ApplyMetalDefaults turns it off).
+// SortRewriter needs to run before StableSortExpander.
+if (debug_options.xla_gpu_enable_cub_radix_sort()) {
+pipeline.AddPass<SortRewriter>(gpu_target_config.device_description,
+is_deviceless, is_early_exit_with_layouts);
+}
+
+### xla/service/gpu/gpu_compiler.cc @ // Run target-specific HLO optimization passes after layout assignment.
+# why: OptimizeHloPostLayoutAssignment runs before fusion: MetalDotOperandUpcaster and CheckPostGemmRewriter run after GemmRewriter and before priority fusion.
+// Run target-specific HLO optimization passes after layout assignment.
+ABSL_RETURN_IF_ERROR(OptimizeHloPostLayoutAssignment(
+hlo_module, stream_exec, options, gpu_topology, alias_info,
+thread_pool.get_mutable(), compilation_stats, mlir_context));
+// This is a "low effort, high impact" fusion that should be run first.
+ABSL_RETURN_IF_ERROR(RunDynamicSliceFusionPasses(
+hlo_module, /*platform_id=*/PlatformId(), compilation_stats));
+ABSL_RETURN_IF_ERROR(RunFusionPasses(
+hlo_module, gpu_topology.gpu_target_config(), thread_pool.get_mutable(),
+ShapeSizeBytesFunction(), alias_info, mlir_context, compilation_stats));
+
+### xla/service/gpu/gpu_compiler.cc @ void AddGemmRewriterPasses(
+# why: Bias fusion always on (no async dot); GEMM epilogues reach MetalBlasLt.
+void AddGemmRewriterPasses(HloPassPipeline& pipeline,
+const DebugOptions& debug_options,
+const se::GpuComputeCapability gpu_version,
+const se::SemanticVersion& toolkit_version) {
+// Adding bias to GEMMs is helpful for skipping kernel launches for `add`
+// operations. However, the bias term can add dependencies between the GEMMs
+// that could otherwise be parallelized. Because of this, we disable bias
+// addition when async dot is enabled.
+GemmRewriterOptions::BiasMode bias_mode =
+GemmRewriterOptions::BiasMode::kBias;
+if (debug_options.xla_gpu_async_dot()) {
+bias_mode = GemmRewriterOptions::BiasMode::kNoBias;
+}
+
+### xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc @ void AddLoweringPasses(
+# why: AddMslLoweringPasses (codegen/msl_emitter.cc) copies this up to SCFToControlFlow; keep them identical for the OneAPI branch.
+void AddLoweringPasses(mlir::OpPassManager& pm,
+const se::DeviceDescription& device) {
+pm.addNestedPass<FuncOp>(emitters::createConvertPureCallOpsPass());
+pm.addPass(emitters::createLowerTensorsPass(device));
+pm.addPass(emitters::createLowerPdlWaitPass());
+pm.addPass(mlir::createConvertComplexToStandardPass());
+pm.addPass(emitters::createMergePointersToSameSlicePass());
+// LowerTensors creates new affine.apply ops. Fold and CSE them so
+// simplify-affine has maximally folded expressions to work with.
+pm.addPass(mlir::createCanonicalizerPass());
+pm.addPass(mlir::createCSEPass());
+// LLVM SPIR-V backend does not use nan-propagiting float minimum/maximum
+// (IEEE 754-2019) semantics, so we need to use explicit NaN propagation for
+// min/max operations on oneAPI platform. This condition is exercised only if
+// fast_min_max is false.
+bool use_explicit_nan_propagation =
+device.gpu_compute_capability().IsOneAPI();
+emitters::SimplifyArithPassOptions simplify_arith_options;
+simplify_arith_options.fast_min_max_ = false;
+simplify_arith_options.explicit_nan_propagation_ =
+use_explicit_nan_propagation;
+pm.addNestedPass<FuncOp>(
+emitters::createSimplifyArithPass(simplify_arith_options));
+pm.addPass(emitters::createSimplifyAffinePass());
+pm.addPass(createConvertIndexTypePass());
+// simplify-affine lowers most affine.apply ops, but if it can't prove a
+// division or modulo is unsigned, affine.apply ops will remain.
+pm.addPass(mlir::createLowerAffinePass());
+pm.addPass(mlir::createLoopInvariantCodeMotionPass());
+pm.addPass(mlir::createSymbolDCEPass());
+pm.addPass(mlir::createCSEPass());
+// This pass has to run before `ExpandFloatOpsPass`.
+if (auto* cc = device.gpu_compute_capability().cuda_compute_capability()) {
+se::SemanticVersion ptx_version =
+nvptx::DetermineHighestSupportedPtxVersionFromCudaVersion(
+device.runtime_version(), cc->major);
+ConvertFloatNvidiaPassOptions nv_options;
+nv_options.compute_capability_major_ = cc->major;
+nv_options.compute_capability_minor_ = cc->minor;
+nv_options.ptx_version_major_ = ptx_version.major_version();
+nv_options.ptx_version_minor_ = ptx_version.minor_version();
+pm.addPass(createConvertFloatNvidiaPass(nv_options));
+} else if (auto* cc =
+device.gpu_compute_capability().rocm_compute_capability()) {
+if (cc->has_fp8_support()) {
+pm.addPass(CreateConvertFloatAMDPass(*cc));
+}
+pm.addPass(createRecoverExp2Pass());
+}
+pm.addPass(emitters::createExpandFloatOpsPass());
+pm.addPass(mlir::createLowerAffinePass());
+pm.addPass(mlir::createSCFToControlFlowPass());
+
+### xla/codegen/emitters/elemental_hlo_to_mlir.cc @ absl::StatusOr<Value> EmitMulAdd(
+# why: Loop-emitted dots multiply in the operand type; if this upcasts itself, the upcaster may be unnecessary.
+absl::StatusOr<Value> EmitMulAdd(Value lhs, Value rhs, Value accumulator,
+PrimitiveType result_element_type,
+mlir::Type accumulator_type,
+ImplicitLocOpBuilder& b) {
+if (primitive_util::IsFloatingPointType(result_element_type)) {
+if (result_element_type == PrimitiveType::BF16) {
+lhs = EmitFloatCast(lhs, b.getF32Type(), b);
+rhs = EmitFloatCast(rhs, b.getF32Type(), b);
+}
+Value casted =
+EmitFloatCast(arith::MulFOp::create(b, lhs, rhs), accumulator_type, b);
+return arith::AddFOp::create(b, accumulator, casted);
+}
+
+### xla/backends/gpu/transforms/gemm_rewriter.cc @ IsMatrixMultiplicationTooSmallForRewriting(
+# why: Small dots stay kDot (xla_gpu_gemm_rewrite_size_threshold); the upcaster targets exactly those.
+int64_t gemm_rewrite_size_threshold =
+instr->GetModule()
+->config()
+.debug_options()
+.xla_gpu_gemm_rewrite_size_threshold();
+ABSL_ASSIGN_OR_RETURN(bool is_matmul_tiny,
+IsMatrixMultiplicationTooSmallForRewriting(
+*instr, gemm_rewrite_size_threshold));
+if (is_matmul_tiny && IsDotSupportedByClassicalEmitters(*instr)) {
+return absl::OkStatus();
+}
+
+### xla/backends/gpu/transforms/priority_fusion.cc @ bool IsFusible(const HloInstruction& instr) {
+# why: kDot is not fusible, so the upcaster builds the convert+dot fusion itself.
+bool IsFusible(const HloInstruction& instr) {
+// Side-effecting operations are not fusible.
+if (!instr.IsFusible()) {
+return false;
+}
+// Element-wise operations are always fusible.
+if (instr.IsElementwise()) {
+return true;
+}
+// Bitcasts are fusible if they don't change the bit width.
+if (IsFusibleBitcast(instr)) {
+return true;
+}
+// Other non-elementwise ops also supported by elemental fusion.
+switch (instr.opcode()) {
+case HloOpcode::kFusion:
+return IsGenericTritonFusion(instr) ||
+instr.fusion_kind() != HloInstruction::FusionKind::kCustom;
+case HloOpcode::kCopy:
+case HloOpcode::kIota:
+case HloOpcode::kConstant:
+case HloOpcode::kReduce:
+case HloOpcode::kBroadcast:
+case HloOpcode::kConcatenate:
+case HloOpcode::kDynamicSlice:
+case HloOpcode::kDynamicUpdateSlice:
+case HloOpcode::kGather:
+case HloOpcode::kPad:
+case HloOpcode::kReduceWindow:
+case HloOpcode::kReshape:
+case HloOpcode::kReverse:
+case HloOpcode::kScatter:
+case HloOpcode::kSlice:
+case HloOpcode::kTranspose:
+return true;
+default:
+
+### IsOneAPI()/IsIntelGpu()/is_sycl occurrences per file
+xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc: 1
+xla/backends/gpu/codegen/emitters/transpose.cc: 1
+xla/backends/gpu/runtime/command_buffer_conversion_pass.cc: 1
+xla/backends/gpu/transforms/gemm_rewriter.cc: 2
+xla/backends/gpu/transforms/priority_fusion.cc: 0
+xla/backends/gpu/transforms/topk_specializer.cc: 1
+xla/codegen/emitters/elemental_hlo_to_mlir.cc: 0
+xla/codegen/emitters/transforms/lower_tensors.cc: 1
+xla/codegen/emitters/transforms/vectorize_loads_stores.cc: 2
+xla/service/algorithm_util.cc: 4
+xla/service/gpu/gpu_compiler.cc: 1
+xla/stream_executor/abi/executable_abi_version.cc: 1

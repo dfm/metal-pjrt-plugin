@@ -1,0 +1,168 @@
+"""Tripwire over the pinned XLA sources the Metal plugin depends on.
+
+The plugin relies on specific behaviour of XLA code it does not own: OneAPI
+branches it inherits by reporting a OneAPI compute capability, a pass
+pipeline prefix copied into codegen/msl_emitter.cc, and assumptions of its
+own HLO passes. Each site below is snapshotted (whitespace-collapsed lines
+around an anchor) into golden.txt next to this file. When the XLA pin moves
+and a site changes, this test fails with a diff: re-check the "why" line
+against the new code, adapt the plugin if needed, then regenerate:
+
+  bazel run //metal_pjrt_plugin/xla_tripwire:xla_tripwire_test -- --update
+  # or, outside Bazel:
+  python3 metal_pjrt_plugin/xla_tripwire/tripwire.py \
+      --xla-root "$(bazel info output_base)/external/xla+" --update
+
+The file list in BUILD.bazel must name every file used here.
+"""
+import argparse
+import difflib
+import os
+import re
+import sys
+from dataclasses import dataclass
+
+
+@dataclass
+class Site:
+    file: str
+    anchor: str  # substring of the first line of interest (first match)
+    why: str
+    before: int = 3
+    after: int = 8
+    end: str = ""  # if set, the window ends at the first line containing it
+
+
+GR = "xla/backends/gpu/transforms/gemm_rewriter.cc"
+GC = "xla/service/gpu/gpu_compiler.cc"
+MKE = "xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc"
+
+SITES = [
+    # --- OneAPI branches the plugin inherits ---
+    Site(GR, "gpu_version_.IsOneAPI()) && type == F64", before=2, after=3,
+         why="No F64 epilogue fusion on OneAPI; blas_lt_support.h assumes f16/bf16/f32 epilogues only."),
+    Site(GR, "absl::StatusOr<absl::string_view> GetNonFp8GemmCustomCallTarget(", before=0, after=8,
+         why="Every GEMM becomes __cublas$lt$matmul on OneAPI (MetalBlasLt is the only GEMM path)."),
+    Site("xla/backends/gpu/transforms/topk_specializer.cc", 'custom_call_target() != "TopK"', before=1, after=3,
+         why="TopkSpecializer skips OneAPI, so TopkDecomposer turns TopK into a sort (CheckPostGemmRewriter)."),
+    Site("xla/service/algorithm_util.cc", "const bool is_sycl = gpu_compute_capability.IsOneAPI();", before=0, after=0,
+         why="bf16 dot algorithms allowed on OneAPI (ALG_DOT_BF16_BF16_F32*)."),
+    Site("xla/service/algorithm_util.cc", "if (!is_cuda_ge_ampere && !is_rocm_bf16 && !is_sycl)", before=1, after=2,
+         why="ALG_DOT_BF16_BF16_F32 accepted on OneAPI."),
+    Site("xla/service/algorithm_util.cc", "return (is_cuda_ge_ampere || is_rocm_bf16 || is_sycl) &&", before=3, after=2,
+         why="ALG_DOT_BF16_BF16_F32_X3/X6/X9 accepted on OneAPI."),
+    Site("xla/stream_executor/abi/executable_abi_version.cc", "if (device_description.gpu_compute_capability().IsOneAPI())", before=0, after=2,
+         why="OneAPI ABI version; metal_pjrt_api.cc drops the AbiVersion extension so serialization works."),
+    Site("xla/codegen/emitters/transforms/lower_tensors.cc", "if (device_spec_.IsIntelGpu()) {", before=3, after=3,
+         why="Atomic fadd lowers to the SPIR-V form, which the MSL emitter translates."),
+    Site("xla/codegen/emitters/transforms/vectorize_loads_stores.cc", "if (device_spec_.IsIntelGpu() && (IsSubByteIntOrFloatType(element_type) ||", before=0, after=3,
+         why="No sub-byte vector loads on OneAPI."),
+    Site("xla/codegen/emitters/transforms/vectorize_loads_stores.cc", "if (device_spec_.IsIntelGpu() && IsSubByteIntOrFloatType(element_type))", before=0, after=2,
+         why="No sub-byte vector stores on OneAPI."),
+    Site("xla/backends/gpu/codegen/emitters/transpose.cc", "bool use_scalar_ops = device.gpu_compute_capability().IsOneAPI() &&", before=0, after=2,
+         why="Scalar shared-memory ops for sub-byte types on OneAPI."),
+    Site("xla/backends/gpu/runtime/command_buffer_conversion_pass.cc", "if (device_info.gpu_compute_capability().IsOneAPI()) {", before=0, after=3,
+         why="No command buffers on OneAPI (ApplyMetalDefaults also clears them)."),
+    Site(GC, "if (gpu_version.IsOneAPI()) {", before=1, after=2,
+         why="F4E2M1FN compares upcast on OneAPI."),
+    # --- Pipeline order the plugin's passes rely on ---
+    Site(GC, "pipeline.AddPass<TopkSpecializer>(gpu_version);", before=1, after=1,
+         why="TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks."),
+    Site(GC, "// SortRewriter needs to run before StableSortExpander.", before=0, after=4,
+         why="SortRewriter only with xla_gpu_enable_cub_radix_sort (ApplyMetalDefaults turns it off)."),
+    Site(GC, "// Run target-specific HLO optimization passes after layout assignment.", before=0, after=11,
+         why="OptimizeHloPostLayoutAssignment runs before fusion: MetalDotOperandUpcaster and CheckPostGemmRewriter run after GemmRewriter and before priority fusion."),
+    Site(GC, "void AddGemmRewriterPasses(", before=0, after=12,
+         why="Bias fusion always on (no async dot); GEMM epilogues reach MetalBlasLt."),
+    # --- Codegen prefix copied into msl_emitter.cc (AddMslLoweringPasses) ---
+    Site(MKE, "void AddLoweringPasses(", before=0, end="createSCFToControlFlowPass",
+         why="AddMslLoweringPasses (codegen/msl_emitter.cc) copies this up to SCFToControlFlow; keep them identical for the OneAPI branch."),
+    # --- Assumptions of MetalDotOperandUpcaster (compiler/passes/dot_upcast.h) ---
+    Site("xla/codegen/emitters/elemental_hlo_to_mlir.cc", "absl::StatusOr<Value> EmitMulAdd(", before=0, after=12,
+         why="Loop-emitted dots multiply in the operand type; if this upcasts itself, the upcaster may be unnecessary."),
+    Site(GR, "IsMatrixMultiplicationTooSmallForRewriting(", before=6, after=5,
+         why="Small dots stay kDot (xla_gpu_gemm_rewrite_size_threshold); the upcaster targets exactly those."),
+    Site("xla/backends/gpu/transforms/priority_fusion.cc", "bool IsFusible(const HloInstruction& instr) {", before=0, end="default:",
+         why="kDot is not fusible, so the upcaster builds the convert+dot fusion itself."),
+]
+
+ONEAPI_RE = re.compile(r"IsOneAPI\(\)|IsIntelGpu\(\)|is_sycl")
+
+
+def collapse(line):
+    return " ".join(line.split())
+
+
+def snapshot(site, text):
+    lines = text.splitlines()
+    idx = [i for i, l in enumerate(lines) if site.anchor in l]
+    if not idx:
+        return [f"!! anchor not found: {site.anchor}"]
+    i = idx[0]
+    lo = max(0, i - site.before)
+    if site.end:
+        hi = next((j for j in range(i, len(lines)) if site.end in lines[j]), None)
+        if hi is None:
+            return [f"!! end anchor not found: {site.end}"]
+    else:
+        hi = min(len(lines) - 1, i + site.after)
+    return [c for c in (collapse(l) for l in lines[lo:hi + 1]) if c]
+
+
+def render(read):
+    out = []
+    for s in SITES:
+        out += [f"### {s.file} @ {s.anchor}", f"# why: {s.why}"]
+        out += snapshot(s, read(s.file)) + [""]
+    out.append("### IsOneAPI()/IsIntelGpu()/is_sycl occurrences per file")
+    for f in sorted({s.file for s in SITES}):
+        out.append(f"{f}: {len(ONEAPI_RE.findall(read(f)))}")
+    return "\n".join(out) + "\n"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xla-root", help="XLA source root (else the Bazel data files)")
+    ap.add_argument("--golden", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden.txt"))
+    ap.add_argument("--update", action="store_true")
+    ap.add_argument("files", nargs="*", help="XLA files (Bazel $(rootpaths))")
+    a = ap.parse_args()
+
+    by_rel = {}
+    for p in a.files:
+        m = re.search(r"(?:^|/)xla\+?/(xla/.*)$", p)
+        if m:
+            by_rel[m.group(1)] = p
+
+    def read(rel):
+        path = os.path.join(a.xla_root, rel) if a.xla_root else by_rel.get(rel)
+        if path is None:
+            sys.exit(f"{rel} is not in the test's data (add it to BUILD.bazel)")
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+
+    got = render(read)
+    golden = a.golden
+    ws = os.environ.get("BUILD_WORKSPACE_DIRECTORY")
+    if a.update and ws:  # bazel run: write the source tree's golden.
+        golden = os.path.join(ws, "metal_pjrt_plugin/xla_tripwire/golden.txt")
+    if a.update:
+        with open(golden, "w", encoding="utf-8") as f:
+            f.write(got)
+        print(f"wrote {golden}")
+        return 0
+    with open(golden, encoding="utf-8") as f:
+        want = f.read()
+    if got == want:
+        print(f"OK: {len(SITES)} XLA sites unchanged")
+        return 0
+    sys.stdout.writelines(difflib.unified_diff(
+        want.splitlines(True), got.splitlines(True), "golden.txt", "pinned XLA"))
+    print("\nXLA sites the Metal plugin depends on changed. Re-check each changed "
+          "site's 'why', adapt the plugin, then rerun with --update (see the "
+          "docstring of tripwire.py).")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

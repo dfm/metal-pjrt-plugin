@@ -1,0 +1,61 @@
+"""Lists every IsOneAPI()/IsIntelGpu()/is_sycl line in the pinned XLA tree
+and compares it with oneapi_callsites.txt. The Metal platform reports a
+OneAPI compute capability, so every such branch can change what the plugin
+gets; a new one needs a look. Not a Bazel test (it would have to glob another
+repository). Run after moving the XLA pin:
+
+  python3 metal_pjrt_plugin/xla_tripwire/oneapi_callsites.py \
+      --xla-root "$(bazel info output_base)/external/xla+" [--update]
+
+Entries are "file: line text" (whitespace collapsed, no line numbers), so
+unrelated edits do not show up. Tests are skipped.
+"""
+import argparse
+import difflib
+import os
+import re
+import sys
+
+PATTERN = re.compile(r"IsOneAPI\(\)|IsIntelGpu\(\)|is_sycl")
+GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oneapi_callsites.txt")
+
+
+def scan(root):
+    out = []
+    for d, _, files in os.walk(os.path.join(root, "xla")):
+        for f in files:
+            if not f.endswith((".cc", ".h")) or f.endswith("_test.cc"):
+                continue
+            path = os.path.join(d, f)
+            rel = os.path.relpath(path, root)
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if PATTERN.search(line):
+                        out.append(f"{rel}: {' '.join(line.split())}\n")
+    return sorted(out)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--xla-root", required=True)
+    ap.add_argument("--update", action="store_true")
+    a = ap.parse_args()
+    got = scan(a.xla_root)
+    if a.update:
+        with open(GOLDEN, "w", encoding="utf-8") as f:
+            f.writelines(got)
+        print(f"wrote {len(got)} call sites to {GOLDEN}")
+        return 0
+    with open(GOLDEN, encoding="utf-8") as f:
+        want = f.readlines()
+    if got == want:
+        print(f"OK: {len(got)} OneAPI call sites unchanged")
+        return 0
+    sys.stdout.writelines(difflib.unified_diff(want, got, "oneapi_callsites.txt", "pinned XLA"))
+    print("\nOneAPI call sites changed: check what each new branch does for "
+          "Metal (add load-bearing ones to tripwire.py), then --update.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
