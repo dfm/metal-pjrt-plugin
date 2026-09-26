@@ -1,6 +1,10 @@
 #include "metal_pjrt_plugin/stream_executor/metal_executor.h"
 
+#include <dlfcn.h>
+#include <mach-o/loader.h>
+
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <optional>
@@ -361,6 +365,61 @@ absl::StatusOr<DeviceAddressBase> MetalExecutor::GetSymbol(
 // ---------------------------------------------------------------------------
 // Device description
 
+namespace {
+
+// The LC_UUID of the Mach-O image containing this code (the plugin dylib).
+// The linker derives it from the image's contents, so every rebuild that
+// changes the code gets a new one.
+std::string ImageUuid() {
+  Dl_info info;
+  if (dladdr(reinterpret_cast<const void*>(&ImageUuid), &info) == 0 ||
+      info.dli_fbase == nullptr) {
+    return "";
+  }
+  const auto* header = static_cast<const mach_header_64*>(info.dli_fbase);
+  if (header->magic != MH_MAGIC_64) return "";
+  const auto* cmd = reinterpret_cast<const load_command*>(header + 1);
+  for (uint32_t i = 0; i < header->ncmds; ++i) {
+    if (cmd->cmd == LC_UUID) {
+      const auto* uuid = reinterpret_cast<const uuid_command*>(cmd);
+      return std::string(reinterpret_cast<const char*>(uuid->uuid),
+                         sizeof(uuid->uuid));
+    }
+    cmd = reinterpret_cast<const load_command*>(
+        reinterpret_cast<const char*>(cmd) + cmd->cmdsize);
+  }
+  return "";
+}
+
+// PJRT reports "oneapi <runtime_version>" as the platform version, and JAX's
+// persistent compilation cache keys on it. Encode the plugin build and the
+// environment variables that change what the compiler emits, so a rebuilt
+// plugin or a different setting never loads another's executables:
+// {1, fingerprint(build UUID), fingerprint(compile-time settings)}.
+// Variables read only at run time (METAL_PJRT_GEMM, _STEEL_TILE,
+// _SMALL_LINALG, _TRACE, ...) are deliberately excluded. A new variable
+// that changes compiled code must be added here (its getenv site says so).
+SemanticVersion PluginVersion() {
+  static const SemanticVersion version = [] {
+    std::string uuid = ImageUuid();
+    if (uuid.empty()) LOG(WARNING) << "Metal: plugin image has no LC_UUID";
+    std::string settings;
+    for (const char* name : {
+             "METAL_PJRT_DISABLE_REWRITES",  // compiler/metal_compiler.cc
+             "METAL_PJRT_DISABLE_LAPACK",    // linalg/linalg_rewriter.cc
+         }) {
+      // Unset and empty mean the same to every reader.
+      const char* v = std::getenv(name);
+      absl::StrAppend(&settings, name, "=", v == nullptr ? "" : v, ";");
+    }
+    return SemanticVersion(1, tsl::Fingerprint32(uuid),
+                           tsl::Fingerprint32(settings));
+  }();
+  return version;
+}
+
+}  // namespace
+
 absl::StatusOr<std::unique_ptr<DeviceDescription>>
 MetalExecutor::CreateDeviceDescription() const {
   return CreateDeviceDescription(device_ordinal());
@@ -378,7 +437,7 @@ MetalExecutor::CreateDeviceDescription(int device_ordinal) {
   desc.set_device_vendor("Apple");
   desc.set_platform_version("Metal");
   desc.set_driver_version(SemanticVersion{0, 0, 0});
-  desc.set_runtime_version(SemanticVersion{0, 0, 0});
+  desc.set_runtime_version(PluginVersion());
   desc.set_compile_time_toolkit_version(SemanticVersion{0, 0, 0});
   desc.set_dnn_version(SemanticVersion{0, 0, 0});
   desc.set_pci_bus_id(absl::StrCat("metal:", device_ordinal));

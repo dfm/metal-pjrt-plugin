@@ -95,6 +95,7 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
 // METAL_PJRT_DISABLE_REWRITES=softmax,scan turns off the FFI-kernel rewriters
 // (for A/B comparisons and bisecting).
 bool RewriteEnabled(absl::string_view name) {
+  // Compile-time setting: listed in PluginVersion (metal_executor.cc).
   const char* env = std::getenv("METAL_PJRT_DISABLE_REWRITES");
   if (env == nullptr) return true;
   for (absl::string_view s : absl::StrSplit(env, ',')) {

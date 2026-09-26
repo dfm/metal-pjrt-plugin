@@ -32,6 +32,7 @@ const char* Bool(bool b) { return b ? "true" : "false"; }
 }  // namespace
 
 bool LapackDisabled() {
+  // Compile-time setting: listed in PluginVersion (metal_executor.cc).
   const char* env = std::getenv("METAL_PJRT_DISABLE_LAPACK");
   return env != nullptr && env[0] != '\0' && std::string(env) != "0";
 }

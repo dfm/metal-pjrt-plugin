@@ -173,5 +173,18 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (`-Wl,-exported_symbol,_GetPjrtApi`, `-install_name @rpath/...`).
 - Client must always pass `platform_name="metal"`; the topology path defaults
   to "gpu" which canonicalizes to "cuda".
-- `MakeComputeCapabilityAttributeString` and `GpuPlatformVersionFromDevices`
-  return "unknown" for our device; harmless.
+- Platform version: `GpuPlatformVersionFromDevices`
+  (`se_gpu_pjrt_client.cc:262-277`) reports `"oneapi " +
+  runtime_version.ToString()`. JAX hashes it into its compilation cache key,
+  so `MetalExecutor` sets `runtime_version` to `{1, fingerprint(LC_UUID of
+  the plugin image), fingerprint(METAL_PJRT_DISABLE_REWRITES,
+  METAL_PJRT_DISABLE_LAPACK)}`: a rebuilt plugin or a different compile-time
+  setting gets a different key. (JAX 0.11.2 does not use its persistent
+  cache for platform "metal" at all: `compilation_cache.is_cache_used`
+  allows only tpu/gpu/cpu/neuron; forcing it on fails at serialization with
+  "Unsupported platform ID for XlaExecutableAbiVersion", since
+  `ExecutableAbiVersion` knows only the CUDA/ROCm/SYCL platform ids. The key
+  is right for when both are fixed.) The
+  plugin no longer sets `jax_compilation_cache_dir`; the per-setting
+  `~/.cache/jax_metal/variants/` directories an older plugin created are
+  orphaned and can be deleted.

@@ -20,33 +20,6 @@ def _get_library_path() -> pathlib.Path | None:
     return None
 
 
-def _default_compilation_cache():
-    """XLA compilation dominates first-call latency (Metal's own shader cache
-    is system-wide already). Enable JAX's persistent cache unless configured."""
-    import jax
-    try:
-        if jax.config.jax_compilation_cache_dir is None:
-            cache = pathlib.Path(
-                os.environ.get("JAX_METAL_CACHE_DIR", pathlib.Path.home() / ".cache" / "jax_metal"))
-            # Compile-time METAL_PJRT_* settings (command buffers, rewrites,
-            # LAPACK, GEMM backend) are baked into cached executables and are
-            # not part of JAX's cache key, so each setting gets its own
-            # subdirectory. Runtime-only variables are excluded.
-            runtime_only = {"METAL_PJRT_TRACE", "METAL_PJRT_POISON_ALLOCATIONS",
-                            "METAL_PJRT_STATE_DIR", "METAL_PJRT_QUARANTINE_STRIKES",
-                            "METAL_PJRT_MAX_OPS", "METAL_PJRT_DUMP_MLIR"}
-            knobs = sorted((k, v) for k, v in os.environ.items()
-                           if k.startswith("METAL_PJRT_") and k not in runtime_only)
-            if knobs:
-                import hashlib
-                digest = hashlib.sha1(repr(knobs).encode()).hexdigest()[:10]
-                cache = cache / "variants" / digest
-            cache.mkdir(parents=True, exist_ok=True)
-            jax.config.update("jax_compilation_cache_dir", str(cache))
-    except Exception as e:  # noqa: BLE001
-        logger.warning("could not enable the persistent compilation cache: %s", e)
-
-
 def initialize():
     import jax._src.xla_bridge as xb
 
@@ -70,7 +43,6 @@ def initialize():
         "visible_devices": [0],
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)
-    _default_compilation_cache()
     # Lowering rules for primitives upstream only lowers on named platforms.
     from jax_plugins.metal import lowerings
     lowerings.register()
