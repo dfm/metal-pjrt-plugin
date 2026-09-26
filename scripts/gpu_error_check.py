@@ -35,8 +35,10 @@ step("fresh g(f(x))", lambda: g(f(x)), want + 1)
 def run(n):
     env = dict(os.environ, JAX_PLATFORMS="metal",
                METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
+    # No timeout: never kill a process with GPU work in flight. The runtime's
+    # own waits are bounded.
     out = subprocess.run([sys.executable, "-c", CHILD], env=env,
-                         capture_output=True, text=True, timeout=300)
+                         capture_output=True, text=True)
     return [l for l in out.stdout.splitlines() if ": " in l], out.returncode
 
 

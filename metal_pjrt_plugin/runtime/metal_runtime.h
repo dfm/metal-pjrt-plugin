@@ -29,10 +29,12 @@
 // the values it waited on, else the status of the previous value on its
 // stream. Host waits (Event::WaitOnHost, Stream::Synchronize) and host tasks
 // return / receive that status, so the output of a failed kernel is never
-// consumed as valid. A Synchronize that reports an error lets the stream
-// recover: later work no longer inherits it. Watchdog timeouts, revoked or
-// removed devices and page faults are sticky for the device instead (as a
-// CUDA illegal-address error is for the context).
+// consumed as valid. Only a Synchronize that reports the error lets the
+// stream recover (later work no longer inherits it); PJRT never synchronizes
+// its compute stream, so there a failure keeps failing every later execution
+// on that stream until the process restarts. Watchdog timeouts, revoked or
+// removed devices and page faults are sticky for the whole device (as a CUDA
+// illegal-address error is for the context).
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
@@ -303,26 +305,39 @@ class Device {
   friend class Event;
   // Status of values signaled on shared events (stream fences and Events),
   // see the file comment. A value is pending from submission until the
-  // command buffer's completion handler (or the host task) has settled its
-  // status; failed values are kept until the event is destroyed.
+  // command buffer's completion handler (or the host task) settles it with
+  // its own status and the values it depends on. Completion handlers never
+  // block: a value's final status (own error, else its dependencies' first)
+  // is resolved lazily, by queries and when later values settle, and
+  // memoized. Resolved OK values are dropped; failed ones are kept until the
+  // event is destroyed.
+  struct ValueRef {
+    const MTL::SharedEvent* event;
+    uint64_t value;
+  };
   void BeginValue(const MTL::SharedEvent* ev, uint64_t v);
   void EndValue(const MTL::SharedEvent* ev, uint64_t v,
-                const absl::Status& status);
-  // Blocks until `v` is settled (bounded: gives up once the device is lost).
+                const absl::Status& status, std::vector<ValueRef> deps = {});
+  // Blocks until `v` is resolved (bounded: gives up once the device is
+  // lost). Host threads only, never completion handlers.
   absl::Status ValueStatus(const MTL::SharedEvent* ev, uint64_t v);
-  // Non-blocking: false while `v` is pending, else sets *status.
+  // Non-blocking: false while `v` (or a value it depends on) is pending,
+  // else sets *status.
   bool TryValueStatus(const MTL::SharedEvent* ev, uint64_t v,
                       absl::Status* status);
   void ForgetValues(const MTL::SharedEvent* ev);
+  // Caller holds values_mu_.
+  bool ResolveLocked(const MTL::SharedEvent* ev, uint64_t v,
+                     absl::Status* status);
   struct ValueRecord {
     std::set<uint64_t> pending;
+    // Settled with an OK own status, waiting for dependencies to resolve.
+    std::map<uint64_t, std::vector<ValueRef>> unresolved;
     std::map<uint64_t, absl::Status> failed;
   };
   std::mutex values_mu_;
   std::condition_variable values_cv_;
   std::unordered_map<const MTL::SharedEvent*, ValueRecord> values_;
-  // Failures ever recorded (TryValueStatus's fast path).
-  std::atomic<uint64_t> failures_{0};
   std::atomic<uint64_t> host_task_holds_{0};
   std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
 };
@@ -406,10 +421,11 @@ class Stream {
   // wait for the running task (or later work on its stream) return
   // FailedPreconditionError instead of deadlocking.
   //
-  // If the work the task is ordered after failed, `fn` does not run; the
-  // task takes that error, passes it to `on_error` (if given) and on to work
-  // waiting for the task. If `fn` itself fails, its error goes to `on_error`
-  // when given (handled there), else on to work waiting for the task.
+  // If the work the task is ordered after failed, the task takes that error
+  // and passes it on to work waiting for the task; with `on_error`, `fn` is
+  // skipped and `on_error` gets the error, without it `fn` still runs. If
+  // `fn` itself fails, its error goes to `on_error` when given (handled
+  // there), else on to work waiting for the task.
   absl::Status HostCallback(
       std::function<absl::Status()> fn,
       std::function<void(absl::Status)> on_error = nullptr);
@@ -431,6 +447,11 @@ class Stream {
   // the failure is sticky for the device, as a real page fault is.
   void FailNextCommandBufferForTesting(absl::Status error,
                                        bool page_fault = false);
+  // Testing only: the next committed command buffer's completion handler
+  // sleeps this long before doing anything.
+  void DelayNextCompletionHandlerForTesting(int milliseconds);
+  // Committed command buffers whose completion handler has not finished.
+  int completion_handlers_pending() const { return completion_->pending; }
   // Commit any open work without waiting.
   absl::Status Flush();
 
@@ -532,6 +553,7 @@ class Stream {
   // FailNextCommandBufferForTesting.
   absl::Status inject_error_;
   bool inject_page_fault_ = false;
+  int inject_handler_delay_ms_ = 0;
   const std::shared_ptr<CompletionState> completion_ =
       std::make_shared<CompletionState>();
   // ResolveCached state (guarded by mu_).

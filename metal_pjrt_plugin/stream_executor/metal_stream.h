@@ -29,8 +29,9 @@ class MetalExecutor;
 // Errors: BlockHostUntilDone returns the status of the work it waited for
 // (a failed command buffer, or a failed dependency; see metal_runtime.h),
 // once; the stream then recovers, except after a lost device. A host
-// callback ordered after failed work does not run: its error_cb gets the
-// error instead (XLA marks the buffers' definition events failed with it).
+// callback with an error_cb ordered after failed work does not run: the
+// error_cb gets the error instead (XLA marks the buffers' definition events
+// failed with it); one without an error_cb still runs.
 // A failed host callback without an error_cb puts the stream into the error
 // state (StreamCommon::CheckStatus, so ok() turns false) and
 // BlockHostUntilDone reports it from then on.

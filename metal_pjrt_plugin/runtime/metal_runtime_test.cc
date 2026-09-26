@@ -521,7 +521,14 @@ TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
   EXPECT_THAT(e2->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
                                          HasSubstr("injected fault")));
   ASSERT_THAT(s3->WaitForStream(s2.get()), IsOk());
-  // A host task ordered after the failure does not run; on_error gets it.
+  // Without on_error, a task ordered after the failure still runs (XLA's
+  // callbacks free memory or complete transfers); the error passes on.
+  bool ran_anyway = false;
+  ASSERT_THAT(s3->HostCallback([&]() {
+    ran_anyway = true;
+    return absl::OkStatus();
+  }), IsOk());
+  // With on_error, it does not run; on_error gets the error.
   bool ran = false;
   absl::Status task_error;
   ASSERT_THAT(s3->HostCallback(
@@ -532,6 +539,7 @@ TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
                   [&](absl::Status st) { task_error = st; }),
               IsOk());
   EXPECT_THAT(s3->Synchronize(), StatusIs(absl::StatusCode::kInternal));
+  EXPECT_TRUE(ran_anyway);
   EXPECT_FALSE(ran);
   EXPECT_THAT(task_error, StatusIs(absl::StatusCode::kInternal,
                                    HasSubstr("injected fault")));
@@ -548,6 +556,46 @@ TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
     EXPECT_THAT(e1->Poll(), IsOkAndHolds(true));
     EXPECT_THAT(st->Synchronize(), IsOk());
   }
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// Completion handlers never wait for each other: X (another queue) waits on
+// Y's event, Y fails and its handler runs late. X's handler finishes at
+// once; X's status resolves to Y's error once Y settles.
+TEST_F(MetalRuntimeTest, CompletionHandlersDoNotBlockOnEachOther) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> sy = NewStream();
+  std::unique_ptr<Stream> sx = NewStream();
+  absl::StatusOr<std::unique_ptr<Event>> ey = dev_->CreateEvent();
+  absl::StatusOr<std::unique_ptr<Event>> ex = dev_->CreateEvent();
+  ASSERT_THAT(ey, IsOk());
+  ASSERT_THAT(ex, IsOk());
+  sy->DelayNextCompletionHandlerForTesting(300);
+  sy->FailNextCommandBufferForTesting(absl::InternalError("injected late"));
+  ASSERT_THAT(Axpy(sy.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(sy->RecordEvent(ey->get()), IsOk());
+  ASSERT_THAT(sx->WaitForEvent(ey->get()), IsOk());
+  ASSERT_THAT(Axpy(sx.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(sx->RecordEvent(ex->get()), IsOk());
+  // X ran on the GPU (the injected Y still signals); its handler must not
+  // wait for Y's, which is still sleeping.
+  const auto start = std::chrono::steady_clock::now();
+  while (sx->completion_handlers_pending() > 0 &&
+         std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  const auto x_done = std::chrono::steady_clock::now() - start;
+  EXPECT_EQ(sx->completion_handlers_pending(), 0);
+  EXPECT_LT(x_done, std::chrono::milliseconds(150));
+  EXPECT_EQ(sy->completion_handlers_pending(), 1);  // Y's handler: later
+  EXPECT_THAT((*ex)->Poll(), IsOkAndHolds(false));  // unresolved until Y
+  EXPECT_THAT((*ex)->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
+                                            HasSubstr("injected late")));
+  EXPECT_THAT(sx->Synchronize(), StatusIs(absl::StatusCode::kInternal));
+  EXPECT_THAT(sy->Synchronize(), StatusIs(absl::StatusCode::kInternal));
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }

@@ -510,7 +510,7 @@ void Device::BeginValue(const MTL::SharedEvent* ev, uint64_t v) {
 }
 
 void Device::EndValue(const MTL::SharedEvent* ev, uint64_t v,
-                      const absl::Status& status) {
+                      const absl::Status& status, std::vector<ValueRef> deps) {
   {
     std::lock_guard<std::mutex> lock(values_mu_);
     auto it = values_.find(ev);
@@ -518,40 +518,88 @@ void Device::EndValue(const MTL::SharedEvent* ev, uint64_t v,
     it->second.pending.erase(v);
     if (!status.ok()) {
       it->second.failed.emplace(v, status);
-      failures_.fetch_add(1);
+    } else if (!deps.empty()) {
+      it->second.unresolved.emplace(v, std::move(deps));
+      // Resolve now if the dependencies are settled (the common case), so
+      // records do not pile up for values nobody asks about.
+      absl::Status ignored;
+      ResolveLocked(ev, v, &ignored);
     }
   }
   values_cv_.notify_all();
+}
+
+bool Device::ResolveLocked(const MTL::SharedEvent* ev, uint64_t v,
+                           absl::Status* status) {
+  // Depth-first over unresolved values, resolving from the bottom up; no
+  // recursion (a stream's predecessor chain can be long).
+  enum class State { kOk, kFailed, kPending, kUnresolved };
+  auto state = [this](const ValueRef& r) {
+    auto it = values_.find(r.event);
+    if (it == values_.end()) return State::kOk;
+    const ValueRecord& rec = it->second;
+    if (rec.pending.count(r.value)) return State::kPending;
+    if (rec.failed.count(r.value)) return State::kFailed;
+    if (rec.unresolved.count(r.value)) return State::kUnresolved;
+    return State::kOk;
+  };
+  std::vector<ValueRef> stack = {{ev, v}};
+  while (!stack.empty()) {
+    const ValueRef top = stack.back();
+    const State s = state(top);
+    if (s == State::kPending) return false;
+    if (s != State::kUnresolved) {
+      stack.pop_back();
+      continue;
+    }
+    ValueRecord& rec = values_[top.event];
+    auto u = rec.unresolved.find(top.value);
+    bool descended = false;
+    absl::Status failed;
+    for (const ValueRef& d : u->second) {
+      const State ds = state(d);
+      if (ds == State::kPending) return false;
+      if (ds == State::kUnresolved) {
+        stack.push_back(d);
+        descended = true;
+        break;
+      }
+      if (ds == State::kFailed) {
+        failed = values_[d.event].failed[d.value];
+        break;
+      }
+    }
+    if (descended) continue;
+    rec.unresolved.erase(u);
+    if (!failed.ok()) rec.failed.emplace(top.value, failed);
+    stack.pop_back();
+  }
+  *status = absl::OkStatus();
+  auto it = values_.find(ev);
+  if (it != values_.end()) {
+    auto f = it->second.failed.find(v);
+    if (f != it->second.failed.end()) *status = f->second;
+  }
+  return true;
 }
 
 bool Device::TryValueStatus(const MTL::SharedEvent* ev, uint64_t v,
                             absl::Status* status) {
   *status = lost_status();
   if (!status->ok()) return true;
-  // Fast path (callers ask only about signaled values): every failure starts
-  // at a root, a command buffer the GPU aborted or a failed host task, and a
-  // root settles its values before they are signaled (aborted buffers never
-  // signal; the handler force-signals after EndValue). So while no failure
-  // was ever recorded, a signaled value cannot be failing, and waiting for
-  // its completion handler (~5-10 us per round trip) buys nothing.
-  if (failures_.load() == 0) return true;
   std::lock_guard<std::mutex> lock(values_mu_);
-  auto it = values_.find(ev);
-  if (it == values_.end()) return true;
-  if (it->second.pending.count(v)) return false;
-  auto f = it->second.failed.find(v);
-  if (f != it->second.failed.end()) *status = f->second;
-  return true;
+  return ResolveLocked(ev, v, status);
 }
 
 absl::Status Device::ValueStatus(const MTL::SharedEvent* ev, uint64_t v) {
   absl::Status status;
   while (!TryValueStatus(ev, v, &status)) {
-    // The value is signaled, so its completion handler or host task is about
-    // to settle it; the timeout only guards against a lost device.
+    // Callers ask about signaled values, so the completion handlers or host
+    // tasks settling them are about to run; the timeout only guards against
+    // a lost device.
     std::unique_lock<std::mutex> lock(values_mu_);
-    auto it = values_.find(ev);
-    if (it == values_.end() || !it->second.pending.count(v)) continue;
+    absl::Status ignored;
+    if (ResolveLocked(ev, v, &ignored)) continue;
     values_cv_.wait_for(lock, std::chrono::milliseconds(200));
   }
   return status;
@@ -836,18 +884,25 @@ void Stream::WorkerLoop() {
     if (status.ok() && task.status_predecessor != 0) {
       status = device_->ValueStatus(fence_, task.status_predecessor);
     }
-    bool handled = false;
-    if (status.ok()) {
+    // With on_error, a task ordered after failed work does not run and
+    // on_error gets the error. Without one, the task runs anyway (XLA's
+    // callbacks without an error callback free memory or complete
+    // transfers) and the error passes on to work waiting for the task.
+    if (!status.ok() && task.on_error) {
+      task.on_error(status);
+    } else {
       current_host_task = {fence_, task.signal_value};
-      status = task.fn();
+      absl::Status own = task.fn();
       current_host_task = {};
-      handled = !status.ok() && task.on_error;
+      // A task's own failure, once handed to on_error, stays there.
+      if (!own.ok() && task.on_error) {
+        task.on_error(own);
+      } else if (status.ok()) {
+        status = own;
+      }
     }
-    if (!status.ok() && task.on_error) task.on_error(status);
     // Settle the status before signaling, so whoever sees the signal sees it.
-    // The task's own failure, once handed to on_error, stays there.
-    device_->EndValue(fence_, task.signal_value,
-                      handled ? absl::OkStatus() : status);
+    device_->EndValue(fence_, task.signal_value, status);
     // A failed command buffer may have force-signaled the fence past this
     // value meanwhile; never move it backwards.
     if (fence_->signaledValue() < task.signal_value) {
@@ -948,12 +1003,13 @@ absl::Status Stream::Commit() {
   }();
   static std::atomic<uint64_t> commits{0};
   if (fail_at != 0 && commits.fetch_add(1) + 1 == fail_at) {
-    device_->failures_.fetch_add(1);  // see FailNextCommandBufferForTesting
     injected_error = absl::InternalError(absl::StrFormat(
         "command buffer %d failed (METAL_PJRT_FAIL_COMMAND_BUFFER)", fail_at));
   }
   const bool injected_page_fault = inject_page_fault_;
   inject_page_fault_ = false;
+  const int handler_delay_ms = inject_handler_delay_ms_;
+  inject_handler_delay_ms_ = 0;
   // On failure, log, record the error and force-signal the fence and any
   // events this buffer was supposed to signal, so waiters do not hang.
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> signals;
@@ -979,6 +1035,11 @@ absl::Status Stream::Commit() {
   }
   for (auto& w : previous_waits) w.event->release();
   last_committed_signal_ = v;
+  // The buffer's status depends on the values it waits for and on the
+  // previous value on its stream (see the file comment).
+  std::vector<Device::ValueRef> deps;
+  for (const PendingWait& w : waits) deps.push_back({w.event, w.value});
+  if (predecessor != 0) deps.push_back({fence_, predecessor});
   for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
   fence->retain();
@@ -998,8 +1059,12 @@ absl::Status Stream::Commit() {
   }
   cmd_->addCompletedHandler(
       [device, state, self, v, fence, signals, waits, ordinal, traced_ops,
-       kernels, predecessor, injected_error,
-       injected_page_fault](MTL::CommandBuffer* cb) {
+       kernels, deps, injected_error, injected_page_fault,
+       handler_delay_ms](MTL::CommandBuffer* cb) {
+        if (handler_delay_ms > 0) {
+          std::this_thread::sleep_for(
+              std::chrono::milliseconds(handler_delay_ms));
+        }
         if (TraceEnabled()) {
           LOG(ERROR) << "[metal-trace] stream " << self << " cb#" << v
                     << " ops=" << traced_ops << " gpu_ms="
@@ -1017,18 +1082,7 @@ absl::Status Stream::Commit() {
           code = injected_page_fault ? MTL::CommandBufferErrorPageFault : 0;
           error = injected_error;
         }
-        absl::Status status = error;
-        if (error.ok()) {
-          // This buffer's own work succeeded; it still fails if what it
-          // waited for, or its stream's earlier work, failed.
-          for (const PendingWait& w : waits) {
-            status = device->ValueStatus(w.event, w.value);
-            if (!status.ok()) break;
-          }
-          if (status.ok() && predecessor != 0) {
-            status = device->ValueStatus(fence, predecessor);
-          }
-        } else {
+        if (!error.ok()) {
           LOG(ERROR) << error.message();
           // Diagnostics: a timeout on a buffer with little GPU work usually
           // means it sat on a wait whose signal never came. Say which.
@@ -1055,10 +1109,15 @@ absl::Status Stream::Commit() {
             device->MarkLost(error, /*reset=*/false);
           }
         }
-        // Settle the status before any force-signal below, so waiters woken
-        // by it see the error.
-        device->EndValue(fence, v, status);
-        for (auto& sv : signals) device->EndValue(sv.first, sv.second, status);
+        // Settle before any force-signal below, so waiters woken by it see
+        // the error. Never block here: dependencies still pending (their
+        // handlers may be queued behind this one) are resolved later.
+        device->EndValue(fence, v, error, error.ok() ? deps
+                                                      : std::vector<Device::ValueRef>{});
+        for (auto& sv : signals) {
+          device->EndValue(sv.first, sv.second, error,
+                           error.ok() ? deps : std::vector<Device::ValueRef>{});
+        }
         if (!error.ok()) {
           if (fence->signaledValue() < v) fence->setSignaledValue(v);
           for (auto& sv : signals) {
@@ -1104,9 +1163,11 @@ void Stream::FailNextCommandBufferForTesting(absl::Status error,
   std::lock_guard<std::mutex> lock(mu_);
   inject_error_ = std::move(error);
   inject_page_fault_ = page_fault;
-  // The injected buffer signals on the GPU before its handler fails it, so
-  // the fast path in TryValueStatus must be off from now on.
-  device_->failures_.fetch_add(1);
+}
+
+void Stream::DelayNextCompletionHandlerForTesting(int milliseconds) {
+  std::lock_guard<std::mutex> lock(mu_);
+  inject_handler_delay_ms_ = milliseconds;
 }
 
 absl::Status Stream::Synchronize() {

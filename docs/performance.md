@@ -387,22 +387,32 @@ dependent computations raise (`INTERNAL: Metal command buffer failed ...
 
 - Sticky for the device: watchdog timeouts, revoked/removed devices (as
   before) and page faults. Everything else (out of memory, invalid resource,
-  ...) fails only the buffer and what depends on it, and a Synchronize
-  (`BlockHostUntilDone`) reports it once, after which the stream recovers.
-  Caveat: dependence on the same stream is by stream order, so later work on
-  that stream keeps failing until a Synchronize on it (PJRT rarely
-  synchronizes the compute stream, so in practice a failed execution also
-  fails later executions on that device until then). Cutting the chain
-  earlier would need data-flow tracking; CUDA makes such errors fatal for the
-  whole context.
+  ...) fails the buffer, what waits for it, and everything later on its
+  stream (same-stream dependence is by stream order), until a Synchronize
+  (`BlockHostUntilDone`) on that stream reports it. **PJRT waits on events
+  and never calls BlockHostUntilDone on the compute stream, so under JAX one
+  such failure fails every later execution on that stream until the process
+  restarts: effectively sticky.** Cutting the chain earlier would need
+  data-flow tracking; CUDA makes such errors fatal for the whole context.
+- Completion handlers never block: a handler records its buffer's own
+  status and the values it depended on, and the final status is resolved
+  lazily (memoized) by whoever asks, so a handler can never wait on another
+  handler queued behind it. A host task ordered after failed work runs
+  anyway when it has no error callback (XLA's plain callbacks free memory or
+  complete transfers) and passes the error on; with one, it is skipped and
+  the callback gets the error.
 - `BlockHostUntilDone` no longer puts the StreamExecutor stream into its
   error state on a GPU failure (as on CUDA; XLA CHECKs `ok()` on pooled
   streams); a failing host callback without `error_cb` still does.
-- Cost: host queries of a value wait for its completion handler, which cost
-  ~5-10 us per round trip (jit(x*2+1) median 166-171 -> 172-176 us). A fast
-  path skips the wait while no failure was ever recorded on the device
-  (sound because a failing root settles its values before they are signaled);
-  with it the numbers match the baseline (166-169 us; two-kernel 146-149 us).
+- Cost: a host query of a signaled value waits for the completion handler
+  that settles it. bench/latency.py, interleaved A/B in one build: jit(x*2+1)
+  median 173-176 us vs 157-168 us without the wait, two-kernel program 162
+  vs 143-152 us (+8-12 us per synchronizing round trip); dispatch_bound.py
+  unchanged. A fast path (treat signaled values as OK while no failure was
+  ever recorded) would remove it, but it assumes a failing buffer never runs
+  its trailing signals before its handler, which may not hold for page
+  faults (the GPU may continue past a faulting access). Kept the sound
+  version; the fast path is a 5-line change if the latency matters more.
 - Tests: runtime tests inject failures (`FailNextCommandBufferForTesting`,
   no real GPU fault); `metal_executor_test` checks error_cb, events and
   BlockHostUntilDone; `scripts/gpu_error_check.py` runs a JAX program with
