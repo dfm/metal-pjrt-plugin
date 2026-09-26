@@ -125,6 +125,24 @@ CHECKS = {
     "lu 7x5 / 5x7": (lambda a, b: (lu_check(a), lu_check(b)), mat(7, 5), mat(5, 7)),
     "lu batched pivots/perm": (lambda a: jax.lax.linalg.lu(a), mat(3, 12, 12)),
     "solve batched": (lambda a, b: jnp.linalg.solve(a + 4 * jnp.eye(10), b), mat(3, 10, 10), mat(3, 10, 2)),
+    # Small matrices run as GPU kernels (n <= 32); larger ones on the host.
+    "cholesky batched 5x4": (lambda a: jnp.linalg.cholesky(a), np.stack([spd(4) for _ in range(5)])),
+    "cholesky 32 / 33": (lambda a, b: (jnp.linalg.cholesky(a), jnp.linalg.cholesky(b)), spd(32), spd(33)),
+    "cholesky upper small": (lambda a: jax.lax.linalg.cholesky(a, symmetrize_input=False), spd(6)),
+    "cholesky batched not PD -> nan rows": (lambda a: jnp.isnan(jnp.linalg.cholesky(a)).all(axis=(1, 2)), np.stack([spd(5), -spd(5), spd(5)])),
+    "lu batched 4x4 / 2x2": (lambda a, b: (jax.lax.linalg.lu(a), jax.lax.linalg.lu(b)), mat(7, 4, 4), mat(3, 2, 2)),
+    "lu small non-square 5x3 / 3x5": (lambda a, b: (lu_check(a), lu_check(b)), mat(5, 3), mat(3, 5)),
+    "lu 32 / 33": (lambda a, b: (lu_check(a), lu_check(b)), mat(32, 32), mat(33, 33)),
+    "solve batched 4x4": (lambda a, b: jnp.linalg.solve(a + 3 * jnp.eye(4), b), mat(50, 4, 4), mat(50, 4, 4)),
+    "solve batched 4x4 grad": (lambda a, b: jax.grad(lambda x: jnp.sum(jnp.linalg.solve(x + 3 * jnp.eye(4), b) ** 2))(a), mat(6, 4, 4), mat(6, 4, 2)),
+    **{f"triangular_solve 3x3 left={l} lower={lo} trans={t} unit={u}": (
+        (lambda l, lo, t, u: lambda a, b: jax.lax.linalg.triangular_solve(
+            a, b if l else jnp.swapaxes(b, -1, -2), left_side=l, lower=lo,
+            transpose_a=t, unit_diagonal=u))(l, lo, t, u),
+        np.stack([mat(3, 3) + 4 * np.eye(3, dtype=np.float32) for _ in range(4)]),
+        mat(4, 3, 5))
+       for l in (True, False) for lo in (True, False) for t in (False, True)
+       for u in (False, True)},
     # Gradients through the LAPACK paths.
     "grad cholesky": (lambda a: jax.grad(lambda x: jnp.sum(jnp.linalg.cholesky(x @ x.T + 20 * jnp.eye(20)) ** 2))(a), mat(20, 20)),
     "grad solve": (lambda a, b: jax.grad(lambda x: jnp.sum(jnp.linalg.solve(x + 5 * jnp.eye(12), b) ** 2))(a), mat(12, 12), mat(12, 3)),

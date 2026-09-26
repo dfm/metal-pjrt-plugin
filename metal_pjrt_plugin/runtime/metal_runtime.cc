@@ -515,10 +515,11 @@ absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
 }
 
 namespace {
-// Fill kernels: `v` is the pattern broadcast to 32 bits, `n` the number of
-// elements (words or bytes) to write. Byte i takes byte (i mod 4) of the
-// pattern, which is right for 1-, 2- and 4-byte patterns alike.
-constexpr char kFillMsl[] = R"(
+// Built-in kernels. Fill: `v` is the pattern broadcast to 32 bits, `n` the
+// number of elements (words or bytes) to write; byte i takes byte (i mod 4) of
+// the pattern, which is right for 1-, 2- and 4-byte patterns alike. Copy:
+// 16-byte vectors when both ends are 16-byte aligned, bytes otherwise.
+constexpr char kBuiltinMsl[] = R"(
 #include <metal_stdlib>
 using namespace metal;
 kernel void xla_metal_fill32(device uint* p [[buffer(0)]],
@@ -533,17 +534,30 @@ kernel void xla_metal_fill8(device uchar* p [[buffer(0)]],
                             uint i [[thread_position_in_grid]]) {
   if (i < n) p[i] = (uchar)((v >> (8u * (i & 3u))) & 0xffu);
 }
+kernel void xla_metal_copy16(device const uint4* src [[buffer(0)]],
+                             device uint4* dst [[buffer(1)]],
+                             constant uint& n [[buffer(2)]],
+                             uint i [[thread_position_in_grid]]) {
+  if (i < n) dst[i] = src[i];
+}
+kernel void xla_metal_copy8(device const uchar* src [[buffer(0)]],
+                            device uchar* dst [[buffer(1)]],
+                            constant uint& n [[buffer(2)]],
+                            uint i [[thread_position_in_grid]]) {
+  if (i < n) dst[i] = src[i];
+}
 )";
+constexpr const char* kBuiltinNames[] = {"xla_metal_fill32", "xla_metal_fill8",
+                                         "xla_metal_copy16", "xla_metal_copy8"};
 }  // namespace
 
-absl::StatusOr<const Kernel*> Device::FillKernel(bool word_granular) {
-  std::lock_guard<std::mutex> lock(fill_mu_);
-  std::unique_ptr<Kernel>& slot = word_granular ? fill32_kernel_ : fill8_kernel_;
+absl::StatusOr<const Kernel*> Device::BuiltinKernel(Builtin kind) {
+  std::lock_guard<std::mutex> lock(builtin_mu_);
+  std::unique_ptr<Kernel>& slot = builtin_kernels_[static_cast<int>(kind)];
   if (slot == nullptr) {
-    ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, CompileLibrary(kFillMsl));
-    ABSL_ASSIGN_OR_RETURN(
-        slot, CreateKernel(lib, word_granular ? "xla_metal_fill32"
-                                              : "xla_metal_fill8"));
+    ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, CompileLibrary(kBuiltinMsl));
+    ABSL_ASSIGN_OR_RETURN(slot,
+                          CreateKernel(lib, kBuiltinNames[static_cast<int>(kind)]));
   }
   return slot.get();
 }
@@ -806,6 +820,7 @@ absl::Status Stream::Commit() {
         gpu_pending_.fetch_sub(1, std::memory_order_release);
       });
   cmd_->commit();
+  last_commit_time_ = std::chrono::steady_clock::now();
   // Keep the (retained) buffer until it completes; prune finished ones.
   in_flight_.push_back(cmd_);
   cmd_ = nullptr;
@@ -909,13 +924,29 @@ absl::StatusOr<BufferRef> Stream::ResolveCached(const void* ptr) {
   return ref;
 }
 
+namespace {
+std::chrono::microseconds EarlyCommitInterval() {
+  static const std::chrono::microseconds v = [] {
+    const char* e = std::getenv("METAL_PJRT_EARLY_COMMIT_US");
+    int x = e ? std::atoi(e) : -1;
+    return std::chrono::microseconds(x >= 0 ? x
+                                            : Stream::kEarlyCommitIntervalUs);
+  }();
+  return v;
+}
+}  // namespace
+
 absl::Status Stream::FinishOp(uint64_t work) {
   threads_in_cmd_ += work;
   ++ops_in_cmd_;
   if (ops_in_cmd_ >= MaxOpsPerCommandBuffer() ||
-      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer ||
-      (ops_in_cmd_ >= kEarlyCommitOps &&
-       gpu_pending_.load(std::memory_order_acquire) == 0)) {
+      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
+    return Commit();
+  }
+  if (ops_in_cmd_ >= kEarlyCommitOps &&
+      gpu_pending_.load(std::memory_order_acquire) == 0 &&
+      std::chrono::steady_clock::now() - last_commit_time_ >=
+          EarlyCommitInterval()) {
     return Commit();
   }
   return absl::OkStatus();
@@ -1099,7 +1130,37 @@ absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
   return EncodeCopy(*d, *s, size);
 }
 
+// One-dimensional dispatch of a built-in kernel over n elements: buffers
+// 0..k-1 then the element count at index k. Caller holds mu_.
+absl::Status Stream::EncodeBuiltin(Device::Builtin kind,
+                                   absl::Span<const BufferRef> buffers,
+                                   const void* bytes, size_t bytes_len,
+                                   uint64_t n64) {
+  if (n64 > std::numeric_limits<uint32_t>::max()) {
+    return absl::UnimplementedError(absl::StrFormat(
+        "built-in kernel over %d elements exceeds the 32-bit limit", n64));
+  }
+  ABSL_ASSIGN_OR_RETURN(const Kernel* kernel, device_->BuiltinKernel(kind));
+  const uint32_t n = static_cast<uint32_t>(n64);
+  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
+  enc_->setComputePipelineState(kernel->pso());
+  pending_kernels_.push_back(kernel->identity());
+  NS::UInteger slot = 0;
+  for (const BufferRef& b : buffers) enc_->setBuffer(b.buffer, b.offset, slot++);
+  if (bytes != nullptr) enc_->setBytes(bytes, bytes_len, slot++);
+  enc_->setBytes(&n, sizeof(n), slot);
+  const uint32_t group =
+      std::min<uint32_t>(n, kernel->max_total_threads_per_threadgroup());
+  enc_->dispatchThreads(MTL::Size(n, 1, 1), MTL::Size(group, 1, 1));
+  return FinishOp(n);
+}
+
 absl::Status Stream::EncodeCopy(BufferRef dst, BufferRef src, uint64_t size) {
+  if (size <= kComputeCopyMaxBytes) {
+    const bool vec = size % 16 == 0 && dst.offset % 16 == 0 && src.offset % 16 == 0;
+    return EncodeBuiltin(vec ? Device::Builtin::kCopy16 : Device::Builtin::kCopy8,
+                         {src, dst}, nullptr, 0, vec ? size / 16 : size);
+  }
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
@@ -1145,7 +1206,7 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
   const uint8_t b = static_cast<uint8_t>(pattern & 0xff);
   const bool uniform = (pattern >> 8 & 0xff) == b &&
                        (pattern >> 16 & 0xff) == b && (pattern >> 24 & 0xff) == b;
-  if (uniform) {
+  if (uniform && size > kComputeCopyMaxBytes) {
     ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
     EndEncoder();
     MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
@@ -1159,24 +1220,8 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
   }
   // Word-granular when the range is 4-byte aligned; bytes otherwise.
   const bool words = size % 4 == 0 && dst.offset % 4 == 0;
-  ABSL_ASSIGN_OR_RETURN(const Kernel* kernel, device_->FillKernel(words));
-  const uint64_t n64 = words ? size / 4 : size;
-  if (n64 > std::numeric_limits<uint32_t>::max()) {
-    return absl::UnimplementedError(
-        absl::StrFormat("fill of %d bytes exceeds the 32-bit element limit",
-                        size));
-  }
-  const uint32_t n = static_cast<uint32_t>(n64);
-  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
-  enc_->setComputePipelineState(kernel->pso());
-  pending_kernels_.push_back(kernel->identity());
-  enc_->setBuffer(dst.buffer, dst.offset, 0);
-  enc_->setBytes(&pattern, sizeof(pattern), 1);
-  enc_->setBytes(&n, sizeof(n), 2);
-  const uint32_t group =
-      std::min<uint32_t>(n, kernel->max_total_threads_per_threadgroup());
-  enc_->dispatchThreads(MTL::Size(n, 1, 1), MTL::Size(group, 1, 1));
-  return FinishOp(n);
+  return EncodeBuiltin(words ? Device::Builtin::kFill32 : Device::Builtin::kFill8,
+                       {dst}, &pattern, sizeof(pattern), words ? size / 4 : size);
 }
 
 absl::Status Stream::Replay(CommandList& list) {

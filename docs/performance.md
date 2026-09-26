@@ -255,3 +255,46 @@ sequential solver (~1 ms per step) are dominated by something else; the
 parallel solver's value+grad still spends most of its time in ~200 command
 buffers per call, 60 of them host syncs from the host-side LAPACK FFI
 (getrf + two triangular solves per 4x4 batched solve) and small argsorts.
+
+## Dispatch-bound programs, round two (2026-09-26, afternoon)
+
+Profiling a 2000-step scan (`bench/dispatch_bound.py`) with `sample` showed
+the main thread 80% blocked on the GPU and Metal's own command-queue
+submission thread 98% busy: the early-commit policy produced ~700 command
+buffers per call, and the driver spends ~150 us of a dedicated thread
+submitting each one. Copies (dynamic-slice thunks) also alternated blit and
+compute encoders inside every iteration, and each encoder boundary is a
+separate GPU "kick" (~10 us of GPU time). Three changes:
+
+- **Time-paced early commits**: at most one early commit per 500 us
+  (`kEarlyCommitIntervalUs`, `METAL_PJRT_EARLY_COMMIT_US`); syncs and the
+  op/thread caps still commit immediately.
+- **Copies and fills as compute kernels** up to 16 MB (`Device::Builtin`
+  kernels), so a stream of kernels and copies stays in one compute encoder;
+  blit for larger ones.
+- **Small sorts unrolled** in MetalSortExpander (sort dimension <= 64: every
+  substage is a fusion, no while loop). LU pivot inversion in
+  `jnp.linalg.solve` sorts rows of J elements.
+- **Small dense linalg on the GPU**: matrices up to 32x32 in
+  `metal$cholesky`, `metal$triangular_solve` and `metal$lapack_getrf` run
+  as one GPU thread per matrix (per right-hand-side column for solves)
+  instead of a synchronizing host LAPACK call (`METAL_PJRT_SMALL_LINALG=0`
+  restores the host path). A batched 4x4 `solve` cost three GPU round trips.
+
+Results (ms; Metal vs CPU):
+
+| program | before | after |
+|---|---|---|
+| scan, 2000 steps, tiny state | 100 | 7.4 |
+| tinygp parallel value+grad n=1000 | 35 | 3.2 (CPU 4.9) |
+| tinygp parallel value+grad n=20000 | 106 | 6.8 (CPU 77) |
+| tinygp parallel value+grad n=200000 | 231 | 68 (CPU 703) |
+| tinygp parallel predict n=200000 | 27000 | 1960 (CPU 295) |
+| tinygp sequential value+grad n=20000 | 18700 | 1670 (CPU 64) |
+
+GPU time per op is now ~1 us for these loops (0.8 us is the floor measured
+for dependent one-threadgroup dispatches), and the sequential programs are
+GPU-bound there: `predict` and the sequential solver run ~10 tiny kernels per
+element in a scan. Going further means fewer, fatter kernels per iteration
+(fusing a scan body into one kernel, or in-kernel loops), which is the
+deferred region-emitter work, not runtime overhead.

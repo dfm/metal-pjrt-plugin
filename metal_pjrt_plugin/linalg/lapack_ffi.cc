@@ -42,6 +42,7 @@
 // Only f32 is supported (JAX's x64 mode is off on this backend).
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <vector>
@@ -149,6 +150,192 @@ absl::Status LapackError(const char* name, int info) {
 }
 
 //===--------------------------------------------------------------------===//
+// Small matrices on the GPU.
+//
+// Each host handler synchronizes the stream, which costs a full GPU round
+// trip (and splits the command buffer) per call. Programs that solve many
+// tiny systems inside loops (a batched 4x4 solve per level of an associative
+// scan, say) paid three round trips per solve. Matrices of up to
+// kSmallMatrixMax rows/cols are therefore factorized or solved by one GPU
+// thread per matrix (per right-hand-side column for triangular solves),
+// enqueued on the stream like any kernel, with no synchronization.
+// METAL_PJRT_SMALL_LINALG=0 forces the host path (for A/B testing).
+//===--------------------------------------------------------------------===//
+
+constexpr int64_t kSmallMatrixMax = 32;
+
+bool SmallLinalgEnabled() {
+  static const bool enabled = [] {
+    const char* v = std::getenv("METAL_PJRT_SMALL_LINALG");
+    return v == nullptr || v[0] == '\0' || v[0] != '0';
+  }();
+  return enabled;
+}
+
+// SmallParams::flags bits.
+constexpr uint32_t kFlagLower = 1;
+constexpr uint32_t kFlagLeft = 2;
+constexpr uint32_t kFlagTrans = 4;
+constexpr uint32_t kFlagUnit = 8;
+
+struct SmallParams {
+  uint32_t batch;
+  uint32_t m;      // rows of the matrix being factorized / of B
+  uint32_t n;      // cols of the matrix being factorized / of B
+  uint32_t k;      // order of the triangular matrix
+  uint32_t flags;
+};
+
+constexpr char kSmallLinalgMsl[] = R"(
+#include <metal_stdlib>
+using namespace metal;
+struct SmallParams { uint batch; uint m; uint n; uint k; uint flags; };
+constant uint kLower = 1, kLeft = 2, kTrans = 4, kUnit = 8;
+
+// Cholesky of a row-major n x n matrix, in place semantics (a may equal out):
+// only the referenced triangle of a is read; the result holds L (lower) or
+// U = L^T (upper) with the other triangle zeroed; not positive definite ->
+// all NaN. One thread per matrix.
+kernel void small_cholesky(device const float* a [[buffer(0)]],
+                           device float* out [[buffer(1)]],
+                           constant SmallParams& p [[buffer(2)]],
+                           uint b [[thread_position_in_grid]]) {
+  if (b >= p.batch) return;
+  const uint n = p.n;
+  const bool lower = p.flags & kLower;
+  device const float* A = a + b * n * n;
+  device float* L = out + b * n * n;
+  // (i, j) with i >= j: the referenced element of A and the slot of L_ij.
+  #define LD(i, j) (lower ? A[(i) * n + (j)] : A[(j) * n + (i)])
+  #define ST(i, j) (lower ? L[(i) * n + (j)] : L[(j) * n + (i)])
+  bool bad = false;
+  for (uint j = 0; j < n && !bad; ++j) {
+    float s = LD(j, j);
+    for (uint t = 0; t < j; ++t) s -= ST(j, t) * ST(j, t);
+    if (!(s > 0.0f)) { bad = true; break; }
+    const float d = sqrt(s);
+    ST(j, j) = d;
+    for (uint i = j + 1; i < n; ++i) {
+      float v = LD(i, j);
+      for (uint t = 0; t < j; ++t) v -= ST(i, t) * ST(j, t);
+      ST(i, j) = v / d;
+    }
+  }
+  #undef LD
+  #undef ST
+  if (bad) {
+    for (uint i = 0; i < n * n; ++i) L[i] = NAN;
+    return;
+  }
+  for (uint i = 0; i < n; ++i) {
+    for (uint j = i + 1; j < n; ++j) {
+      if (lower) L[i * n + j] = 0.0f; else L[j * n + i] = 0.0f;
+    }
+  }
+}
+
+// Triangular solve, row-major: op(A) X = B (left) or X op(A) = B (right),
+// A k x k, B and X m x n (x may equal b). One thread per (matrix, column of X)
+// on the left, per (matrix, row of X) on the right.
+kernel void small_trsm(device const float* a [[buffer(0)]],
+                       device const float* bm [[buffer(1)]],
+                       device float* x [[buffer(2)]],
+                       constant SmallParams& p [[buffer(3)]],
+                       uint gid [[thread_position_in_grid]]) {
+  const bool left = p.flags & kLeft, lower = p.flags & kLower,
+             trans = p.flags & kTrans, unit = p.flags & kUnit;
+  const uint k = p.k, m = p.m, n = p.n;
+  const uint lines = left ? n : m;
+  if (gid >= p.batch * lines) return;
+  const uint b = gid / lines, line = gid % lines;
+  device const float* A = a + b * k * k;
+  device const float* B = bm + b * m * n;
+  device float* X = x + b * m * n;
+  // The system solved by this thread is E y = r with E = op(A) (left) or
+  // op(A)^T (right); E is lower triangular iff lower ^ trans ^ right.
+  const bool e_lower = lower != trans != !left;
+  #define E(i, j) ((trans != !left) ? A[(j) * k + (i)] : A[(i) * k + (j)])
+  #define R(i) (left ? B[(i) * n + line] : B[line * n + (i)])
+  #define Y(i) (left ? X[(i) * n + line] : X[line * n + (i)])
+  if (e_lower) {
+    for (uint i = 0; i < k; ++i) {
+      float s = R(i);
+      for (uint j = 0; j < i; ++j) s -= E(i, j) * Y(j);
+      Y(i) = unit ? s : s / E(i, i);
+    }
+  } else {
+    for (uint ii = k; ii-- > 0;) {
+      float s = R(ii);
+      for (uint j = ii + 1; j < k; ++j) s -= E(ii, j) * Y(j);
+      Y(ii) = unit ? s : s / E(ii, ii);
+    }
+  }
+  #undef E
+  #undef R
+  #undef Y
+}
+
+// LU with partial pivoting of a column-major m x n matrix (LAPACK layout,
+// lda = m), in place (a may equal lu); pivots are 0-based, permutation the
+// row order they produce. One thread per matrix. Singular pivots (exactly
+// zero) are left in place, as sgetrf does.
+kernel void small_getrf(device const float* a [[buffer(0)]],
+                        device float* lu [[buffer(1)]],
+                        device int* piv [[buffer(2)]],
+                        device int* perm [[buffer(3)]],
+                        constant SmallParams& p [[buffer(4)]],
+                        uint b [[thread_position_in_grid]]) {
+  if (b >= p.batch) return;
+  const uint m = p.m, n = p.n, kk = p.k;
+  device const float* A = a + b * m * n;
+  device float* U = lu + b * m * n;
+  device int* pv = piv + b * kk;
+  device int* pm = perm + b * m;
+  if (A != U) for (uint i = 0; i < m * n; ++i) U[i] = A[i];
+  #define M(i, j) U[(j) * m + (i)]
+  for (uint j = 0; j < kk; ++j) {
+    uint piv_row = j;
+    float best = fabs(M(j, j));
+    for (uint i = j + 1; i < m; ++i) {
+      const float v = fabs(M(i, j));
+      if (v > best) { best = v; piv_row = i; }
+    }
+    pv[j] = (int)piv_row;
+    if (piv_row != j) {
+      for (uint c = 0; c < n; ++c) {
+        const float t = M(j, c); M(j, c) = M(piv_row, c); M(piv_row, c) = t;
+      }
+    }
+    const float d = M(j, j);
+    if (d != 0.0f) {
+      for (uint i = j + 1; i < m; ++i) M(i, j) /= d;
+    }
+    for (uint i = j + 1; i < m; ++i) {
+      const float l = M(i, j);
+      if (l == 0.0f) continue;
+      for (uint c = j + 1; c < n; ++c) M(i, c) -= l * M(j, c);
+    }
+  }
+  #undef M
+  for (uint i = 0; i < m; ++i) pm[i] = (int)i;
+  for (uint i = 0; i < kk; ++i) {
+    const int t = pm[i]; pm[i] = pm[pv[i]]; pm[pv[i]] = t;
+  }
+}
+)";
+
+absl::Status LaunchSmall(stream_executor::Stream* stream, const char* function,
+                         const std::vector<const void*>& buffers,
+                         const SmallParams& params, uint64_t threads) {
+  const uint32_t group = 64;
+  const uint32_t groups =
+      static_cast<uint32_t>((threads + group - 1) / group);
+  return ffi::LaunchMsl(stream, kSmallLinalgMsl, function, buffers, params,
+                        rt::Dim3{std::max(groups, 1u), 1, 1},
+                        rt::Dim3{group, 1, 1});
+}
+
+//===--------------------------------------------------------------------===//
 // HLO-level ops (row-major).
 //===--------------------------------------------------------------------===//
 
@@ -160,6 +347,12 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (!d.ok()) return d.status();
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$cholesky: matrix must be square");
+  }
+  if (SmallLinalgEnabled() && d->rows <= kSmallMatrixMax && d->rows > 0) {
+    SmallParams p{static_cast<uint32_t>(d->batch), 0,
+                  static_cast<uint32_t>(d->rows), 0, lower ? kFlagLower : 0u};
+    return LaunchSmall(stream, "small_cholesky",
+                       {a.untyped_data(), out->untyped_data()}, p, d->batch);
   }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   const int n = static_cast<int>(d->rows);
@@ -208,15 +401,28 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
     return absl::InvalidArgumentError(
         "metal$triangular_solve: incompatible operand shapes");
   }
+  // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
+  // 3 = ADJOINT (the same as TRANSPOSE for real types).
+  const bool trans = transpose_a == 2 || transpose_a == 3;
+  if (SmallLinalgEnabled() && k <= kSmallMatrixMax && k > 0 && db->rows > 0 &&
+      db->cols > 0) {
+    SmallParams p{static_cast<uint32_t>(db->batch),
+                  static_cast<uint32_t>(db->rows),
+                  static_cast<uint32_t>(db->cols), static_cast<uint32_t>(k),
+                  (lower ? kFlagLower : 0u) | (left_side ? kFlagLeft : 0u) |
+                      (trans ? kFlagTrans : 0u) |
+                      (unit_diagonal ? kFlagUnit : 0u)};
+    const uint64_t lines = left_side ? db->cols : db->rows;
+    return LaunchSmall(stream, "small_trsm",
+                       {a.untyped_data(), b.untyped_data(), out->untyped_data()},
+                       p, db->batch * lines);
+  }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, b.untyped_data(), b.size_bytes());
   const int m = static_cast<int>(db->rows);
   const int n = static_cast<int>(db->cols);
   if (m == 0 || n == 0) return absl::OkStatus();
-  // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
-  // 3 = ADJOINT (the same as TRANSPOSE for real types).
-  const bool trans = transpose_a == 2 || transpose_a == 3;
   const float* av = static_cast<const float*>(a.untyped_data());
   for (int64_t i = 0; i < db->batch; ++i) {
     cblas_strsm(kCblasRowMajor, left_side ? kCblasLeft : kCblasRight,
@@ -245,6 +451,17 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   }
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
+  if (SmallLinalgEnabled() && d->rows <= kSmallMatrixMax &&
+      d->cols <= kSmallMatrixMax && d->rows > 0 && d->cols > 0) {
+    SmallParams p{static_cast<uint32_t>(d->batch),
+                  static_cast<uint32_t>(d->rows),
+                  static_cast<uint32_t>(d->cols),
+                  static_cast<uint32_t>(std::min(d->rows, d->cols)), 0};
+    return LaunchSmall(stream, "small_getrf",
+                       {a.untyped_data(), lu->untyped_data(),
+                        pivots->untyped_data(), permutation->untyped_data()},
+                       p, d->batch);
+  }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(lu->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());

@@ -97,6 +97,48 @@ ENTRY e {
   }
 }
 
+// Sort dimensions of up to 64 elements are emitted straight-line (no while
+// loop); larger ones run the loop.
+TEST_F(MetalSortExpanderTest, SmallSortsAreUnrolled) {
+  for (int64_t n : {4, 64, 65}) {
+    std::string hlo = absl::StrReplaceAll(R"(
+HloModule m
+lt {
+  a = s32[] parameter(0)
+  b = s32[] parameter(1)
+  c = s32[] parameter(2)
+  d = s32[] parameter(3)
+  ROOT r = pred[] compare(a, b), direction=LT
+}
+ENTRY e {
+  k = s32[7,$N] parameter(0)
+  v = s32[7,$N] parameter(1)
+  ROOT s = (s32[7,$N], s32[7,$N]) sort(k, v), dimensions={1}, is_stable=true,
+      to_apply=lt
+})", {{"$N", absl::StrCat(n)}});
+    auto module_or = ParseAndReturnVerifiedModule(hlo);
+    ASSERT_TRUE(module_or.ok()) << module_or.status();
+    std::unique_ptr<HloModule> module = std::move(module_or).value();
+    MetalSortExpander pass;
+    ASSERT_TRUE(RunHloPass(&pass, module.get()).ok());
+    int whiles = 0;
+    for (const HloComputation* c : module->computations()) {
+      for (const HloInstruction* i : c->instructions()) {
+        whiles += i->opcode() == HloOpcode::kWhile;
+      }
+    }
+    EXPECT_EQ(whiles, n <= 64 ? 0 : 1) << "n=" << n;
+    // Still sorts correctly.
+    std::mt19937 rng(n);
+    std::vector<Literal> args;
+    args.push_back(MakeLiteral<int32_t>(ShapeUtil::MakeShape(S32, {7, n}),
+                                        [&](int64_t) { return rng() % 5; }));
+    args.push_back(MakeLiteral<int32_t>(ShapeUtil::MakeShape(S32, {7, n}),
+                                        [&](int64_t i) { return i; }));
+    RunAndCompare(hlo, args);
+  }
+}
+
 TEST_F(MetalSortExpanderTest, KeyValueStableWithDuplicates) {
   const char* hlo = R"(
 HloModule m

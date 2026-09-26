@@ -391,14 +391,23 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   s.arrays.push_back(comp->AddInstruction(
       HloInstruction::CreateIota(ShapeUtil::MakeShape(itype, {m}), 0)));
 
-  // An odd substage count leaves one step to run before the two-step loop.
-  if (num_steps % 2 == 1) {
+  // Small sort dimensions (up to 64 elements, 21 substages) are emitted
+  // straight-line: each substage becomes a fusion, and the whole sort then
+  // runs inside one command buffer with no while loop (a while loop costs a
+  // thunk-level loop per sort, which dominated batched argsorts of a few
+  // elements per row, e.g. LU pivot inversion in jnp.linalg.solve).
+  // Larger sorts run the two-substages-per-iteration while loop below, with an
+  // odd substage count leaving one step to run before it.
+  constexpr int64_t kMaxUnrolledSteps = 21;
+  const int64_t pre_steps =
+      num_steps <= kMaxUnrolledSteps ? num_steps : num_steps % 2;
+  for (int64_t step = 0; step < pre_steps; ++step) {
     TF_ASSIGN_OR_RETURN(s, EmitStep(outer, sort->to_apply(), num_operands, n,
                                     pow2, s));
   }
   std::vector<HloInstruction*> sorted(s.arrays.begin(),
                                       s.arrays.begin() + num_operands);
-  if (num_steps / 2 > 0) {
+  if (num_steps > kMaxUnrolledSteps) {
     std::vector<HloInstruction*> init = {outer.ScalarIndex(0), s.k, s.j};
     init.insert(init.end(), s.arrays.begin(), s.arrays.end());
     HloInstruction* init_tuple =

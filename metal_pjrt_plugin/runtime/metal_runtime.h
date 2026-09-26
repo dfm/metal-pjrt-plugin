@@ -26,6 +26,7 @@
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <condition_variable>
 #include <cstdint>
@@ -207,9 +208,13 @@ class Device {
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
 
-  // Built-in fill kernels (32-bit and byte granularity), compiled on first
-  // use. Used for memsets whose pattern is not a single repeated byte.
-  absl::StatusOr<const Kernel*> FillKernel(bool word_granular);
+  // Built-in kernels (compiled on first use): fills at 32-bit and byte
+  // granularity, copies in 16-byte vectors and bytes. Small copies and fills
+  // run as compute kernels so a stream of kernels and copies stays in one
+  // compute encoder (creating a blit encoder per copy cost ~10 us and an
+  // encoder switch on both sides); large ones use the blit engine.
+  enum class Builtin { kFill32, kFill8, kCopy16, kCopy8 };
+  absl::StatusOr<const Kernel*> BuiltinKernel(Builtin kind);
 
   // GPU reset log and kernel quarantine. A watchdog timeout resets the GPU
   // for every process, and after a few resets the driver leaves the GPU slow
@@ -252,9 +257,8 @@ class Device {
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
   std::unordered_map<MTL::Library*, std::string> library_keys_;  // hash
-  std::mutex fill_mu_;
-  std::unique_ptr<Kernel> fill32_kernel_;
-  std::unique_ptr<Kernel> fill8_kernel_;
+  std::mutex builtin_mu_;
+  std::unique_ptr<Kernel> builtin_kernels_[4];
   // Reset log state (see RecordReset); strikes_ is guarded by mu_.
   void LoadResetLog();
   std::string state_dir_;
@@ -435,6 +439,14 @@ class Stream {
   // overrides the op cap.
   static constexpr int kMaxOpsPerCommandBuffer = 1024;
   static constexpr int kEarlyCommitOps = 16;
+  // Early commits are also paced in time: submitting a command buffer costs
+  // the driver ~150 us of a dedicated thread, which was the bottleneck for
+  // loops of tiny kernels (700 buffers per call). At most one early commit
+  // per kEarlyCommitIntervalUs; explicit syncs and the caps above still
+  // commit immediately. METAL_PJRT_EARLY_COMMIT_US overrides.
+  static constexpr int kEarlyCommitIntervalUs = 500;
+  // Copies and uniform fills up to this size run as compute kernels.
+  static constexpr uint64_t kComputeCopyMaxBytes = 16ull << 20;
   // Also commit once this many threads have been dispatched into one command
   // buffer (roughly tens of milliseconds of GPU work), so a batch of heavy
   // kernels cannot approach the GPU watchdog timeout, especially under
@@ -463,6 +475,9 @@ class Stream {
       absl::Span<const uint64_t> addrs,
       absl::Span<MTL::Buffer* const> resident,
       uint32_t threadgroup_memory_bytes);
+  absl::Status EncodeBuiltin(Device::Builtin kind,
+                             absl::Span<const BufferRef> buffers,
+                             const void* bytes, size_t bytes_len, uint64_t n);
   absl::Status EncodeCopy(BufferRef dst, BufferRef src, uint64_t size);
   absl::Status EncodeFill(BufferRef dst, uint32_t pattern, int pattern_bytes,
                           uint64_t size);
@@ -493,6 +508,7 @@ class Stream {
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
+  std::chrono::steady_clock::time_point last_commit_time_{};
   // Committed command buffers whose completion handler has not run yet.
   std::atomic<int> gpu_pending_{0};
   // ResolveCached state (guarded by mu_).
