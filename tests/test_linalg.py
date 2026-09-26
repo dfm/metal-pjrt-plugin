@@ -1,40 +1,27 @@
-"""Compare linear algebra / FFT results on the metal backend against CPU.
-
-  JAX_PLATFORMS=metal,cpu python scripts/linalg_check.py [-v] [--time [N ...]]
+"""Linear algebra / FFT on metal against a float64 CPU reference
+(tests/metal_testing.py), normwise in ulps per output.
 
 Float32 cholesky / triangular_solve go through Accelerate LAPACK (HLO
 rewriter), lu / qr / eigh / svd through the LAPACK JAX lowerings
 (jax_plugins/metal/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
-XLA's expanders / the pure-JAX paths for A/B comparisons. `--time` prints
-median wall times (ms) on metal and CPU at n = 256, 1000, 3000 (or the given
-sizes); eigh / svd are only timed for n <= 1000.
+XLA's expanders / the pure-JAX paths for A/B comparisons. Timings:
+bench/linalg_bench.py.
 
 Decompositions are compared through invariants (reconstruction, orthogonality,
 sorted spectra) rather than raw factors, which are only unique up to signs /
 phases. Complex values cannot currently live in metal buffers, so FFT checks
 reduce to real outputs (abs / real / imag) inside the jitted function.
 """
-import sys
-import traceback
-
 import numpy as np
 import jax
 import jax.numpy as jnp
+import pytest
 
-cpu = jax.devices("cpu")[0]
+from metal_testing import check
+
+pytestmark = pytest.mark.metal
+
 rng = np.random.default_rng(0)
-
-
-def on(dev, fn, *args):
-  with jax.default_device(dev):
-    out = jax.jit(fn)(*[jax.device_put(a, dev) for a in args])
-    return jax.tree.map(np.asarray, out)
-
-
-def compare(fn, *args, rtol=1e-3, atol=1e-3):
-  got = on(jax.devices()[0], fn, *args)
-  want = on(cpu, fn, *args)
-  jax.tree.map(lambda g, w: np.testing.assert_allclose(g, w, rtol=rtol, atol=atol), got, want)
 
 
 def spd(n):
@@ -149,77 +136,74 @@ CHECKS = {
     "grad cho_solve/logdet": (lambda a, y: jax.grad(gp_nll)(a, y), mat(30, 30), mat(30)),
     "grad eigh": (lambda a: jax.grad(lambda x: jnp.sum(jnp.linalg.eigh(x + x.T)[0] ** 3))(a), mat(10, 10)),
     "grad slogdet": (lambda a: jax.grad(lambda x: jnp.linalg.slogdet(x + 5 * jnp.eye(12))[1])(a), mat(12, 12)),
-    # Known failures: these materialize complex intermediates in device
-    # memory, which the MSL emitter does not support yet (not a lowering issue).
     "[complex buffers] fft2 * 2 / ifftn": (lambda x: jnp.abs(jnp.fft.ifftn(jnp.fft.fft2(x) * 2)), mat(8, 12)),
     "[complex buffers] fft grad": (lambda x: jax.grad(lambda v: jnp.sum(jnp.abs(jnp.fft.rfft(v)) ** 2))(x), mat(32)),
 }
 
 
-def timeit(dev, fn, *args, reps=5):
-  import time
-  with jax.default_device(dev):
-    f = jax.jit(fn)
-    xs = [jax.device_put(a, dev) for a in args]
-    jax.block_until_ready(f(*xs))
-    ts = []
-    for _ in range(reps):
-      t0 = time.perf_counter()
-      jax.block_until_ready(f(*xs))
-      ts.append(time.perf_counter() - t0)
-  return 1e3 * float(np.median(ts))
+
+# Known failures: these materialize complex intermediates in device memory,
+# which the MSL emitter does not support yet (not a lowering issue).
+XFAIL = {n for n in CHECKS if n.startswith("[complex buffers]")}
+
+# Measured (METAL_TEST_REPORT_ULPS=1, M3) and doubled; normwise ulps.
+ULPS = {
+    'cholesky 16': 1.4, 'cholesky 300': 4.3, 'eigh 8': 2, 'eigh 64': 6,
+    'eigh 300 (QDWH path)': 5.9, 'eigvalsh batched': 4.2, 'svd 12x8': 6,
+    'svd 8x12': 5.6, 'svd vals 40x40': 6.9, 'qr 12x8': 2.2, 'qr 8x12': 4.6,
+    'lu 16': 7.1, 'solve 16': 6.2, 'inv 16': 12, 'det/slogdet 16': 1.7,
+    'cho_solve 16': 8.1, 'fft abs': 2.5, 'fft re/im odd n': 3.8,
+    'ifft(fft) roundtrip': 2.4, 'rfft': 4.3, 'irfft(rfft) even/odd': 4,
+    'irfft of arbitrary spectrum': 5.6, 'fft2 / ifftn': 4,
+    'rfft2 / irfft2': 6.5, 'cholesky batched 3x40': 1.2,
+    'triangular_solve left=True lower=True trans=False unit=False': 1.6,
+    'triangular_solve left=True lower=True trans=False unit=True': 2.7,
+    'triangular_solve left=True lower=True trans=True unit=False': 1,
+    'triangular_solve left=True lower=True trans=True unit=True': 1.8,
+    'triangular_solve left=True lower=False trans=False unit=False': 2.2,
+    'triangular_solve left=True lower=False trans=False unit=True': 3.4,
+    'triangular_solve left=True lower=False trans=True unit=False': 1,
+    'triangular_solve left=True lower=False trans=True unit=True': 1,
+    'triangular_solve left=False lower=True trans=False unit=False': 3.1,
+    'triangular_solve left=False lower=True trans=False unit=True': 2.5,
+    'triangular_solve left=False lower=True trans=True unit=False': 1.7,
+    'triangular_solve left=False lower=True trans=True unit=True': 2.2,
+    'triangular_solve left=False lower=False trans=False unit=False': 5.6,
+    'triangular_solve left=False lower=False trans=False unit=True': 2.3,
+    'triangular_solve left=False lower=False trans=True unit=False': 2.3,
+    'triangular_solve left=False lower=False trans=True unit=True': 3,
+    'eigh upper (asymmetric input)': 5.2,
+    'eigh lower (asymmetric input)': 6.6, 'eigh batched vectors': 3.6,
+    'svd full 7x5': 8.9, 'svd batched 2x6x9': 6.8, 'qr complete 9x5': 1.8,
+    'qr batched 3x6x4': 2, 'lu 7x5 / 5x7': 1.5, 'lu batched pivots/perm': 3.6,
+    'solve batched': 3.5, 'cholesky batched 5x4': 1.6,
+    'cholesky 32 / 33': 2.3, 'cholesky upper small': 1.4,
+    'lu batched 4x4 / 2x2': 1, 'lu small non-square 5x3 / 3x5': 1,
+    'lu 32 / 33': 19, 'solve batched 4x4': 1.7, 'solve batched 4x4 grad': 3.9,
+    'triangular_solve 3x3 left=True lower=True trans=False unit=False': 1.3,
+    'triangular_solve 3x3 left=True lower=True trans=False unit=True': 1.1,
+    'triangular_solve 3x3 left=True lower=True trans=True unit=False': 1.7,
+    'triangular_solve 3x3 left=True lower=True trans=True unit=True': 1.2,
+    'triangular_solve 3x3 left=True lower=False trans=False unit=False': 1.2,
+    'triangular_solve 3x3 left=True lower=False trans=False unit=True': 1,
+    'triangular_solve 3x3 left=True lower=False trans=True unit=False': 1,
+    'triangular_solve 3x3 left=True lower=False trans=True unit=True': 1,
+    'triangular_solve 3x3 left=False lower=True trans=False unit=False': 1.9,
+    'triangular_solve 3x3 left=False lower=True trans=False unit=True': 1.8,
+    'triangular_solve 3x3 left=False lower=True trans=True unit=False': 1.4,
+    'triangular_solve 3x3 left=False lower=True trans=True unit=True': 1,
+    'triangular_solve 3x3 left=False lower=False trans=False unit=False': 1,
+    'triangular_solve 3x3 left=False lower=False trans=False unit=True': 1,
+    'triangular_solve 3x3 left=False lower=False trans=True unit=False': 1.9,
+    'triangular_solve 3x3 left=False lower=False trans=True unit=True': 1.1,
+    'grad cholesky': 9, 'grad solve': 7.4, 'grad cho_solve/logdet': 13,
+    'grad eigh': 12, 'grad slogdet': 2.7,
+}
 
 
-def timings(sizes):
-  ops = {
-      "cholesky": lambda a, b: jnp.linalg.cholesky(a),
-      "cho_solve": lambda a, b: jax.scipy.linalg.cho_solve((a, True), b),
-      "solve (lu)": lambda a, b: jnp.linalg.solve(a, b),
-      "gp nll+grad": lambda a, b: jax.value_and_grad(
-          lambda k, y: 0.5 * y @ jax.scipy.linalg.cho_solve(
-              jax.scipy.linalg.cho_factor(k, lower=True), y)
-          + jnp.sum(jnp.log(jnp.diag(jnp.linalg.cholesky(k)))))(a, b[:, 0]),
-      "eigh": lambda a, b: jnp.linalg.eigh(a),
-      "svd": lambda a, b: jnp.linalg.svd(a),
-  }
-  print(f"\n{'op':<14}{'n':>6}{'metal ms':>11}{'cpu ms':>9}", flush=True)
-  for n in sizes:
-    a = spd(n)
-    b = mat(n, 4)
-    for name, fn in ops.items():
-      if name in ("eigh", "svd") and n > 1000:
-        continue
-      try:
-        tm = timeit(jax.devices()[0], fn, a, b)
-      except Exception as e:  # noqa: BLE001
-        tm = float("nan")
-        print(f"  {name} {n}: {type(e).__name__}", flush=True)
-      tc = timeit(cpu, fn, a, b)
-      print(f"{name:<14}{n:>6}{tm:>11.1f}{tc:>9.1f}", flush=True)
-
-
-def main():
-  if "--time" in sys.argv:
-    sizes = [int(x) for x in sys.argv[sys.argv.index("--time") + 1:]
-             if x.isdigit()] or [256, 1000, 3000]
-    print("backend:", jax.default_backend())
-    timings(sizes)
-    return 0
-  print("backend:", jax.default_backend())
-  fails = 0
-  for name, (fn, *args) in CHECKS.items():
-    try:
-      compare(fn, *args)
-      print(f"PASS {name}", flush=True)
-    except Exception as e:  # noqa: BLE001
-      fails += 1
-      msg = (str(e).strip().splitlines() or [""])[0][:200]
-      print(f"FAIL {name}: {type(e).__name__}: {msg}", flush=True)
-      if "-v" in sys.argv:
-        traceback.print_exc()
-  print(f"\n{len(CHECKS) - fails}/{len(CHECKS)} passed")
-  return 1 if fails else 0
-
-
-if __name__ == "__main__":
-  sys.exit(main())
+@pytest.mark.parametrize("name", [
+    pytest.param(n, marks=[pytest.mark.xfail(reason="complex buffers", strict=True)] if n in XFAIL else [])
+    for n in CHECKS])
+def test_linalg(name):
+  fn, *args = CHECKS[name]
+  check(fn, *args, ulps=ULPS.get(name, 0), normwise=True, name=name)

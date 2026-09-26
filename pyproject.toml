@@ -15,3 +15,12 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["jax_plugins*"]
+
+# tests/: see tests/conftest.py. No pytest-timeout and no xdist: a timeout
+# ends the process with GPU work in flight, and parallel workers put several
+# GPU jobs on 8 GB. A slow test gets a stack dump (faulthandler) instead.
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-p no:timeout -p no:xdist -p no:cacheprovider"
+faulthandler_timeout = 240
+markers = ["metal: needs the Metal device (run under scripts/device_lock.py)"]

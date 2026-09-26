@@ -1,10 +1,9 @@
 # XLA op coverage audit (XLA @ 91888df6)
 
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
-works. "Verified" means observed in `scripts/lax_coverage.py` (run with
-`JAX_PLATFORMS=metal,cpu`; 164/167 cases pass on 2026-09-26, the failures
-being f32->bf16 and f32->f8e4m3 rounding and int4). File references are into
-the XLA tree.
+works. "Verified" means observed in `tests/test_lax.py` (against a float64
+CPU reference, with tolerances in ulps; 166/167 cases pass on 2026-09-26, int4
+is the known failure). File references are into the XLA tree.
 
 ## Execution paths the backend implements
 
@@ -31,7 +30,7 @@ emitter's default case ("Unsupported instruction opcode").
 |---|---|---|---|
 | elementwise, broadcast, reshape, transpose, slice, concat, iota, pad, reverse, map, clamp, select, convert, bitcast-convert, reduce-precision, compare | loop / transpose / concat MLIR emitters | OK | verified; f64 and complex excluded |
 | reduce | reduction MLIR emitter | OK | verified incl. 1M and column reductions |
-| reduce-window, cumulative ops | elemental MLIR (+ scan rewriters); cumsum/cumprod/cummax/cummin over the minor dim -> `MetalScanRewriter` -> `metal$scan` | OK | verified incl. reverse, f32/f16/bf16/s32 (`scripts/fused_kernels_check.py`) |
+| reduce-window, cumulative ops | elemental MLIR (+ scan rewriters); cumsum/cumprod/cummax/cummin over the minor dim -> `MetalScanRewriter` -> `metal$scan` | OK | verified incl. reverse, f32/f16/bf16/s32 (`tests/test_fused_kernels.py`) |
 | softmax / log-softmax over the minor dim | `MetalSoftmaxRewriter` -> `metal$softmax` (one kernel) | OK | verified f32/f16/bf16, n <= 16384 |
 | gather, dynamic-slice | elemental MLIR | OK | verified |
 | dynamic-update-slice | in-place DUS emitter or loop | OK | verified |
@@ -41,12 +40,12 @@ emitter's default case ("Unsupported instruction opcode").
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
 | dot, f16/bf16/f32 | BlasLt thunk over MPS | OK | verified incl. batched, int8/int32 fell back to elemental loops |
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | BLAS thunk must reject; today those dtypes fail earlier |
-| dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | MPS GEMM + one MSL epilogue kernel (bias, relu / tanh-gelu / silu, aux); verified by `scripts/epilogue_check.py` and `blas:metal_blas_lt_test` |
+| dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | MPS GEMM + one MSL epilogue kernel (bias, relu / tanh-gelu / silu, aux); verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
 | sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
-| cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `scripts/linalg_check.py` |
+| cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
 | triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
 | lu / geqrf / householder_product / eigh / svd | JAX lowerings in `jax_plugins/metal/linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
 | fft | `jax_plugins/metal/lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | verified (fft, rfft2); a native FFT is still missing |
@@ -62,15 +61,26 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `scripts/ffi_check.py` calls `metal$softmax` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `tests/test_ffi.py` calls `metal$softmax` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 
 The emitters accept every XLA type; nothing demotes f64 or complex, so they
 reach the MSL translation and are rejected there. bf16 and f8 conversions
-are expanded to integer math by XLA; a rounding mismatch against CPU for
-f32 to bf16 and f32 to f8e4m3 was observed and needs investigation. Sub-byte
-integers (s4/u4) are rejected by the emitter.
+are expanded to integer math by XLA and round exactly (0 ulps against CPU).
+The mismatch seen earlier came from the test converting back to f32 inside
+the same jit: XLA's GPU pipeline removes f32 -> bf16/f16 -> f32 pairs
+(`SimplifyFPConversions` under `xla_allow_excess_precision`, on by default,
+as on CUDA), so the value never rounds. Sub-byte integers (s4/u4) are
+rejected by the emitter.
+
+A 16-bit -> f32 dot (`preferred_element_type`) small enough that XLA keeps it
+in a loop fusion (e.g. 4x3 @ 3x6) rounds every product to the input type:
+XLA's elemental `EmitMulAdd` multiplies in the operand type before
+converting to the f32 accumulator (`elemental_hlo_to_mlir.cc:494-501`).
+Relative error bf16 1.4e-2, f16 6.7e-4; dots that reach GEMM are fine.
+Wrong values, not an exception: JAX's `testDotPreferredElement2` and a
+strict xfail in `tests/test_steel_gemm.py` track it.
 
 ## Fixes ranked by payoff
 
@@ -80,7 +90,7 @@ integers (s4/u4) are rejected by the emitter.
 3. ~~`xla_gpu_enable_cub_radix_sort=false` by default~~ (done).
 4. ~~BlasLt epilogues~~ (done).
 5. ~~Argument buffers for kernels with more than 31 buffers~~ (done).
-6. bf16/f8 conversion rounding.
+6. ~~bf16/f8 conversion rounding~~ (not a bug: excess precision, above).
 7. ~~Reject f64 and complex in the BLAS thunk explicitly~~ (done:
    UNIMPLEMENTED from `metal_blas.cc`).
 8. A native FFT (the dense-DFT lowering is O(n^2); MPS has no FFT for

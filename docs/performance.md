@@ -419,7 +419,7 @@ dependent computations raise (`INTERNAL: Metal command buffer failed ...
   version; the fast path is a 5-line change if the latency matters more.
 - Tests: runtime tests inject failures (`FailNextCommandBufferForTesting`,
   no real GPU fault); `metal_executor_test` checks error_cb, events and
-  BlockHostUntilDone; `scripts/gpu_error_check.py` runs a JAX program with
+  BlockHostUntilDone; `tests/test_gpu_errors.py` runs a JAX program with
   `METAL_PJRT_FAIL_COMMAND_BUFFER=n` (testing only: the n-th committed
   command buffer counts as failed) for n = 1..8 and checks that every step
   either returns correct values or raises, and that each failure surfaces.
@@ -441,8 +441,8 @@ Steady-state nanoGPT step is ~190 ms, so a warm first call is roughly half
 executable load (deserialize, `newLibraryWithSource` hitting the system
 shader cache, buffer setup) and half the run; the hit saves ~350 ms of XLA
 compilation. Process start to first MLP result, which also covers the ~20
-small jits of parameter init, went 1463 -> 455 ms. `scripts/lax_coverage.py`
-runs in 7 s cold, 2 s warm. With the very first Metal shader compile in a
+small jits of parameter init, went 1463 -> 455 ms. The lax coverage sweep (now
+`tests/test_lax.py`) ran in 7 s cold, 2 s warm. With the very first Metal shader compile in a
 boot (system shader cache cold) the MLP first call was 541 ms without the
 cache.
 

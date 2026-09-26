@@ -15,4 +15,4 @@ if [[ -x .venv/bin/python ]] && command -v uv >/dev/null; then
 else
   python3 -m pip install -e . >/dev/null
 fi
-echo "installed; try: JAX_PLATFORMS=metal python scripts/smoke_test.py"
+echo "installed; try: scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py"

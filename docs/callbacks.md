@@ -5,9 +5,9 @@ Status: **supported** under `jit` on a single metal device:
 `jax.experimental.io_callback` (ordered and unordered), `jax.debug.callback`
 and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
 exception in the callback surfaces as a `JaxRuntimeError` carrying its
-message. Tests: `scripts/callback_check.py` (compares against cpu),
-`scripts/lax_coverage.py` (three callback cases), and tinygp's quasiseparable
-solver (`jax.debug.callback(_check_sorted, ...)`) in `scripts/tinygp_check.py`.
+message. Tests: `tests/test_callbacks.py` (compares against cpu),
+`tests/test_lax.py` (three callback cases), and tinygp's quasiseparable
+solver (`jax.debug.callback(_check_sorted, ...)`) in `tests/test_tinygp.py`.
 checkify's runtime-error path still uses the TPU rule (`debug_check` is a
 no-op; see `jax_plugins/metal/lowerings.py`).
 

@@ -1,8 +1,13 @@
-"""Quick op-coverage sweep on the Metal backend: each case runs in isolation
-and reports pass/fail with the first line of the error."""
-import faulthandler, sys, traceback
+"""Quick op-coverage sweep on metal: each case runs in isolation. Floating
+results are compared with a float64 CPU reference in ulps
+(tests/metal_testing.py); tolerances are ~2x the measured error."""
 import numpy as np
 import jax, jax.numpy as jnp
+import pytest
+
+from metal_testing import check
+
+pytestmark = pytest.mark.metal
 
 CASES = {}
 def case(name):
@@ -12,23 +17,24 @@ def case(name):
     return deco
 
 f32 = jnp.float32
+bf16 = jnp.bfloat16
+rng = np.random.default_rng(0)
 @case("matmul f32 64x64")
 def _():
-    a = jnp.arange(64*64, dtype=f32).reshape(64, 64) / 4096; b = a.T + 1
-    np.testing.assert_allclose(np.asarray(a @ b), np.asarray(a) @ np.asarray(b), rtol=1e-4, atol=1e-4)
+    a = np.arange(64*64, dtype=np.float32).reshape(64, 64) / 4096; b = a.T + 1
+    check(lambda a, b: a @ b, a, b, ulps=4.5, normwise=True, name="matmul")
 @case("matmul bf16")
 def _():
-    a = jnp.ones((32, 48), jnp.bfloat16); b = jnp.ones((48, 16), jnp.bfloat16)
-    np.testing.assert_allclose(np.asarray(a @ b).astype(np.float32), 48.0)
+    a = jnp.ones((32, 48), bf16); b = jnp.ones((48, 16), bf16)
+    np.testing.assert_array_equal(np.asarray(a @ b).astype(np.float32), 48.0)
 @case("batched matmul")
 def _():
     a = jnp.ones((4, 8, 16), f32); b = jnp.ones((4, 16, 8), f32)
-    np.testing.assert_allclose(np.asarray(jnp.einsum("bij,bjk->bik", a, b)), 16.0)
+    np.testing.assert_array_equal(np.asarray(jnp.einsum("bij,bjk->bik", a, b)), 16.0)
 @case("dense layer + relu + softmax")
 def _():
-    x = jnp.linspace(-1, 1, 32*16, dtype=f32).reshape(32, 16); w = jnp.ones((16, 8), f32) * 0.1
-    y = jax.nn.softmax(jax.nn.relu(x @ w + 0.5), axis=-1)
-    np.testing.assert_allclose(np.asarray(y).sum(-1), 1.0, rtol=1e-5)
+    x = np.linspace(-1, 1, 32*16, dtype=np.float32).reshape(32, 16); w = np.full((16, 8), 0.1, np.float32)
+    check(lambda x, w: jax.nn.softmax(jax.nn.relu(x @ w + 0.5), axis=-1), x, w, ulps=1, normwise=True, name="dense")
 @case("transpose + reshape")
 def _():
     x = jnp.arange(24, dtype=f32).reshape(2, 3, 4)
@@ -79,26 +85,26 @@ def _():
     m = float(u.mean()); assert 0.4 < m < 0.6, m
 @case("bf16 elementwise")
 def _():
-    x = jnp.linspace(0, 1, 64, dtype=jnp.bfloat16)
-    np.testing.assert_allclose(np.asarray(jnp.tanh(x) * 2).astype(np.float32), np.tanh(np.asarray(x).astype(np.float32)) * 2, rtol=2e-2)
+    x = np.linspace(0, 1, 64, dtype=np.float32).astype(bf16)
+    check(lambda x: jnp.tanh(x) * 2, x, ulps=1, name="bf16 tanh")
 @case("int32 ops")
 def _():
     x = jnp.arange(10, dtype=jnp.int32)
     np.testing.assert_array_equal(np.asarray((x * 3) % 4 + (x // 2)), (np.arange(10) * 3) % 4 + np.arange(10) // 2)
 @case("f16 math")
 def _():
-    x = jnp.linspace(0.1, 2.0, 32, dtype=jnp.float16)
-    np.testing.assert_allclose(np.asarray(jnp.log(x) + jnp.sqrt(x)).astype(np.float32), np.log(np.asarray(x).astype(np.float32)) + np.sqrt(np.asarray(x).astype(np.float32)), rtol=1e-2)
+    x = np.linspace(0.1, 2.0, 32, dtype=np.float16)
+    check(lambda x: jnp.log(x) + jnp.sqrt(x), x, ulps=7.2, name="f16 log+sqrt")
 @case("grad of mlp")
 def _():
     def loss(w, x): return jnp.sum(jnp.tanh(x @ w) ** 2)
-    w = jnp.ones((8, 4), f32) * 0.1; x = jnp.ones((16, 8), f32)
-    g = jax.grad(loss)(w, x); assert np.isfinite(np.asarray(g)).all()
-@case("conv2d (expected unsupported)")
+    w = rng.standard_normal((8, 4)).astype(np.float32) * 0.3; x = rng.standard_normal((16, 8)).astype(np.float32)
+    check(jax.grad(loss), w, x, ulps=1.8, normwise=True, name="grad mlp")
+@case("conv2d")
 def _():
-    x = jnp.ones((1, 8, 8, 3), f32); w = jnp.ones((3, 3, 3, 4), f32)
-    y = jax.lax.conv_general_dilated(x, w, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC"))
-    assert y.shape == (1, 8, 8, 4)
+    x = rng.standard_normal((1, 8, 8, 3)).astype(np.float32); w = rng.standard_normal((3, 3, 3, 4)).astype(np.float32)
+    check(lambda x, w: jax.lax.conv_general_dilated(x, w, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC")),
+          x, w, ulps=4.2, normwise=True, name="conv2d")
 @case("iota + where + select")
 def _():
     x = jnp.arange(12, dtype=f32)
@@ -108,26 +114,7 @@ def _():
     x = jnp.ones((2048, 2048), f32)
     assert float(jnp.sum(x * 2 + 1)) == 3 * 2048 * 2048
 
-def main():
-    print("backend:", jax.default_backend())
-    ok = 0
-    for name, fn in CASES.items():
-        if name.startswith("SKIP"):
-            print(f"SKIP {name}", flush=True); continue
-        print(f"RUN  {name}", flush=True)
-        # Report a slow case with a stack dump, but never exit: exiting with
-        # GPU work in flight is what wedged the driver once. GPU hangs end
-        # with the runtime's bounded waits (watchdog -> error).
-        faulthandler.dump_traceback_later(180, repeat=True)
-        try:
-            fn(); ok += 1; print(f"PASS {name}", flush=True)
-        except Exception as e:  # noqa
-            msg = str(e).strip().splitlines()[0][:160] if str(e).strip() else type(e).__name__
-            print(f"FAIL {name}: {type(e).__name__}: {msg}", flush=True)
-        finally:
-            faulthandler.cancel_dump_traceback_later()
-    print(f"{ok}/{len(CASES)} passed")
-    return 0 if ok == len(CASES) else 1
 
-if __name__ == "__main__":
-    sys.exit(main())
+@pytest.mark.parametrize("name", list(CASES))
+def test_op(name):
+    CASES[name]()

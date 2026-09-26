@@ -35,6 +35,8 @@ differs from the MLX-based approaches.
 - `metal_pjrt_plugin/pjrt/`: the plugin dylib target.
 - `jax_plugins/metal/`: Python registration package modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
+- `tests/`: pytest suite (see below); `scripts/jax_known_failures/`: the
+  expected failures of JAX's own tests.
 - `bench/`: benchmarks (Python, and the C++ dispatch microbenchmark).
 - `scripts/build_spike.sh`: staged overnight build that measures whether the
   XLA GPU stack compiles here without CUDA, and what it costs.
@@ -44,7 +46,8 @@ differs from the MLX-based approaches.
 ```
 brew install bazelisk
 scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/metal, pip install -e .
-JAX_PLATFORMS=metal python scripts/smoke_test.py
+scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
+scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
@@ -53,6 +56,16 @@ bench/run_all.sh                                               # benchmarks vs c
 
 Run one GPU-heavy job at a time (the scripts take a device lock); see
 `docs/performance.md` for the memory policy and why.
+
+`tests/` is a pytest suite; tests that need the GPU are marked `metal` and
+refuse to run outside `scripts/device_lock.py` (`-m "not metal"` runs the
+rest anywhere). Numerics are compared with a float64 CPU reference in ulps
+of the output dtype (`tests/metal_testing.py`), with tolerances about twice
+the measured error; `METAL_TEST_REPORT_ULPS=1 ... pytest -s` prints the
+measured errors (and CPU float32's, for comparison). No test timeouts:
+killing a process with GPU work in flight can wedge the driver, so slow
+tests get a faulthandler stack dump and GPU hangs end through the runtime's
+bounded waits.
 
 `scripts/build_spike.sh` is the staged overnight build of XLA's GPU stack used
 to establish that the dependency graph compiles here at all.

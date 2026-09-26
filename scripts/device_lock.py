@@ -34,7 +34,9 @@ def main(argv):
                 time.sleep(2)
         f.seek(0); f.truncate()
         f.write(f"{os.getpid()} {' '.join(argv)}\n"); f.flush()
-        return subprocess.call(argv)
+        # Tells tests/conftest.py the lock is held.
+        env = dict(os.environ, JAX_METAL_DEVICE_LOCK_HELD=str(os.getpid()))
+        return subprocess.call(argv, env=env)
 
 
 if __name__ == "__main__":
