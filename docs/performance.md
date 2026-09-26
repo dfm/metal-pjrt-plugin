@@ -401,6 +401,10 @@ dependent computations raise (`INTERNAL: Metal command buffer failed ...
   anyway when it has no error callback (XLA's plain callbacks free memory or
   complete transfers) and passes the error on; with one, it is skipped and
   the callback gets the error.
+- Known limitation: a dependency on a value whose Event or Stream was
+  already destroyed resolves as OK (its records go with it), so the error is
+  lost if a failed stream or Event dies before its dependents are queried;
+  rare with PJRT, which keeps its streams and pooled events alive.
 - `BlockHostUntilDone` no longer puts the StreamExecutor stream into its
   error state on a GPU failure (as on CUDA; XLA CHECKs `ok()` on pooled
   streams); a failing host callback without `error_cb` still does.
