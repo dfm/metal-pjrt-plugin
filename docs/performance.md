@@ -104,3 +104,29 @@ Policy now:
   benchmarks and sweeps; `scripts/run_jax_tests.sh` runs JAX's tests in one
   process with per-test in-process timeouts (pytest-timeout, thread method)
   and never signal-kills workers.
+
+## Dispatch-bound programs: decision (2026-09-26)
+
+Small-kernel programs (JAX scans, tinygp's quasiseparable solvers) are bound
+by per-dispatch cost: XLA thunk work plus ~30-40 us in our runtime per
+launch, and ~1 ms per command-buffer round trip. On CUDA the same programs
+are fast because XLA converts runs of thunks into CUDA graphs and replays
+them; that conversion is off for us (OneAPI capability + our defaults).
+
+Options considered:
+- MPSGraph for program subsets: rejected. It is the approach Apple's
+  jax-metal took; the library is opaque, has a documented record of bugs and
+  unpredictable performance, and still issues roughly one kernel per op for
+  the slices/concats/small matmuls these programs consist of.
+- Metal-specific region emitters (associative scan as one kernel, in-kernel
+  while loops for small-state loops): high leverage for scan-shaped programs
+  but workload-specific. Deferred; not adding a scan primitive for now.
+- StreamExecutor `CommandBuffer` implemented on Metal indirect command
+  buffers: chosen. General, mirrors what XLA already does on CUDA/ROCm, and
+  Metal's ICB is the native equivalent (record once, replay with one call,
+  per-command barriers). Design: one argument convention for all kernels
+  (pointers read from a per-executable address table, so recorded commands
+  never change and `Update` is a memcpy of addresses), copies and memsets as
+  compute kernels, serial barriers, untracked resources with `useResources`.
+  Gate: a standalone spike must show ICB replay is clearly cheaper per
+  command than direct encoding before the plumbing is built.
