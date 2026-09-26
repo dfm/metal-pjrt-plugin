@@ -1,21 +1,9 @@
-{"backend": "metal", "case": "elementwise chain 16M", "ms": 2.149, "best_ms": 2.099}
-{"backend": "metal", "case": "reduce rows 4096x4096", "ms": 1.274, "best_ms": 1.222}
-{"backend": "metal", "case": "reduce cols 4096x4096", "ms": 1.311, "best_ms": 1.069}
-{"backend": "metal", "case": "reduce all 16M", "ms": 1.315, "best_ms": 1.131}
-{"backend": "metal", "case": "softmax 8192x1024", "ms": 2.165, "best_ms": 2.1}
-{"backend": "metal", "case": "layernorm fwd 8192x1024", "ms": 2.108, "best_ms": 1.913}
-{"backend": "metal", "case": "layernorm fwd+bwd 8192x1024", "ms": 2.954, "best_ms": 2.708}
-{"backend": "metal", "case": "transpose 4096x4096", "ms": 1.935, "best_ms": 1.869}
-{"backend": "metal", "case": "cumsum 4096x4096 rows", "ms": 3.869, "best_ms": 3.828}
-{"backend": "metal", "case": "adam 50x1M params", "ms": 17.825, "best_ms": 17.087}
-{"backend": "metal", "case": "matmul f32 1024", "ms": 1.581, "best_ms": 1.371}
-{"backend": "metal", "case": "matmul f32 2048", "ms": 7.898, "best_ms": 7.305}
-{"backend": "metal", "case": "matmul f32 4096", "ms": 51.276, "best_ms": 48.792}
-{"backend": "metal", "case": "matmul bf16 2048", "ms": 11.388, "best_ms": 8.729}
-{"backend": "metal", "case": "batched matmul 16x512", "ms": 1.997, "best_ms": 1.982}
-{"backend": "metal", "case": "attention fwd 8x8x512x64", "ms": 6.03, "best_ms": 5.681}
-{"backend": "metal", "case": "attention fwd+bwd", "ms": 13.256, "best_ms": 12.635}
-{"backend": "metal", "case": "nanoGPT fwd (loss)", "ms": NaN, "best_ms": NaN, "error": "JaxRuntimeError: UNIMPLEMENTED: Metal BlasLt: epilogue 32 is not supported [executable_name='jit_gpt_loss']"}
-{"backend": "metal", "case": "nanoGPT train step", "ms": 183.799, "best_ms": 182.497}
-{"backend": "metal", "case": "cnn fwd 32x32x32", "ms": 2.653, "best_ms": 2.645}
-{"backend": "metal", "case": "cnn fwd+bwd", "ms": 5.854, "best_ms": 5.664}
+{"backend": "metal", "case": "elementwise chain 16M", "ms": 2.156, "best_ms": 2.082}
+{"backend": "metal", "case": "reduce rows 4096x4096", "ms": 1.291, "best_ms": 1.256}
+{"backend": "metal", "case": "reduce cols 4096x4096", "ms": 1.379, "best_ms": 1.256}
+{"backend": "metal", "case": "reduce all 16M", "ms": 1.388, "best_ms": 1.068}
+{"backend": "metal", "case": "softmax 8192x1024", "ms": 1.572, "best_ms": 1.289}
+{"backend": "metal", "case": "layernorm fwd 8192x1024", "ms": 2.117, "best_ms": 1.916}
+{"backend": "metal", "case": "layernorm fwd+bwd 8192x1024", "ms": 2.884, "best_ms": 2.569}
+{"backend": "metal", "case": "transpose 4096x4096", "ms": 1.883, "best_ms": 1.787}
+{"backend": "metal", "case": "cumsum 4096x4096 rows", "ms": 1.85, "best_ms": 1.726}
