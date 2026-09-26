@@ -4,6 +4,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 # Serialize against other GPU jobs (see scripts/device_lock.py).
 if [[ -z "${JAX_METAL_LOCKED:-}" ]]; then exec env JAX_METAL_LOCKED=1 scripts/device_lock.py -- "$0" "$@"; fi
+# Refuse to time a GPU that was reset since boot (it runs slow until reboot).
+if [[ -z "${BENCH_ALLOW_DEGRADED:-}" ]]; then
+  scripts/gpu_health.py --strict || { echo "set BENCH_ALLOW_DEGRADED=1 to run anyway" >&2; exit 1; }
+fi
 mkdir -p bench/results
 ONLY=${BENCH_ONLY:-}
 for label in metal cpu; do
