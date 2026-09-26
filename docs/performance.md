@@ -85,11 +85,12 @@ work then left them stuck inside the driver.
 
 Policy now:
 
-- **Budget from free memory.** At device creation the plugin computes a
-  per-process budget = min(recommended working set, reclaimable system
-  memory - 1 GB), never below 256 MB, and reports it to XLA as the device
-  total, so the BFC pool is sized as a fraction of that (default 0.6) rather
-  than of all RAM. A second process started later sees less.
+- **Budget as a ceiling, guard as the protection.** The pool may grow to
+  min(recommended working set, 3/4 of physical RAM); regions are only mapped
+  when used. (A first version derived the budget from free memory at startup;
+  on a machine busy with builds that came out at 1.5 GB and starved ordinary
+  workloads, so the static budget is generous and the dynamic guard below
+  does the real work.)
 - **Allocation guard.** Any allocation of 1 MB or more is refused with
   RESOURCE_EXHAUSTED if it would leave less than 512 MB reclaimable, so a
   program fails cleanly instead of pushing the machine into swap.

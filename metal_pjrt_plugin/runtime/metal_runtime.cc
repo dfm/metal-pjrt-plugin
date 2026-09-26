@@ -133,17 +133,18 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   info.supports_metal4 = info.gpu_family >= 9;
   info.simd_width = 32;
   {
-    // Leave 1 GB for the OS and other processes; never budget less than
-    // 256 MB so a busy machine still gets a usable device.
-    const uint64_t kReserve = 1ull << 30, kMinBudget = 256ull << 20;
-    uint64_t reclaimable = ReclaimableMemoryBytes();
-    uint64_t budget = reclaimable > kReserve ? reclaimable - kReserve : 0;
-    budget = std::max(budget, kMinBudget);
+    // The pool may grow to 3/4 of physical RAM (XLA's own default for
+    // dedicated GPUs), capped by the GPU's recommended working set. This is a
+    // ceiling, not a reservation: regions are only mapped when used, and the
+    // allocation-time guard below refuses growth that would leave the system
+    // without free memory, so a busy machine degrades to clean
+    // RESOURCE_EXHAUSTED errors instead of swapping.
+    uint64_t budget = PhysicalMemoryBytes() / 4 * 3;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
     dev->memory_budget_ = budget;
     LOG(INFO) << "Metal device " << ordinal << " (" << info.name
-              << "): memory budget " << (budget >> 20) << " MB of "
-              << (reclaimable >> 20) << " MB reclaimable system memory";
+              << "): memory budget " << (budget >> 20) << " MB, "
+              << (ReclaimableMemoryBytes() >> 20) << " MB reclaimable now";
   }  // All Apple GPUs; confirmed per-pipeline on creation.
   return dev;
 }

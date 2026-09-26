@@ -17,7 +17,8 @@ def build(kind, params, x, yerr):
     if kind == "quasisep":
         k = quasisep.Matern32(scale=jnp.exp(params["log_scale"]), sigma=jnp.exp(params["log_sigma"])) + \
             quasisep.SHO(omega=jnp.exp(params["log_omega"]), quality=jnp.exp(params["log_q"]), sigma=jnp.exp(params["log_sigma2"]))
-        return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * params["log_jitter"]), solver=QuasisepSolver, mean=params["mean"])
+        return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * params["log_jitter"]), solver=QuasisepSolver, mean=params["mean"],
+                               assume_sorted=True)  # the sortedness check is a jax.debug.callback
     k = jnp.exp(2 * params["log_sigma"]) * kernels.Matern32(scale=jnp.exp(params["log_scale"])) + \
         jnp.exp(2 * params["log_sigma2"]) * kernels.ExpSquared(scale=jnp.exp(params["log_omega"]))
     return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * params["log_jitter"]), mean=params["mean"])

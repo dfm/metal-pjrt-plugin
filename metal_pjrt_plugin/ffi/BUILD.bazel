@@ -7,6 +7,7 @@ cc_library(
     name = "metal_ffi",
     srcs = [
         "metal_ffi.cc",
+        "python_callback_ffi.cc",
         "scan_ffi.cc",
         "softmax_ffi.cc",
         "test_scale_ffi.cc",

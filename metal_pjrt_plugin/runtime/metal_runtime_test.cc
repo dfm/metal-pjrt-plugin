@@ -251,7 +251,7 @@ TEST_F(MetalRuntimeTest, MemoryBudgetAndAllocationGuard) {
   // set; it must be usable but never the whole machine.
   EXPECT_GE(dev_->memory_budget(), 256ull << 20);
   EXPECT_LE(dev_->memory_budget(), dev_->info().recommended_working_set);
-  EXPECT_LE(dev_->memory_budget(), PhysicalMemoryBytes());
+  EXPECT_LE(dev_->memory_budget(), PhysicalMemoryBytes() / 4 * 3);
   // Asking for more than the machine can hand out without swapping is
   // refused cleanly (RESOURCE_EXHAUSTED), not attempted.
   uint64_t too_much = std::min<uint64_t>(dev_->info().max_buffer_length,

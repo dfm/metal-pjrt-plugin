@@ -1,0 +1,40 @@
+package(default_visibility = ["//visibility:public"])
+
+# Dense linear algebra via Apple Accelerate (LAPACK/BLAS on the CPU, zero
+# copy on unified memory): FFI handlers plus the HLO pass that targets them.
+# See lapack_ffi.cc. Handlers register statically, so this is alwayslink.
+cc_library(
+    name = "lapack_ffi",
+    srcs = ["lapack_ffi.cc"],
+    linkopts = ["-framework Accelerate"],
+    deps = [
+        "//metal_pjrt_plugin/ffi:metal_ffi",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/backends/gpu:ffi",
+        "@xla//xla/ffi",
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/stream_executor:stream",
+    ],
+    alwayslink = True,
+)
+
+cc_library(
+    name = "linalg_rewriter",
+    srcs = ["linalg_rewriter.cc"],
+    hdrs = ["linalg_rewriter.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/pass:hlo_pass",
+        "@xla//xla/service/gpu:backend_configs_cc",
+        "@xla//xla/tsl/platform:errors",
+    ],
+)

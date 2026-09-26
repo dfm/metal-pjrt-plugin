@@ -192,4 +192,5 @@ def register() -> None:
   reg("fft", _fft)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
+  from jax_plugins.metal import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
   _registered = True

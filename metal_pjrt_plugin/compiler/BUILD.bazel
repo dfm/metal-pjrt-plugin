@@ -10,6 +10,9 @@ cc_library(
         "//metal_pjrt_plugin/compiler/passes:scan_rewriter",
         "//metal_pjrt_plugin/compiler/passes:softmax_rewriter",
         "//metal_pjrt_plugin/compiler/passes:sort_expander",
+        # linalg (Accelerate LAPACK): the rewriter and the handlers it targets.
+        "//metal_pjrt_plugin/linalg:lapack_ffi",
+        "//metal_pjrt_plugin/linalg:linalg_rewriter",
         "//metal_pjrt_plugin/runtime:constants_container",
         "//metal_pjrt_plugin/stream_executor:metal_platform_id",
         "@com_google_absl//absl/log",

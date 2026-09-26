@@ -1,0 +1,137 @@
+"""LAPACK-backed lowerings of JAX's linear algebra primitives on "metal".
+
+The plugin's C++ side (metal_pjrt_plugin/linalg/lapack_ffi.cc) registers FFI
+handlers that synchronize the Metal stream and run Apple Accelerate's LAPACK
+on the unified-memory buffers (zero copy). This module lowers JAX primitives
+to those handlers, mirroring JAX's own CPU lowerings (``lapack_*_ffi``): the
+matrix operands and results request column-major layouts (XLA inserts the
+transposes on the GPU), so the handlers see LAPACK's native layout.
+
+  lu_p                  -> metal$lapack_getrf (lu, 0-based pivots, permutation)
+  geqrf_p               -> metal$lapack_geqrf
+  householder_product_p -> metal$lapack_orgqr
+  eigh_p                -> metal$lapack_syevd
+  svd_p                 -> metal$lapack_gesdd / metal$lapack_gesdd_novec
+
+cholesky_p and triangular_solve_p need nothing here: their generic lowerings
+emit the HLO ``cholesky`` / ``triangular_solve`` ops, which the compiler's
+MetalLinalgRewriter turns into metal$cholesky / metal$triangular_solve.
+
+Only float32 goes through LAPACK; other dtypes and unsupported options
+(eigh/svd subsets, Jacobi/polar/QDWH algorithms) fall back to the previous
+platform-independent lowerings. ``METAL_PJRT_DISABLE_LAPACK=1`` disables all of
+this (and the C++ rewriter), restoring XLA's expanders for A/B comparisons.
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+PLATFORM = "metal"
+
+
+def lapack_disabled() -> bool:
+  v = os.environ.get("METAL_PJRT_DISABLE_LAPACK", "")
+  return v not in ("", "0")
+
+
+def _is_f32(aval) -> bool:
+  return np.dtype(aval.dtype) == np.float32
+
+
+def _static(avals) -> bool:
+  from jax._src import core
+  return all(core.is_constant_shape(a.shape) for a in avals)
+
+
+def register() -> None:
+  """Register the LAPACK lowerings for platform "metal" (after lowerings.py's
+  own registrations, which these override for float32)."""
+  if lapack_disabled():
+    logger.info("metal: METAL_PJRT_DISABLE_LAPACK set; not using LAPACK")
+    return
+
+  from jax._src.interpreters import mlir
+  from jax._src.lax import linalg as ll
+  from jax._src.tpu.linalg import eigh as tpu_eigh
+  from jax._src.tpu.linalg import svd as tpu_svd
+
+  ffi = ll._linalg_ffi_lowering
+
+  def ok(ctx):
+    return (all(_is_f32(a) for a in ctx.avals_in if a.dtype.kind == "f")
+            and all(a.dtype.kind in "fi" for a in ctx.avals_in)
+            and _static((*ctx.avals_in, *ctx.avals_out)))
+
+  # lu ---------------------------------------------------------------------
+  lu_fallback = mlir.lower_fun(ll._lu_python, multiple_results=True)
+
+  def lu_rule(ctx, operand):
+    if not ok(ctx):
+      return lu_fallback(ctx, operand)
+    return ffi("metal$lapack_getrf", operand_output_aliases={0: 0})(
+        ctx, operand)
+
+  # qr ---------------------------------------------------------------------
+  def geqrf_rule(ctx, operand):
+    if not ok(ctx):
+      return ll._geqrf_lowering_rule(ctx, operand)
+    return ffi("metal$lapack_geqrf", operand_output_aliases={0: 0})(
+        ctx, operand)
+
+  def householder_rule(ctx, a, taus):
+    m, n = ctx.avals_in[0].shape[-2:]
+    if not ok(ctx) or m < n:
+      return ll._householder_product_lowering(ctx, a, taus)
+    return ffi("metal$lapack_orgqr", operand_output_aliases={0: 0})(
+        ctx, a, taus)
+
+  # eigh -------------------------------------------------------------------
+  def eigh_rule(ctx, operand, *, lower, sort_eigenvalues, subset_by_index,
+                algorithm):
+    n = ctx.avals_in[0].shape[-1]
+    if (not ok(ctx)
+        or not (subset_by_index is None or tuple(subset_by_index) == (0, n))
+        or algorithm not in (None, ll.EighImplementation.QR)):
+      return tpu_eigh._eigh_tpu_lowering(
+          ctx, operand, lower=lower, sort_eigenvalues=sort_eigenvalues,
+          subset_by_index=subset_by_index, algorithm=algorithm)
+    # LAPACK always sorts eigenvalues ascending.
+    return ffi("metal$lapack_syevd", operand_output_aliases={0: 0})(
+        ctx, operand, lower=bool(lower))
+
+  # svd --------------------------------------------------------------------
+  def svd_rule(ctx, operand, *, full_matrices, compute_uv, subset_by_index,
+               algorithm=None):
+    operand_aval, = ctx.avals_in
+    m, n = operand_aval.shape[-2:]
+    if (not ok(ctx) or m == 0 or n == 0
+        or not (subset_by_index is None
+                or tuple(subset_by_index) == (0, min(m, n)))
+        or algorithm not in (None, ll.SvdAlgorithm.DEFAULT,
+                             ll.SvdAlgorithm.DIVIDE_AND_CONQUER)):
+      return tpu_svd._svd_tpu_lowering_rule(
+          ctx, operand, full_matrices=full_matrices, compute_uv=compute_uv,
+          subset_by_index=subset_by_index, algorithm=algorithm)
+    if compute_uv:
+      s_aval, u_aval, vt_aval = ctx.avals_out
+      rule = ffi("metal$lapack_gesdd",
+                 avals_out=[operand_aval, s_aval, u_aval, vt_aval],
+                 operand_output_aliases={0: 0})
+      _, s, u, vt = rule(ctx, operand, full_matrices=bool(full_matrices))
+      return [s, u, vt]
+    s_aval, = ctx.avals_out
+    rule = ffi("metal$lapack_gesdd_novec", avals_out=[operand_aval, s_aval],
+               operand_output_aliases={0: 0})
+    _, s = rule(ctx, operand)
+    return [s]
+
+  for prim, rule in ((ll.lu_p, lu_rule), (ll.geqrf_p, geqrf_rule),
+                     (ll.householder_product_p, householder_rule),
+                     (ll.eigh_p, eigh_rule), (ll.svd_p, svd_rule)):
+    mlir.register_lowering(prim, rule, platform=PLATFORM)

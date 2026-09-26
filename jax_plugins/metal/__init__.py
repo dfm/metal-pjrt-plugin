@@ -61,3 +61,9 @@ def initialize():
     # Lowering rules for primitives upstream only lowers on named platforms.
     from jax_plugins.metal import lowerings
     lowerings.register()
+    # Host callbacks (pure_callback, io_callback, jax.debug.*).
+    try:
+        from jax_plugins.metal import callbacks
+        callbacks.install(path)
+    except Exception as e:  # noqa: BLE001 - never break plugin init
+        logger.warning("metal: host callbacks unavailable: %s", e)

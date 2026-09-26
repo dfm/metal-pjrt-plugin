@@ -31,6 +31,8 @@ cc_binary(
     name = "pjrt_c_api_metal_plugin.dylib",
     linkopts = [
         "-Wl,-exported_symbol,_GetPjrtApi",
+        # Host callbacks: jax_plugins/metal/callbacks.py installs its trampoline.
+        "-Wl,-exported_symbol,_metal_pjrt_register_python_callback_trampoline",
         "-Wl,-install_name,@rpath/pjrt_c_api_metal_plugin.dylib",
         "-Wl,-undefined,error",
     ],

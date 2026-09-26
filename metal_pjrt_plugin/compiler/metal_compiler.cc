@@ -26,6 +26,9 @@
 #include "metal_pjrt_plugin/compiler/passes/scan_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/softmax_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/sort_expander.h"
+// --- begin linalg (Accelerate LAPACK) ---
+#include "metal_pjrt_plugin/linalg/linalg_rewriter.h"
+// --- end linalg ---
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
 #include "xla/service/call_inliner.h"
@@ -134,6 +137,15 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
   ApplyMetalDefaults(module->mutable_config().mutable_debug_options());
+  // --- begin linalg (Accelerate LAPACK) ---
+  // kCholesky / kTriangularSolve -> metal$cholesky / metal$triangular_solve,
+  // before CholeskyExpander / TriangularSolveExpander see them.
+  if (!LapackDisabled() && RewriteEnabled("lapack")) {
+    HloPassPipeline pipeline("metal-linalg");
+    pipeline.AddPass<MetalLinalgRewriter>();
+    TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
+  }
+  // --- end linalg ---
   if (RewriteEnabled("scan")) {
     HloPassPipeline pipeline("metal-pre-optimization");
     pipeline.AddPass<MetalScanRewriter>();
