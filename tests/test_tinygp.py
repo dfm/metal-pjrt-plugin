@@ -58,9 +58,18 @@ def program(kind):
 # CPU float32 for comparison (value / gradient / mean): quasisep-par 1000
 # 54 / 63 / 223, 20000 43 / 97 / NaN, 200000 243 / 1040 / NaN; quasisep 1000
 # 46 / 56 / 92, 20000 41 / 103 / 1300; dense 1000 29 / 42 / 707, 3000
-# 82 / 284 / 2230. Metal's gradients at n = 20000 are ~10x less accurate than
-# CPU's, and the parallel solver's mean at n = 200000 is off by ~1%
-# (1.7e5 ulps), where CPU float32 gives NaN.
+# 82 / 284 / 2230.
+# WRONG-VALUES CANDIDATES (not accepted; don't loosen further):
+# - gradient at n = 20000, both quasisep solvers: 896 / 977 ulps vs CPU 103
+#   / 97 (relative 6e-5 on d/dlog_sigma, CPU ~6e-6); value 115 vs 41.
+# - parallel solver mean at n = 200000: 1.7e5 ulps (~1% of max|mean|);
+#   CPU float32 is NaN there, so no float32 baseline.
+# A/B (same numbers unless noted): METAL_PJRT_DISABLE_REWRITES=scan (the
+# programs use no metal$scan), =all (par: 901 / 1.3e5), METAL_PJRT_GEMM=mps,
+# XLA_FLAGS=--xla_allow_excess_precision=false. Fast math is already off
+# (metal_runtime.cc); there is no FMA-contraction switch. Repro:
+#   scripts/device_lock.py -- env METAL_TEST_REPORT_ULPS=1 .venv/bin/python \
+#     -m pytest tests/test_tinygp.py -s -k 20000
 ULPS = {  # (value, gradient, mean)
     ('quasisep-par', 1000): (64, 130, 980),
     ('quasisep-par', 20000): (240, 2000, 22000),

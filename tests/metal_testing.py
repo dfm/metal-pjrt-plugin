@@ -10,7 +10,9 @@ true answer for the rounded inputs up to f64 rounding):
   programs, whose small outputs come from cancellation.
 
 Tolerances in the tests are small multiples of the measured error, so real
-regressions show. METAL_TEST_REPORT_ULPS=1 prints the measured error of
+regressions show. They were measured on an Apple M3 (10-core GPU), macOS
+26.2: on other Apple GPUs or OS versions (different Metal math library /
+compiler), a slightly larger error means retune, not regression. METAL_TEST_REPORT_ULPS=1 prints the measured error of
 every comparison (with pytest -s), plus the CPU float32 error for context,
 which is how the tolerances were set.
 """

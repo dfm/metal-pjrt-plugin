@@ -20,6 +20,10 @@ import pytest
 
 @pytest.hookimpl(trylast=True)  # after -m / -k deselection
 def pytest_collection_modifyitems(config, items):
+    # test_gpu_errors starts child JAX processes: run it before this process
+    # holds a BFC pool from other tests, so the children's allocation guard
+    # sees the memory.
+    items.sort(key=lambda item: "test_gpu_errors.py" not in item.nodeid)
     if not any(item.get_closest_marker("metal") for item in items):
         return
     if not os.environ.get("JAX_METAL_DEVICE_LOCK_HELD"):
