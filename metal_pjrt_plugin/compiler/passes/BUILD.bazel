@@ -125,3 +125,38 @@ cc_test(
         "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
     ],
 )
+
+cc_library(
+    name = "hlo_checks",
+    srcs = ["hlo_checks.cc"],
+    hdrs = ["hlo_checks.h"],
+    deps = [
+        ":dot_upcast",
+        "//metal_pjrt_plugin/blas:blas_lt_support",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/service/gpu:backend_configs_cc",
+        "@xla//xla/service/gpu:cublas_cudnn",
+        "@xla//xla/service/gpu:ir_emission_utils",
+        "@xla//xla/service/gpu:matmul_utils",
+        "@xla//xla/tsl/platform:statusor",
+    ],
+)
+
+cc_test(
+    name = "hlo_checks_test",
+    srcs = ["hlo_checks_test.cc"],
+    deps = [
+        ":dot_upcast",
+        ":hlo_checks",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
+    ],
+)

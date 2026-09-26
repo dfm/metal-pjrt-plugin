@@ -82,7 +82,13 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (no-op), `OptimizeHloConvolutionCanonicalization` (no-op in v1: no conv),
   `CompileTargetBinary(module_config, llvm::Module*, device_description,
   relocatable, debug_module, shard)`.
-- `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`: base.
+- `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`:
+  `MetalSoftmaxRewriter`, the base pipeline (GemmRewriter), then
+  `MetalDotOperandUpcaster` on the dots left for the loop emitter and
+  `CheckPostGemmRewriter` (`compiler/passes/hlo_checks.h`): no narrow-operand
+  kDot, no TopK custom call, every `__cublas$lt$matmul` has types and an
+  epilogue `MetalBlasLt` supports (`blas/blas_lt_support.h`, shared with
+  `MetalBlasLt`). A violation is a compile error naming the JAX op and line.
 - Kernels are compiled one module at a time via
   `CompileSingleModule -> CompileTargetBinary`; result bytes become a
   `CustomKernelThunk` with a cubin spec. `GpuExecutable::binary()` holds only

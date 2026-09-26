@@ -61,7 +61,8 @@ class MetalCompiler : public GpuCompiler {
 
   // Runs MetalSoftmaxRewriter (layouts are normalized by now and fusion has
   // not run yet), then the stock post-layout pipeline, then
-  // MetalDotOperandUpcaster on the dots GemmRewriter left.
+  // MetalDotOperandUpcaster on the dots GemmRewriter left, then
+  // CheckPostGemmRewriter (hlo_checks.h).
   absl::Status OptimizeHloPostLayoutAssignment(
       HloModule* hlo_module, se::StreamExecutor* stream_exec,
       const CompileOptions& options, const GpuTopology& gpu_topology,

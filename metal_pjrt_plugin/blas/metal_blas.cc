@@ -16,6 +16,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "metal_pjrt_plugin/blas/blas_lt_support.h"
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 #include "metal_pjrt_plugin/blas/steel_gemm.h"  // steel GEMM dispatch
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
@@ -125,89 +126,7 @@ double ReadScale(const void* p, blas::DataType scale_type) {
   return *static_cast<const float*>(p);
 }
 
-// ---------------------------------------------------------------------------
-// BlasLt epilogues
-//
-// cuBLASLt semantics (what XLA's GemmRewriter fuses, see
-// gemm_rewriter.cc FuseVectorBiasAdd / FuseReluActivation /
-// FuseGeluActivation):
-//   D   = act(alpha * op(A) op(B) + beta * C + bias)
-//   aux = alpha * op(A) op(B) + beta * C + bias      (*WithAux only)
-// * bias is a vector with one element per index of the output's most minor
-//   physical dimension (cuBLASLt: per row of the column-major D), shared by
-//   all rows and batches; its element type is D's.
-// * GELU is the tanh approximation (the rewriter only matches
-//   0.5 x (1 + tanh(sqrt(2/pi) (x + 0.044715 x^3)))).
-// * SILU is x * sigmoid(x) (only fused on ROCm >= 7, supported anyway).
-// * aux has D's shape, element type, leading dimension and batch stride.
-//
-// After the MPS GEMM (which leaves alpha AB + beta C in D) one elementwise
-// kernel applies bias/activation in f32 and writes D (and aux).
-
-enum class Activation { kNone = 0, kReLU = 1, kGELU = 2, kSILU = 3 };
-
-struct EpilogueSpec {
-  bool bias = false;
-  Activation act = Activation::kNone;
-  bool aux = false;
-  bool trivial() const { return !bias && act == Activation::kNone; }
-};
-
-absl::StatusOr<EpilogueSpec> DecodeEpilogue(gpu::BlasLt::Epilogue e) {
-  using E = gpu::BlasLt::Epilogue;
-  EpilogueSpec s;
-  switch (e) {
-    case E::kDefault:
-      break;
-    case E::kReLU:
-      s.act = Activation::kReLU;
-      break;
-    case E::kBias:
-      s.bias = true;
-      break;
-    case E::kBiasThenReLU:
-      s.bias = true;
-      s.act = Activation::kReLU;
-      break;
-    case E::kGELU:
-      s.act = Activation::kGELU;
-      break;
-    case E::kGELUWithAux:
-      s.act = Activation::kGELU;
-      s.aux = true;
-      break;
-    case E::kBiasThenGELU:
-      s.bias = true;
-      s.act = Activation::kGELU;
-      break;
-    case E::kBiasThenGELUWithAux:
-      s.bias = true;
-      s.act = Activation::kGELU;
-      s.aux = true;
-      break;
-    case E::kSILU:
-      s.act = Activation::kSILU;
-      break;
-    case E::kSILUWithAux:
-      s.act = Activation::kSILU;
-      s.aux = true;
-      break;
-    case E::kBiasThenSILU:
-      s.bias = true;
-      s.act = Activation::kSILU;
-      break;
-    case E::kBiasThenSILUWithAux:
-      s.bias = true;
-      s.act = Activation::kSILU;
-      s.aux = true;
-      break;
-    default:
-      return absl::UnimplementedError(
-          absl::StrCat("Metal BlasLt: epilogue ", static_cast<int>(e),
-                       " is not supported"));
-  }
-  return s;
-}
+// BlasLt epilogues: semantics and DecodeEpilogue in blas_lt_support.h.
 
 // Must match the `EpiParams` struct in the generated MSL.
 struct EpilogueParams {
@@ -471,15 +390,10 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
         "Metal BlasLt: inconsistent shapes lhs=", lhs.ToString(),
         " rhs=", rhs.ToString(), " out=", out.ToString()));
   }
+  ABSL_RETURN_IF_ERROR(CheckBlasLtTypes(lhs.dtype, rhs.dtype, out.dtype));
   ABSL_ASSIGN_OR_RETURN(mps::MpsDType ta, FromPrimitiveType(lhs.dtype));
   ABSL_ASSIGN_OR_RETURN(mps::MpsDType tb, FromPrimitiveType(rhs.dtype));
   ABSL_ASSIGN_OR_RETURN(mps::MpsDType tout, FromPrimitiveType(out.dtype));
-  if (ta != tb || !SupportedTypes(ta, tout)) {
-    return absl::UnimplementedError(absl::StrCat(
-        "Metal BlasLt: unsupported types ", xla::PrimitiveType_Name(lhs.dtype),
-        " x ", xla::PrimitiveType_Name(rhs.dtype), " -> ",
-        xla::PrimitiveType_Name(out.dtype)));
-  }
   if (cfg.beta != 0.0 &&
       (c.dtype != out.dtype || c.order != out.order ||
        c.leading_dim_stride != out.leading_dim_stride ||

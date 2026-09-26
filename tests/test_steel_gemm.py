@@ -70,3 +70,12 @@ def test_mixed_precision_dot_routing(dt, hlo_dt):
     hlo = f.lower(*small).compile().as_text()
     assert "__cublas" not in hlo
     assert re.search(r"f32\[4,3\]\S* convert\(", hlo), hlo
+
+
+def test_unsupported_gemm_fails_at_compile_time():
+    """CheckPostGemmRewriter: an int8 GEMM (no Metal kernel) is refused when
+    compiling, naming the JAX op and the source line."""
+    x = jnp.ones((64, 48), jnp.int8)
+    f = jax.jit(lambda a, b: jax.lax.dot(a, b, preferred_element_type=jnp.int32))
+    with pytest.raises(Exception, match=r"S8 x S8 -> S32 .*dot_general.* at .*test_steel_gemm.py:\d+"):
+        f.lower(x, x.T).compile()

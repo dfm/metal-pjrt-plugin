@@ -26,6 +26,7 @@
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
 #include "metal_pjrt_plugin/compiler/passes/dot_upcast.h"
+#include "metal_pjrt_plugin/compiler/passes/hlo_checks.h"
 #include "metal_pjrt_plugin/compiler/passes/scan_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/softmax_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/sort_expander.h"
@@ -179,7 +180,8 @@ absl::Status MetalCompiler::OptimizeHloPostLayoutAssignment(
   // After GemmRewriter, so only the dots left for the loop emitter change.
   HloPassPipeline pipeline("metal-post-gemm", compilation_stats);
   pipeline.AddPass<MetalDotOperandUpcaster>();
-  return pipeline.Run(hlo_module).status();
+  TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  return CheckPostGemmRewriter(*hlo_module);
 }
 
 void MetalCompiler::AddPaddingForGpublasGemms(

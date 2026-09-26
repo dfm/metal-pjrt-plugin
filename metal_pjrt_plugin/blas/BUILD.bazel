@@ -27,12 +27,28 @@ cc_library(
     ],
 )
 
+# What MetalBlasLt supports (types, epilogues), without Metal; also used by
+# the compiler's post-GemmRewriter checks.
+cc_library(
+    name = "blas_lt_support",
+    srcs = ["blas_lt_support.cc"],
+    hdrs = ["blas_lt_support.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/stream_executor/gpu:gpu_blas_lt",
+    ],
+)
+
 # blas::BlasSupport + gpu::BlasLt for the Metal StreamExecutor.
 cc_library(
     name = "metal_blas",
     srcs = ["metal_blas.cc"],
     hdrs = ["metal_blas.h"],
     deps = [
+        ":blas_lt_support",
         ":mps_gemm",
         ":steel_gemm",
         "//metal_pjrt_plugin/runtime:metal_runtime",
