@@ -332,22 +332,18 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         "%d bytes (device %d, %s)",
         requested, info_.max_buffer_length, ordinal_, info_.name));
   }
-  // Refuse allocations that would push the system into swap: on unified
-  // memory a GPU touching paged-out memory stalls until the watchdog fires,
-  // and that is how the machine got wedged once. Keep a reserve for the OS.
-  if (size >= (1u << 20)) {
-    const uint64_t kReserve = 512ull << 20;
-    uint64_t reclaimable = ReclaimableMemoryBytes();
-    if (reclaimable < kReserve || size > reclaimable - kReserve) {
-      return absl::ResourceExhaustedError(absl::StrFormat(
-          "Metal allocation of %d bytes refused: only %d bytes of system "
-          "memory are reclaimable and %d bytes are reserved for the OS "
-          "(device %d, %d bytes already allocated by this process, budget %d "
-          "bytes). Reduce the working set or close other memory-heavy "
-          "processes.",
-          requested, reclaimable, kReserve, ordinal_, allocated_bytes(),
-          memory_budget_));
-    }
+  // Refuse allocations that would push the system into swap (that is how the
+  // machine got wedged once).
+  uint64_t reclaimable = 0;
+  if (!FitsInSystemMemory(size, &reclaimable)) {
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal allocation of %d bytes refused: only %d bytes of system "
+        "memory are reclaimable and %d bytes are reserved for the OS "
+        "(device %d, %d bytes already allocated by this process, budget %d "
+        "bytes). Reduce the working set or close other memory-heavy "
+        "processes.",
+        requested, reclaimable, kSystemMemoryReserve, ordinal_,
+        allocated_bytes(), memory_budget_));
   }
   // Default (tracked) hazard mode: Metal orders dispatches touching the same
   // buffer for us. Untracked mode with manual barriers is a later optimization.
@@ -681,17 +677,21 @@ void Stream::WorkerLoop() {
       continue;
     }
     task.fn();
-    fence_->setSignaledValue(task.signal_value);
+    // A failed command buffer may have force-signaled the fence past this
+    // value meanwhile; never move it backwards.
+    if (fence_->signaledValue() < task.signal_value) {
+      fence_->setSignaledValue(task.signal_value);
+    }
   }
 }
 
 absl::Status Stream::CheckAsyncError() {
-  std::lock_guard<std::mutex> lock(err_mu_);
-  if (async_error_.ok()) return absl::OkStatus();
+  std::lock_guard<std::mutex> lock(completion_->mu);
+  if (completion_->error.ok()) return absl::OkStatus();
   return absl::FailedPreconditionError(absl::StrCat(
       "Metal stream on device ", device_->ordinal(),
       " is in error state after an earlier GPU failure: ",
-      async_error_.message()));
+      completion_->error.message()));
 }
 
 absl::Status Stream::EnsureCommandBuffer() {
@@ -773,24 +773,32 @@ absl::Status Stream::Commit() {
   for (auto& sv : signals) sv.first->retain();
   std::vector<PendingWait> waits;
   waits.swap(pending_waits_);
-  last_committed_waits_ = waits;
   auto kernels =
       std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
           std::move(pending_kernels_));
   pending_kernels_.clear();
-  last_committed_kernels_ = kernels;
+  {
+    std::lock_guard<std::mutex> lock(diag_mu_);
+    last_committed_waits_ = waits;
+    last_committed_kernels_ = kernels;
+  }
   last_committed_signal_ = v;
   for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
   fence->retain();
   const int ordinal = device_->ordinal();
   const int traced_ops = ops_in_cmd_;
-  gpu_pending_.fetch_add(1, std::memory_order_relaxed);
+  // The handler must not touch `this`: after a device reset ~Stream stops
+  // waiting for in-flight buffers, whose handlers may run later.
+  Device* device = device_;
+  std::shared_ptr<CompletionState> state = completion_;
+  const void* self = this;
+  state->pending.fetch_add(1, std::memory_order_relaxed);
   cmd_->addCompletedHandler(
-      [this, v, fence, signals, waits, ordinal, traced_ops,
+      [device, state, self, v, fence, signals, waits, ordinal, traced_ops,
        kernels](MTL::CommandBuffer* cb) {
         if (TraceEnabled()) {
-          LOG(ERROR) << "[metal-trace] stream " << this << " cb#" << v
+          LOG(ERROR) << "[metal-trace] stream " << self << " cb#" << v
                     << " ops=" << traced_ops << " gpu_ms="
                     << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
         }
@@ -810,10 +818,10 @@ absl::Status Stream::Commit() {
           }
           LOG(ERROR) << "  ops in buffer: " << traced_ops << ", gpu time ms: "
                      << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
-          device_->DumpStreams();
+          device->DumpStreams();
           {
-            std::lock_guard<std::mutex> lock(err_mu_);
-            if (async_error_.ok()) async_error_ = error;
+            std::lock_guard<std::mutex> lock(state->mu);
+            if (state->error.ok()) state->error = error;
           }
           // Watchdog timeouts and revoked/removed devices mean the GPU was
           // reset underneath us: stop submitting from this process.
@@ -821,8 +829,8 @@ absl::Status Stream::Commit() {
           if (code == MTL::CommandBufferErrorTimeout ||
               code == MTL::CommandBufferErrorAccessRevoked ||
               code == MTL::CommandBufferErrorDeviceRemoved) {
-            device_->RecordReset(error.message(), *kernels);
-            device_->MarkLost(error);
+            device->RecordReset(error.message(), *kernels);
+            device->MarkLost(error);
           }
           if (fence->signaledValue() < v) fence->setSignaledValue(v);
           for (auto& sv : signals) {
@@ -834,7 +842,7 @@ absl::Status Stream::Commit() {
         for (auto& sv : signals) sv.first->release();
         for (auto& w : waits) w.event->release();
         fence->release();
-        gpu_pending_.fetch_sub(1, std::memory_order_release);
+        state->pending.fetch_sub(1, std::memory_order_release);
       });
   cmd_->commit();
   last_commit_time_ = std::chrono::steady_clock::now();
@@ -907,17 +915,17 @@ absl::Status Stream::Synchronize() {
   if (first_failure.ok()) first_failure = device_->lost_status();
   // The completion handler may not have run yet; record the failure here too
   // so the error state does not depend on that ordering.
-  std::lock_guard<std::mutex> elock(err_mu_);
-  if (async_error_.ok()) async_error_ = first_failure;
-  if (async_error_.ok()) return absl::OkStatus();
+  std::lock_guard<std::mutex> elock(completion_->mu);
+  absl::Status& async_error = completion_->error;
+  if (async_error.ok()) async_error = first_failure;
+  if (async_error.ok()) return absl::OkStatus();
   // A failed command buffer does not take the device down (unlike a CUDA
   // context error), so report the failure once, to the caller waiting on
   // this work, and let the stream recover for subsequent work.
-  absl::Status error = async_error_;
+  absl::Status error = async_error;
   absl::Status lost = device_->lost_status();
   if (!lost.ok()) return lost;  // sticky: the GPU was reset
-  async_error_ = absl::OkStatus();
-  async_error_reported_ = false;
+  async_error = absl::OkStatus();
   return error;
 }
 
@@ -968,7 +976,7 @@ absl::Status Stream::FinishOp(uint64_t work) {
     return Commit();
   }
   if (ops_in_cmd_ >= kEarlyCommitOps &&
-      gpu_pending_.load(std::memory_order_acquire) == 0 &&
+      completion_->pending.load(std::memory_order_acquire) == 0 &&
       std::chrono::steady_clock::now() - last_commit_time_ >=
           EarlyCommitInterval()) {
     return Commit();
@@ -1358,11 +1366,6 @@ void Device::UnregisterStream(Stream* s) {
 }
 
 void Device::DumpStreams() {
-  std::vector<Stream*> streams;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    streams = live_streams_;
-  }
   {
     mach_task_basic_info info;
     mach_msg_type_number_t count = MACH_TASK_BASIC_INFO_COUNT;
@@ -1376,24 +1379,39 @@ void Device::DumpStreams() {
                << " MB, reclaimable system memory "
                << (ReclaimableMemoryBytes() >> 20) << " MB";
   }
-  LOG(ERROR) << "  live streams on device " << ordinal_ << ": " << streams.size();
-  for (Stream* st : streams) LOG(ERROR) << "    " << st->DebugState();
+  // Hold mu_ so no stream can unregister (and be destroyed) meanwhile.
+  std::lock_guard<std::mutex> lock(mu_);
+  LOG(ERROR) << "  live streams on device " << ordinal_ << ": "
+             << live_streams_.size();
+  for (Stream* st : live_streams_) LOG(ERROR) << "    " << st->DebugState();
 }
 
 std::string Stream::DebugState() {
   // Called from a completion handler; do not take mu_ (the owner may hold it
-  // while blocked in Synchronize). Values are read racily, for diagnostics.
+  // while blocked in Synchronize). Scalars are read racily, for diagnostics;
+  // containers only under their own locks.
+  size_t host_tasks;
+  {
+    std::lock_guard<std::mutex> lock(work_mu_);
+    host_tasks = work_.size();
+  }
+  std::vector<PendingWait> waits;
+  std::shared_ptr<const std::vector<std::shared_ptr<const KernelIdentity>>>
+      kernels;
+  {
+    std::lock_guard<std::mutex> lock(diag_mu_);
+    waits = last_committed_waits_;
+    kernels = last_committed_kernels_;
+  }
   std::string out = absl::StrFormat(
       "stream %p fence %p: next value %d, last committed %d, signaled %d, "
       "open cb %s, host tasks pending %d; last committed cb waited on:",
       this, fence_, fence_value_, last_committed_fence_value_,
-      fence_->signaledValue(), cmd_ ? "yes" : "no", work_.size());
-  for (const PendingWait& w : last_committed_waits_) {
+      fence_->signaledValue(), cmd_ ? "yes" : "no", host_tasks);
+  for (const PendingWait& w : waits) {
     absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
                           w.event, w.value, w.event->signaledValue());
   }
-  absl::StrAppendFormat(&out, "; deferred waits %d", deferred_waits_.size());
-  auto kernels = last_committed_kernels_;
   absl::StrAppendFormat(&out, "; kernels in last committed cb (%d):",
                         kernels ? kernels->size() : 0);
   if (kernels) {

@@ -3,7 +3,9 @@
 //
 // Two entry points reach GEMMs in XLA:
 //   * blas::BlasSupport::DoBlasGemm* (GemmThunk, "__cublas$gemm"): legacy
-//     cuBLAS-style column-major calls.
+//     cuBLAS-style column-major calls. The GemmRewriter no longer emits
+//     these; without an algorithm they carry no output type, so only f32 is
+//     accepted there.
 //   * gpu::BlasLt (CublasLtMatmulThunk, "__cublas$lt$matmul"): GemmRewriter
 //     routes *every* GEMM here when the compute capability is OneAPI, which is
 //     what the Metal platform reports (gemm_rewriter.cc,

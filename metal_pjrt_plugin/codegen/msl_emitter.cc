@@ -416,6 +416,10 @@ std::optional<int64_t> ByteAlign(Type t) {
   if (auto at = mlir::dyn_cast<ml::LLVMArrayType>(t)) {
     return ByteAlign(at.getElementType());
   }
+  // xla_vec<T, N> is a plain T[N]; native vectors align to their size.
+  if (auto vt = mlir::dyn_cast<mlir::VectorType>(t)) {
+    if (!IsNativeVector(vt)) return ByteAlign(vt.getElementType());
+  }
   if (auto st = mlir::dyn_cast<ml::LLVMStructType>(t)) {
     if (st.isPacked()) return 1;
     int64_t a = 1;
@@ -456,7 +460,9 @@ std::optional<int64_t> ByteSize(Type t) {
     if (vt.getRank() != 1) return std::nullopt;
     std::optional<int64_t> e = ByteSize(vt.getElementType());
     if (!e) return std::nullopt;
-    return *e * vt.getNumElements();
+    // MSL's 3-lane vectors (float3, half3, ...) occupy four lanes.
+    int64_t n = vt.getNumElements();
+    return *e * (IsNativeVector(vt) && n == 3 ? 4 : n);
   }
   if (auto at = mlir::dyn_cast<ml::LLVMArrayType>(t)) {
     std::optional<int64_t> e = ByteSize(at.getElementType());

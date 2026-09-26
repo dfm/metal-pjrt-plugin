@@ -341,19 +341,17 @@ absl::Status MetalBlas::DoBlasGemmStridedBatched(
     const DeviceAddressBase& b, int ldb, int64_t stride_b, const void* beta,
     DeviceAddressBase* c, int ldc, int64_t stride_c, int batch_count,
     const EngineOptions& engine_options, blas::CallContext context) {
-  // This entry point only carries the input type. XLA's RunGemm also routes
-  // (bf16|f16) x (bf16|f16) -> f32 here, so infer an f32 output from C's
-  // size: a half-precision C is exactly 2 bytes per element and can never be
-  // large enough to hold the f32 extent.
-  blas::DataType type_c = dtype;
-  if (dtype == blas::DataType::kHalf || dtype == blas::DataType::kBF16) {
-    const uint64_t extent =
-        static_cast<uint64_t>(batch_count > 0 ? batch_count - 1 : 0) *
-            static_cast<uint64_t>(stride_c) +
-        (n > 0 ? (n - 1) * static_cast<uint64_t>(ldc) : 0) + m;
-    if (c->size() >= 4 * extent) type_c = blas::DataType::kFloat;
+  // This entry point (GemmThunk, "__cublas$gemm") carries only the input
+  // type, and XLA's RunGemm also routes (bf16|f16) x (bf16|f16) -> f32 here,
+  // so a half-precision output cannot be told apart from an f32 one. The
+  // GemmRewriter sends every GEMM to BlasLt on OneAPI and no longer emits
+  // legacy calls, so refuse rather than guess.
+  if (dtype != blas::DataType::kFloat) {
+    return absl::UnimplementedError(absl::StrCat(
+        "Metal BLAS: legacy GEMM entry point supports f32 only, got ",
+        blas::DataTypeString(dtype), " (use the BlasLt path)"));
   }
-  return DoGemm(stream, transa, transb, m, n, k, dtype, type_c, alpha, beta, a,
+  return DoGemm(stream, transa, transb, m, n, k, dtype, dtype, alpha, beta, a,
                 lda, stride_a, b, ldb, stride_b, c, ldc, stride_c,
                 batch_count);
 }

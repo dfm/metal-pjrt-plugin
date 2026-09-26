@@ -90,8 +90,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - Registration: static initializer calling `Compiler::RegisterCompilerFactory`
   in an `alwayslink` target.
 - Base `OptimizeHloPostLayoutAssignment` unconditionally rewrites dots into
-  `__cublas$gemm` custom calls (GemmThunk -> `StreamExecutor::AsBlas()`), so
-  matmul needs a `blas::BlasSupport` for Metal (MPS, Objective-C++).
+  library custom calls; on OneAPI every one is `__cublas$lt$matmul`
+  (`GetNonFp8GemmCustomCallTarget`; the legacy `__cublas$gemm` fallback is
+  gone), so matmul runs through `MetalBlasLt` (MPS or steel kernels).
 - Triton is gated off for non-CUDA/ROCm; cuDNN passes default to no-op.
 
 ## Codegen: MLIR -> EmitC -> MSL

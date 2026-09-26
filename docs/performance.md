@@ -102,8 +102,10 @@ Policy now:
 - **Smaller command buffers**: 32 dispatches or 2^27 dispatched threads.
 - **One GPU job at a time.** `scripts/device_lock.py` serializes test suites,
   benchmarks and sweeps; `scripts/run_jax_tests.sh` runs JAX's tests in one
-  process with per-test in-process timeouts (pytest-timeout, thread method)
-  and never signal-kills workers.
+  process and never kills or exits it on a timeout: a slow test gets a stack
+  dump (`faulthandler_timeout`) and GPU hangs end with the runtime's bounded
+  waits. (pytest-timeout was dropped: both its methods end the process with
+  GPU work in flight.)
 
 ## Dispatch-bound programs: decision (2026-09-26)
 

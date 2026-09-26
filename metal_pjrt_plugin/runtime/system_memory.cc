@@ -32,5 +32,12 @@ uint64_t ReclaimableMemoryBytes() {
   return pages * page;
 }
 
+bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable) {
+  if (size < (1u << 20)) return true;
+  const uint64_t r = ReclaimableMemoryBytes();
+  if (reclaimable != nullptr) *reclaimable = r;
+  return r >= kSystemMemoryReserve && size <= r - kSystemMemoryReserve;
+}
+
 }  // namespace rt
 }  // namespace metal_pjrt

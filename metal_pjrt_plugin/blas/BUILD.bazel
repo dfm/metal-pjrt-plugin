@@ -17,6 +17,7 @@ cc_library(
         "-framework Foundation",
     ],
     deps = [
+        "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/strings",

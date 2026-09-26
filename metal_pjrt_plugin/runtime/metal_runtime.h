@@ -426,8 +426,18 @@ class Stream {
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
   std::chrono::steady_clock::time_point last_commit_time_{};
-  // Committed command buffers whose completion handler has not run yet.
-  std::atomic<int> gpu_pending_{0};
+  // State shared with completion handlers, which may run after the stream is
+  // gone (~Stream abandons in-flight buffers once the device is lost).
+  struct CompletionState {
+    // First GPU failure (set by a failed command buffer's completion handler
+    // or by Synchronize).
+    std::mutex mu;
+    absl::Status error;
+    // Committed command buffers whose completion handler has not run yet.
+    std::atomic<int> pending{0};
+  };
+  const std::shared_ptr<CompletionState> completion_ =
+      std::make_shared<CompletionState>();
   // ResolveCached state (guarded by mu_).
   struct CachedRange {
     uintptr_t base = 0;
@@ -464,6 +474,9 @@ class Stream {
   // Encode deferred waits into the open command buffer. Caller holds mu_ and
   // has an open command buffer; any open encoder is ended first.
   void FlushDeferredWaits();
+  // Guards last_committed_waits_ and last_committed_kernels_, which
+  // DebugState reads from other threads without taking mu_.
+  std::mutex diag_mu_;
   // Waits of the most recently committed command buffer (diagnostics).
   std::vector<PendingWait> last_committed_waits_;
   // Kernels encoded into the open / last committed command buffer (for the
@@ -477,12 +490,6 @@ class Stream {
   // last committed command buffer waited on.
   std::string DebugState();
  private:
-  // First GPU failure (set by a failed command buffer's completion handler or
-  // by Synchronize); sticky. `async_error_reported_` is set once Synchronize
-  // has returned it.
-  std::mutex err_mu_;
-  absl::Status async_error_;
-  bool async_error_reported_ = false;
   // FailedPreconditionError if the stream is in the error state.
   absl::Status CheckAsyncError();
 

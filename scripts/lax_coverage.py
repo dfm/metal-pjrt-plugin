@@ -179,7 +179,8 @@ def main():
     print("backend:", jax.default_backend(), flush=True)
     results = []
     for name, fn in CASES:
-        faulthandler.dump_traceback_later(240, exit=True)
+        # Stack dump on a slow case, never exit (see op_coverage.py).
+        faulthandler.dump_traceback_later(240, repeat=True)
         try:
             fn(); results.append((name, "PASS", ""))
         except Exception as e:  # noqa

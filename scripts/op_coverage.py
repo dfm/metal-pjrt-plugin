@@ -115,8 +115,10 @@ def main():
         if name.startswith("SKIP"):
             print(f"SKIP {name}", flush=True); continue
         print(f"RUN  {name}", flush=True)
-        # A GPU-side hang would not return to Python; dump stacks and exit.
-        faulthandler.dump_traceback_later(180, exit=True)
+        # Report a slow case with a stack dump, but never exit: exiting with
+        # GPU work in flight is what wedged the driver once. GPU hangs end
+        # with the runtime's bounded waits (watchdog -> error).
+        faulthandler.dump_traceback_later(180, repeat=True)
         try:
             fn(); ok += 1; print(f"PASS {name}", flush=True)
         except Exception as e:  # noqa

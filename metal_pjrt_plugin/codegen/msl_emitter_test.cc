@@ -309,6 +309,31 @@ TEST_F(MslEmitterTest, VectorizedLoadStore) {
   EXPECT_THAT(msl, HasSubstr("xla_load<xla_vec<half, 8>>("));
 }
 
+// float3 occupies 16 bytes in MSL, so a 3-lane vector's storage and GEP
+// stride must be 16 bytes, not 12.
+constexpr char kThreeLane[] = R"mlir(
+module {
+  func.func @three(%arg0: !llvm.ptr) {
+    %c4 = arith.constant 4 : i32
+    %a = llvm.alloca %c4 x vector<3xf32> : (i32) -> !llvm.ptr
+    %tid = gpu.thread_id x
+    %i = arith.index_castui %tid : index to i32
+    %p = llvm.getelementptr %a[%i] : (!llvm.ptr, i32) -> !llvm.ptr, vector<3xf32>
+    %v = llvm.load %p : !llvm.ptr -> vector<3xf32>
+    llvm.store %v, %arg0 : vector<3xf32>, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, ThreeLaneVectorsUseFourLanesOfStorage) {
+  absl::StatusOr<MslKernel> kernel = Emit(kThreeLane, "three");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  EXPECT_THAT(msl, HasSubstr("xla_alloca_0[4];"));
+  EXPECT_THAT(msl, HasSubstr(" = 16;"));
+  EXPECT_THAT(msl, Not(HasSubstr(" = 12;")));
+}
+
 TEST_F(MslEmitterTest, RejectsF64) {
   constexpr char kIr[] = R"mlir(
 module {

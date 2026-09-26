@@ -16,6 +16,7 @@
 #include "absl/status/status_macros.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "metal_pjrt_plugin/runtime/system_memory.h"
 
 #if !__has_feature(objc_arc)
 #error "mps_gemm_objc.cc must be compiled with -fobjc-arc"
@@ -425,6 +426,16 @@ absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
     const MpsDType staged_dtype = convert ? MpsDType::kF32 : x.dtype;
     const int64_t staged_es = MpsDTypeSize(staged_dtype);
     const int64_t tmp_bytes = required * staged_es;
+    // Staging buffers come straight from the device, not the pool; they
+    // still obey the allocation guard.
+    uint64_t reclaimable = 0;
+    if (!rt::FitsInSystemMemory(tmp_bytes, &reclaimable)) {
+      return absl::ResourceExhaustedError(Describe(
+          absl::StrFormat("a %d-byte staging buffer was refused: only %d "
+                          "bytes of system memory are reclaimable",
+                          tmp_bytes, reclaimable),
+          p));
+    }
     id<MTLBuffer> tmp =
         [device newBufferWithLength:static_cast<NSUInteger>(tmp_bytes)
                             options:MTLResourceStorageModePrivate];
