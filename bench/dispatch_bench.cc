@@ -154,12 +154,20 @@ int main(int argc, char** argv) {
     MTL::CommandQueue* q = dev->mtl()->newCommandQueue();
     auto ref_a = *dev->Resolve(bufs[0]);
     auto ref_c = *dev->Resolve(bufs[33]);
-    for (int variant = 0; variant < 4; ++variant) {
+    // Variant 4: created from a descriptor with
+    // errorOptions = EncoderExecutionStatus (per-encoder error states).
+    MTL::CommandBufferDescriptor* desc =
+        MTL::CommandBufferDescriptor::alloc()->init();
+    desc->setErrorOptions(MTL::CommandBufferErrorOptionEncoderExecutionStatus);
+    for (int variant = 0; variant < 5; ++variant) {
       const int iters = 100;
       double t0 = Now();
       double host_to_start = 0, gpu = 0, sched = 0, notify = 0;
       for (int it = 0; it < iters; ++it) {
-        MTL::CommandBuffer* cb = variant == 2 ? q->commandBufferWithUnretainedReferences() : q->commandBuffer();
+        MTL::CommandBuffer* cb =
+            variant == 2   ? q->commandBufferWithUnretainedReferences()
+            : variant == 4 ? q->commandBuffer(desc)
+                           : q->commandBuffer();
         if (variant >= 1) {
           MTL::ComputeCommandEncoder* e = cb->computeCommandEncoder();
           e->setComputePipelineState(kernel->pso());
@@ -190,10 +198,15 @@ int main(int argc, char** argv) {
       double t1 = Now();
       std::printf("raw cb %s: %.1f us/roundtrip (commit->complete %.1f us, "
                   "commit->gpu start %.1f us, gpu %.1f us, gpu end->host %.1f us)\n",
-                  variant == 0 ? "empty          " : variant == 1 ? "1 dispatch     " : variant == 2 ? "1 disp unretain" : "1 disp spin    ",
+                  variant == 0   ? "empty          "
+                  : variant == 1 ? "1 dispatch     "
+                  : variant == 2 ? "1 disp unretain"
+                  : variant == 3 ? "1 disp spin    "
+                                 : "1 disp errinfo ",
                   (t1 - t0) * 1e6 / iters, host_to_start * 1e6 / iters,
                   sched * 1e6 / iters, gpu * 1e6 / iters, notify * 1e6 / iters);
     }
+    desc->release();
     q->release();
   }
   for (void* p : bufs) Check(dev->Deallocate(p), "Deallocate");

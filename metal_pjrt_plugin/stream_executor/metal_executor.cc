@@ -1,7 +1,5 @@
 #include "metal_pjrt_plugin/stream_executor/metal_executor.h"
 
-#include <dlfcn.h>
-#include <mach-o/loader.h>
 
 #include <cstdint>
 #include <cstdlib>
@@ -367,30 +365,6 @@ absl::StatusOr<DeviceAddressBase> MetalExecutor::GetSymbol(
 
 namespace {
 
-// The LC_UUID of the Mach-O image containing this code (the plugin dylib).
-// The linker derives it from the image's contents, so every rebuild that
-// changes the code gets a new one.
-std::string ImageUuid() {
-  Dl_info info;
-  if (dladdr(reinterpret_cast<const void*>(&ImageUuid), &info) == 0 ||
-      info.dli_fbase == nullptr) {
-    return "";
-  }
-  const auto* header = static_cast<const mach_header_64*>(info.dli_fbase);
-  if (header->magic != MH_MAGIC_64) return "";
-  const auto* cmd = reinterpret_cast<const load_command*>(header + 1);
-  for (uint32_t i = 0; i < header->ncmds; ++i) {
-    if (cmd->cmd == LC_UUID) {
-      const auto* uuid = reinterpret_cast<const uuid_command*>(cmd);
-      return std::string(reinterpret_cast<const char*>(uuid->uuid),
-                         sizeof(uuid->uuid));
-    }
-    cmd = reinterpret_cast<const load_command*>(
-        reinterpret_cast<const char*>(cmd) + cmd->cmdsize);
-  }
-  return "";
-}
-
 // PJRT reports "oneapi <runtime_version>" as the platform version, and JAX's
 // persistent compilation cache keys on it. Encode the plugin build and the
 // environment variables that change what the compiler emits, so a rebuilt
@@ -401,7 +375,7 @@ std::string ImageUuid() {
 // that changes compiled code must be added here (its getenv site says so).
 SemanticVersion PluginVersion() {
   static const SemanticVersion version = [] {
-    std::string uuid = ImageUuid();
+    std::string uuid = metal_pjrt::rt::ImageUuid();
     if (uuid.empty()) LOG(WARNING) << "Metal: plugin image has no LC_UUID";
     std::string settings;
     for (const char* name : {

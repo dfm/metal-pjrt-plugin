@@ -230,6 +230,19 @@ run from doing it again. Now:
   logs a warning at device creation too.
 - Still unavoidable: the first reset a non-terminating kernel causes. Metal
   has no per-kernel timeout shorter than the watchdog.
+- Narrowed (2026-09-26, night): the runtime's built-in fill/copy kernels
+  (in nearly every command buffer) are listed under `"builtins"` and never
+  struck or refused, and strikes count only for resets since boot with the
+  same plugin build (each record carries `"build"`, the dylib's LC_UUID, the
+  same UUID as in the platform version), so a reboot or a rebuild lifts a
+  quarantine. Not done: per-encoder blame via
+  `MTLCommandBufferDescriptor.errorOptions = EncoderExecutionStatus`. It
+  costs nothing measurable (`bench/dispatch_bench` raw round trip, 1
+  dispatch: 96-107 us with it vs 97-111 us without, GPU time 1.8-2.1 vs 1.8
+  us), but it reports a state per encoder and a command buffer is mostly one
+  serial compute encoder (splitting encoders was a measured cost), so it
+  cannot narrow blame within the usual buffer; what it reports on a watchdog
+  timeout could not be checked without causing one.
 
 ### Measurements after the reboot (2026-09-26, healthy GPU)
 

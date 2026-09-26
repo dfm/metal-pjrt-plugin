@@ -218,6 +218,49 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
               StatusIs(absl::StatusCode::kFailedPrecondition,
                        HasSubstr("quarantined")));
 
+  // Built-in kernels are listed by name, never struck or refused.
+  absl::StatusOr<const Kernel*> fill =
+      (*d2)->BuiltinKernel(Device::Builtin::kFill32);
+  ASSERT_THAT(fill, IsOk());
+  (*d2)->RecordReset("builtin", {(*fill)->identity()});
+  (*d2)->RecordReset("builtin", {(*fill)->identity()});
+  {
+    std::ifstream in2(dir + "/gpu_resets.jsonl");
+    std::string last;
+    while (std::getline(in2, line)) last = line;
+    EXPECT_THAT(last, HasSubstr("\"builtins\":[\"xla_metal_fill32\"]"));
+    EXPECT_THAT(last, HasSubstr("\"kernels\":[]"));
+    EXPECT_THAT(last, HasSubstr("\"build\":\""));
+  }
+  absl::StatusOr<std::unique_ptr<Device>> d2b = Device::Create(0);
+  ASSERT_THAT(d2b, IsOk());
+  EXPECT_THAT((*d2b)->BuiltinKernel(Device::Builtin::kFill32), IsOk());
+
+  // Strikes count only since boot and for this plugin build: rewrite the
+  // log with the same two axpy resets from another build and from before
+  // boot.
+  {
+    std::ifstream in3(dir + "/gpu_resets.jsonl");
+    std::vector<std::string> lines;
+    while (std::getline(in3, line)) lines.push_back(line);
+    std::ofstream out(dir + "/gpu_resets.jsonl", std::ios::trunc);
+    for (int i = 0; i < 2; ++i) {
+      std::string other = lines[i];
+      size_t b = other.find("\"build\":\"") + 9;
+      other.replace(b, other.find('"', b) - b, "0123");
+      out << other << "\n";
+      std::string old = lines[i];
+      old.replace(8, old.find(',') - 8, "1");  // "time":1
+      out << old << "\n";
+    }
+  }
+  absl::StatusOr<std::unique_ptr<Device>> d4 = Device::Create(0);
+  ASSERT_THAT(d4, IsOk());
+  EXPECT_EQ((*d4)->resets_since_boot(), 2);  // the other build's two
+  absl::StatusOr<MTL::Library*> lib4 = (*d4)->CompileLibrary(kMsl);
+  ASSERT_THAT(lib4, IsOk());
+  EXPECT_THAT((*d4)->CreateKernel(*lib4, "axpy"), IsOk());
+
   // Disabled by threshold 0.
   setenv("METAL_PJRT_QUARANTINE_STRIKES", "0", 1);
   absl::StatusOr<std::unique_ptr<Device>> d3 = Device::Create(0);

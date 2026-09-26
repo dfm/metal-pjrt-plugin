@@ -140,7 +140,15 @@ bool UsesArgumentBuffer(const std::string& msl_source,
 struct KernelIdentity {
   std::string name;
   std::string key;
+  // Device::BuiltinKernel's fill/copy kernels: in nearly every command
+  // buffer, so never blamed for a reset.
+  bool builtin = false;
 };
+
+// The LC_UUID of the Mach-O image containing the runtime (the plugin dylib,
+// or a test binary): 16 raw bytes, or empty. The linker derives it from the
+// image's contents, so every rebuild that changes the code gets a new one.
+std::string ImageUuid();
 
 class Kernel {
  public:
@@ -215,7 +223,8 @@ class Device {
   absl::StatusOr<MTL::Library*> CompileLibrary(const std::string& msl_source);
   // Create (or fetch cached) pipeline state for `function` in `library`.
   absl::StatusOr<std::unique_ptr<Kernel>> CreateKernel(
-      MTL::Library* library, const std::string& function);
+      MTL::Library* library, const std::string& function,
+      bool builtin = false);
 
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
@@ -232,10 +241,13 @@ class Device {
   // for every process, and after a few resets the driver leaves the GPU slow
   // until a reboot, so the same bug must not be allowed to reset it again
   // and again. Every reset observed by this process is appended to
-  // <state dir>/gpu_resets.jsonl with the kernels that were in the command
-  // buffer that timed out (none when that buffer only waited on another
-  // stream). Kernels seen in `quarantine_strikes()` or more resets are refused
-  // by CreateKernel until the log is cleared (scripts/gpu_health.py --clear).
+  // <state dir>/gpu_resets.jsonl with the boot time, the plugin build
+  // (ImageUuid) and the kernels that were in the command buffer that timed
+  // out (none when that buffer only waited on another stream; built-in
+  // kernels are listed separately and never blamed). Kernels seen in
+  // `quarantine_strikes()` or more resets since boot with the same plugin
+  // build are refused by CreateKernel; a reboot or a rebuild lifts that, as
+  // does clearing the log (scripts/gpu_health.py --clear).
   // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/jax_metal;
   // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
   void RecordReset(absl::string_view cause,
@@ -285,6 +297,7 @@ class Device {
   int quarantine_strikes_ = 2;
   int resets_since_boot_ = 0;
   std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
+  std::string build_;  // hex ImageUuid, recorded with each reset
   friend class Stream;
   friend class Event;
   // Status of values signaled on shared events (stream fences and Events),

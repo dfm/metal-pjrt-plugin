@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <dlfcn.h>
 #include <mach/mach.h>
+#include <mach-o/loader.h>
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
@@ -23,6 +25,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/escaping.h"
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
@@ -209,6 +212,21 @@ std::string ResetLogPath(const std::string& state_dir) {
   return absl::StrCat(state_dir, "/gpu_resets.jsonl");
 }
 
+// Value of `"field":` in a one-line JSON record (number or string, no
+// escapes), or empty.
+absl::string_view JsonField(absl::string_view line, absl::string_view field) {
+  const std::string tag = absl::StrCat("\"", field, "\":");
+  size_t p = line.find(tag);
+  if (p == absl::string_view::npos) return "";
+  p += tag.size();
+  if (p < line.size() && line[p] == '"') {
+    size_t e = line.find('"', p + 1);
+    return e == absl::string_view::npos ? "" : line.substr(p + 1, e - p - 1);
+  }
+  size_t e = line.find_first_of(",}", p);
+  return e == absl::string_view::npos ? "" : line.substr(p, e - p);
+}
+
 int64_t BootTimeSeconds() {
   struct timeval tv;
   size_t len = sizeof(tv);
@@ -238,7 +256,29 @@ std::string JsonEscape(absl::string_view s) {
 }
 }  // namespace
 
+std::string ImageUuid() {
+  Dl_info info;
+  if (dladdr(reinterpret_cast<const void*>(&ImageUuid), &info) == 0 ||
+      info.dli_fbase == nullptr) {
+    return "";
+  }
+  const auto* header = static_cast<const mach_header_64*>(info.dli_fbase);
+  if (header->magic != MH_MAGIC_64) return "";
+  const auto* cmd = reinterpret_cast<const load_command*>(header + 1);
+  for (uint32_t i = 0; i < header->ncmds; ++i) {
+    if (cmd->cmd == LC_UUID) {
+      const auto* uuid = reinterpret_cast<const uuid_command*>(cmd);
+      return std::string(reinterpret_cast<const char*>(uuid->uuid),
+                         sizeof(uuid->uuid));
+    }
+    cmd = reinterpret_cast<const load_command*>(
+        reinterpret_cast<const char*>(cmd) + cmd->cmdsize);
+  }
+  return "";
+}
+
 void Device::LoadResetLog() {
+  build_ = absl::BytesToHexString(ImageUuid());
   const char* dir = std::getenv("METAL_PJRT_STATE_DIR");
   if (dir != nullptr && dir[0] != '\0') {
     state_dir_ = dir;
@@ -260,17 +300,16 @@ void Device::LoadResetLog() {
   std::string line;
   std::lock_guard<std::mutex> lock(mu_);
   while (std::getline(in, line)) {
-    // Each line is one reset: {"time":N,...,"kernels":[{"key":"..",..},..]}.
-    // The keys are hex hashes plus a function name, so a substring scan is
-    // enough; no JSON parser in the runtime.
-    size_t t = line.find("\"time\":");
+    // Each line is one reset: {"time":N,"build":"..",...,"kernels":[{"key":
+    // "..",..},..]}. The keys are hex hashes plus a function name, so a
+    // substring scan is enough; no JSON parser in the runtime.
     int64_t when = 0;
-    if (t != std::string::npos) {
-      absl::SimpleAtoi(absl::string_view(line).substr(t + 7,
-                                                   line.find_first_of(",}", t) - (t + 7)),
-                       &when);
-    }
-    if (when >= boot) ++resets_since_boot_;
+    absl::SimpleAtoi(JsonField(line, "time"), &when);
+    if (when < boot) continue;
+    ++resets_since_boot_;
+    // Strikes count per boot (the driver's state resets with it) and per
+    // plugin build (a rebuild may have fixed the kernel).
+    if (JsonField(line, "build") != build_) continue;
     size_t pos = 0;
     while ((pos = line.find("\"key\":\"", pos)) != std::string::npos) {
       pos += 7;
@@ -293,14 +332,26 @@ void Device::RecordReset(
     absl::Span<const std::shared_ptr<const KernelIdentity>> kernels) {
   const int64_t now = static_cast<int64_t>(std::time(nullptr));
   std::string line = absl::StrFormat(
-      "{\"time\":%d,\"pid\":%d,\"device\":%d,\"error\":\"%s\",\"kernels\":[",
-      now, static_cast<int>(getpid()), ordinal_, JsonEscape(cause));
+      "{\"time\":%d,\"build\":\"%s\",\"pid\":%d,\"device\":%d,"
+      "\"error\":\"%s\",\"builtins\":[",
+      now, build_, static_cast<int>(getpid()), ordinal_, JsonEscape(cause));
+  // Built-ins by name only (no "key", so they never count as strikes).
+  std::vector<std::string> builtins;
+  for (const auto& k : kernels) {
+    if (k != nullptr && k->builtin &&
+        std::find(builtins.begin(), builtins.end(), k->name) == builtins.end()) {
+      absl::StrAppendFormat(&line, "%s\"%s\"", builtins.empty() ? "" : ",",
+                            JsonEscape(k->name));
+      builtins.push_back(k->name);
+    }
+  }
+  line += "],\"kernels\":[";
   // Each kernel once, in launch order.
   std::vector<const KernelIdentity*> unique;
   {
     std::lock_guard<std::mutex> lock(mu_);
     for (const auto& k : kernels) {
-      if (k == nullptr) continue;
+      if (k == nullptr || k->builtin) continue;
       auto [it, inserted] = strikes_.emplace(k->key, 0);
       if (std::find_if(unique.begin(), unique.end(), [&](const KernelIdentity* u) {
             return u->key == k->key;
@@ -328,8 +379,8 @@ void Device::RecordReset(
   LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
              << " with " << unique.size()
              << " suspect kernel(s); kernels seen in " << quarantine_strikes_
-             << " resets are refused until the log is cleared "
-                "(scripts/gpu_health.py --clear)";
+             << " resets (since boot, same plugin build) are refused until "
+                "a reboot, a rebuild or scripts/gpu_health.py --clear";
 }
 
 Device::~Device() {
@@ -550,7 +601,7 @@ absl::StatusOr<MTL::Library*> Device::CompileLibrary(
 }
 
 absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
-    MTL::Library* library, const std::string& function) {
+    MTL::Library* library, const std::string& function, bool builtin) {
   if (library == nullptr) {
     return absl::InvalidArgumentError(
         absl::StrCat("CreateKernel(", function, "): null library"));
@@ -560,18 +611,20 @@ absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
   MTL::ComputePipelineState* pso = nullptr;
   auto identity = std::make_shared<KernelIdentity>();
   identity->name = function;
+  identity->builtin = builtin;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto lk = library_keys_.find(library);
     identity->key = absl::StrCat(
         lk == library_keys_.end() ? "unknown" : lk->second, ":", function);
     auto strikes = strikes_.find(identity->key);
-    if (quarantine_strikes_ > 0 && strikes != strikes_.end() &&
+    if (!builtin && quarantine_strikes_ > 0 && strikes != strikes_.end() &&
         strikes->second >= quarantine_strikes_) {
       return absl::FailedPreconditionError(absl::StrFormat(
           "kernel %s is quarantined: it was in the command buffer that timed "
-          "out in %d GPU watchdog resets (see %s/gpu_resets.jsonl). Fix the "
-          "kernel, then clear the log with scripts/gpu_health.py --clear; "
+          "out in %d GPU watchdog resets since boot with this plugin build "
+          "(see %s/gpu_resets.jsonl). Fix the kernel (a rebuild lifts the "
+          "quarantine), or clear the log with scripts/gpu_health.py --clear; "
           "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
           function, strikes->second, state_dir_));
     }
@@ -649,8 +702,9 @@ absl::StatusOr<const Kernel*> Device::BuiltinKernel(Builtin kind) {
   std::unique_ptr<Kernel>& slot = builtin_kernels_[static_cast<int>(kind)];
   if (slot == nullptr) {
     ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, CompileLibrary(kBuiltinMsl));
-    ABSL_ASSIGN_OR_RETURN(slot,
-                          CreateKernel(lib, kBuiltinNames[static_cast<int>(kind)]));
+    ABSL_ASSIGN_OR_RETURN(
+        slot, CreateKernel(lib, kBuiltinNames[static_cast<int>(kind)],
+                           /*builtin=*/true));
   }
   return slot.get();
 }
