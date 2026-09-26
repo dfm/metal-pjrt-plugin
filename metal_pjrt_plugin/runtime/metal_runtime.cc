@@ -650,6 +650,7 @@ Stream::~Stream() {
   }
   if (cmd_) cmd_->release();
   for (MTL::CommandBuffer* cb : in_flight_) cb->release();
+  for (const PendingWait& w : last_committed_waits_) w.event->release();
   fence_->release();
   queue_->release();
 }
@@ -777,11 +778,17 @@ absl::Status Stream::Commit() {
       std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
           std::move(pending_kernels_));
   pending_kernels_.clear();
+  // The diagnostic copy of the waits holds its own references: DebugState
+  // reads the events' signaled values later, possibly from another stream's
+  // completion handler after the waited-on event or stream is gone.
+  std::vector<PendingWait> previous_waits = waits;
+  for (auto& w : previous_waits) w.event->retain();
   {
     std::lock_guard<std::mutex> lock(diag_mu_);
-    last_committed_waits_ = waits;
+    last_committed_waits_.swap(previous_waits);
     last_committed_kernels_ = kernels;
   }
+  for (auto& w : previous_waits) w.event->release();
   last_committed_signal_ = v;
   for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
@@ -1395,22 +1402,21 @@ std::string Stream::DebugState() {
     std::lock_guard<std::mutex> lock(work_mu_);
     host_tasks = work_.size();
   }
-  std::vector<PendingWait> waits;
-  std::shared_ptr<const std::vector<std::shared_ptr<const KernelIdentity>>>
-      kernels;
-  {
-    std::lock_guard<std::mutex> lock(diag_mu_);
-    waits = last_committed_waits_;
-    kernels = last_committed_kernels_;
-  }
   std::string out = absl::StrFormat(
       "stream %p fence %p: next value %d, last committed %d, signaled %d, "
       "open cb %s, host tasks pending %d; last committed cb waited on:",
       this, fence_, fence_value_, last_committed_fence_value_,
       fence_->signaledValue(), cmd_ ? "yes" : "no", host_tasks);
-  for (const PendingWait& w : waits) {
-    absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
-                          w.event, w.value, w.event->signaledValue());
+  std::shared_ptr<const std::vector<std::shared_ptr<const KernelIdentity>>>
+      kernels;
+  {
+    // The stream's references keep these events alive while diag_mu_ is held.
+    std::lock_guard<std::mutex> lock(diag_mu_);
+    for (const PendingWait& w : last_committed_waits_) {
+      absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
+                            w.event, w.value, w.event->signaledValue());
+    }
+    kernels = last_committed_kernels_;
   }
   absl::StrAppendFormat(&out, "; kernels in last committed cb (%d):",
                         kernels ? kernels->size() : 0);

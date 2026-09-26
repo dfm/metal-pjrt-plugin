@@ -477,7 +477,8 @@ class Stream {
   // Guards last_committed_waits_ and last_committed_kernels_, which
   // DebugState reads from other threads without taking mu_.
   std::mutex diag_mu_;
-  // Waits of the most recently committed command buffer (diagnostics).
+  // Waits of the most recently committed command buffer (diagnostics); the
+  // events are retained until overwritten or ~Stream.
   std::vector<PendingWait> last_committed_waits_;
   // Kernels encoded into the open / last committed command buffer (for the
   // timeout diagnostics and the reset log).
