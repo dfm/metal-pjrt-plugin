@@ -44,7 +44,6 @@ inline constexpr char kMetalFfiPlatform[] = "METAL";
 // Custom-call target names of the handlers in this directory.
 inline constexpr char kSoftmaxTarget[] = "metal$softmax";
 inline constexpr char kScanTarget[] = "metal$scan";
-inline constexpr char kTestScaleTarget[] = "metal$test_scale";
 
 // The runtime stream and device behind an se::Stream owned by the Metal
 // StreamExecutor. Fails for streams of other platforms.

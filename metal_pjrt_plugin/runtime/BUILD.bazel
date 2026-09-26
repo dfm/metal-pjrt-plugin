@@ -52,18 +52,3 @@ cc_test(
         "@com_google_googletest//:gtest_main",
     ],
 )
-
-# CPU-side dispatch cost microbenchmark; needs a Metal device, run locally
-# under scripts/device_lock.py.
-cc_binary(
-    name = "dispatch_bench",
-    srcs = ["dispatch_bench.cc"],
-    tags = ["manual"],
-    deps = [
-        ":metal_runtime",
-        "@com_google_absl//absl/status",
-        "@com_google_absl//absl/status:statusor",
-        "@metal_cpp",
-    ],
-)
-

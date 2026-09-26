@@ -26,7 +26,10 @@ fixed-shape `MPSGraphExecutable` built from a two-node graph.
 - Executables encode onto an `MPSCommandBuffer`, not a bare
   `MTLCommandBuffer`. The thunk has to wrap ours and stay inside the
   per-command-buffer work budget from the GPU-wedge fix.
-- Compile latency is real; cache executables on disk next to the MSL cache.
+- Compile latency is real. Metal's system shader cache already makes a
+  repeated `newLibraryWithSource` cheap (186 ms first, 1.3 ms in a later
+  process for a small kernel); an MPSGraph executable would need its own
+  on-disk cache.
 - Targets: conv forward / data grad / weights grad; scaled dot-product
   attention (first-class op on macOS 15+); FFT, which we have no other source
   for.
@@ -69,8 +72,9 @@ per-shape choice stops being the `METAL_PJRT_GEMM` environment variable.
 Metal has no double type and jax-metal rejects f64 outright, so this would be
 a genuine differentiator. Because we generate the MSL, f64 can be lowered to
 a (hi, lo) float2 pair with error-free transforms (two-sum, two-prod via fma)
-in the emitter, with the remaining precision loss (about 1e-32 relative,
-i.e. ~106 mantissa bits minus rounding slop) documented. Transcendentals need
+in the emitter, with the precision loss documented: two f32 give about 48
+mantissa bits (~1e-14 relative, not IEEE double's 53) and keep f32's
+exponent range (overflow near 3e38, denormals below 1e-38). Transcendentals need
 their own double-float implementations; start with add / sub / mul / div /
 sqrt / fma / compare / convert and reduce, which cover most of what people
 want f64 for (accumulators, orbital mechanics, GP kernels). Reject anything

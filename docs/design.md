@@ -58,9 +58,13 @@ LowerTensors introduced) to EmitC, and prints MSL. The text rides to
 Details and the exact contract are in `docs/integration-notes.md`.
 
 Runtime shader compilation works with command-line tools only (verified:
-192 ms for a trivial kernel). Compiled libraries need a persistent cache keyed
-by MSL hash, because 100 fused kernels at 200 ms each is an unacceptable
-first-run cost.
+192 ms for a trivial kernel). No cache of our own is needed across processes:
+Metal's system shader cache keys on the source, so the same MSL compiles in
+~1.3 ms in a later process (186 ms first; measured 2026-09-26). Within a
+process `rt::Device` caches libraries by source hash. JAX's persistent
+compilation cache is not used for platform "metal" (see
+`docs/integration-notes.md`, PJRT client), so XLA compilation itself is
+repeated per process.
 
 ## Library ops
 
@@ -81,9 +85,11 @@ float64 (Metal has none; reject, consider double-float emulation later).
 1. Build spike (`scripts/build_spike.sh`): does the GPU compiler build on macOS
    arm64 without CUDA, and at what cost. Go/no-go.
 2. StreamExecutor Metal platform, validated with XLA's own stream_executor tests.
-3. `MetalCompiler` with the target-binary hook doing LLVM IR -> SPIR-V -> MSL.
-   Goal: a fused elementwise-plus-reduce program end to end.
-4. Dot and conv through BLAS/DNN backed by MPS.
+3. `MetalCompiler` with a kernel compiler doing MLIR -> EmitC -> MSL (see
+   Codegen; the SPIR-V route was ruled out). Goal: a fused
+   elementwise-plus-reduce program end to end.
+4. Dot through BLAS backed by MPS (and steel kernels for f16/bf16). Conv
+   still runs as XLA-emitted kernels; no DNN library path yet.
 5. Python package, JAX test suite under `JAX_PLATFORMS=metal`, benchmarks vs
    jax-mps, MetalHLO and native MLX (ResNet18/CIFAR, nanoGPT).
 
@@ -94,5 +100,5 @@ float64 (Metal has none; reject, consider double-float emulation later).
 - CUDA coupling inside `xla/service/gpu` (e.g. `gpu_compiler` depends on
   `stream_executor/cuda:cuda_compute_capability` and the Triton emitters).
   Expect a patch set against XLA, pinned to the jaxlib release's commit.
-- SPIR-V to MSL gaps: atomics, subgroup ops, 32 KB threadgroup memory, 32-wide
+- MSL codegen gaps: atomics, subgroup ops, 32 KB threadgroup memory, 32-wide
   SIMD, launch-dimension mapping.

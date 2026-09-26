@@ -1,7 +1,7 @@
 // Microbenchmark for the CPU-side cost of a kernel dispatch through
 // rt::Stream::Launch. Needs a Metal device; run under scripts/device_lock.py:
-//   bazel build //metal_pjrt_plugin/runtime:dispatch_bench
-//   scripts/device_lock.py -- bazel-bin/metal_pjrt_plugin/runtime/dispatch_bench
+//   bazel build //bench:dispatch_bench
+//   scripts/device_lock.py -- bazel-bin/bench/dispatch_bench
 // Prints us/dispatch for encoding alone (Launch calls) and for the whole run
 // including Synchronize, for independent and dependent (chained) launches.
 #include <algorithm>

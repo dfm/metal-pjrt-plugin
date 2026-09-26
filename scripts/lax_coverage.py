@@ -1,7 +1,7 @@
 """Exercise (nearly) every jax.lax primitive on the current backend, one at a
 time, and report pass/fail with the error class. Used for the coverage audit.
 
-  JAX_PLATFORMS=metal python scripts/lax_coverage.py
+  JAX_PLATFORMS=metal,cpu python scripts/lax_coverage.py   # cpu is the reference
 """
 import faulthandler, sys
 import numpy as np

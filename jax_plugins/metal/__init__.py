@@ -1,7 +1,8 @@
 """JAX plugin registration for the Metal PJRT plugin.
 
-Modeled on jax_plugins/cuda/__init__.py. Not functional until the plugin
-shared library exists.
+Modeled on jax_plugins/cuda/__init__.py: registers the PJRT plugin dylib
+(linked next to this file by scripts/install_dev.sh) under platform "metal",
+then installs the lowerings and host callbacks the plugin needs.
 """
 
 import logging

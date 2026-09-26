@@ -1,0 +1,15 @@
+# C++ benchmarks. The Python benchmarks in this directory are not built.
+
+# CPU-side dispatch cost microbenchmark; needs a Metal device, run locally
+# under scripts/device_lock.py.
+cc_binary(
+    name = "dispatch_bench",
+    srcs = ["dispatch_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@metal_cpp",
+    ],
+)

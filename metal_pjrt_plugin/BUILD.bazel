@@ -1,8 +1,9 @@
-# Plugin sources. Nothing here builds yet; the overnight spike builds XLA
-# targets directly (see scripts/build_spike.sh). Skeleton to be filled in:
+# Plugin sources; each subdirectory is its own package:
 #
+#   runtime/           XLA-free layer over Metal (metal-cpp)
 #   stream_executor/   MetalPlatform, MetalExecutor, MetalStream, MetalEvent
-#   compiler/          MetalCompiler : xla::gpu::GpuCompiler
-#   pjrt/              GetPjrtApi() built on @xla//xla/pjrt/c:pjrt_c_api_gpu_internal
-#
-# package(default_visibility = ["//visibility:public"])
+#   compiler/          MetalCompiler : xla::gpu::GpuCompiler, HLO passes
+#   codegen/           MLIR -> EmitC -> MSL (MetalKernelCompiler)
+#   blas/, linalg/     GEMM (MPS, steel) and linear algebra
+#   ffi/               FFI custom-call handlers
+#   pjrt/              the plugin dylib (XLA's pjrt_c_api_gpu shim)

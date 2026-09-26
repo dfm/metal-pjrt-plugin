@@ -1,5 +1,6 @@
-// "metal$test_scale": y = x * scale for f32 buffers. Exists to exercise the
-// FFI plumbing end to end (scripts/ffi_check.py).
+// "metal$test_scale": y = x * scale for f32 buffers. Test-only (not linked
+// into the plugin); ffi_test uses it to exercise handler registration and
+// LaunchMsl.
 #include <cstdint>
 #include <string>
 

@@ -147,8 +147,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
 - Handlers: `metal$softmax`, `metal$scan` (targets of MetalSoftmaxRewriter /
-  MetalScanRewriter), `metal$test_scale` (plumbing test,
-  `scripts/ffi_check.py`). `METAL_PJRT_DISABLE_REWRITES=softmax,scan|all`
+  MetalScanRewriter; `scripts/ffi_check.py` also calls `metal$softmax`
+  through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
+  (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin. `METAL_PJRT_DISABLE_REWRITES=softmax,scan|all`
   turns the rewriters off.
 - Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
   `metal$cholesky`, `metal$triangular_solve` (targets of

@@ -1,8 +1,10 @@
 # XLA op coverage audit (XLA @ 91888df6)
 
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
-works. "Verified" means observed in `scripts/lax_coverage.py` on 2026-09-23
-(146/167 cases pass). File references are into the XLA tree.
+works. "Verified" means observed in `scripts/lax_coverage.py` (run with
+`JAX_PLATFORMS=metal,cpu`; 164/167 cases pass on 2026-09-26, the failures
+being f32->bf16 and f32->f8e4m3 rounding and int4). File references are into
+the XLA tree.
 
 ## Execution paths the backend implements
 
@@ -12,7 +14,8 @@ works. "Verified" means observed in `scripts/lax_coverage.py` on 2026-09-23
    works, except f64 and complex element types and sub-byte integers.
    Kernels with more than 31 buffer arguments (Metal's argument-table limit)
    take them through an argument buffer of GPU addresses (up to 512).
-2. **GEMM** via the BlasLt thunk backed by Metal Performance Shaders. On an
+2. **GEMM** via the BlasLt thunk backed by Metal Performance Shaders (f32)
+   and steel MSL kernels (f16/bf16). On an
    OneAPI-reporting device every dot the rewriter accepts becomes
    `__cublas$lt$matmul` (`gemm_rewriter.cc:2318`).
 3. **Generic runtime thunks**: copies, memset, while, conditional, call,
@@ -46,7 +49,7 @@ emitter's default case ("Unsupported instruction opcode").
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `scripts/linalg_check.py` |
 | triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
 | lu / geqrf / householder_product / eigh / svd | JAX lowerings in `jax_plugins/metal/linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
-| fft | FftThunk (cuFFT) | NO | verified failing (complex reaches the emitter first) |
+| fft | `jax_plugins/metal/lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | verified (fft, rfft2); a native FFT is still missing |
 | cuDNN conv / norm / attention | DNN thunks | not produced | conv rewriter is a no-op |
 | Triton fusions | Triton | not produced | gated to CUDA/ROCm |
 | custom fusions (CUTLASS), PTX custom kernels | custom kernel thunks | NO | not produced |
@@ -59,7 +62,7 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, `metal$test_scale`); jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `scripts/ffi_check.py` calls `metal$softmax` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 
@@ -71,11 +74,14 @@ integers (s4/u4) are rejected by the emitter.
 
 ## Fixes ranked by payoff
 
-1. Sort as an MSL kernel (unblocks sort, argsort, top_k, searchsorted, unique).
-2. `TriangularSolveExpander` in MetalCompiler (unblocks solve, LU, large Cholesky).
-3. `xla_gpu_enable_cub_radix_sort=false` by default.
+1. ~~Sort~~ (done: `MetalSortExpander` bitonic network).
+2. ~~`TriangularSolveExpander` in MetalCompiler~~ (done; f32 solves and
+   Cholesky go to LAPACK / small-matrix GPU kernels via `MetalLinalgRewriter`).
+3. ~~`xla_gpu_enable_cub_radix_sort=false` by default~~ (done).
 4. ~~BlasLt epilogues~~ (done).
 5. ~~Argument buffers for kernels with more than 31 buffers~~ (done).
 6. bf16/f8 conversion rounding.
-7. Reject f64 and complex in the BLAS thunk explicitly.
-8. FFT (would need a Metal FFT library; MPS has none for arbitrary sizes).
+7. ~~Reject f64 and complex in the BLAS thunk explicitly~~ (done:
+   UNIMPLEMENTED from `metal_blas.cc`).
+8. A native FFT (the dense-DFT lowering is O(n^2); MPS has no FFT for
+   arbitrary sizes).
