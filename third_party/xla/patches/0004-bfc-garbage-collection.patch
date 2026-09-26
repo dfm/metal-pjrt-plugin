@@ -1,0 +1,30 @@
+diff -ruN a/xla/pjrt/gpu/gpu_helpers.cc b/xla/pjrt/gpu/gpu_helpers.cc
+--- a/xla/pjrt/gpu/gpu_helpers.cc	2026-09-25 23:33:44
++++ b/xla/pjrt/gpu/gpu_helpers.cc	2026-09-25 23:33:44
+@@ -168,6 +168,8 @@
+ 
+   tsl::BFCAllocator::Options opts;
+   opts.allow_growth = !preallocate;
++  // metal-pjrt-plugin: return unused regions when growth is refused.
++  opts.garbage_collection = true;
+   opts.enable_spatial_partitioning = enable_spatial_partitioning;
+   return std::make_shared<tsl::BFCAllocator>(
+       std::move(sub_allocator), allocator_memory,
+@@ -210,6 +212,8 @@
+ 
+   tsl::BFCAllocator::Options opts;
+   opts.allow_growth = !preallocate;
++  // metal-pjrt-plugin: return unused regions when growth is refused.
++  opts.garbage_collection = true;
+   return std::make_unique<tsl::BFCAllocator>(
+       std::move(sub_allocator), allocator_memory,
+       absl::StrCat("GPU_collectivememory_", device_ordinal, "_bfc"), opts);
+@@ -241,6 +245,8 @@
+ 
+   tsl::BFCAllocator::Options opts;
+   opts.allow_growth = !preallocate;
++  // metal-pjrt-plugin: return unused regions when growth is refused.
++  opts.garbage_collection = true;
+   return std::make_unique<tsl::BFCAllocator>(std::move(sub_allocator),
+                                              kGpuHostMemoryLimitBytes,
+                                              /*name=*/"xla_gpu_host_bfc", opts);
