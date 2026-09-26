@@ -14,11 +14,12 @@ from tinygp.kernels import quasisep
 jax.config.update("jax_enable_x64", False)
 
 def build(kind, params, x, yerr):
-    if kind == "quasisep":
+    if kind.startswith("quasisep"):
         k = quasisep.Matern32(scale=jnp.exp(params["log_scale"]), sigma=jnp.exp(params["log_sigma"])) + \
             quasisep.SHO(omega=jnp.exp(params["log_omega"]), quality=jnp.exp(params["log_q"]), sigma=jnp.exp(params["log_sigma2"]))
         return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * params["log_jitter"]), solver=QuasisepSolver, mean=params["mean"],
-                               assume_sorted=True)  # the sortedness check is a jax.debug.callback
+                               assume_sorted=True,  # the sortedness check is a jax.debug.callback
+                               parallel=(kind == "quasisep-par"))  # associative-scan algorithms (tinygp main)
     k = jnp.exp(2 * params["log_sigma"]) * kernels.Matern32(scale=jnp.exp(params["log_scale"])) + \
         jnp.exp(2 * params["log_sigma2"]) * kernels.ExpSquared(scale=jnp.exp(params["log_omega"]))
     return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * params["log_jitter"]), mean=params["mean"])
@@ -44,16 +45,16 @@ def run(kind, n, dev):
 def main():
     cpu = jax.devices("cpu")[0]; metal = [d for d in jax.devices() if d.platform == "metal"][0]
     ok = True
-    for kind, n in [("quasisep", 1000), ("quasisep", 20000), ("quasisep", 200000), ("dense", 1000), ("dense", 3000)]:
+    for kind, n in [("quasisep-par", 1000), ("quasisep-par", 20000), ("quasisep-par", 200000), ("quasisep", 1000), ("quasisep", 20000), ("dense", 1000), ("dense", 3000)]:
         vc, gc, mc, tvc, tpc = run(kind, n, cpu)
         try:
             vm, gm, mm, tvm, tpm = run(kind, n, metal)
         except Exception as e:  # noqa
-            ok = False; print(f"{kind:9s} n={n:6d}  metal FAILED: {type(e).__name__}: {str(e).splitlines()[0][:120]}"); continue
+            ok = False; print(f"{kind:12s} n={n:6d}  metal FAILED: {type(e).__name__}: {str(e).splitlines()[0][:120]}"); continue
         rel = abs(vm - vc) / max(1.0, abs(vc)); grel = np.max(np.abs(gm - gc) / (1e-3 + np.abs(gc))); mrel = np.max(np.abs(mm - mc))
         good = rel < 1e-3 and grel < 5e-2 and mrel < 1e-2
         ok &= good
-        print(f"{kind:9s} n={n:6d}  logp cpu {vc:12.3f} metal {vm:12.3f} (rel {rel:.1e})  grad maxrel {grel:.1e}  pred maxabs {mrel:.1e}  "
+        print(f"{kind:12s} n={n:6d}  logp cpu {vc:12.3f} metal {vm:12.3f} (rel {rel:.1e})  grad maxrel {grel:.1e}  pred maxabs {mrel:.1e}  "
               f"| value+grad: cpu {tvc:7.1f} ms, metal {tvm:7.1f} ms | predict: cpu {tpc:7.1f} ms, metal {tpm:7.1f} ms  {'OK' if good else 'MISMATCH'}", flush=True)
     print("ALL OK" if ok else "SOME FAILURES"); return 0 if ok else 1
 

@@ -1,23 +1,23 @@
 | case | metal | jax-mps | mlx | cpu |
 |---|---|---|---|---|
-| elementwise chain 16M | 1.88 | 1.85 | 1.77 | 34.12 |
-| reduce rows 4096x4096 | 0.98 | 2.69 | 2.64 | 0.77 |
-| reduce cols 4096x4096 | 1.07 | 2.77 | 2.69 | 1.74 |
-| reduce all 16M | 0.98 | 1.04 | 1.09 | 0.88 |
-| softmax 8192x1024 | 1.09 | 1.02 | 1.01 | 1.60 |
-| layernorm fwd 8192x1024 | 1.83 | 3.31 | 3.40 | 1.03 |
-| layernorm fwd+bwd 8192x1024 | 2.58 | 11.00 | 10.99 | 1.97 |
-| transpose 4096x4096 | 1.91 | 1.93 | 1.78 | 35.41 |
-| cumsum 4096x4096 rows | 1.89 | 2.08 | 1.80 | 17.77 |
-| adam 50x1M params | ERR | 13.44 | 17.83 | 37.53 |
-| matmul f32 1024 | ERR | 1.04 | 1.14 | 4.42 |
-| matmul f32 2048 | ERR | 6.63 | 6.80 | 41.76 |
-| matmul f32 4096 | ERR | 70.20 | 73.24 | 401.45 |
-| matmul bf16 2048 | ERR | 6.15 | 6.50 | 86.76 |
-| batched matmul 16x512 | ERR | 1.82 | 1.91 | 10.97 |
-| attention fwd 8x8x512x64 | ERR | 5.75 | 5.92 | 14.50 |
-| attention fwd+bwd | ERR | 19.24 | 15.32 | 43.54 |
-| nanoGPT fwd (loss) | ERR | 72.08 | 67.80 | 327.37 |
-| nanoGPT train step | ERR | 262.60 | 238.07 | 1958.69 |
-| cnn fwd 32x32x32 | ERR | 1.18 | 0.61 | 1.12 |
-| cnn fwd+bwd | ERR | 2.27 | 1.85 | 4.94 |
+| elementwise chain 16M | 1.78 | 1.72 | 1.77 | 31.94 |
+| reduce rows 4096x4096 | 1.03 | 2.52 | 2.48 | 0.66 |
+| reduce cols 4096x4096 | 1.01 | 2.53 | 2.50 | 1.46 |
+| reduce all 16M | 0.98 | 1.03 | 1.02 | 0.70 |
+| softmax 8192x1024 | 1.01 | 0.98 | 0.99 | 1.31 |
+| layernorm fwd 8192x1024 | 1.74 | 3.27 | 3.40 | 0.90 |
+| layernorm fwd+bwd 8192x1024 | 2.51 | 10.10 | 10.13 | 1.83 |
+| transpose 4096x4096 | 1.82 | 1.99 | 1.72 | 33.71 |
+| cumsum 4096x4096 rows | 1.78 | 1.86 | 1.84 | 14.13 |
+| adam 50x1M params | 16.81 | 13.48 | 17.34 | 29.52 |
+| matmul f32 1024 | 1.03 | 1.04 | 1.09 | 5.29 |
+| matmul f32 2048 | 6.33 | 6.60 | 7.83 | 42.74 |
+| matmul f32 4096 | 54.65 | 58.95 | 89.69 | 409.57 |
+| matmul bf16 2048 | 6.08 | 6.91 | 11.44 | 77.79 |
+| batched matmul 16x512 | 1.81 | 1.96 | 3.27 | 10.50 |
+| attention fwd 8x8x512x64 | 5.85 | 5.55 | 6.63 | 13.63 |
+| attention fwd+bwd | 13.21 | 19.36 | 16.82 | 41.34 |
+| nanoGPT fwd (loss) | 61.72 | 111.75 | 126.03 | 398.38 |
+| nanoGPT train step | ERR | 340.52 | 351.95 | 1577.17 |
+| cnn fwd 32x32x32 | 2.00 | 2.12 | 0.95 | 1.15 |
+| cnn fwd+bwd | 5.97 | 1.93 | 2.34 | 3.99 |

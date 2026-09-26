@@ -149,6 +149,16 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   MetalScanRewriter), `metal$test_scale` (plumbing test,
   `scripts/ffi_check.py`). `METAL_PJRT_DISABLE_REWRITES=softmax,scan|all`
   turns the rewriters off.
+- Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
+  `metal$cholesky`, `metal$triangular_solve` (targets of
+  `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
+  row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,
+  gesdd_novec}` (targets of `jax_plugins/metal/linalg_lowerings.py`,
+  column-major operands via layout constraints). Each handler calls
+  `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
+  the shared-storage buffers (zero copy), synchronously on the thunk thread.
+  f32 only. `METAL_PJRT_DISABLE_LAPACK=1` (or `METAL_PJRT_DISABLE_REWRITES=
+  lapack` for the HLO pass alone) falls back to XLA's expanders.
 
 ## PJRT client
 

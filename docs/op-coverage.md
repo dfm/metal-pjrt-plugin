@@ -43,9 +43,9 @@ emitter's default case ("Unsupported instruction opcode").
 | sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
-| cholesky | CholeskyExpander | OK | larger than 128 emits triangular-solve, expanded too; verified n=8, 200 |
-| triangular-solve | `TriangularSolveExpander` in MetalCompiler's pre-layout hook | OK | verified incl. LU solve and n=200 Cholesky/solve |
-| QR, eigh custom calls | QrExpander / EighExpander | OK at XLA level | JAX's own lowering for eigh/svd has no rule for platform "metal"; separate issue |
+| cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `scripts/linalg_check.py` |
+| triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
+| lu / geqrf / householder_product / eigh / svd | JAX lowerings in `jax_plugins/metal/linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
 | fft | FftThunk (cuFFT) | NO | verified failing (complex reaches the emitter first) |
 | cuDNN conv / norm / attention | DNN thunks | not produced | conv rewriter is a no-op |
 | Triton fusions | Triton | not produced | gated to CUDA/ROCm |
