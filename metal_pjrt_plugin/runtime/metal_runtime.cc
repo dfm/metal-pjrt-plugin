@@ -636,10 +636,6 @@ absl::Status Event::WaitOnHost() {
   {
     std::lock_guard<std::mutex> lock(mu_);
     v = value_;
-    if (v != 0) {
-      ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(recorded_fence_,
-                                                        recorded_fence_value_));
-    }
   }
   if (v == 0) return absl::OkStatus();
   // A failed command buffer force-signals its events (see Stream::Commit), so
@@ -1365,14 +1361,19 @@ absl::Status Stream::RecordEvent(Event* event) {
   uint64_t v;
   {
     std::lock_guard<std::mutex> elock(event->mu_);
-    v = ++event->value_;
-    event->recorded_fence_ = fence_;
-    event->recorded_fence_value_ = fence_value_ + 1;  // this Commit's signal
+    v = ++event->next_value_;
   }
   cmd_->encodeSignalEvent(event->event_, v);
   pending_signals_.emplace_back(event->event_, v);
-  // Commit so a host or another stream waiting on the event can make progress.
-  return Commit();
+  // Commit so a host or another stream waiting on the event can make
+  // progress, and publish the value only then: Commit may first wait for a
+  // host task (hold rule), and a wait on the value before its signaling
+  // buffer is committed would sit on the GPU. Waiters on a published value
+  // therefore never wait for unfinished host work.
+  ABSL_RETURN_IF_ERROR(Commit());
+  std::lock_guard<std::mutex> elock(event->mu_);
+  event->value_ = std::max(event->value_, v);
+  return absl::OkStatus();
 }
 
 absl::Status Stream::WaitForEvent(Event* event) {
@@ -1399,16 +1400,26 @@ absl::Status Stream::WaitForStream(Stream* other) {
   // either its last command buffer or a host task enqueued after it (whose
   // value is signaled by the host, hence the hold rule applies). Values are
   // monotonic in stream order: later work waits for earlier host tasks.
+  // Also inherit the waits `other` has not encoded yet (it may have launched
+  // nothing since it was told to wait): waiting for `other` means waiting
+  // for everything it is ordered after. Same lifetime rule as any deferred
+  // wait (the events' owners outlive the wait).
   uint64_t v;
   bool host_task;
+  std::vector<PendingWait> inherited;
   {
     std::lock_guard<std::mutex> olock(other->mu_);
     ABSL_RETURN_IF_ERROR(other->Commit());
     v = other->fence_value_;
     host_task = v > other->last_committed_fence_value_;
+    for (const PendingWait& w : other->deferred_waits_) {
+      if (w.event != other->fence_) inherited.push_back(w);  // else <= v
+    }
   }
-  if (v == 0) return absl::OkStatus();
   std::lock_guard<std::mutex> lock(mu_);
+  deferred_waits_.insert(deferred_waits_.end(), inherited.begin(),
+                         inherited.end());
+  if (v == 0) return absl::OkStatus();
   deferred_waits_.push_back({other->fence_, v, "stream", host_task});
   return absl::OkStatus();
 }

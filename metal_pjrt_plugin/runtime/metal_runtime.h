@@ -287,9 +287,9 @@ class Event {
   Event& operator=(const Event&) = delete;
   // True once the last recorded value has been signaled.
   bool IsComplete() const;
-  // Block the host until complete. FailedPreconditionError when called from
-  // a host task of the stream that recorded the event, at or before the
-  // recording (it would wait for itself).
+  // Block the host until complete. Safe from host tasks: a value is
+  // published only once its signaling buffer is committed, and committed
+  // buffers never wait for unfinished host tasks.
   absl::Status WaitOnHost();
 
  private:
@@ -298,11 +298,10 @@ class Event {
   Event(Device* device, MTL::SharedEvent* ev) : device_(device), event_(ev) {}
   Device* device_;
   MTL::SharedEvent* event_;
-  uint64_t value_ = 0;  // last recorded value; 0 means never recorded
-  // Fence value of the recording stream's buffer that signals value_ (for
-  // the host-task re-entrancy check).
-  MTL::SharedEvent* recorded_fence_ = nullptr;
-  uint64_t recorded_fence_value_ = 0;
+  // Last recorded value whose signaling buffer is committed; 0 means never
+  // recorded. next_value_ is the last value handed out by RecordEvent.
+  uint64_t value_ = 0;
+  uint64_t next_value_ = 0;
   std::mutex mu_;
 };
 
@@ -357,7 +356,8 @@ class Stream {
 
   absl::Status RecordEvent(Event* event);
   absl::Status WaitForEvent(Event* event);
-  // Make this stream wait for everything currently enqueued on `other`.
+  // Make this stream wait for everything currently enqueued on `other`,
+  // including its host tasks and the waits it has not encoded yet.
   absl::Status WaitForStream(Stream* other);
 
   // Commit any open work and block until the stream is idle. Returns the GPU

@@ -340,28 +340,82 @@ TEST_F(MetalRuntimeTest, WaitForStreamCoversHostTasks) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// WaitForStream is transitive: B waiting for A also waits for what A was
+// told to wait for, even when A has launched nothing since (CUDA orders B
+// after C here too). C's producer is a host task: GPU-only producers are
+// also ordered by Metal's hazard tracking of the shared buffer, which would
+// hide the bug.
+TEST_F(MetalRuntimeTest, WaitForStreamIncludesTheOtherStreamsWaits) {
+  const uint32_t n = 1 << 16;
+  void* y = Alloc(n * 4);
+  void* z = Alloc(n * 4);
+  std::unique_ptr<Stream> a = NewStream();
+  std::unique_ptr<Stream> b = NewStream();
+  std::unique_ptr<Stream> c = NewStream();
+  ASSERT_THAT(c->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(c->Synchronize(), IsOk());
+  const uint64_t holds = dev_->host_task_holds();
+  for (int round = 1; round <= 2; ++round) {
+    // Round 2: `a` also has committed work of its own.
+    if (round == 2) ASSERT_THAT(a->Memset32(z, 0, n * 4), IsOk());
+    ASSERT_THAT(c->HostCallback([y, n, round]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      for (uint32_t i = 0; i < n; ++i) {
+        static_cast<float*>(y)[i] = 100.0f * round;
+      }
+    }), IsOk());
+    ASSERT_THAT(a->WaitForStream(c.get()), IsOk());
+    ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+    ASSERT_THAT(b->MemcpyDeviceToDevice(z, y, n * 4), IsOk());
+    ASSERT_THAT(b->Synchronize(), IsOk());
+    EXPECT_EQ(static_cast<float*>(z)[0], 100.0f * round) << round;
+    EXPECT_EQ(static_cast<float*>(z)[n - 1], 100.0f * round) << round;
+    ASSERT_THAT(a->Synchronize(), IsOk());
+  }
+  EXPECT_GT(dev_->host_task_holds(), holds);
+  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+  EXPECT_THAT(dev_->Deallocate(z), IsOk());
+}
+
 // A host task that waits for its own stream gets an error, not a deadlock.
 TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
-  std::unique_ptr<Stream> s = NewStream();
+  const uint32_t n = 1024;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> a = NewStream();
+  std::unique_ptr<Stream> b = NewStream();
   absl::StatusOr<std::unique_ptr<Event>> ev = dev_->CreateEvent();
   ASSERT_THAT(ev, IsOk());
-  absl::Status sync_status, event_status;
   Event* e = ev->get();
-  ASSERT_THAT(s->HostCallback([&, e]() {
-    sync_status = s->Synchronize();
-    // Wait (bounded) until the RecordEvent below has taken its value; that
-    // recording is ordered after this task, so waiting for it would hang.
-    for (int i = 0; i < 2000 && e->IsComplete(); ++i) {
+  std::atomic<bool> go{false};
+  absl::Status sync_status, commit_status, event_status;
+  ASSERT_THAT(a->HostCallback([&]() {
+    sync_status = a->Synchronize();
+    for (int i = 0; i < 2000 && !go.load(); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
+    // `b` waits for this task; committing its work from here would wait for
+    // the task itself.
+    commit_status = Axpy(b.get(), x, y, n, 1.0f, n / 256);
+    if (commit_status.ok()) commit_status = b->Flush();
+    // The event recorded after this task is not published until its buffer
+    // is committed, so waiting for it returns at once.
     event_status = e->WaitOnHost();
   }), IsOk());
-  ASSERT_THAT(s->RecordEvent(e), IsOk());
-  ASSERT_THAT(s->Synchronize(), IsOk());
+  ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+  go = true;
+  ASSERT_THAT(a->RecordEvent(e), IsOk());
+  ASSERT_THAT(a->Synchronize(), IsOk());
   EXPECT_THAT(sync_status, StatusIs(absl::StatusCode::kFailedPrecondition));
-  EXPECT_THAT(event_status, StatusIs(absl::StatusCode::kFailedPrecondition));
-  EXPECT_THAT(e->WaitOnHost(), IsOk());  // fine from outside the task
+  EXPECT_THAT(commit_status, StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(event_status, IsOk());
+  EXPECT_THAT(e->WaitOnHost(), IsOk());
+  // The work refused inside the task is committed later from outside it.
+  EXPECT_THAT(b->Synchronize(), IsOk());
   EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
 TEST_F(MetalRuntimeTest, ErrorCodes) {
