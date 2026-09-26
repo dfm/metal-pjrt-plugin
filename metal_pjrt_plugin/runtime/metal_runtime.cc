@@ -9,6 +9,13 @@
 #include <mach/mach.h>
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/sysctl.h>
+#include <fstream>
+#include <filesystem>
+#include <ctime>
+#include <limits>
 #include <functional>
 #include <thread>
 
@@ -16,6 +23,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 
@@ -160,7 +168,136 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
               << "): memory budget " << (budget >> 20) << " MB, "
               << (ReclaimableMemoryBytes() >> 20) << " MB reclaimable now";
   }  // All Apple GPUs; confirmed per-pipeline on creation.
+  dev->LoadResetLog();
   return dev;
+}
+
+namespace {
+std::string ResetLogPath(const std::string& state_dir) {
+  return absl::StrCat(state_dir, "/gpu_resets.jsonl");
+}
+
+int64_t BootTimeSeconds() {
+  struct timeval tv;
+  size_t len = sizeof(tv);
+  if (sysctlbyname("kern.boottime", &tv, &len, nullptr, 0) != 0) return 0;
+  return tv.tv_sec;
+}
+
+// Minimal JSON string escaping for the messages we write.
+std::string JsonEscape(absl::string_view s) {
+  std::string out;
+  out.reserve(s.size() + 8);
+  for (char ch : s) {
+    switch (ch) {
+      case '"': out += "\\\""; break;
+      case '\\': out += "\\\\"; break;
+      case '\n': out += "\\n"; break;
+      case '\t': out += "\\t"; break;
+      default:
+        if (static_cast<unsigned char>(ch) < 0x20) {
+          absl::StrAppendFormat(&out, "\\u%04x", ch);
+        } else {
+          out += ch;
+        }
+    }
+  }
+  return out;
+}
+}  // namespace
+
+void Device::LoadResetLog() {
+  const char* dir = std::getenv("METAL_PJRT_STATE_DIR");
+  if (dir != nullptr && dir[0] != '\0') {
+    state_dir_ = dir;
+  } else {
+    const char* home = std::getenv("HOME");
+    state_dir_ = absl::StrCat(home != nullptr ? home : ".", "/.cache/jax_metal");
+  }
+  if (const char* v = std::getenv("METAL_PJRT_QUARANTINE_STRIKES")) {
+    int n = 0;
+    if (absl::SimpleAtoi(v, &n) && n >= 0) {
+      quarantine_strikes_ = n;
+    } else {
+      LOG(WARNING) << "Ignoring METAL_PJRT_QUARANTINE_STRIKES=" << v;
+    }
+  }
+  std::ifstream in(ResetLogPath(state_dir_));
+  if (!in) return;
+  const int64_t boot = BootTimeSeconds();
+  std::string line;
+  std::lock_guard<std::mutex> lock(mu_);
+  while (std::getline(in, line)) {
+    // Each line is one reset: {"time":N,...,"kernels":[{"key":"..",..},..]}.
+    // The keys are hex hashes plus a function name, so a substring scan is
+    // enough; no JSON parser in the runtime.
+    size_t t = line.find("\"time\":");
+    int64_t when = 0;
+    if (t != std::string::npos) {
+      absl::SimpleAtoi(absl::string_view(line).substr(t + 7,
+                                                   line.find_first_of(",}", t) - (t + 7)),
+                       &when);
+    }
+    if (when >= boot) ++resets_since_boot_;
+    size_t pos = 0;
+    while ((pos = line.find("\"key\":\"", pos)) != std::string::npos) {
+      pos += 7;
+      size_t end = line.find('"', pos);
+      if (end == std::string::npos) break;
+      ++strikes_[line.substr(pos, end - pos)];
+      pos = end;
+    }
+  }
+  if (resets_since_boot_ > 0) {
+    LOG(WARNING) << "The GPU was reset " << resets_since_boot_
+                 << " time(s) since boot (" << ResetLogPath(state_dir_)
+                 << "); the driver leaves it slow after resets, so timings "
+                    "are unreliable until a reboot";
+  }
+}
+
+void Device::RecordReset(
+    absl::string_view cause,
+    absl::Span<const std::shared_ptr<const KernelIdentity>> kernels) {
+  const int64_t now = static_cast<int64_t>(std::time(nullptr));
+  std::string line = absl::StrFormat(
+      "{\"time\":%d,\"pid\":%d,\"device\":%d,\"error\":\"%s\",\"kernels\":[",
+      now, static_cast<int>(getpid()), ordinal_, JsonEscape(cause));
+  // Each kernel once, in launch order.
+  std::vector<const KernelIdentity*> unique;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    for (const auto& k : kernels) {
+      if (k == nullptr) continue;
+      auto [it, inserted] = strikes_.emplace(k->key, 0);
+      if (std::find_if(unique.begin(), unique.end(), [&](const KernelIdentity* u) {
+            return u->key == k->key;
+          }) == unique.end()) {
+        unique.push_back(k.get());
+        ++it->second;
+      }
+    }
+  }
+  for (size_t i = 0; i < unique.size(); ++i) {
+    absl::StrAppendFormat(&line, "%s{\"key\":\"%s\",\"name\":\"%s\"}",
+                          i ? "," : "", JsonEscape(unique[i]->key),
+                          JsonEscape(unique[i]->name));
+  }
+  line += "]}\n";
+  std::error_code ec;
+  std::filesystem::create_directories(state_dir_, ec);
+  std::ofstream out(ResetLogPath(state_dir_), std::ios::app);
+  if (!out) {
+    LOG(ERROR) << "Could not append the GPU reset record to "
+               << ResetLogPath(state_dir_);
+    return;
+  }
+  out << line;
+  LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
+             << " with " << unique.size()
+             << " suspect kernel(s); kernels seen in " << quarantine_strikes_
+             << " resets are refused until the log is cleared "
+                "(scripts/gpu_health.py --clear)";
 }
 
 Device::~Device() {
@@ -312,6 +449,7 @@ absl::StatusOr<MTL::Library*> Device::CompileLibrary(
     if (!inserted) {
       lib->release();  // lost a race; use the cached one
     }
+    library_keys_[it->second] = key;
     result = it->second;
   }
   pool->release();
@@ -327,8 +465,23 @@ absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
   std::string key =
       absl::StrCat(reinterpret_cast<uintptr_t>(library), ":", function);
   MTL::ComputePipelineState* pso = nullptr;
+  auto identity = std::make_shared<KernelIdentity>();
+  identity->name = function;
   {
     std::lock_guard<std::mutex> lock(mu_);
+    auto lk = library_keys_.find(library);
+    identity->key = absl::StrCat(
+        lk == library_keys_.end() ? "unknown" : lk->second, ":", function);
+    auto strikes = strikes_.find(identity->key);
+    if (quarantine_strikes_ > 0 && strikes != strikes_.end() &&
+        strikes->second >= quarantine_strikes_) {
+      return absl::FailedPreconditionError(absl::StrFormat(
+          "kernel %s is quarantined: it was in the command buffer that timed "
+          "out in %d GPU watchdog resets (see %s/gpu_resets.jsonl). Fix the "
+          "kernel, then clear the log with scripts/gpu_health.py --clear; "
+          "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
+          function, strikes->second, state_dir_));
+    }
     auto it = pso_cache_.find(key);
     if (it != pso_cache_.end()) pso = it->second;
   }
@@ -358,7 +511,41 @@ absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
       pso = it->second;
     }
   }
-  return std::make_unique<Kernel>(pso, function);
+  return std::make_unique<Kernel>(pso, std::move(identity));
+}
+
+namespace {
+// Fill kernels: `v` is the pattern broadcast to 32 bits, `n` the number of
+// elements (words or bytes) to write. Byte i takes byte (i mod 4) of the
+// pattern, which is right for 1-, 2- and 4-byte patterns alike.
+constexpr char kFillMsl[] = R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void xla_metal_fill32(device uint* p [[buffer(0)]],
+                             constant uint& v [[buffer(1)]],
+                             constant uint& n [[buffer(2)]],
+                             uint i [[thread_position_in_grid]]) {
+  if (i < n) p[i] = v;
+}
+kernel void xla_metal_fill8(device uchar* p [[buffer(0)]],
+                            constant uint& v [[buffer(1)]],
+                            constant uint& n [[buffer(2)]],
+                            uint i [[thread_position_in_grid]]) {
+  if (i < n) p[i] = (uchar)((v >> (8u * (i & 3u))) & 0xffu);
+}
+)";
+}  // namespace
+
+absl::StatusOr<const Kernel*> Device::FillKernel(bool word_granular) {
+  std::lock_guard<std::mutex> lock(fill_mu_);
+  std::unique_ptr<Kernel>& slot = word_granular ? fill32_kernel_ : fill8_kernel_;
+  if (slot == nullptr) {
+    ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, CompileLibrary(kFillMsl));
+    ABSL_ASSIGN_OR_RETURN(
+        slot, CreateKernel(lib, word_granular ? "xla_metal_fill32"
+                                              : "xla_metal_fill8"));
+  }
+  return slot.get();
 }
 
 absl::StatusOr<std::unique_ptr<Stream>> Device::CreateStream() {
@@ -556,8 +743,11 @@ absl::Status Stream::Commit() {
   std::vector<PendingWait> waits;
   waits.swap(pending_waits_);
   last_committed_waits_ = waits;
-  last_committed_names_.swap(pending_names_);
-  pending_names_.clear();
+  auto kernels =
+      std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
+          std::move(pending_kernels_));
+  pending_kernels_.clear();
+  last_committed_kernels_ = kernels;
   last_committed_signal_ = v;
   for (auto& w : waits) w.event->retain();
   MTL::SharedEvent* fence = fence_;
@@ -566,8 +756,8 @@ absl::Status Stream::Commit() {
   const int traced_ops = ops_in_cmd_;
   gpu_pending_.fetch_add(1, std::memory_order_relaxed);
   cmd_->addCompletedHandler(
-      [this, v, fence, signals, waits, ordinal,
-       traced_ops](MTL::CommandBuffer* cb) {
+      [this, v, fence, signals, waits, ordinal, traced_ops,
+       kernels](MTL::CommandBuffer* cb) {
         if (TraceEnabled()) {
           LOG(ERROR) << "[metal-trace] stream " << this << " cb#" << v
                     << " ops=" << traced_ops << " gpu_ms="
@@ -600,6 +790,7 @@ absl::Status Stream::Commit() {
           if (code == MTL::CommandBufferErrorTimeout ||
               code == MTL::CommandBufferErrorAccessRevoked ||
               code == MTL::CommandBufferErrorDeviceRemoved) {
+            device_->RecordReset(error.message(), *kernels);
             device_->MarkLost(error);
           }
           if (fence->signaledValue() < v) fence->setSignaledValue(v);
@@ -726,20 +917,56 @@ absl::Status Stream::FinishOp(uint64_t work) {
   return absl::OkStatus();
 }
 
+namespace {
+// Checks shared by Stream::Launch and CommandList::AddLaunch.
+absl::Status ValidateLaunch(const Kernel& kernel, Dim3 threads,
+                            absl::Span<const KernelArg> args) {
+  if (kernel.uses_argument_buffer()) {
+    if (args.size() > Stream::kMaxArgumentBufferArgs) {
+      return absl::UnimplementedError(absl::StrFormat(
+          "Launch %s: %d buffer arguments exceed the argument-buffer limit "
+          "of %d",
+          kernel.name(), args.size(), Stream::kMaxArgumentBufferArgs));
+    }
+    for (size_t i = 0; i < args.size(); ++i) {
+      if (!args[i].is_buffer) {
+        return absl::InvalidArgumentError(absl::StrFormat(
+            "Launch %s argument %d: kernels with an argument buffer take only "
+            "buffer arguments",
+            kernel.name(), i));
+      }
+    }
+  } else if (args.size() > Stream::kMaxBufferArgs) {
+    size_t num_buffers = 0;
+    for (const KernelArg& a : args) num_buffers += a.is_buffer ? 1 : 0;
+    return absl::UnimplementedError(absl::StrFormat(
+        "Launch %s: %d arguments (%d buffers) exceed Metal's %d argument "
+        "table slots and the kernel has no argument buffer",
+        kernel.name(), args.size(), num_buffers, Stream::kMaxBufferArgs));
+  }
+  const uint64_t per_group =
+      static_cast<uint64_t>(threads.x) * threads.y * threads.z;
+  if (per_group == 0 || per_group > kernel.max_total_threads_per_threadgroup()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "Launch %s: %d threads per threadgroup (pipeline limit %d)",
+        kernel.name(), per_group, kernel.max_total_threads_per_threadgroup()));
+  }
+  return absl::OkStatus();
+}
+
+uint64_t LaunchWork(Dim3 threadgroups, Dim3 threads) {
+  return static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
+         threadgroups.z * threads.x * threads.y * threads.z;
+}
+}  // namespace
+
 absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
                             Dim3 threads, absl::Span<const KernelArg> args,
                             uint32_t threadgroup_memory_bytes) {
-  size_t num_buffers = 0;
-  for (const KernelArg& a : args) num_buffers += a.is_buffer ? 1 : 0;
+  ABSL_RETURN_IF_ERROR(ValidateLaunch(kernel, threads, args));
   if (kernel.uses_argument_buffer()) {
     return LaunchWithArgumentBuffer(kernel, threadgroups, threads, args,
                                     threadgroup_memory_bytes);
-  }
-  if (args.size() > kMaxBufferArgs) {
-    return absl::UnimplementedError(absl::StrFormat(
-        "Launch %s: %d arguments (%d buffers) exceed Metal's %d argument "
-        "table slots; argument buffers are not implemented",
-        kernel.name(), args.size(), num_buffers, kMaxBufferArgs));
   }
   std::lock_guard<std::mutex> lock(mu_);
   // Resolve before opening an encoder so a bad pointer encodes nothing.
@@ -753,9 +980,41 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
     }
     refs[i] = *ref;
   }
+  return EncodeLaunch(kernel, threadgroups, threads, args,
+                      absl::MakeConstSpan(refs, args.size()),
+                      threadgroup_memory_bytes);
+}
+
+absl::Status Stream::LaunchWithArgumentBuffer(
+    const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
+    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
+  std::lock_guard<std::mutex> lock(mu_);
+  absl::InlinedVector<uint64_t, 64> addrs(std::max<size_t>(args.size(), 1), 0);
+  absl::InlinedVector<MTL::Buffer*, 16> resident;
+  for (size_t i = 0; i < args.size(); ++i) {
+    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
+    if (!ref.ok()) {
+      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
+                                                    kernel.name(), i));
+    }
+    addrs[i] = ref->buffer->gpuAddress() + ref->offset;
+    if (std::find(resident.begin(), resident.end(), ref->buffer) ==
+        resident.end()) {
+      resident.push_back(ref->buffer);
+    }
+  }
+  return EncodeLaunchWithArgumentBuffer(kernel, threadgroups, threads, addrs,
+                                        resident, threadgroup_memory_bytes);
+}
+
+absl::Status Stream::EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
+                                  Dim3 threads,
+                                  absl::Span<const KernelArg> args,
+                                  absl::Span<const BufferRef> refs,
+                                  uint32_t threadgroup_memory_bytes) {
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
-  pending_names_.push_back(kernel.name());
+  pending_kernels_.push_back(kernel.identity());
   for (size_t i = 0; i < args.size(); ++i) {
     const KernelArg& a = args[i];
     if (a.is_buffer) {
@@ -772,42 +1031,16 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
-                  threadgroups.z * threads.x * threads.y * threads.z);
+  return FinishOp(LaunchWork(threadgroups, threads));
 }
 
-absl::Status Stream::LaunchWithArgumentBuffer(
+absl::Status Stream::EncodeLaunchWithArgumentBuffer(
     const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
-  if (args.size() > kMaxArgumentBufferArgs) {
-    return absl::UnimplementedError(absl::StrFormat(
-        "Launch %s: %d buffer arguments exceed the argument-buffer limit of %d",
-        kernel.name(), args.size(), kMaxArgumentBufferArgs));
-  }
-  std::lock_guard<std::mutex> lock(mu_);
-  std::vector<uint64_t> addrs(std::max<size_t>(args.size(), 1), 0);
-  std::vector<MTL::Buffer*> resident;
-  for (size_t i = 0; i < args.size(); ++i) {
-    if (!args[i].is_buffer) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Launch %s argument %d: kernels with an argument buffer take only "
-          "buffer arguments",
-          kernel.name(), i));
-    }
-    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
-    if (!ref.ok()) {
-      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
-                                                    kernel.name(), i));
-    }
-    addrs[i] = ref->buffer->gpuAddress() + ref->offset;
-    if (std::find(resident.begin(), resident.end(), ref->buffer) ==
-        resident.end()) {
-      resident.push_back(ref->buffer);
-    }
-  }
+    absl::Span<const uint64_t> addrs, absl::Span<MTL::Buffer* const> resident,
+    uint32_t threadgroup_memory_bytes) {
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
-  pending_names_.push_back(kernel.name());
+  pending_kernels_.push_back(kernel.identity());
   enc_->setBytes(addrs.data(), addrs.size() * sizeof(uint64_t), 0);
   // Buffers reached only through GPU addresses must be made resident (and
   // visible to hazard tracking) explicitly.
@@ -822,8 +1055,7 @@ absl::Status Stream::LaunchWithArgumentBuffer(
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(static_cast<uint64_t>(threadgroups.x) * threadgroups.y *
-                  threadgroups.z * threads.x * threads.y * threads.z);
+  return FinishOp(LaunchWork(threadgroups, threads));
 }
 
 absl::Status Stream::EncodeExternal(
@@ -835,6 +1067,19 @@ absl::Status Stream::EncodeExternal(
   return FinishOp(kExternalOpWork);
 }
 
+namespace {
+absl::Status CheckRange(const BufferRef& ref, uint64_t size,
+                        absl::string_view what) {
+  if (ref.offset + size > ref.buffer->length()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "%s runs past the end of its %d-byte allocation (offset %d, %d "
+        "bytes)",
+        what, ref.buffer->length(), ref.offset, size));
+  }
+  return absl::OkStatus();
+}
+}  // namespace
+
 absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
                                           uint64_t size) {
   if (size == 0) return absl::OkStatus();
@@ -845,20 +1090,20 @@ absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
   if (!d.ok()) return Annotate(d.status(), absl::StrCat(what, " destination"));
   absl::StatusOr<BufferRef> s = device_->Resolve(src);
   if (!s.ok()) return Annotate(s.status(), absl::StrCat(what, " source"));
-  if (d->offset + size > d->buffer->length() ||
-      s->offset + size > s->buffer->length()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "%s runs past the end of an allocation (dst %d/%d, src %d/%d bytes)",
-        what, d->offset, d->buffer->length(), s->offset, s->buffer->length()));
-  }
+  ABSL_RETURN_IF_ERROR(CheckRange(*d, size, absl::StrCat(what, " destination")));
+  ABSL_RETURN_IF_ERROR(CheckRange(*s, size, absl::StrCat(what, " source")));
+  return EncodeCopy(*d, *s, size);
+}
+
+absl::Status Stream::EncodeCopy(BufferRef dst, BufferRef src, uint64_t size) {
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
   if (blit == nullptr) {
-    return absl::InternalError(
-        absl::StrCat("Metal blitCommandEncoder creation failed for ", what));
+    return absl::InternalError(absl::StrFormat(
+        "Metal blitCommandEncoder creation failed for a %d-byte copy", size));
   }
-  blit->copyFromBuffer(s->buffer, s->offset, d->buffer, d->offset, size);
+  blit->copyFromBuffer(src.buffer, src.offset, dst.buffer, dst.offset, size);
   blit->endEncoding();
   return FinishOp(size / 4);  // about one thread per word
 }
@@ -870,21 +1115,9 @@ absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
       absl::StrFormat("Memset8(%p, 0x%02x, %d bytes)", dst, value, size);
   absl::StatusOr<BufferRef> d = device_->Resolve(dst);
   if (!d.ok()) return Annotate(d.status(), what);
-  if (d->offset + size > d->buffer->length()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "%s runs past the end of its %d-byte allocation (offset %d)", what,
-        d->buffer->length(), d->offset));
-  }
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  EndEncoder();
-  MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
-  if (blit == nullptr) {
-    return absl::InternalError(
-        absl::StrCat("Metal blitCommandEncoder creation failed for ", what));
-  }
-  blit->fillBuffer(d->buffer, NS::Range(d->offset, size), value);
-  blit->endEncoding();
-  return FinishOp(size / 4);
+  ABSL_RETURN_IF_ERROR(CheckRange(*d, size, what));
+  const uint32_t v = value;
+  return EncodeFill(*d, v | v << 8 | v << 16 | v << 24, 1, size);
 }
 
 absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
@@ -893,17 +1126,308 @@ absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
         "Memset32(%p, 0x%08x, %d bytes): size must be a multiple of 4", dst,
         value, size));
   }
-  // Blit fill is byte-granular; a 32-bit pattern needs a kernel or a host
-  // callback. Use the host path for correctness; a kernel can replace it.
-  uint8_t b = static_cast<uint8_t>(value & 0xff);
-  if ((value >> 8 & 0xff) == b && (value >> 16 & 0xff) == b &&
-      (value >> 24 & 0xff) == b) {
-    return Memset8(dst, b, size);
+  if (size == 0) return absl::OkStatus();
+  std::lock_guard<std::mutex> lock(mu_);
+  const std::string what =
+      absl::StrFormat("Memset32(%p, 0x%08x, %d bytes)", dst, value, size);
+  absl::StatusOr<BufferRef> d = device_->Resolve(dst);
+  if (!d.ok()) return Annotate(d.status(), what);
+  ABSL_RETURN_IF_ERROR(CheckRange(*d, size, what));
+  return EncodeFill(*d, value, 4, size);
+}
+
+absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
+                                int pattern_bytes, uint64_t size) {
+  const uint8_t b = static_cast<uint8_t>(pattern & 0xff);
+  const bool uniform = (pattern >> 8 & 0xff) == b &&
+                       (pattern >> 16 & 0xff) == b && (pattern >> 24 & 0xff) == b;
+  if (uniform) {
+    ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
+    EndEncoder();
+    MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
+    if (blit == nullptr) {
+      return absl::InternalError(absl::StrFormat(
+          "Metal blitCommandEncoder creation failed for a %d-byte fill", size));
+    }
+    blit->fillBuffer(dst.buffer, NS::Range(dst.offset, size), b);
+    blit->endEncoding();
+    return FinishOp(size / 4);
   }
-  return HostCallback([dst, value, size]() {
-    uint32_t* p = static_cast<uint32_t*>(dst);
-    for (uint64_t i = 0; i < size / 4; ++i) p[i] = value;
-  });
+  // Word-granular when the range is 4-byte aligned; bytes otherwise.
+  const bool words = size % 4 == 0 && dst.offset % 4 == 0;
+  ABSL_ASSIGN_OR_RETURN(const Kernel* kernel, device_->FillKernel(words));
+  const uint64_t n64 = words ? size / 4 : size;
+  if (n64 > std::numeric_limits<uint32_t>::max()) {
+    return absl::UnimplementedError(
+        absl::StrFormat("fill of %d bytes exceeds the 32-bit element limit",
+                        size));
+  }
+  const uint32_t n = static_cast<uint32_t>(n64);
+  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
+  enc_->setComputePipelineState(kernel->pso());
+  pending_kernels_.push_back(kernel->identity());
+  enc_->setBuffer(dst.buffer, dst.offset, 0);
+  enc_->setBytes(&pattern, sizeof(pattern), 1);
+  enc_->setBytes(&n, sizeof(n), 2);
+  const uint32_t group =
+      std::min<uint32_t>(n, kernel->max_total_threads_per_threadgroup());
+  enc_->dispatchThreads(MTL::Size(n, 1, 1), MTL::Size(group, 1, 1));
+  return FinishOp(n);
+}
+
+absl::Status Stream::Replay(CommandList& list) {
+  if (list.device() != device_) {
+    return absl::InvalidArgumentError(
+        "Replay: the command list belongs to another device");
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  ABSL_RETURN_IF_ERROR(list.ResolveIfStale());
+  for (size_t i = 0; i < list.commands_.size(); ++i) {
+    const CommandList::Command& c = list.commands_[i];
+    absl::Status status;
+    switch (c.kind) {
+      case CommandList::Command::Kind::kLaunch:
+        status = c.kernel->uses_argument_buffer()
+                     ? EncodeLaunchWithArgumentBuffer(
+                           *c.kernel, c.threadgroups, c.threads, c.addrs,
+                           c.resident, c.threadgroup_memory_bytes)
+                     : EncodeLaunch(*c.kernel, c.threadgroups, c.threads,
+                                    c.args, c.refs, c.threadgroup_memory_bytes);
+        break;
+      case CommandList::Command::Kind::kCopy:
+        status = EncodeCopy(c.dst_ref, c.src_ref, c.size);
+        break;
+      case CommandList::Command::Kind::kFill:
+        status = EncodeFill(c.dst_ref, c.pattern, c.pattern_bytes, c.size);
+        break;
+      case CommandList::Command::Kind::kEmpty:
+        break;
+    }
+    if (!status.ok()) {
+      return Annotate(status, absl::StrFormat("Replay command %d of %d", i,
+                                              list.commands_.size()));
+    }
+  }
+  return absl::OkStatus();
+}
+
+// ---------------------------------------------------------------------------
+// CommandList
+
+absl::Status CommandList::CheckIndex(size_t index, Command::Kind kind) const {
+  if (index >= commands_.size()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "command %d out of range (%d commands)", index, commands_.size()));
+  }
+  if (commands_[index].kind != kind) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "command %d is not of the kind being updated", index));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status CommandList::Resolve(Command& c, size_t index) {
+  switch (c.kind) {
+    case Command::Kind::kLaunch: {
+      if (c.kernel->uses_argument_buffer()) {
+        c.addrs.assign(std::max<size_t>(c.args.size(), 1), 0);
+        c.resident.clear();
+        for (size_t i = 0; i < c.args.size(); ++i) {
+          absl::StatusOr<BufferRef> ref = device_->Resolve(c.args[i].device_ptr);
+          if (!ref.ok()) {
+            return Annotate(ref.status(),
+                            absl::StrFormat("command %d (%s) argument %d",
+                                            index, c.kernel->name(), i));
+          }
+          c.addrs[i] = ref->buffer->gpuAddress() + ref->offset;
+          if (std::find(c.resident.begin(), c.resident.end(), ref->buffer) ==
+              c.resident.end()) {
+            c.resident.push_back(ref->buffer);
+          }
+        }
+        return absl::OkStatus();
+      }
+      c.refs.assign(c.args.size(), BufferRef());
+      for (size_t i = 0; i < c.args.size(); ++i) {
+        if (!c.args[i].is_buffer) continue;
+        absl::StatusOr<BufferRef> ref = device_->Resolve(c.args[i].device_ptr);
+        if (!ref.ok()) {
+          return Annotate(ref.status(),
+                          absl::StrFormat("command %d (%s) argument %d", index,
+                                          c.kernel->name(), i));
+        }
+        c.refs[i] = *ref;
+      }
+      return absl::OkStatus();
+    }
+    case Command::Kind::kCopy: {
+      const std::string what = absl::StrFormat(
+          "command %d: copy(%p <- %p, %d bytes)", index, c.dst, c.src, c.size);
+      absl::StatusOr<BufferRef> d = device_->Resolve(c.dst);
+      if (!d.ok()) return Annotate(d.status(), what + " destination");
+      absl::StatusOr<BufferRef> s = device_->Resolve(c.src);
+      if (!s.ok()) return Annotate(s.status(), what + " source");
+      ABSL_RETURN_IF_ERROR(CheckRange(*d, c.size, what + " destination"));
+      ABSL_RETURN_IF_ERROR(CheckRange(*s, c.size, what + " source"));
+      c.dst_ref = *d;
+      c.src_ref = *s;
+      return absl::OkStatus();
+    }
+    case Command::Kind::kFill: {
+      const std::string what =
+          absl::StrFormat("command %d: fill(%p, 0x%08x, %d bytes)", index,
+                          c.dst, c.pattern, c.size);
+      absl::StatusOr<BufferRef> d = device_->Resolve(c.dst);
+      if (!d.ok()) return Annotate(d.status(), what);
+      ABSL_RETURN_IF_ERROR(CheckRange(*d, c.size, what));
+      c.dst_ref = *d;
+      return absl::OkStatus();
+    }
+    case Command::Kind::kEmpty:
+      return absl::OkStatus();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status CommandList::ResolveIfStale() {
+  const uint64_t gen = device_->allocation_generation();
+  if (gen == resolved_generation_) return absl::OkStatus();
+  for (size_t i = 0; i < commands_.size(); ++i) {
+    ABSL_RETURN_IF_ERROR(Resolve(commands_[i], i));
+  }
+  resolved_generation_ = gen;
+  return absl::OkStatus();
+}
+
+absl::StatusOr<size_t> CommandList::AddLaunch(
+    const Kernel* kernel, Dim3 threadgroups, Dim3 threads,
+    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
+  commands_.emplace_back();
+  commands_.back().kind = Command::Kind::kLaunch;
+  const size_t index = commands_.size() - 1;
+  absl::Status s = UpdateLaunch(index, kernel, threadgroups, threads, args,
+                                threadgroup_memory_bytes);
+  if (!s.ok()) {
+    commands_.pop_back();
+    return s;
+  }
+  return index;
+}
+
+absl::Status CommandList::UpdateLaunch(size_t index, const Kernel* kernel,
+                                       Dim3 threadgroups, Dim3 threads,
+                                       absl::Span<const KernelArg> args,
+                                       uint32_t threadgroup_memory_bytes) {
+  ABSL_RETURN_IF_ERROR(CheckIndex(index, Command::Kind::kLaunch));
+  if (kernel == nullptr) {
+    return absl::InvalidArgumentError(
+        absl::StrFormat("command %d: null kernel", index));
+  }
+  ABSL_RETURN_IF_ERROR(ValidateLaunch(*kernel, threads, args));
+  Command& c = commands_[index];
+  c.kernel = kernel;
+  c.threadgroups = threadgroups;
+  c.threads = threads;
+  c.threadgroup_memory_bytes = threadgroup_memory_bytes;
+  c.args.assign(args.begin(), args.end());
+  return Resolve(c, index);
+}
+
+absl::StatusOr<size_t> CommandList::AddCopy(void* dst, const void* src,
+                                            uint64_t size) {
+  commands_.emplace_back();
+  commands_.back().kind = Command::Kind::kCopy;
+  const size_t index = commands_.size() - 1;
+  absl::Status s = UpdateCopy(index, dst, src, size);
+  if (!s.ok()) {
+    commands_.pop_back();
+    return s;
+  }
+  return index;
+}
+
+absl::Status CommandList::UpdateCopy(size_t index, void* dst, const void* src,
+                                     uint64_t size) {
+  ABSL_RETURN_IF_ERROR(CheckIndex(index, Command::Kind::kCopy));
+  Command& c = commands_[index];
+  c.dst = dst;
+  c.src = src;
+  c.size = size;
+  if (size == 0) {
+    c.kind = Command::Kind::kEmpty;  // nothing to encode
+    return absl::OkStatus();
+  }
+  return Resolve(c, index);
+}
+
+absl::StatusOr<size_t> CommandList::AddFill(void* dst, uint32_t pattern,
+                                            int pattern_bytes, uint64_t size) {
+  commands_.emplace_back();
+  commands_.back().kind = Command::Kind::kFill;
+  const size_t index = commands_.size() - 1;
+  absl::Status s = UpdateFill(index, dst, pattern, pattern_bytes, size);
+  if (!s.ok()) {
+    commands_.pop_back();
+    return s;
+  }
+  return index;
+}
+
+absl::Status CommandList::UpdateFill(size_t index, void* dst, uint32_t pattern,
+                                     int pattern_bytes, uint64_t size) {
+  ABSL_RETURN_IF_ERROR(CheckIndex(index, Command::Kind::kFill));
+  if (pattern_bytes != 1 && pattern_bytes != 2 && pattern_bytes != 4) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "command %d: fill pattern width %d (expected 1, 2 or 4 bytes)", index,
+        pattern_bytes));
+  }
+  if (size % pattern_bytes != 0) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "command %d: fill of %d bytes is not a multiple of the %d-byte pattern",
+        index, size, pattern_bytes));
+  }
+  Command& c = commands_[index];
+  c.dst = dst;
+  c.pattern = pattern;
+  c.pattern_bytes = pattern_bytes;
+  c.size = size;
+  if (size == 0) {
+    c.kind = Command::Kind::kEmpty;
+    return absl::OkStatus();
+  }
+  return Resolve(c, index);
+}
+
+size_t CommandList::AddEmpty() {
+  commands_.emplace_back();
+  return commands_.size() - 1;
+}
+
+std::string CommandList::ToString() const {
+  std::string out = absl::StrFormat("CommandList(%d commands)", commands_.size());
+  for (size_t i = 0; i < commands_.size(); ++i) {
+    const Command& c = commands_[i];
+    switch (c.kind) {
+      case Command::Kind::kLaunch:
+        absl::StrAppendFormat(&out, "\n  %d: launch %s grid %dx%dx%d x %dx%dx%d, %d args",
+                              i, c.kernel->name(), c.threadgroups.x,
+                              c.threadgroups.y, c.threadgroups.z, c.threads.x,
+                              c.threads.y, c.threads.z, c.args.size());
+        break;
+      case Command::Kind::kCopy:
+        absl::StrAppendFormat(&out, "\n  %d: copy %p <- %p, %d bytes", i, c.dst,
+                              c.src, c.size);
+        break;
+      case Command::Kind::kFill:
+        absl::StrAppendFormat(&out, "\n  %d: fill %p, 0x%08x (%d-byte pattern), %d bytes",
+                              i, c.dst, c.pattern, c.pattern_bytes, c.size);
+        break;
+      case Command::Kind::kEmpty:
+        absl::StrAppendFormat(&out, "\n  %d: empty", i);
+        break;
+    }
+  }
+  return out;
 }
 
 absl::Status Stream::HostCallback(std::function<void()> fn) {
@@ -1049,10 +1573,11 @@ std::string Stream::DebugState() {
     absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
                           w.event, w.value, w.event->signaledValue());
   }
+  auto kernels = last_committed_kernels_;
   absl::StrAppendFormat(&out, "; kernels in last committed cb (%d):",
-                        last_committed_names_.size());
-  for (const std::string& name : last_committed_names_) {
-    absl::StrAppend(&out, " ", name);
+                        kernels ? kernels->size() : 0);
+  if (kernels) {
+    for (const auto& k : *kernels) absl::StrAppend(&out, " ", k->name);
   }
   return out;
 }

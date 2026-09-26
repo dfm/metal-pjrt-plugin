@@ -42,6 +42,7 @@
 #include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "absl/types/span.h"
 
 namespace MTL {
@@ -119,16 +120,30 @@ inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
 bool UsesArgumentBuffer(const std::string& msl_source,
                         const std::string& kernel_name);
 
+// What identifies a kernel across processes: its function name and a key
+// made of the hash of its MSL source plus the function name. Shared by the
+// Kernel and by the streams' per-command-buffer records (so recording a
+// launch costs a reference count, not a string copy).
+struct KernelIdentity {
+  std::string name;
+  std::string key;
+};
+
 class Kernel {
  public:
-  Kernel(MTL::ComputePipelineState* pso, std::string name)
-      : pso_(pso), name_(std::move(name)) {}
+  Kernel(MTL::ComputePipelineState* pso,
+         std::shared_ptr<const KernelIdentity> identity)
+      : pso_(pso), identity_(std::move(identity)) {}
   ~Kernel();
   Kernel(const Kernel&) = delete;
   Kernel& operator=(const Kernel&) = delete;
 
   MTL::ComputePipelineState* pso() const { return pso_; }
-  const std::string& name() const { return name_; }
+  const std::string& name() const { return identity_->name; }
+  const std::string& key() const { return identity_->key; }
+  const std::shared_ptr<const KernelIdentity>& identity() const {
+    return identity_;
+  }
   // See kArgumentBufferMarker. Launch then packs all (buffer) arguments into
   // one setBytes payload of GPU addresses and marks the buffers resident.
   bool uses_argument_buffer() const { return uses_argument_buffer_; }
@@ -139,7 +154,7 @@ class Kernel {
 
  private:
   MTL::ComputePipelineState* pso_;
-  std::string name_;
+  std::shared_ptr<const KernelIdentity> identity_;
   bool uses_argument_buffer_ = false;
 };
 
@@ -192,6 +207,28 @@ class Device {
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
 
+  // Built-in fill kernels (32-bit and byte granularity), compiled on first
+  // use. Used for memsets whose pattern is not a single repeated byte.
+  absl::StatusOr<const Kernel*> FillKernel(bool word_granular);
+
+  // GPU reset log and kernel quarantine. A watchdog timeout resets the GPU
+  // for every process, and after a few resets the driver leaves the GPU slow
+  // until a reboot, so the same bug must not be allowed to reset it again
+  // and again. Every reset observed by this process is appended to
+  // <state dir>/gpu_resets.jsonl with the kernels that were in the command
+  // buffer that timed out (none when that buffer only waited on another
+  // stream). Kernels seen in `quarantine_strikes()` or more resets are refused
+  // by CreateKernel until the log is cleared (scripts/gpu_health.py --clear).
+  // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/jax_metal;
+  // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
+  void RecordReset(absl::string_view cause,
+                   absl::Span<const std::shared_ptr<const KernelIdentity>>
+                       kernels);
+  const std::string& state_dir() const { return state_dir_; }
+  int quarantine_strikes() const { return quarantine_strikes_; }
+  // Resets recorded since the machine booted (by any process).
+  int resets_since_boot() const { return resets_since_boot_; }
+
  private:
   Device() = default;
   int ordinal_ = 0;
@@ -214,6 +251,16 @@ class Device {
  private:
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
+  std::unordered_map<MTL::Library*, std::string> library_keys_;  // hash
+  std::mutex fill_mu_;
+  std::unique_ptr<Kernel> fill32_kernel_;
+  std::unique_ptr<Kernel> fill8_kernel_;
+  // Reset log state (see RecordReset); strikes_ is guarded by mu_.
+  void LoadResetLog();
+  std::string state_dir_;
+  int quarantine_strikes_ = 2;
+  int resets_since_boot_ = 0;
+  std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
 };
 
 // Timeline-semaphore style event: `Record` on a stream bumps and signals a
@@ -236,6 +283,84 @@ class Event {
   MTL::SharedEvent* event_;
   uint64_t value_ = 0;  // last recorded value; 0 means never recorded
   std::mutex mu_;
+};
+
+// A recorded, replayable sequence of stream work: the software command
+// buffer behind StreamExecutor's CommandBuffer on Metal. Commands keep their
+// buffer arguments resolved to (MTL::Buffer, offset) so Stream::Replay only
+// encodes; resolution is redone lazily when the device's allocation
+// generation changes (something was freed since) or when a command is
+// updated with new arguments. Commands replay in recording order, with the
+// stream's usual serial ordering between them.
+//
+// Measured on an M3 (runtime/icb_spike.cc): direct encoding costs about
+// 0.1-0.2 us per dispatch, so replaying this way removes the 30-40 us of
+// per-kernel host work XLA's thunks and our argument packing cost, without the
+// 1-4 us of extra GPU time per dispatch a Metal indirect command buffer with
+// per-command barriers was measured to add.
+class CommandList {
+ public:
+  explicit CommandList(Device* device) : device_(device) {}
+  CommandList(const CommandList&) = delete;
+  CommandList& operator=(const CommandList&) = delete;
+
+  // Each Add* returns the new command's index; Update* replaces the
+  // parameters of an existing command of the same kind. Arguments are
+  // validated and resolved immediately.
+  absl::StatusOr<size_t> AddLaunch(const Kernel* kernel, Dim3 threadgroups,
+                                   Dim3 threads,
+                                   absl::Span<const KernelArg> args,
+                                   uint32_t threadgroup_memory_bytes = 0);
+  absl::Status UpdateLaunch(size_t index, const Kernel* kernel,
+                            Dim3 threadgroups, Dim3 threads,
+                            absl::Span<const KernelArg> args,
+                            uint32_t threadgroup_memory_bytes = 0);
+  absl::StatusOr<size_t> AddCopy(void* dst, const void* src, uint64_t size);
+  absl::Status UpdateCopy(size_t index, void* dst, const void* src,
+                          uint64_t size);
+  // `pattern` is the fill value broadcast to 32 bits; `pattern_bytes` (1, 2
+  // or 4) is the width of the original pattern.
+  absl::StatusOr<size_t> AddFill(void* dst, uint32_t pattern,
+                                 int pattern_bytes, uint64_t size);
+  absl::Status UpdateFill(size_t index, void* dst, uint32_t pattern,
+                          int pattern_bytes, uint64_t size);
+  size_t AddEmpty();
+
+  size_t size() const { return commands_.size(); }
+  Device* device() const { return device_; }
+  std::string ToString() const;
+
+ private:
+  friend class Stream;
+  struct Command {
+    enum class Kind { kLaunch, kCopy, kFill, kEmpty };
+    Kind kind = Kind::kEmpty;
+    // Launch.
+    const Kernel* kernel = nullptr;
+    Dim3 threadgroups{1, 1, 1};
+    Dim3 threads{1, 1, 1};
+    uint32_t threadgroup_memory_bytes = 0;
+    std::vector<KernelArg> args;
+    std::vector<BufferRef> refs;           // per argument (buffers only)
+    std::vector<uint64_t> addrs;           // argument-buffer kernels
+    std::vector<MTL::Buffer*> resident;    // argument-buffer kernels
+    // Copy / fill.
+    void* dst = nullptr;
+    const void* src = nullptr;
+    uint64_t size = 0;
+    uint32_t pattern = 0;
+    int pattern_bytes = 0;
+    BufferRef dst_ref;
+    BufferRef src_ref;
+  };
+  absl::Status Resolve(Command& c, size_t index);
+  // Re-resolve every command if anything was freed since the last time.
+  absl::Status ResolveIfStale();
+  absl::Status CheckIndex(size_t index, Command::Kind kind) const;
+
+  Device* device_;
+  std::vector<Command> commands_;
+  uint64_t resolved_generation_ = ~0ull;
 };
 
 class Stream {
@@ -266,10 +391,15 @@ class Stream {
   absl::Status EncodeExternal(
       std::function<absl::Status(void* mtl_command_buffer)> encode);
 
-  // Device-to-device copy and fill, via a blit encoder.
+  // Device-to-device copy and fill. Copies and single-byte fills use a blit
+  // encoder; other fills use the device's built-in fill kernel.
   absl::Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
   absl::Status Memset8(void* dst, uint8_t value, uint64_t size);
   absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
+
+  // Encode every command of `list` into this stream, in order. The list must
+  // belong to this stream's device.
+  absl::Status Replay(CommandList& list);
 
   // Host transfers are ordered on the stream: they run in a host callback once
   // prior work completes, and later stream work waits for them. With unified
@@ -322,6 +452,20 @@ class Stream {
                                         Dim3 threadgroups, Dim3 threads,
                                         absl::Span<const KernelArg> args,
                                         uint32_t threadgroup_memory_bytes);
+  // Encoders for already-resolved work (shared by the direct API and Replay).
+  // Caller holds mu_.
+  absl::Status EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
+                            Dim3 threads, absl::Span<const KernelArg> args,
+                            absl::Span<const BufferRef> refs,
+                            uint32_t threadgroup_memory_bytes);
+  absl::Status EncodeLaunchWithArgumentBuffer(
+      const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
+      absl::Span<const uint64_t> addrs,
+      absl::Span<MTL::Buffer* const> resident,
+      uint32_t threadgroup_memory_bytes);
+  absl::Status EncodeCopy(BufferRef dst, BufferRef src, uint64_t size);
+  absl::Status EncodeFill(BufferRef dst, uint32_t pattern, int pattern_bytes,
+                          uint64_t size);
   // Device::Resolve with a small per-stream cache of recently used
   // allocations (invalidated whenever anything is deallocated). Caller holds
   // mu_.
@@ -378,9 +522,11 @@ class Stream {
   std::vector<PendingWait> pending_waits_;
   // Waits of the most recently committed command buffer (diagnostics).
   std::vector<PendingWait> last_committed_waits_;
-  // Kernel names encoded into the open / last committed command buffer.
-  std::vector<std::string> pending_names_;
-  std::vector<std::string> last_committed_names_;
+  // Kernels encoded into the open / last committed command buffer (for the
+  // timeout diagnostics and the reset log).
+  std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
+  std::shared_ptr<const std::vector<std::shared_ptr<const KernelIdentity>>>
+      last_committed_kernels_;
   uint64_t last_committed_signal_ = 0;
  public:
   // Diagnostics: one line describing this stream's fence state and what its

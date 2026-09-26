@@ -5,6 +5,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
+#include <fstream>
+#include <filesystem>
+#include <cstdlib>
 #include <string>
 #include <vector>
 
@@ -144,6 +147,158 @@ TEST_F(MetalRuntimeTest, LaunchCopyAndEvents) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
   EXPECT_THAT(dev_->Deallocate(z), IsOk());
   EXPECT_EQ(dev_->allocated_bytes(), 0u);
+}
+
+TEST_F(MetalRuntimeTest, FillPatterns) {
+  const uint32_t n = 4096;
+  void* z = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  // Non-uniform 32-bit pattern goes through the fill kernel.
+  ASSERT_THAT(s->Memset32(z, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(z)[0], 1.0f);
+  EXPECT_EQ(static_cast<float*>(z)[n - 1], 1.0f);
+  // Byte fill of an unaligned interior range: blit path.
+  ASSERT_THAT(s->Memset8(static_cast<char*>(z) + 3, 0xab, 10), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  const uint8_t* bytes = static_cast<const uint8_t*>(z);
+  // 1.0f is 00 00 80 3f in memory.
+  EXPECT_EQ(bytes[2], 0x80);
+  EXPECT_EQ(bytes[3], 0xab);
+  EXPECT_EQ(bytes[12], 0xab);
+  EXPECT_EQ(bytes[13], 0x00);
+  EXPECT_EQ(bytes[15], 0x3f);
+  EXPECT_THAT(dev_->Deallocate(z), IsOk());
+}
+
+TEST_F(MetalRuntimeTest, CommandListReplayAndUpdate) {
+  const uint32_t n = 1 << 16;
+  const uint32_t groups = (n + 255) / 256;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  void* z = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::vector<float> hx(n, 1.0f), hy(n, 0.0f), out(n, 0.0f);
+  ASSERT_THAT(s->MemcpyHostToDevice(x, hx.data(), n * 4), IsOk());
+  ASSERT_THAT(s->MemcpyHostToDevice(y, hy.data(), n * 4), IsOk());
+
+  // Record: y += 3x; y += 3x; z = y; fill x with 2.0f (32-bit pattern).
+  Params p{n, 3.0f};
+  CommandList list(dev_.get());
+  absl::StatusOr<size_t> c0 = list.AddLaunch(
+      kernel_.get(), Dim3{groups, 1, 1}, Dim3{256, 1, 1},
+      {KernelArg::Buffer(x), KernelArg::Buffer(y),
+       KernelArg::Bytes(&p, sizeof(p))});
+  ASSERT_THAT(c0, IsOk());
+  absl::StatusOr<size_t> c1 = list.AddLaunch(
+      kernel_.get(), Dim3{groups, 1, 1}, Dim3{256, 1, 1},
+      {KernelArg::Buffer(x), KernelArg::Buffer(y),
+       KernelArg::Bytes(&p, sizeof(p))});
+  ASSERT_THAT(c1, IsOk());
+  absl::StatusOr<size_t> c2 = list.AddCopy(z, y, n * 4);
+  ASSERT_THAT(c2, IsOk());
+  absl::StatusOr<size_t> c3 = list.AddFill(x, 0x40000000u, 4, n * 4);
+  ASSERT_THAT(c3, IsOk());
+  EXPECT_EQ(list.size(), 4u);
+  EXPECT_THAT(list.ToString(), HasSubstr("launch axpy"));
+
+  // Replay twice: after the first, y = 6 and z = 6, x = 2; after the second,
+  // y = 6 + 12 = 18, z = 18.
+  ASSERT_THAT(s->Replay(list), IsOk());
+  ASSERT_THAT(s->Replay(list), IsOk());
+  ASSERT_THAT(s->MemcpyDeviceToHost(out.data(), z, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(out[0], 18.0f);
+  EXPECT_EQ(out[n - 1], 18.0f);
+  EXPECT_EQ(static_cast<float*>(x)[7], 2.0f);
+
+  // Update: point the copy at a fresh buffer, then free x and reuse the
+  // address range (stale resolution must be redone on replay).
+  void* w = Alloc(n * 4);
+  ASSERT_THAT(list.UpdateCopy(*c2, w, y, n * 4), IsOk());
+  ASSERT_THAT(dev_->Deallocate(x), IsOk());
+  void* x2 = Alloc(n * 4);
+  ASSERT_THAT(s->Memset8(x2, 0, n * 4), IsOk());
+  ASSERT_THAT(list.UpdateLaunch(*c0, kernel_.get(), Dim3{groups, 1, 1},
+                                Dim3{256, 1, 1},
+                                {KernelArg::Buffer(x2), KernelArg::Buffer(y),
+                                 KernelArg::Bytes(&p, sizeof(p))}),
+              IsOk());
+  ASSERT_THAT(list.UpdateLaunch(*c1, kernel_.get(), Dim3{groups, 1, 1},
+                                Dim3{256, 1, 1},
+                                {KernelArg::Buffer(x2), KernelArg::Buffer(y),
+                                 KernelArg::Bytes(&p, sizeof(p))}),
+              IsOk());
+  ASSERT_THAT(list.UpdateFill(*c3, x2, 0x40000000u, 4, n * 4), IsOk());
+  // x2 = 0 so y stays 18; w = 18; then x2 = 2.
+  ASSERT_THAT(s->Replay(list), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(w)[3], 18.0f);
+  EXPECT_EQ(static_cast<float*>(x2)[3], 2.0f);
+
+  // Errors: wrong kind, bad index, unknown pointer.
+  EXPECT_THAT(list.UpdateCopy(*c0, w, y, 4),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(list.UpdateCopy(99, w, y, 4),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  int junk = 0;
+  EXPECT_THAT(list.AddCopy(&junk, y, 4),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_EQ(list.size(), 4u);
+
+  for (void* ptr : {y, z, w, x2}) EXPECT_THAT(dev_->Deallocate(ptr), IsOk());
+}
+
+TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
+  // A private state directory so the real reset log is untouched.
+  char tmpl[] = "/tmp/metal_rt_state_XXXXXX";
+  ASSERT_NE(mkdtemp(tmpl), nullptr);
+  const std::string dir = tmpl;
+  setenv("METAL_PJRT_STATE_DIR", dir.c_str(), 1);
+  unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
+  absl::StatusOr<std::unique_ptr<Device>> d1 = Device::Create(0);
+  ASSERT_THAT(d1, IsOk());
+  EXPECT_EQ((*d1)->state_dir(), dir);
+  EXPECT_EQ((*d1)->resets_since_boot(), 0);
+  absl::StatusOr<MTL::Library*> lib1 = (*d1)->CompileLibrary(kMsl);
+  ASSERT_THAT(lib1, IsOk());
+  absl::StatusOr<std::unique_ptr<Kernel>> k1 = (*d1)->CreateKernel(*lib1, "axpy");
+  ASSERT_THAT(k1, IsOk());
+  EXPECT_THAT((*k1)->key(), HasSubstr(":axpy"));
+
+  // Two resets blaming axpy (the second with a duplicate and a null entry).
+  (*d1)->RecordReset("first \"timeout\"", {(*k1)->identity()});
+  (*d1)->RecordReset("second", {(*k1)->identity(), (*k1)->identity(), nullptr});
+  std::ifstream in(dir + "/gpu_resets.jsonl");
+  std::string line;
+  int lines = 0;
+  while (std::getline(in, line)) {
+    ++lines;
+    EXPECT_THAT(line, HasSubstr("\"key\":\"" + (*k1)->key() + "\""));
+    EXPECT_THAT(line, HasSubstr("\"name\":\"axpy\""));
+  }
+  EXPECT_EQ(lines, 2);
+
+  // A new device (new process, effectively) refuses the kernel.
+  absl::StatusOr<std::unique_ptr<Device>> d2 = Device::Create(0);
+  ASSERT_THAT(d2, IsOk());
+  EXPECT_EQ((*d2)->resets_since_boot(), 2);
+  absl::StatusOr<MTL::Library*> lib2 = (*d2)->CompileLibrary(kMsl);
+  ASSERT_THAT(lib2, IsOk());
+  EXPECT_THAT((*d2)->CreateKernel(*lib2, "axpy"),
+              StatusIs(absl::StatusCode::kFailedPrecondition,
+                       HasSubstr("quarantined")));
+
+  // Disabled by threshold 0.
+  setenv("METAL_PJRT_QUARANTINE_STRIKES", "0", 1);
+  absl::StatusOr<std::unique_ptr<Device>> d3 = Device::Create(0);
+  ASSERT_THAT(d3, IsOk());
+  absl::StatusOr<MTL::Library*> lib3 = (*d3)->CompileLibrary(kMsl);
+  ASSERT_THAT(lib3, IsOk());
+  EXPECT_THAT((*d3)->CreateKernel(*lib3, "axpy"), IsOk());
+  unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
+  unsetenv("METAL_PJRT_STATE_DIR");
+  std::filesystem::remove_all(dir);
 }
 
 TEST_F(MetalRuntimeTest, ErrorCodes) {

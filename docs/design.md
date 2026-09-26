@@ -22,7 +22,9 @@ Metal support is therefore:
 
 - `stream_executor/metal/`: `MetalPlatform`, `MetalExecutor`, streams as
   `MTLCommandQueue`, events as `MTLSharedEvent`, shared-storage `MTLBuffer`s,
-  kernel launch from an `MTLLibrary`.
+  kernel launch from an `MTLLibrary`, and `CommandBuffer` (XLA's CUDA-graph
+  abstraction) as software replay of pre-resolved commands (see
+  docs/performance.md, "Command buffers").
 - `MetalCompiler : GpuCompiler` with Triton, cuDNN passes, autotuning and
   collectives disabled.
 - A `TENSORFLOW_USE_METAL`-style build of the existing shim.

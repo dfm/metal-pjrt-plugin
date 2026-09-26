@@ -165,3 +165,66 @@ cleared every command type for OneAPI devices); `ApplyMetalDefaults` still
 clears the set until a backend exists. Only `FUSION` should be enabled then:
 the pass does not fall back if a backend returns Unimplemented while
 recording.
+
+## Command buffers: software replay (2026-09-26)
+
+Implemented, following the spike: `stream_executor/metal_command_buffer.{h,cc}`
+implements StreamExecutor's `CommandBuffer` on top of
+`rt::CommandList` + `rt::Stream::Replay` (runtime/metal_runtime.{h,cc}).
+
+- **Record** (`CreateLaunch`, `CreateMemcpyD2D`, `CreateMemset`,
+  `CreateEmptyCmd`): arguments are converted once (StreamExecutor kernel args
+  to device pointers) and resolved to `(MTLBuffer, offset)` immediately.
+  Argument-buffer kernels get their GPU-address table and residency list
+  built here too.
+- **Submit**: one lock, one loop over the commands, encoding each into the
+  stream's open command buffer with the same encoders the direct path uses
+  (`EncodeLaunch`, `EncodeCopy`, `EncodeFill`). The stream's batching
+  policy (op and thread caps, early commit when the GPU is idle) applies
+  unchanged, so a long recorded sequence still cannot approach the watchdog.
+- **Update**: XLA calls `Update` + `UpdateLaunch`/`UpdateMemcpyD2D`/
+  `UpdateMemset` whenever a referenced allocation's address changed (with the
+  default allocator only constants are persistent, so this is common); each
+  touched command is re-resolved. Replay also re-resolves everything when the
+  device's allocation generation moved (something was freed since), so a
+  freed-and-reused address can never point at a stale `MTLBuffer`.
+- **Ordering**: commands replay in recording order, which is thunk order and
+  therefore a topological order of XLA's dependency graph; the dependency
+  lists are accepted and ignored. `xla_gpu_command_buffer_scheduling_mode` is
+  set to SERIALIZE to match.
+- **Memsets** with a non-uniform pattern use a built-in fill kernel
+  (`Device::FillKernel`) instead of the old host-callback path, which split
+  the command buffer and cost a round trip.
+- **Enabled command types**: FUSION only (kernel and custom-kernel thunks,
+  device copies, memsets). Everything else (`CreateChildCommand`, case/while,
+  host callbacks, host transfers, DNN graphs) returns Unimplemented, and XLA
+  does not fall back when recording fails, so those types must stay off.
+  Controls: `METAL_PJRT_COMMAND_BUFFERS=0` disables the conversion,
+  `METAL_PJRT_MIN_GRAPH_SIZE=n` overrides XLA's minimum run length (5).
+- Not done: Metal indirect command buffers (slower on the GPU per the spike),
+  concurrent replay of independent commands.
+
+## Reset log and kernel quarantine (2026-09-26)
+
+Why: the scatter min/max hang (an upstream MLIR while-lowering bug, fixed in
+codegen/msl_emitter.cc) was re-run by nine full lax suites over one night,
+each of which reset the GPU; after that many resets the driver leaves the GPU
+about ten times slower per dispatch until a reboot. Nothing stopped the next
+run from doing it again. Now:
+
+- The runtime appends every watchdog reset it observes to
+  `~/.cache/jax_metal/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR` overrides)
+  with the kernels that were in the command buffer that timed out. A buffer
+  that only waited on another stream (as happens when the producer stream's
+  batch is slow on a degraded GPU) contributes no suspects.
+- `Device::CreateKernel` refuses a kernel seen in two or more resets
+  (`METAL_PJRT_QUARANTINE_STRIKES`, 0 disables) with FAILED_PRECONDITION at
+  executable load time, before any GPU work, naming the log. A compiler bug
+  therefore costs at most two resets instead of one per run.
+- `scripts/gpu_health.py` summarizes resets since boot and quarantined
+  kernels; `--clear` forgets them. `bench/run_all.sh` refuses to take timings
+  on a GPU reset since boot (`BENCH_ALLOW_DEGRADED=1` overrides) and
+  `scripts/run_jax_tests.sh` prints the summary before a run; the runtime
+  logs a warning at device creation too.
+- Still unavoidable: the first reset a non-terminating kernel causes. Metal
+  has no per-kernel timeout shorter than the watchdog.

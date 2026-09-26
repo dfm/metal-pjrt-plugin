@@ -6,7 +6,9 @@
 #include <optional>
 
 #include "absl/status/status.h"
+#include "absl/container/inlined_vector.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/string_view.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/kernel_args.h"
@@ -33,6 +35,16 @@ class MetalKernel : public Kernel {
       ThreadDim threads, size_t dynamic_shared_memory_bytes) const override;
 
   metal_pjrt::rt::Kernel* rt_kernel() const { return kernel_.get(); }
+
+  // Converts StreamExecutor kernel arguments (a device address array, or
+  // packed arguments holding device pointers) to runtime arguments in HLO
+  // buffer order, checking arity and Metal's argument limits.
+  absl::Status PackArgs(const KernelArgs& args,
+                        absl::InlinedVector<metal_pjrt::rt::KernelArg, 16>& out,
+                        uint32_t& shared_bytes) const;
+  // Rejects thread block clusters, which Metal does not have.
+  static absl::Status CheckClusterDims(
+      absl::string_view name, const std::optional<ClusterDim>& cluster_dims);
 
  private:
   absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,

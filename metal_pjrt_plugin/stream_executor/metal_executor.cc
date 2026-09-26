@@ -20,6 +20,7 @@
 #include "metal_pjrt_plugin/blas/metal_blas.h"  // [metal-blas]
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt_plugin/stream_executor/metal_command_buffer.h"
 #include "metal_pjrt_plugin/stream_executor/metal_event.h"
 #include "metal_pjrt_plugin/stream_executor/metal_kernel.h"
 #include "metal_pjrt_plugin/stream_executor/metal_stream.h"
@@ -55,6 +56,18 @@ blas::BlasSupport* MetalExecutor::AsBlas() {
     blas_ = std::make_unique<MetalBlas>(device_.get());
   }
   return blas_.get();
+}
+
+// ---------------------------------------------------------------------------
+// Command buffers
+
+absl::StatusOr<std::unique_ptr<CommandBuffer>>
+MetalExecutor::CreateCommandBuffer(CommandBuffer::Mode mode) {
+  if (device_ == nullptr) {
+    return absl::FailedPreconditionError(
+        "Metal executor is not initialized; cannot create a command buffer");
+  }
+  return std::unique_ptr<CommandBuffer>(new MetalCommandBuffer(this, mode));
 }
 
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@
 #include "absl/types/span.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/blas.h"  // [metal-blas]
+#include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/device_description.h"
 #include "xla/stream_executor/event.h"
@@ -81,6 +82,10 @@ class MetalExecutor : public gpu::GpuExecutor {
   bool UnloadModule(ModuleHandle module_handle) override;
   absl::StatusOr<DeviceAddressBase> GetSymbol(
       const std::string& symbol_name, ModuleHandle module_handle) override;
+
+  // Command buffers (software replay; see metal_command_buffer.h).
+  absl::StatusOr<std::unique_ptr<CommandBuffer>> CreateCommandBuffer(
+      CommandBuffer::Mode mode) override;
 
   // Device description.
   absl::StatusOr<std::unique_ptr<DeviceDescription>> CreateDeviceDescription()
