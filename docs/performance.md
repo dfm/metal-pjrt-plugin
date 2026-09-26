@@ -232,10 +232,13 @@ run from doing it again. Now:
   has no per-kernel timeout shorter than the watchdog.
 - Narrowed (2026-09-26, night): the runtime's built-in fill/copy kernels
   (in nearly every command buffer) are listed under `"builtins"` and never
-  struck or refused, and strikes count only for resets since boot with the
-  same plugin build (each record carries `"build"`, the dylib's LC_UUID, the
-  same UUID as in the platform version), so a reboot or a rebuild lifts a
-  quarantine. Not done: per-encoder blame via
+  struck or refused, and strikes count only for resets since boot, so a
+  reboot lifts a quarantine. Each record carries `"build"` (the dylib's
+  LC_UUID) for diagnostics only: it changes with every unrelated rebuild, so
+  keying strikes on it would let a twice-struck kernel reset the GPU again
+  after any rebuild. A kernel whose source changes gets a new key anyway; a
+  fix outside the kernel source (runtime, launch dimensions) needs
+  `scripts/gpu_health.py --clear`. Not done: per-encoder blame via
   `MTLCommandBufferDescriptor.errorOptions = EncoderExecutionStatus`. It
   costs nothing measurable (`bench/dispatch_bench` raw round trip, 1
   dispatch: 96-107 us with it vs 97-111 us without, GPU time 1.8-2.1 vs 1.8

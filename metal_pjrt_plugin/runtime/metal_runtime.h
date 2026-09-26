@@ -241,13 +241,14 @@ class Device {
   // for every process, and after a few resets the driver leaves the GPU slow
   // until a reboot, so the same bug must not be allowed to reset it again
   // and again. Every reset observed by this process is appended to
-  // <state dir>/gpu_resets.jsonl with the boot time, the plugin build
-  // (ImageUuid) and the kernels that were in the command buffer that timed
-  // out (none when that buffer only waited on another stream; built-in
+  // <state dir>/gpu_resets.jsonl with the time, the plugin build (ImageUuid,
+  // diagnostics only) and the kernels that were in the command buffer that
+  // timed out (none when that buffer only waited on another stream; built-in
   // kernels are listed separately and never blamed). Kernels seen in
-  // `quarantine_strikes()` or more resets since boot with the same plugin
-  // build are refused by CreateKernel; a reboot or a rebuild lifts that, as
-  // does clearing the log (scripts/gpu_health.py --clear).
+  // `quarantine_strikes()` or more resets since boot are refused by
+  // CreateKernel until a reboot or until the log is cleared
+  // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
+  // new key; a fix elsewhere (runtime, launch dimensions) needs --clear.
   // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/jax_metal;
   // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
   void RecordReset(absl::string_view cause,

@@ -236,30 +236,44 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   ASSERT_THAT(d2b, IsOk());
   EXPECT_THAT((*d2b)->BuiltinKernel(Device::Builtin::kFill32), IsOk());
 
-  // Strikes count only since boot and for this plugin build: rewrite the
-  // log with the same two axpy resets from another build and from before
-  // boot.
+  // Strikes count only since boot, from any plugin build: rewrite the log
+  // with the two axpy resets from before boot plus one since boot from
+  // another build (one strike), then add a second from another build.
+  std::vector<std::string> records;
   {
     std::ifstream in3(dir + "/gpu_resets.jsonl");
-    std::vector<std::string> lines;
-    while (std::getline(in3, line)) lines.push_back(line);
+    while (std::getline(in3, line)) records.push_back(line);
+  }
+  auto other_build = [](std::string l) {
+    size_t b = l.find("\"build\":\"") + 9;
+    l.replace(b, l.find('"', b) - b, "0123");
+    return l;
+  };
+  {
     std::ofstream out(dir + "/gpu_resets.jsonl", std::ios::trunc);
     for (int i = 0; i < 2; ++i) {
-      std::string other = lines[i];
-      size_t b = other.find("\"build\":\"") + 9;
-      other.replace(b, other.find('"', b) - b, "0123");
-      out << other << "\n";
-      std::string old = lines[i];
+      std::string old = records[i];
       old.replace(8, old.find(',') - 8, "1");  // "time":1
       out << old << "\n";
     }
+    out << other_build(records[0]) << "\n";
   }
   absl::StatusOr<std::unique_ptr<Device>> d4 = Device::Create(0);
   ASSERT_THAT(d4, IsOk());
-  EXPECT_EQ((*d4)->resets_since_boot(), 2);  // the other build's two
+  EXPECT_EQ((*d4)->resets_since_boot(), 1);
   absl::StatusOr<MTL::Library*> lib4 = (*d4)->CompileLibrary(kMsl);
   ASSERT_THAT(lib4, IsOk());
   EXPECT_THAT((*d4)->CreateKernel(*lib4, "axpy"), IsOk());
+  {
+    std::ofstream out(dir + "/gpu_resets.jsonl", std::ios::app);
+    out << other_build(records[1]) << "\n";
+  }
+  absl::StatusOr<std::unique_ptr<Device>> d5 = Device::Create(0);
+  ASSERT_THAT(d5, IsOk());
+  absl::StatusOr<MTL::Library*> lib5 = (*d5)->CompileLibrary(kMsl);
+  ASSERT_THAT(lib5, IsOk());
+  EXPECT_THAT((*d5)->CreateKernel(*lib5, "axpy"),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
 
   // Disabled by threshold 0.
   setenv("METAL_PJRT_QUARANTINE_STRIKES", "0", 1);

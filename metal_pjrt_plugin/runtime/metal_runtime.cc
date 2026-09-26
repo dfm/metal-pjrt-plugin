@@ -306,10 +306,10 @@ void Device::LoadResetLog() {
     int64_t when = 0;
     absl::SimpleAtoi(JsonField(line, "time"), &when);
     if (when < boot) continue;
+    // Strikes count per boot (the driver's state resets with it), for any
+    // plugin build: builds change with every unrelated rebuild, and a kernel
+    // whose code changed has a new key anyway. "build" is for diagnostics.
     ++resets_since_boot_;
-    // Strikes count per boot (the driver's state resets with it) and per
-    // plugin build (a rebuild may have fixed the kernel).
-    if (JsonField(line, "build") != build_) continue;
     size_t pos = 0;
     while ((pos = line.find("\"key\":\"", pos)) != std::string::npos) {
       pos += 7;
@@ -379,8 +379,8 @@ void Device::RecordReset(
   LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
              << " with " << unique.size()
              << " suspect kernel(s); kernels seen in " << quarantine_strikes_
-             << " resets (since boot, same plugin build) are refused until "
-                "a reboot, a rebuild or scripts/gpu_health.py --clear";
+             << " resets since boot are refused until a reboot or "
+                "scripts/gpu_health.py --clear";
 }
 
 Device::~Device() {
@@ -622,9 +622,10 @@ absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
         strikes->second >= quarantine_strikes_) {
       return absl::FailedPreconditionError(absl::StrFormat(
           "kernel %s is quarantined: it was in the command buffer that timed "
-          "out in %d GPU watchdog resets since boot with this plugin build "
-          "(see %s/gpu_resets.jsonl). Fix the kernel (a rebuild lifts the "
-          "quarantine), or clear the log with scripts/gpu_health.py --clear; "
+          "out in %d GPU watchdog resets since boot (see "
+          "%s/gpu_resets.jsonl). Fix the kernel (a changed kernel gets a new "
+          "key); after a fix outside the kernel source, clear the log with "
+          "scripts/gpu_health.py --clear. A reboot also lifts it; "
           "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
           function, strikes->second, state_dir_));
     }
