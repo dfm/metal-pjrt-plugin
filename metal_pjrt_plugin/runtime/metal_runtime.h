@@ -234,6 +234,14 @@ class Device {
   // Resets recorded since the machine booted (by any process).
   int resets_since_boot() const { return resets_since_boot_; }
 
+  // Hold-rule counters (see Stream::Commit): command buffers whose commit
+  // waited on the host for a host task, and command buffers committed while
+  // still waiting on an unfinished host task (must stay 0).
+  uint64_t host_task_holds() const { return host_task_holds_.load(); }
+  uint64_t unsignaled_host_task_waits_committed() const {
+    return unsignaled_host_task_waits_committed_.load();
+  }
+
  private:
   Device() = default;
   int ordinal_ = 0;
@@ -265,6 +273,9 @@ class Device {
   int quarantine_strikes_ = 2;
   int resets_since_boot_ = 0;
   std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
+  friend class Stream;
+  std::atomic<uint64_t> host_task_holds_{0};
+  std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
 };
 
 // Timeline-semaphore style event: `Record` on a stream bumps and signals a
@@ -276,7 +287,9 @@ class Event {
   Event& operator=(const Event&) = delete;
   // True once the last recorded value has been signaled.
   bool IsComplete() const;
-  // Block the host until complete.
+  // Block the host until complete. FailedPreconditionError when called from
+  // a host task of the stream that recorded the event, at or before the
+  // recording (it would wait for itself).
   absl::Status WaitOnHost();
 
  private:
@@ -286,6 +299,10 @@ class Event {
   Device* device_;
   MTL::SharedEvent* event_;
   uint64_t value_ = 0;  // last recorded value; 0 means never recorded
+  // Fence value of the recording stream's buffer that signals value_ (for
+  // the host-task re-entrancy check).
+  MTL::SharedEvent* recorded_fence_ = nullptr;
+  uint64_t recorded_fence_value_ = 0;
   std::mutex mu_;
 };
 
@@ -330,7 +347,12 @@ class Stream {
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
 
   // Run `fn` on the host once all previously enqueued work has completed;
-  // subsequent stream work waits for it to finish.
+  // subsequent stream work waits for it to finish. GPU work that waits for a
+  // host task is committed only after the task has run (see Commit), so a
+  // slow task never counts against the GPU watchdog. A task must not wait
+  // for its own stream: Synchronize, Event::WaitOnHost and commits that would
+  // wait for the running task (or later work on its stream) return
+  // FailedPreconditionError instead of deadlocking.
   absl::Status HostCallback(std::function<void()> fn);
 
   absl::Status RecordEvent(Event* event);
@@ -410,7 +432,11 @@ class Stream {
   absl::Status EnsureCommandBuffer();
   absl::Status EnsureComputeEncoder();
   void EndEncoder();
-  // Commit the current command buffer (if any).
+  // Commit the current command buffer (if any). Hold rule: if the buffer
+  // waits on a host-task value that is not signaled yet, first wait for it
+  // on the host (bounded, like every host wait), so no committed buffer ever
+  // sits on the GPU waiting for host work. Host-task workers never take mu_,
+  // so waiting here while holding it cannot deadlock with them.
   absl::Status Commit();
   // Signal/wait on the stream's private timeline (used for host callbacks and
   // cross-stream ordering).
@@ -461,6 +487,8 @@ class Stream {
     MTL::SharedEvent* event;
     uint64_t value;
     const char* kind;
+    // The value is signaled by a host task (of any stream), not by GPU work.
+    bool host_task = false;
   };
   std::vector<PendingWait> pending_waits_;
   // Waits requested (WaitForEvent/WaitForStream/HostCallback) but not yet

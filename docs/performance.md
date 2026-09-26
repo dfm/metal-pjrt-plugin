@@ -333,6 +333,16 @@ parallel value+grad at n=1000: 97 command buffers per call (8 wait-only)
 -> 6 (none), same timings otherwise; the JAX device-to-host pattern (wait
 for the compute stream, copy, block) no longer costs a GPU round trip.
 
+Hold rule (2026-09-26, night): lazy encoding still let a command buffer
+wait on the GPU for a host task that had not run yet (a slow host task then
+counts against the watchdog). `Stream::Commit` now waits on the host for
+any unsignaled host-task value the buffer waits on before committing it.
+Host-task workers never take the stream lock, so this cannot deadlock with
+them; a host task that waits for its own stream (Synchronize, an event
+recorded after it, a commit waiting for it) gets FAILED_PRECONDITION
+instead of hanging. `Device::unsignaled_host_task_waits_committed()` counts
+violations and the runtime tests assert it stays 0.
+
 ## Persistent compilation cache (2026-09-26, night)
 
 JAX's persistent compilation cache now works for "metal" (how:

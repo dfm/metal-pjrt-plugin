@@ -98,6 +98,27 @@ absl::Status WaitForValueOnHost(Device* device, MTL::SharedEvent* ev,
   return absl::OkStatus();
 }
 
+// The host task running on this thread, if any: its stream's fence and the
+// value the task signals when done. Waiting on that fence for this value or
+// later can never finish.
+struct HostTaskContext {
+  const MTL::SharedEvent* fence = nullptr;
+  uint64_t value = 0;
+};
+thread_local HostTaskContext current_host_task;
+
+absl::Status CheckNotWaitingOnOwnHostTask(const MTL::SharedEvent* ev,
+                                          uint64_t v) {
+  if (ev == nullptr || ev != current_host_task.fence ||
+      v < current_host_task.value) {
+    return absl::OkStatus();
+  }
+  return absl::FailedPreconditionError(absl::StrFormat(
+      "a host task of a Metal stream waited for its own stream (value %d, the "
+      "task signals %d when it returns); it would deadlock",
+      v, current_host_task.value));
+}
+
 absl::Status Annotate(const absl::Status& s, absl::string_view context) {
   if (s.ok()) return s;
   return absl::Status(s.code(), absl::StrCat(context, ": ", s.message()));
@@ -615,6 +636,10 @@ absl::Status Event::WaitOnHost() {
   {
     std::lock_guard<std::mutex> lock(mu_);
     v = value_;
+    if (v != 0) {
+      ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(recorded_fence_,
+                                                        recorded_fence_value_));
+    }
   }
   if (v == 0) return absl::OkStatus();
   // A failed command buffer force-signals its events (see Stream::Commit), so
@@ -677,7 +702,9 @@ void Stream::WorkerLoop() {
       }
       continue;
     }
+    current_host_task = {fence_, task.signal_value};
     task.fn();
+    current_host_task = {};
     // A failed command buffer may have force-signaled the fence past this
     // value meanwhile; never move it backwards.
     if (fence_->signaledValue() < task.signal_value) {
@@ -763,6 +790,12 @@ uint64_t Stream::SignalFence() {
 
 absl::Status Stream::Commit() {
   if (cmd_ == nullptr) return absl::OkStatus();
+  for (const PendingWait& w : pending_waits_) {
+    if (!w.host_task || w.event->signaledValue() >= w.value) continue;
+    ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(w.event, w.value));
+    device_->host_task_holds_.fetch_add(1, std::memory_order_relaxed);
+    ABSL_RETURN_IF_ERROR(WaitForValueOnHost(device_, w.event, w.value));
+  }
   EndEncoder();
   // Every command buffer ends by signaling the stream timeline, so
   // Synchronize/WaitForStream have a value to wait on.
@@ -801,6 +834,12 @@ absl::Status Stream::Commit() {
   std::shared_ptr<CompletionState> state = completion_;
   const void* self = this;
   state->pending.fetch_add(1, std::memory_order_relaxed);
+  for (const PendingWait& w : waits) {
+    if (w.host_task && w.event->signaledValue() < w.value) {
+      device->unsignaled_host_task_waits_committed_.fetch_add(
+          1, std::memory_order_relaxed);
+    }
+  }
   cmd_->addCompletedHandler(
       [device, state, self, v, fence, signals, waits, ordinal, traced_ops,
        kernels](MTL::CommandBuffer* cb) {
@@ -879,6 +918,11 @@ absl::Status Stream::Flush() {
 }
 
 absl::Status Stream::Synchronize() {
+  if (current_host_task.fence == fence_) {
+    return absl::FailedPreconditionError(
+        "Synchronize called from a host task of the same Metal stream; it "
+        "would wait for itself");
+  }
   std::lock_guard<std::mutex> lock(mu_);
   ABSL_RETURN_IF_ERROR(Commit());
   // Wait for completion (not just the fence signal) so resources referenced
@@ -914,7 +958,8 @@ absl::Status Stream::Synchronize() {
   // Waits not yet encoded are satisfied on the host instead of by a
   // wait-only command buffer (which would count against the GPU watchdog).
   for (const PendingWait& w : deferred_waits_) {
-    absl::Status s = WaitForValueOnHost(device_, w.event, w.value);
+    absl::Status s = CheckNotWaitingOnOwnHostTask(w.event, w.value);
+    if (s.ok()) s = WaitForValueOnHost(device_, w.event, w.value);
     if (!s.ok() && first_failure.ok()) first_failure = s;
   }
   if (first_failure.ok()) deferred_waits_.clear();
@@ -1284,7 +1329,7 @@ absl::Status Stream::HostCallback(std::function<void()> fn) {
   work_cv_.notify_one();
   // 2. Later GPU work on this stream waits for the task; the wait is encoded
   //    lazily, in front of that work (see deferred_waits_).
-  deferred_waits_.push_back({fence_, done_value, "host-callback"});
+  deferred_waits_.push_back({fence_, done_value, "host-callback", true});
   return absl::OkStatus();
 }
 
@@ -1321,6 +1366,8 @@ absl::Status Stream::RecordEvent(Event* event) {
   {
     std::lock_guard<std::mutex> elock(event->mu_);
     v = ++event->value_;
+    event->recorded_fence_ = fence_;
+    event->recorded_fence_value_ = fence_value_ + 1;  // this Commit's signal
   }
   cmd_->encodeSignalEvent(event->event_, v);
   pending_signals_.emplace_back(event->event_, v);

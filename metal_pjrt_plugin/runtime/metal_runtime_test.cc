@@ -10,6 +10,8 @@
 #include <filesystem>
 #include <cstdlib>
 #include <string>
+#include <thread>
+#include <chrono>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -274,6 +276,57 @@ TEST_F(MetalRuntimeTest, DeferredWaits) {
 
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// Hold rule: GPU work waiting on a slow host task is committed only after
+// the task has run, so no command buffer waits on host work on the GPU.
+TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
+  const uint32_t n = 1 << 16;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  const uint64_t holds = dev_->host_task_holds();
+  ASSERT_THAT(s->HostCallback([y]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    static_cast<float*>(y)[0] = 100.0f;
+  }), IsOk());
+  // Encoded behind the task; its commit waits for the task on the host.
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(s->Flush(), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(y)[0], 101.0f);
+  EXPECT_EQ(static_cast<float*>(y)[n - 1], 1.0f);
+  EXPECT_GT(dev_->host_task_holds(), holds);
+  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A host task that waits for its own stream gets an error, not a deadlock.
+TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
+  std::unique_ptr<Stream> s = NewStream();
+  absl::StatusOr<std::unique_ptr<Event>> ev = dev_->CreateEvent();
+  ASSERT_THAT(ev, IsOk());
+  absl::Status sync_status, event_status;
+  Event* e = ev->get();
+  ASSERT_THAT(s->HostCallback([&, e]() {
+    sync_status = s->Synchronize();
+    // Wait (bounded) until the RecordEvent below has taken its value; that
+    // recording is ordered after this task, so waiting for it would hang.
+    for (int i = 0; i < 2000 && e->IsComplete(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    event_status = e->WaitOnHost();
+  }), IsOk());
+  ASSERT_THAT(s->RecordEvent(e), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(sync_status, StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(event_status, StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(e->WaitOnHost(), IsOk());  // fine from outside the task
+  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
 }
 
 TEST_F(MetalRuntimeTest, ErrorCodes) {
