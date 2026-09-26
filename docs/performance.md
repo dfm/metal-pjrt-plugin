@@ -298,3 +298,22 @@ GPU-bound there: `predict` and the sequential solver run ~10 tiny kernels per
 element in a scan. Going further means fewer, fatter kernels per iteration
 (fusing a scan body into one kernel, or in-kernel loops), which is the
 deferred region-emitter work, not runtime overhead.
+
+## Command buffers: removed (2026-09-26, evening)
+
+With the runtime fixes above in place, the software-replay `CommandBuffer`
+was re-measured against thunk-by-thunk execution on the same build: nanoGPT
+train step 184 vs 196 ms (6% better), tinygp parallel value+grad n=200000
+52 vs 54 ms (a wash), and the loop-heavy programs 5-30% *worse* (scan 8.1 vs
+6.2 ms, tinygp n=1000 3.1 vs 2.6 ms) because XLA's command-buffer thunk does
+its own per-execution bookkeeping on top of the replay, which now costs more
+than the ~3 us launches it replaces. The design argument for it rested on a
+per-kernel host cost of 30-40 us that turned out to be the Synchronize
+sleep and the command-buffer submission storm, not launch overhead.
+
+Removed: `stream_executor/metal_command_buffer.{h,cc}`, the runtime
+`CommandList`/`Replay`, XLA patch 0005, the Bazel visibility override, and
+the ICB spike binary (its numbers stay recorded above). Kept: the shared
+encoders, built-in copy/fill kernels, time-paced commits, unrolled small
+sorts and GPU small-matrix linalg, which are what actually moved the numbers.
+`ApplyMetalDefaults` clears the command types as before.

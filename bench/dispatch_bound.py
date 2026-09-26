@@ -1,8 +1,5 @@
-"""Dispatch-bound programs: long chains of tiny kernels, where per-launch host
-cost dominates. Exercises XLA command buffers (software replay on Metal).
-Run with METAL_PJRT_COMMAND_BUFFERS=0 for the thunk-by-thunk baseline (use a
-separate JAX_COMPILATION_CACHE_DIR per setting: the conversion is baked into
-cached executables)."""
+"""Dispatch-bound programs: long chains of tiny kernels and a scan with tiny
+state, where per-launch host cost and command-buffer batching dominate."""
 import os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import jax, jax.numpy as jnp

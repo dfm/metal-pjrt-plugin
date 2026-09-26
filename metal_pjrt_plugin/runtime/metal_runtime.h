@@ -289,84 +289,6 @@ class Event {
   std::mutex mu_;
 };
 
-// A recorded, replayable sequence of stream work: the software command
-// buffer behind StreamExecutor's CommandBuffer on Metal. Commands keep their
-// buffer arguments resolved to (MTL::Buffer, offset) so Stream::Replay only
-// encodes; resolution is redone lazily when the device's allocation
-// generation changes (something was freed since) or when a command is
-// updated with new arguments. Commands replay in recording order, with the
-// stream's usual serial ordering between them.
-//
-// Measured on an M3 (runtime/icb_spike.cc): direct encoding costs about
-// 0.1-0.2 us per dispatch, so replaying this way removes the 30-40 us of
-// per-kernel host work XLA's thunks and our argument packing cost, without the
-// 1-4 us of extra GPU time per dispatch a Metal indirect command buffer with
-// per-command barriers was measured to add.
-class CommandList {
- public:
-  explicit CommandList(Device* device) : device_(device) {}
-  CommandList(const CommandList&) = delete;
-  CommandList& operator=(const CommandList&) = delete;
-
-  // Each Add* returns the new command's index; Update* replaces the
-  // parameters of an existing command of the same kind. Arguments are
-  // validated and resolved immediately.
-  absl::StatusOr<size_t> AddLaunch(const Kernel* kernel, Dim3 threadgroups,
-                                   Dim3 threads,
-                                   absl::Span<const KernelArg> args,
-                                   uint32_t threadgroup_memory_bytes = 0);
-  absl::Status UpdateLaunch(size_t index, const Kernel* kernel,
-                            Dim3 threadgroups, Dim3 threads,
-                            absl::Span<const KernelArg> args,
-                            uint32_t threadgroup_memory_bytes = 0);
-  absl::StatusOr<size_t> AddCopy(void* dst, const void* src, uint64_t size);
-  absl::Status UpdateCopy(size_t index, void* dst, const void* src,
-                          uint64_t size);
-  // `pattern` is the fill value broadcast to 32 bits; `pattern_bytes` (1, 2
-  // or 4) is the width of the original pattern.
-  absl::StatusOr<size_t> AddFill(void* dst, uint32_t pattern,
-                                 int pattern_bytes, uint64_t size);
-  absl::Status UpdateFill(size_t index, void* dst, uint32_t pattern,
-                          int pattern_bytes, uint64_t size);
-  size_t AddEmpty();
-
-  size_t size() const { return commands_.size(); }
-  Device* device() const { return device_; }
-  std::string ToString() const;
-
- private:
-  friend class Stream;
-  struct Command {
-    enum class Kind { kLaunch, kCopy, kFill, kEmpty };
-    Kind kind = Kind::kEmpty;
-    // Launch.
-    const Kernel* kernel = nullptr;
-    Dim3 threadgroups{1, 1, 1};
-    Dim3 threads{1, 1, 1};
-    uint32_t threadgroup_memory_bytes = 0;
-    std::vector<KernelArg> args;
-    std::vector<BufferRef> refs;           // per argument (buffers only)
-    std::vector<uint64_t> addrs;           // argument-buffer kernels
-    std::vector<MTL::Buffer*> resident;    // argument-buffer kernels
-    // Copy / fill.
-    void* dst = nullptr;
-    const void* src = nullptr;
-    uint64_t size = 0;
-    uint32_t pattern = 0;
-    int pattern_bytes = 0;
-    BufferRef dst_ref;
-    BufferRef src_ref;
-  };
-  absl::Status Resolve(Command& c, size_t index);
-  // Re-resolve every command if anything was freed since the last time.
-  absl::Status ResolveIfStale();
-  absl::Status CheckIndex(size_t index, Command::Kind kind) const;
-
-  Device* device_;
-  std::vector<Command> commands_;
-  uint64_t resolved_generation_ = ~0ull;
-};
-
 class Stream {
  public:
   ~Stream();
@@ -400,10 +322,6 @@ class Stream {
   absl::Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
   absl::Status Memset8(void* dst, uint8_t value, uint64_t size);
   absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
-
-  // Encode every command of `list` into this stream, in order. The list must
-  // belong to this stream's device.
-  absl::Status Replay(CommandList& list);
 
   // Host transfers are ordered on the stream: they run in a host callback once
   // prior work completes, and later stream work waits for them. With unified
@@ -464,8 +382,7 @@ class Stream {
                                         Dim3 threadgroups, Dim3 threads,
                                         absl::Span<const KernelArg> args,
                                         uint32_t threadgroup_memory_bytes);
-  // Encoders for already-resolved work (shared by the direct API and Replay).
-  // Caller holds mu_.
+  // Encoders for already-resolved work. Caller holds mu_.
   absl::Status EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
                             Dim3 threads, absl::Span<const KernelArg> args,
                             absl::Span<const BufferRef> refs,

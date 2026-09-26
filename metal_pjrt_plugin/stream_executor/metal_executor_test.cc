@@ -12,8 +12,6 @@
 #include "absl/status/statusor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
-#include "xla/stream_executor/bit_pattern.h"
-#include "xla/stream_executor/command_buffer.h"
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/kernel_args.h"
@@ -97,87 +95,6 @@ TEST(MetalExecutorTest, LoadLaunchAndCopy) {
 
   executor->Deallocate(&x);
   executor->Deallocate(&y);
-}
-
-TEST(MetalExecutorTest, CommandBufferReplayAndUpdate) {
-  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
-                          PlatformManager::PlatformWithName("METAL"));
-  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
-                          platform->ExecutorForDevice(0));
-  TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
-
-  const int n = 4096;
-  DeviceAddressBase x = executor->Allocate(n * sizeof(float));
-  DeviceAddressBase y = executor->Allocate(n * sizeof(float));
-  DeviceAddressBase z = executor->Allocate(n * sizeof(float));
-  std::vector<float> hx(n, 1.5f), hy(n, 1.0f), out(n, 0.0f);
-  TF_ASSERT_OK(stream->Memcpy(&x, hx.data(), n * sizeof(float)));
-  TF_ASSERT_OK(stream->Memcpy(&y, hy.data(), n * sizeof(float)));
-  TF_ASSERT_OK(stream->MemZero(&z, n * sizeof(float)));
-
-  std::vector<uint8_t> msl(kAxpy, kAxpy + sizeof(kAxpy) - 1);
-  KernelLoaderSpec spec = KernelLoaderSpec::CreateOwningCudaCubinInMemorySpec(
-      std::move(msl), "axpy", /*arity=*/2);
-  TF_ASSERT_OK_AND_ASSIGN(auto kernel, executor->LoadKernel(spec));
-
-  // Record: y = 2x + y; z = y; y = 1.0f. Per submit: y -> 4, z -> 4, y -> 1.
-  TF_ASSERT_OK_AND_ASSIGN(auto cb, executor->CreateCommandBuffer(
-                                       CommandBuffer::Mode::kPrimary));
-  EXPECT_EQ(cb->state(), CommandBuffer::State::kCreate);
-  std::vector<DeviceAddressBase> args = {x, y};
-  auto packed = PackKernelArgs(args, /*shared_mem_bytes=*/0);
-  TF_ASSERT_OK_AND_ASSIGN(
-      const CommandBuffer::Command* launch,
-      cb->CreateLaunch(ThreadDim(256), BlockDim(n / 256), std::nullopt,
-                       *kernel, *packed, {}));
-  TF_ASSERT_OK_AND_ASSIGN(const CommandBuffer::Command* copy,
-                          cb->CreateMemcpyD2D(&z, y, n * sizeof(float),
-                                              {launch}));
-  TF_ASSERT_OK_AND_ASSIGN(
-      const CommandBuffer::Command* fill,
-      cb->CreateMemset(&y, BitPattern(uint32_t{0x3f800000}), n, {copy}));
-  EXPECT_THAT(cb->Submit(stream.get()).code(),
-              absl::StatusCode::kFailedPrecondition);  // not finalized
-  TF_ASSERT_OK(cb->Finalize());
-  EXPECT_EQ(cb->state(), CommandBuffer::State::kFinalized);
-  EXPECT_THAT(cb->CreateEmptyCmd({}).status().code(),
-              absl::StatusCode::kFailedPrecondition);  // finalized
-
-  TF_ASSERT_OK(cb->Submit(stream.get()));
-  TF_ASSERT_OK(cb->Submit(stream.get()));
-  TF_ASSERT_OK(stream->Memcpy(out.data(), z, n * sizeof(float)));
-  TF_ASSERT_OK(stream->BlockHostUntilDone());
-  EXPECT_EQ(out[0], 4.0f);
-  EXPECT_EQ(out[n - 1], 4.0f);
-
-  // Update: launch writes z (z = 2x + z = 7), copy z into y, zero z.
-  TF_ASSERT_OK(cb->Update());
-  EXPECT_EQ(cb->state(), CommandBuffer::State::kUpdate);
-  std::vector<DeviceAddressBase> args2 = {x, z};
-  auto packed2 = PackKernelArgs(args2, 0);
-  TF_ASSERT_OK(cb->UpdateLaunch(launch, ThreadDim(256), BlockDim(n / 256),
-                                std::nullopt, *kernel, *packed2));
-  TF_ASSERT_OK(cb->UpdateMemcpyD2D(copy, &y, z, n * sizeof(float)));
-  TF_ASSERT_OK(cb->UpdateMemset(fill, &z, BitPattern(uint8_t{0}),
-                                n * sizeof(float)));
-  TF_ASSERT_OK(cb->Finalize());
-  TF_ASSERT_OK(cb->Submit(stream.get()));
-  TF_ASSERT_OK(stream->Memcpy(out.data(), y, n * sizeof(float)));
-  TF_ASSERT_OK(stream->BlockHostUntilDone());
-  EXPECT_EQ(out[5], 7.0f);
-  TF_ASSERT_OK(stream->Memcpy(out.data(), z, n * sizeof(float)));
-  TF_ASSERT_OK(stream->BlockHostUntilDone());
-  EXPECT_EQ(out[5], 0.0f);
-
-  // Unsupported command types report Unimplemented rather than misbehaving.
-  TF_ASSERT_OK_AND_ASSIGN(auto other, executor->CreateCommandBuffer(
-                                          CommandBuffer::Mode::kPrimary));
-  EXPECT_THAT(other->CreateHost([] {}, {}).status().code(),
-              absl::StatusCode::kUnimplemented);
-
-  executor->Deallocate(&x);
-  executor->Deallocate(&y);
-  executor->Deallocate(&z);
 }
 
 TEST(MetalExecutorTest, ConstantsModule) {

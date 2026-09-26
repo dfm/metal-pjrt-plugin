@@ -83,7 +83,3 @@ common:debug_symbols --strip=never --per_file_copt="metal_pjrt_plugin|xla/pjrt@-
 common:debug --config=debug_symbols -c fastbuild
 
 try-import %workspace%/user.bazelrc
-
-# XLA marks stream_executor:command_buffer and :bit_pattern internal to its
-# own tree; the Metal platform implements CommandBuffer out of tree.
-common --check_visibility=false

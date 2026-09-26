@@ -108,30 +108,11 @@ bool RewriteEnabled(absl::string_view name) {
 void ApplyMetalDefaults(DebugOptions& debug_options) {
   debug_options.set_xla_gpu_enable_cub_radix_sort(false);
   debug_options.set_xla_gpu_enable_triton_gemm(false);
-  // Command buffers: runs of kernel/copy/memset thunks become one
-  // CommandBufferThunk replayed through MetalCommandBuffer (software replay
-  // of pre-resolved commands). Only FUSION is enabled: the Metal command
-  // buffer records launches, device copies and memsets, and XLA does not
-  // fall back to thunks when recording a command type fails. Serial
-  // scheduling matches how the buffer is replayed. METAL_PJRT_COMMAND_BUFFERS=0
-  // turns the conversion off; METAL_PJRT_MIN_GRAPH_SIZE sets the minimum run
-  // length (XLA's default is 5).
+  // No command buffers: XLA's conversion pass already clears the command
+  // types for OneAPI-capability devices, and a software-replay
+  // implementation was measured (docs/performance.md) to be a wash once the
+  // runtime's per-launch overhead was fixed, so it was removed.
   debug_options.clear_xla_gpu_enable_command_buffer();
-  const char* cb = std::getenv("METAL_PJRT_COMMAND_BUFFERS");
-  if (cb == nullptr || std::string_view(cb) != "0") {
-    debug_options.add_xla_gpu_enable_command_buffer(DebugOptions::FUSION);
-    debug_options.set_xla_gpu_command_buffer_scheduling_mode(
-        DebugOptions::SERIALIZE);
-    if (const char* min = std::getenv("METAL_PJRT_MIN_GRAPH_SIZE")) {
-      int value = 0;
-      if (absl::SimpleAtoi(min, &value) && value >= 1) {
-        debug_options.set_xla_gpu_graph_min_graph_size(value);
-      } else {
-        LOG(WARNING) << "Ignoring METAL_PJRT_MIN_GRAPH_SIZE=" << min
-                     << " (expected a positive integer)";
-      }
-    }
-  }
 }
 
 MetalCompiler::MetalCompiler()
