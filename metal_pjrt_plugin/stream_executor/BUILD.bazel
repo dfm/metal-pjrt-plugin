@@ -1,3 +1,5 @@
+load("//metal_pjrt_plugin:device_test.bzl", "DEVICE_TEST_TAGS")
+
 package(default_visibility = ["//visibility:public"])
 
 cc_library(
@@ -82,10 +84,12 @@ cc_library(
     alwayslink = True,  # Registers itself with the PlatformManager.
 )
 
+# MetalExecutor / MetalStream / MetalEvent; needs a Metal device.
 cc_test(
     name = "metal_executor_test",
     srcs = ["metal_executor_test.cc"],
-    tags = ["local", "manual"],  # needs a Metal device
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
     deps = [
         ":metal_executor",
         ":metal_platform",

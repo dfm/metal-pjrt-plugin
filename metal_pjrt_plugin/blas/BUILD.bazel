@@ -1,3 +1,5 @@
+load("//metal_pjrt_plugin:device_test.bzl", "DEVICE_TEST_TAGS")
+
 package(default_visibility = ["//visibility:public"])
 
 # MPSMatrixMultiplication GEMM. Objective-C++ (ARC); the header is plain C++
@@ -58,10 +60,8 @@ cc_test(
         "-ObjC++",
         "-fobjc-arc",
     ],
-    tags = [
-        "local",
-        "manual",
-    ],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
     deps = [
         ":mps_gemm",
         "//metal_pjrt_plugin/runtime:metal_runtime",
@@ -76,10 +76,8 @@ cc_test(
 cc_test(
     name = "metal_blas_lt_test",
     srcs = ["metal_blas_lt_test.cc"],
-    tags = [
-        "local",
-        "manual",
-    ],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
     deps = [
         "//metal_pjrt_plugin/stream_executor:metal_platform",
         "@com_google_absl//absl/status",
@@ -122,10 +120,8 @@ cc_library(
 cc_test(
     name = "steel_gemm_test",
     srcs = ["steel_gemm_test.cc"],
-    tags = [
-        "local",
-        "manual",
-    ],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
     deps = [
         ":mps_gemm",
         ":steel_gemm",

@@ -1,3 +1,5 @@
+load("//metal_pjrt_plugin:device_test.bzl", "DEVICE_TEST_TAGS")
+
 package(default_visibility = ["//visibility:public"])
 
 # XLA FFI support for the Metal platform: helpers plus the handlers the Metal
@@ -51,11 +53,12 @@ cc_library(
 )
 
 # Looks metal$test_scale up in the static FFI registry and invokes it on a
-# Metal stream, as XLA's CustomCallThunk does.
+# Metal stream, as XLA's CustomCallThunk does. Needs a Metal device.
 cc_test(
     name = "ffi_test",
     srcs = ["ffi_test.cc"],
-    tags = ["local", "manual"],  # needs a Metal device
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
     deps = [
         ":test_scale_ffi",
         "//metal_pjrt_plugin/stream_executor:metal_platform",

@@ -45,7 +45,8 @@ differs from the MLX-based approaches.
 brew install bazelisk
 scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/metal, pip install -e .
 JAX_PLATFORMS=metal python scripts/smoke_test.py
-bazel test --test_tag_filters=local //metal_pjrt_plugin/...   # device tests
+bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
+scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized (slow tests get a stack dump, never a kill)
 bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
 ```
