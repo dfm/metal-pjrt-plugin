@@ -130,3 +130,38 @@ Options considered:
   compute kernels, serial barriers, untracked resources with `useResources`.
   Gate: a standalone spike must show ICB replay is clearly cheaper per
   command than direct encoding before the plumbing is built.
+
+### ICB spike results (2026-09-26, degraded GPU; re-measure after a reboot)
+
+`metal_pjrt_plugin/runtime/icb_spike.cc` (target `:icb_spike`, run under the
+device lock) replays 10,000 dependent one-threadgroup dispatches. All variants
+produced correct results, including ICB replay with `setBarrier` ordering.
+Microseconds per command, range over 5 repetitions:
+
+| variant | CPU | GPU |
+|---|---|---|
+| direct encoding, tracked buffers (today's path) | 0.10-0.39 | 3.2-4.7 |
+| direct encoding, untracked + `useResources` | 0.11-0.18 | 2.5-4.6 |
+| direct encoding, address-table kernels | 0.07-0.09 | 2.1-4.0 |
+| ICB replay, buffers bound per command | 0.001-0.003 | 4.2-6.0 |
+| ICB replay, address-table kernels | 0.001-0.007 | 6.0-9.0 |
+| ICB record (one-time) | 0.05-0.13 | - |
+| ICB rebind of every binding (`Update`) | 0.03-0.06 | - |
+| address-table rewrite (`Update` as a memcpy) | 0.002-0.003 | - |
+
+Reading: raw metal-cpp encoding costs 0.1-0.2 us per dispatch, so the
+30-40 us we pay per kernel today is XLA thunk execution plus our resolve and
+argument packing, not Metal encoding. An ICB with a barrier per command costs
+1-2 us more GPU time per dispatch than direct encoding (3-4 us more with the
+address table), and once host overhead is gone these programs are GPU-latency
+bound, so ICB replay would make them slower. The gate in the decision above
+was not met. Open question for the `CommandBuffer` backend: software replay
+(record resolved commands, re-encode them in a tight loop on submit) keeps
+the CPU win without the ICB's GPU cost; the address-table convention is still
+worth keeping as an option since directly encoded table kernels were the
+cheapest on the GPU. Independently of the backend, XLA patch 0005 lets
+`xla_gpu_enable_command_buffer` take effect on Metal (the conversion pass
+cleared every command type for OneAPI devices); `ApplyMetalDefaults` still
+clears the set until a backend exists. Only `FUSION` should be enabled then:
+the pass does not fall back if a backend returns Unimplemented while
+recording.

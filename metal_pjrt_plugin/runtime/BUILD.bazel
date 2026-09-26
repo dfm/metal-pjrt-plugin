@@ -66,3 +66,15 @@ cc_binary(
         "@metal_cpp",
     ],
 )
+
+# Indirect command buffer spike (record/replay/update cost vs direct
+# encoding); needs a Metal device, run under scripts/device_lock.py.
+cc_binary(
+    name = "icb_spike",
+    srcs = ["icb_spike.cc"],
+    tags = ["manual"],
+    deps = [
+        ":metal_runtime",  # metal-cpp private implementation
+        "@metal_cpp",
+    ],
+)
