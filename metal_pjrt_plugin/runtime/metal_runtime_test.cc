@@ -3,6 +3,7 @@
 #include "metal_pjrt_plugin/runtime/system_memory.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <fstream>
@@ -221,6 +222,58 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
   unsetenv("METAL_PJRT_STATE_DIR");
   std::filesystem::remove_all(dir);
+}
+
+// Waits are encoded lazily: a stream that only waits (for another stream,
+// or for a host task) never commits a wait-only command buffer, and
+// Synchronize / host tasks honor pending waits on the host.
+TEST_F(MetalRuntimeTest, DeferredWaits) {
+  const uint32_t n = 1 << 18;
+  const uint32_t groups = (n + 255) / 256;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  std::vector<float> hx(n, 1.0f), hy(n, 0.0f), out(n, -1.0f);
+  ASSERT_THAT(s->MemcpyHostToDevice(x, hx.data(), n * 4), IsOk());
+  ASSERT_THAT(s->MemcpyHostToDevice(y, hy.data(), n * 4), IsOk());
+
+  // s does a lot of work; s2 waits for it and then syncs with no GPU work of
+  // its own: the wait must be honored on the host.
+  for (int i = 0; i < 300; ++i) ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, groups), IsOk());
+  absl::StatusOr<std::unique_ptr<Event>> ev = dev_->CreateEvent();
+  ASSERT_THAT(ev, IsOk());
+  ASSERT_THAT(s->RecordEvent(ev->get()), IsOk());
+  ASSERT_THAT(s2->WaitForEvent(ev->get()), IsOk());
+  ASSERT_THAT(s2->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(y)[n - 1], 300.0f);
+
+  // XLA's device-to-host pattern: wait for the compute stream, then copy on
+  // the transfer stream (a host task), then block. The task must wait for
+  // the compute stream's work even though no command buffer was committed
+  // on s2 for it.
+  for (int i = 0; i < 300; ++i) ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, groups), IsOk());
+  ASSERT_THAT(s2->WaitForStream(s.get()), IsOk());
+  ASSERT_THAT(s2->MemcpyDeviceToHost(out.data(), y, n * 4), IsOk());
+  ASSERT_THAT(s2->Synchronize(), IsOk());
+  EXPECT_EQ(out[0], 600.0f);
+  EXPECT_EQ(out[n - 1], 600.0f);
+
+  // A host task followed by GPU work on the same stream: the work waits for
+  // the task (wait encoded lazily in front of it).
+  std::atomic<int> ran{0};
+  ASSERT_THAT(s->HostCallback([&]() {
+    static_cast<float*>(y)[0] = 1000.0f;
+    ran = 1;
+  }), IsOk());
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, groups), IsOk());  // y[0] = 1001
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(ran.load(), 1);
+  EXPECT_EQ(static_cast<float*>(y)[0], 1001.0f);
+  EXPECT_EQ(static_cast<float*>(y)[1], 601.0f);
+
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
 TEST_F(MetalRuntimeTest, ErrorCodes) {

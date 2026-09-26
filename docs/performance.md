@@ -317,3 +317,16 @@ the ICB spike binary (its numbers stay recorded above). Kept: the shared
 encoders, built-in copy/fill kernels, time-paced commits, unrolled small
 sorts and GPU small-matrix linalg, which are what actually moved the numbers.
 `ApplyMetalDefaults` clears the command types as before.
+
+## Lazy waits (2026-09-26, evening)
+
+A command buffer that only waits on an event still counts its waiting time
+against the GPU watchdog; on a slow producer it times out on its own, which
+is what the third reset of the day was. Waits (WaitForEvent, WaitForStream,
+the wait for a host task) are now recorded and encoded lazily, immediately
+before the next GPU work on the stream. A Synchronize with pending waits
+satisfies them on the host, and a host task inherits the waits pending when
+it was enqueued. Result: no wait-only command buffers exist at all. tinygp
+parallel value+grad at n=1000: 97 command buffers per call (8 wait-only)
+-> 6 (none), same timings otherwise; the JAX device-to-host pattern (wait
+for the compute stream, copy, block) no longer costs a GPU round trip.

@@ -87,6 +87,17 @@ int HighestAppleFamily(MTL::Device* d) {
 }
 
 // Prefixes `context` to a non-OK status, keeping its code.
+// Waits on the host for `ev` to reach `v`, giving up once the device is lost
+// (work committed after a reset may never run, and an unbounded wait leaves
+// the process unable to exit, which is how the driver got wedged once).
+absl::Status WaitForValueOnHost(Device* device, MTL::SharedEvent* ev,
+                                uint64_t v) {
+  while (!ev->waitUntilSignaledValue(v, /*milliseconds=*/200)) {
+    ABSL_RETURN_IF_ERROR(device->lost_status());
+  }
+  return absl::OkStatus();
+}
+
 absl::Status Annotate(const absl::Status& s, absl::string_view context) {
   if (s.ok()) return s;
   return absl::Status(s.code(), absl::StrCat(context, ": ", s.message()));
@@ -612,13 +623,7 @@ absl::Status Event::WaitOnHost() {
   if (v == 0) return absl::OkStatus();
   // A failed command buffer force-signals its events (see Stream::Commit), so
   // this cannot hang on GPU errors; the error is reported by the stream.
-  while (!event_->waitUntilSignaledValue(v, /*milliseconds=*/200)) {
-    // Never wait forever once the device was reset: work committed after a
-    // reset may never run, and an unbounded wait leaves the process unable to
-    // exit (which is how the driver got wedged once).
-    ABSL_RETURN_IF_ERROR(device_->lost_status());
-  }
-  return absl::OkStatus();
+  return WaitForValueOnHost(device_, event_, v);
 }
 
 // ---------------------------------------------------------------------------
@@ -663,12 +668,10 @@ void Stream::WorkerLoop() {
       task = std::move(work_.front());
       work_.pop_front();
     }
-    bool abandoned = false;
-    while (!fence_->waitUntilSignaledValue(task.wait_value, 200)) {
-      if (!device_->lost_status().ok()) {  // see Event::WaitOnHost
-        abandoned = true;
-        break;
-      }
+    bool abandoned = !WaitForValueOnHost(device_, fence_, task.wait_value).ok();
+    for (auto& [ev, value] : task.extra_waits) {
+      if (!abandoned) abandoned = !WaitForValueOnHost(device_, ev, value).ok();
+      ev->release();
     }
     if (abandoned) {
       // Unblock any GPU wait on this task without running the callback.
@@ -692,7 +695,10 @@ absl::Status Stream::CheckAsyncError() {
 }
 
 absl::Status Stream::EnsureCommandBuffer() {
-  if (cmd_ != nullptr) return absl::OkStatus();
+  if (cmd_ != nullptr) {
+    FlushDeferredWaits();
+    return absl::OkStatus();
+  }
   ABSL_RETURN_IF_ERROR(device_->lost_status());
   // Retained references: XLA frees device buffers as soon as the host no
   // longer needs them and relies on the driver to keep memory alive until
@@ -711,7 +717,18 @@ absl::Status Stream::EnsureCommandBuffer() {
   }
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
+  FlushDeferredWaits();
   return absl::OkStatus();
+}
+
+void Stream::FlushDeferredWaits() {
+  if (deferred_waits_.empty()) return;
+  EndEncoder();
+  for (const PendingWait& w : deferred_waits_) {
+    cmd_->encodeWait(w.event, w.value);
+    pending_waits_.push_back(w);
+  }
+  deferred_waits_.clear();
 }
 
 absl::Status Stream::EnsureComputeEncoder() {
@@ -879,6 +896,13 @@ absl::Status Stream::Synchronize() {
     cb->release();
   }
   in_flight_.clear();
+  // Waits not yet encoded are satisfied on the host instead of by a
+  // wait-only command buffer (which would count against the GPU watchdog).
+  for (const PendingWait& w : deferred_waits_) {
+    absl::Status s = WaitForValueOnHost(device_, w.event, w.value);
+    if (!s.ok() && first_failure.ok()) first_failure = s;
+  }
+  if (first_failure.ok()) deferred_waits_.clear();
   // Work abandoned above because the device was reset must not look done.
   if (first_failure.ok()) first_failure = device_->lost_status();
   // The completion handler may not have run yet; record the failure here too
@@ -1226,20 +1250,26 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
 
 absl::Status Stream::HostCallback(std::function<void()> fn) {
   std::lock_guard<std::mutex> lock(mu_);
-  // 1. Commit everything so far; it ends with a fence signal (value v).
+  // 1. Commit everything so far; it ends with a fence signal (value v). Waits
+  //    still deferred on this stream become waits of the host task itself.
   ABSL_RETURN_IF_ERROR(Commit());
-  // 2. Open a new command buffer whose first action is to wait on a value
-  //    the host callback will signal after running.
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
+  ABSL_RETURN_IF_ERROR(device_->lost_status());
   uint64_t done_value = ++fence_value_;
   uint64_t after_prior = last_committed_fence_value_;
+  HostTask task{after_prior, std::move(fn), done_value, {}};
+  for (const PendingWait& w : deferred_waits_) {
+    w.event->retain();
+    task.extra_waits.emplace_back(w.event, w.value);
+  }
+  deferred_waits_.clear();
   {
     std::lock_guard<std::mutex> lock(work_mu_);
-    work_.push_back(HostTask{after_prior, std::move(fn), done_value});
+    work_.push_back(std::move(task));
   }
   work_cv_.notify_one();
-  cmd_->encodeWait(fence_, done_value);
-  pending_waits_.push_back({fence_, done_value, "host-callback"});
+  // 2. Later GPU work on this stream waits for the task; the wait is encoded
+  //    lazily, in front of that work (see deferred_waits_).
+  deferred_waits_.push_back({fence_, done_value, "host-callback"});
   return absl::OkStatus();
 }
 
@@ -1294,10 +1324,7 @@ absl::Status Stream::WaitForEvent(Event* event) {
     v = event->value_;
   }
   if (v == 0) return absl::OkStatus();
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  EndEncoder();
-  cmd_->encodeWait(event->event_, v);
-  pending_waits_.push_back({event->event_, v, "event"});
+  deferred_waits_.push_back({event->event_, v, "event"});
   return absl::OkStatus();
 }
 
@@ -1312,11 +1339,9 @@ absl::Status Stream::WaitForStream(Stream* other) {
     ABSL_RETURN_IF_ERROR(other->Commit());
     v = other->last_committed_fence_value_;
   }
+  if (v == 0) return absl::OkStatus();
   std::lock_guard<std::mutex> lock(mu_);
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  EndEncoder();
-  cmd_->encodeWait(other->fence_, v);
-  pending_waits_.push_back({other->fence_, v, "stream"});
+  deferred_waits_.push_back({other->fence_, v, "stream"});
   return absl::OkStatus();
 }
 
@@ -1367,6 +1392,7 @@ std::string Stream::DebugState() {
     absl::StrAppendFormat(&out, " [%s %p value %d (signaled %d)]", w.kind,
                           w.event, w.value, w.event->signaledValue());
   }
+  absl::StrAppendFormat(&out, "; deferred waits %d", deferred_waits_.size());
   auto kernels = last_committed_kernels_;
   absl::StrAppendFormat(&out, "; kernels in last committed cb (%d):",
                         kernels ? kernels->size() : 0);

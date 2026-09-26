@@ -453,6 +453,17 @@ class Stream {
     const char* kind;
   };
   std::vector<PendingWait> pending_waits_;
+  // Waits requested (WaitForEvent/WaitForStream/HostCallback) but not yet
+  // encoded. A command buffer that only waits still counts its waiting time
+  // against the GPU watchdog, so waits are encoded lazily, right before the
+  // next GPU work on this stream; a host-side Synchronize or host task waits
+  // for them on the host instead. Events are not retained: their owners
+  // (Event objects, other streams) outlive the stream, and stream fences are
+  // released only in ~Stream after work has drained.
+  std::vector<PendingWait> deferred_waits_;
+  // Encode deferred waits into the open command buffer. Caller holds mu_ and
+  // has an open command buffer; any open encoder is ended first.
+  void FlushDeferredWaits();
   // Waits of the most recently committed command buffer (diagnostics).
   std::vector<PendingWait> last_committed_waits_;
   // Kernels encoded into the open / last committed command buffer (for the
@@ -481,6 +492,9 @@ class Stream {
     uint64_t wait_value;
     std::function<void()> fn;
     uint64_t signal_value;
+    // Cross-stream waits that were pending when the task was enqueued: the
+    // task also waits for these (retained events).
+    std::vector<std::pair<MTL::SharedEvent*, uint64_t>> extra_waits;
   };
   void WorkerLoop();
   std::thread worker_;
