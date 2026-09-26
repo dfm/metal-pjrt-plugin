@@ -94,6 +94,121 @@ if (gpu_version.IsOneAPI()) {
 comparison_expander_upcasts.push_back({F4E2M1FN, F16});
 }
 
+### xla/pjrt/gpu/se_gpu_pjrt_client.cc @ if (cc.oneapi_compute_capability() != nullptr) {
+# why: platform_version = 'oneapi ' + runtime_version: the persistent-cache key carries the plugin build and env (29b8494).
+if (cc.oneapi_compute_capability() != nullptr) {
+// TODO(intel-tf): Oneapi multiple platform version support
+// will be added in future, for now, oneapi 2026.0 is supported
+return absl::StrCat("oneapi ", v.IsValid() ? v.ToString() : "2026.0");
+
+### xla/pjrt/c_api_client/pjrt_c_api_client.cc @ PjRtCApiExecutable::GetAbiVersion() const {
+# why: No AbiVersion extension -> Unimplemented, which metal_pjrt_api.cc relies on by dropping the extension (e21d29d).
+PjRtCApiExecutable::GetAbiVersion() const {
+PJRT_AbiVersion_Extension* extension =
+pjrt::FindExtension<PJRT_AbiVersion_Extension>(
+c_api_, PJRT_Extension_Type::PJRT_Extension_Type_AbiVersion);
+if (extension == nullptr) {
+return absl::UnimplementedError(
+"AbiVersion extension not implemented in this PJRT plugin.");
+}
+
+### xla/pjrt/c/pjrt_c_api_gpu_internal.cc @ static PJRT_AbiVersion_Extension abi_version_extension =
+# why: The extension chain metal_pjrt_api.cc copies and filters (removes the AbiVersion node) (e21d29d).
+static PJRT_Xla_Transform_Extension xla_transform_extension =
+pjrt::CreateXlaTransformExtension(&shardings_extension.base);
+static PJRT_AbiVersion_Extension abi_version_extension =
+pjrt::CreateGpuAbiVersionExtension(&xla_transform_extension.base);
+static const PJRT_Api pjrt_api = pjrt::CreatePjrtApi(
+pjrt::gpu_plugin::PJRT_Client_Create,
+pjrt::gpu_plugin::PJRT_ExecuteContext_Create,
+pjrt::gpu_plugin::PJRT_GpuDeviceTopology_Create,
+pjrt::PJRT_Plugin_Initialize_NoOp, &abi_version_extension.base,
+pjrt::gpu_plugin::PJRT_Plugin_Attributes_Gpu);
+
+### xla/python/pjrt_ifrt/pjrt_executable.cc @ GetXlaExecutableVersion(
+# why: IFRT falls back to a version-less XlaExecutableVersion on Unimplemented; otherwise Metal (no TPU/CUDA/ROCm id) can't serialize, and the persistent cache breaks (e21d29d). A jaxlib bump can change this silently.
+absl::StatusOr<std::unique_ptr<XlaExecutableVersion>> GetXlaExecutableVersion(
+xla::PjRtExecutable* pjrt_executable) {
+if (pjrt_executable == nullptr) {
+return absl::InvalidArgumentError("pjrt_executable must not be null.");
+}
+auto abi_version = pjrt_executable->GetAbiVersion();
+if (absl::IsUnimplemented(abi_version.status())) {
+// If the underlying PjRtExecutable does not implement GetAbiVersion (e.g.
+// CPU), return an XlaExecutableVersion without an ABI version so that
+// serialization and execution version queries still succeed.
+return std::make_unique<XlaExecutableVersion>();
+}
+ABSL_RETURN_IF_ERROR(abi_version.status());
+if (*abi_version == nullptr) {
+return absl::InvalidArgumentError(
+"PjRtExecutable returned null ABI version.");
+}
+uint64_t platform_id = (*abi_version)->platform_id();
+std::unique_ptr<XlaExecutableAbiVersion> xla_abi_version;
+if (platform_id == xla::TpuId()) {
+xla_abi_version = std::make_unique<xla::TpuXlaExecutableAbiVersion>(
+*std::move(abi_version));
+} else if (platform_id == xla::CudaId() || platform_id == xla::RocmId()) {
+xla_abi_version = std::make_unique<xla::GpuXlaExecutableAbiVersion>(
+*std::move(abi_version));
+} else {
+return absl::UnimplementedError(absl::StrCat(
+"Unsupported platform ID for XlaExecutableAbiVersion: ", platform_id));
+}
+return std::make_unique<XlaExecutableVersion>(platform_id,
+std::move(xla_abi_version));
+}
+
+### xla/pjrt/se/stream_executor_executable.cc @ StreamExecutorExecutable::Deserialize(
+# why: Deserialize checks only the client name, so a cached Metal executable loads without an ABI check (e21d29d; the cache key is the only guard).
+StreamExecutorExecutable::Deserialize(riegeli::Any<riegeli::Reader*> reader,
+const PjRtTopologyDescription& topology,
+std::optional<CompileOptions> options) {
+ABSL_ASSIGN_OR_RETURN(ExecutableAndOptionsProto proto,
+SerializedGpuExecutableFromReader(std::move(reader)));
+if (!proto.pjrt_client_name().empty() &&
+proto.pjrt_client_name() != kPjRtStreamExecutorClientName) {
+return Internal(
+"Serialized executable is from an incompatible PjRt client type. "
+"PjRt client type expected by the serialized executable: %s",
+proto.pjrt_client_name());
+}
+
+### xla/pjrt/se/pjrt_stream_executor_client.cc @ auto deleted = stream_->DoHostCallback([chunk_ptr]() { delete chunk_ptr; });
+# why: Host callback without error_cb that must still run after a GPU failure (host tasks without on_error run anyway, 62f81f1).
+auto* chunk_ptr = std::make_unique<PjRtChunk>(std::move(chunk)).release();
+auto deleted = stream_->DoHostCallback([chunk_ptr]() { delete chunk_ptr; });
+if (!deleted.ok()) {
+
+### xla/pjrt/gpu/se_gpu_pjrt_client.cc @ return stream->DoHostCallback(
+# why: Host callback without error_cb that must still run after a GPU failure (62f81f1).
+return stream->DoHostCallback(
+[worker = this->async_work_runner(), kv_store = kv_store_,
+key = desc.rendezvous_key(), on_done]() {
+worker->Execute(
+[kv_store, key = std::move(key), on_done]() {
+absl::Status s = kv_store->Set(key, "");
+on_done(s, /*sends_were_enqueued=*/s.ok());
+});
+});
+
+### xla/pjrt/se/buffer_sequencing_event.cc @ bool BufferSequencingEvent::IsComplete() {
+# why: IsComplete is PollForStatus() == kComplete; MetalEvent::PollForStatus returns kError for failed work (62f81f1).
+bool BufferSequencingEvent::IsComplete() {
+tsl::BlockUntilReady(event_);
+if (event_.IsError()) {
+return true;
+}
+return event_->event.event()->PollForStatus() == se::Event::Status::kComplete;
+}
+
+### xla/backends/gpu/transforms/sort_rewriter.cc @ return Product(operand_shape.dimensions()) > 16384;
+# why: Non-CUDA CUB-sort threshold counts total elements (roadmap 2.2; ApplyMetalDefaults keeps cub radix sort off today).
+// TODO(b/410480351): The default heuristic below is pretty bad in the general
+// case. Run benchmarks on different devices and add a heuristic per device.
+return Product(operand_shape.dimensions()) > 16384;
+
 ### xla/service/gpu/gpu_compiler.cc @ pipeline.AddPass<TopkSpecializer>(gpu_version);
 # why: TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks.
 pipeline.AddPass<TopKSplitter>();
@@ -267,10 +382,18 @@ xla/backends/gpu/codegen/emitters/transpose.cc: 1
 xla/backends/gpu/runtime/command_buffer_conversion_pass.cc: 1
 xla/backends/gpu/transforms/gemm_rewriter.cc: 2
 xla/backends/gpu/transforms/priority_fusion.cc: 0
+xla/backends/gpu/transforms/sort_rewriter.cc: 0
 xla/backends/gpu/transforms/topk_specializer.cc: 1
 xla/codegen/emitters/elemental_hlo_to_mlir.cc: 0
 xla/codegen/emitters/transforms/lower_tensors.cc: 1
 xla/codegen/emitters/transforms/vectorize_loads_stores.cc: 2
+xla/pjrt/c/pjrt_c_api_gpu_internal.cc: 0
+xla/pjrt/c_api_client/pjrt_c_api_client.cc: 0
+xla/pjrt/gpu/se_gpu_pjrt_client.cc: 0
+xla/pjrt/se/buffer_sequencing_event.cc: 0
+xla/pjrt/se/pjrt_stream_executor_client.cc: 0
+xla/pjrt/se/stream_executor_executable.cc: 0
+xla/python/pjrt_ifrt/pjrt_executable.cc: 0
 xla/service/algorithm_util.cc: 4
 xla/service/gpu/gpu_compiler.cc: 1
 xla/stream_executor/abi/executable_abi_version.cc: 1

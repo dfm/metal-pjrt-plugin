@@ -1,6 +1,8 @@
 load("@rules_python//python:defs.bzl", "py_test")
 
-# Pinned XLA sources snapshotted by tripwire.py (see its docstring).
+# Pinned XLA sources snapshotted by tripwire.py (see its docstring). Files in
+# packages whose default visibility hides them (xla/pjrt/gpu) can't be listed;
+# tripwire.py reads those next to the listed ones (INVISIBLE there).
 filegroup(
     name = "xla_sources",
     srcs = [
@@ -15,6 +17,13 @@ filegroup(
         "@xla//xla/codegen/emitters/transforms:vectorize_loads_stores.cc",
         "@xla//xla/service:algorithm_util.cc",
         "@xla//xla/service/gpu:gpu_compiler.cc",
+        "@xla//xla/backends/gpu/transforms:sort_rewriter.cc",
+        "@xla//xla/pjrt/c:pjrt_c_api_gpu_internal.cc",
+        "@xla//xla/pjrt/c_api_client:pjrt_c_api_client.cc",
+        "@xla//xla/pjrt/se:buffer_sequencing_event.cc",
+        "@xla//xla/pjrt/se:pjrt_stream_executor_client.cc",
+        "@xla//xla/pjrt/se:stream_executor_executable.cc",
+        "@xla//xla/python/pjrt_ifrt:pjrt_executable.cc",
         "@xla//xla/stream_executor/abi:executable_abi_version.cc",
     ],
 )

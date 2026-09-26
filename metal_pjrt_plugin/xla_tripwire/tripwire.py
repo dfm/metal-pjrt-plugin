@@ -13,7 +13,8 @@ against the new code, adapt the plugin if needed, then regenerate:
   python3 metal_pjrt_plugin/xla_tripwire/tripwire.py \
       --xla-root "$(bazel info output_base)/external/xla+" --update
 
-The file list in BUILD.bazel must name every file used here.
+The file list in BUILD.bazel must name every file used here, except the
+INVISIBLE ones below.
 """
 import argparse
 import difflib
@@ -65,6 +66,25 @@ SITES = [
          why="No command buffers on OneAPI (ApplyMetalDefaults also clears them)."),
     Site(GC, "if (gpu_version.IsOneAPI()) {", before=1, after=2,
          why="F4E2M1FN compares upcast on OneAPI."),
+    # --- PJRT / jaxlib behaviour the runtime and the compile cache rely on ---
+    Site("xla/pjrt/gpu/se_gpu_pjrt_client.cc", "if (cc.oneapi_compute_capability() != nullptr) {", before=0, after=3,
+         why="platform_version = 'oneapi ' + runtime_version: the persistent-cache key carries the plugin build and env (29b8494)."),
+    Site("xla/pjrt/c_api_client/pjrt_c_api_client.cc", "PjRtCApiExecutable::GetAbiVersion() const {", before=0, after=7,
+         why="No AbiVersion extension -> Unimplemented, which metal_pjrt_api.cc relies on by dropping the extension (e21d29d)."),
+    Site("xla/pjrt/c/pjrt_c_api_gpu_internal.cc", "static PJRT_AbiVersion_Extension abi_version_extension =", before=3, after=8,
+         why="The extension chain metal_pjrt_api.cc copies and filters (removes the AbiVersion node) (e21d29d)."),
+    Site("xla/python/pjrt_ifrt/pjrt_executable.cc", "GetXlaExecutableVersion(", before=0, after=31,
+         why="IFRT falls back to a version-less XlaExecutableVersion on Unimplemented; otherwise Metal (no TPU/CUDA/ROCm id) can't serialize, and the persistent cache breaks (e21d29d). A jaxlib bump can change this silently."),
+    Site("xla/pjrt/se/stream_executor_executable.cc", "StreamExecutorExecutable::Deserialize(", before=0, after=11,
+         why="Deserialize checks only the client name, so a cached Metal executable loads without an ABI check (e21d29d; the cache key is the only guard)."),
+    Site("xla/pjrt/se/pjrt_stream_executor_client.cc", "auto deleted = stream_->DoHostCallback([chunk_ptr]() { delete chunk_ptr; });", before=1, after=1,
+         why="Host callback without error_cb that must still run after a GPU failure (host tasks without on_error run anyway, 62f81f1)."),
+    Site("xla/pjrt/gpu/se_gpu_pjrt_client.cc", "return stream->DoHostCallback(", before=0, after=8,
+         why="Host callback without error_cb that must still run after a GPU failure (62f81f1)."),
+    Site("xla/pjrt/se/buffer_sequencing_event.cc", "bool BufferSequencingEvent::IsComplete() {", before=0, after=7,
+         why="IsComplete is PollForStatus() == kComplete; MetalEvent::PollForStatus returns kError for failed work (62f81f1)."),
+    Site("xla/backends/gpu/transforms/sort_rewriter.cc", "return Product(operand_shape.dimensions()) > 16384;", before=2, after=0,
+         why="Non-CUDA CUB-sort threshold counts total elements (roadmap 2.2; ApplyMetalDefaults keeps cub radix sort off today)."),
     # --- Pipeline order the plugin's passes rely on ---
     Site(GC, "pipeline.AddPass<TopkSpecializer>(gpu_version);", before=1, after=1,
          why="TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks."),
@@ -85,6 +105,11 @@ SITES = [
     Site("xla/backends/gpu/transforms/priority_fusion.cc", "bool IsFusible(const HloInstruction& instr) {", before=0, end="default:",
          why="kDot is not fusible, so the upcaster builds the convert+dot fusion itself."),
 ]
+
+# Files Bazel can't list as data (their package's default visibility is
+# private). Read from the same XLA checkout as the listed files: every pin
+# change also changes listed files, so the test still reruns.
+INVISIBLE = {"xla/pjrt/gpu/se_gpu_pjrt_client.cc"}
 
 ONEAPI_RE = re.compile(r"IsOneAPI\(\)|IsIntelGpu\(\)|is_sycl")
 
@@ -134,8 +159,16 @@ def main():
         if m:
             by_rel[m.group(1)] = p
 
+    root = a.xla_root
+    if root is None and by_rel:
+        some_rel, some_path = next(iter(by_rel.items()))
+        root = os.path.realpath(some_path)[:-len(some_rel)]
+
     def read(rel):
-        path = os.path.join(a.xla_root, rel) if a.xla_root else by_rel.get(rel)
+        if a.xla_root or rel in INVISIBLE:
+            path = os.path.join(root, rel)
+        else:
+            path = by_rel.get(rel)
         if path is None:
             sys.exit(f"{rel} is not in the test's data (add it to BUILD.bazel)")
         with open(path, encoding="utf-8") as f:
