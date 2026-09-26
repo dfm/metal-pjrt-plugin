@@ -5,7 +5,7 @@ fourth XLA:GPU platform, alongside CUDA, ROCm and SYCL, rather than by
 re-interpreting StableHLO op by op.
 
 Status: works end to end on an M3 for f32/f16/bf16 programs (JAX's
-`lax_test.py`: 946 pass, 63 known failures in complex types, int4 and dot
+`lax_test.py`: 947 pass, 62 known failures in complex types, int4 and dot
 precision algorithms); not packaged. See `docs/design.md` for the design,
 `docs/integration-notes.md` for the source-verified contract with XLA,
 `docs/op-coverage.md` for what runs, `docs/performance.md` for measurements,

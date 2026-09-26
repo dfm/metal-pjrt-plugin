@@ -1,5 +1,7 @@
 """f16 / bf16 GEMMs through JAX (steel kernels) against a float64 CPU
 reference, normwise in ulps of the output dtype (tests/metal_testing.py)."""
+import re
+
 import numpy as np
 import jax, jax.numpy as jnp
 import pytest
@@ -38,13 +40,33 @@ def test_steel_gemm(name):
     check(fn, *args, ulps=ULPS.get((name.split()[0], kind), 0), normwise=True, name=name)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "bug: a 16-bit -> f32 dot small enough to stay in a loop fusion rounds "
-    "each product to the input type (XLA's elemental EmitMulAdd, "
-    "elemental_hlo_to_mlir.cc:494-501); JAX's LaxTest::testDotPreferredElement2"))
+# Small enough that GemmRewriter leaves it a kDot for the loop emitter, which
+# multiplies in the operand type; MetalDotOperandUpcaster upcasts the operands
+# (JAX's LaxTest::testDotPreferredElement2).
 @pytest.mark.parametrize("dt", ["bfloat16", "float16"])
 def test_small_mixed_precision_dot(dt):
     a = rng.standard_normal((4, 3)).astype(dt)
     b = rng.standard_normal((3, 6)).astype(dt)
     check(lambda x, y: jnp.matmul(x, y, preferred_element_type=jnp.float32),
           a, b, ulps=24, normwise=True, name=f"{dt} 4x3x6 f32 out")
+
+
+def _gemm_operand_types(hlo):
+    """Element types of the operands of each __cublas$lt$matmul."""
+    types = dict(re.findall(r"(%[\w.\-]+) = (\w+)\[", hlo))
+    return [[types[o] for o in re.findall(r"%[\w.\-]+", ops)]
+            for ops in re.findall(
+                r"custom-call\(([^)]*)\), custom_call_target=\"__cublas\$lt\$matmul\"", hlo)]
+
+
+@pytest.mark.parametrize("dt,hlo_dt", [("bfloat16", "bf16"), ("float16", "f16")])
+def test_mixed_precision_dot_routing(dt, hlo_dt):
+    """The upcast only touches dots left after GemmRewriter: a large 16-bit
+    dot with f32 output still reaches the GEMM with 16-bit operands."""
+    f = jax.jit(lambda x, y: jnp.matmul(x, y, preferred_element_type=jnp.float32))
+    big = jnp.ones((256, 256), dt)
+    assert _gemm_operand_types(f.lower(big, big).compile().as_text()) == [[hlo_dt, hlo_dt]]
+    small = jnp.ones((4, 3), dt), jnp.ones((3, 6), dt)
+    hlo = f.lower(*small).compile().as_text()
+    assert "__cublas" not in hlo
+    assert re.search(r"f32\[4,3\]\S* convert\(", hlo), hlo

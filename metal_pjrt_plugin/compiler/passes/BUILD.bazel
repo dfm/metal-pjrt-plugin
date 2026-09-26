@@ -98,3 +98,30 @@ cc_test(
         "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
     ],
 )
+
+cc_library(
+    name = "dot_upcast",
+    srcs = ["dot_upcast.cc"],
+    hdrs = ["dot_upcast.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/pass:hlo_pass",
+        "@xla//xla/tsl/platform:errors",
+    ],
+)
+
+cc_test(
+    name = "dot_upcast_test",
+    srcs = ["dot_upcast_test.cc"],
+    deps = [
+        ":dot_upcast",
+        "@com_google_googletest//:gtest_main",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
+    ],
+)

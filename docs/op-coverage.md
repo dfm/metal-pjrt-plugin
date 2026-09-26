@@ -75,12 +75,15 @@ as on CUDA), so the value never rounds. Sub-byte integers (s4/u4) are
 rejected by the emitter.
 
 A 16-bit -> f32 dot (`preferred_element_type`) small enough that XLA keeps it
-in a loop fusion (e.g. 4x3 @ 3x6) rounds every product to the input type:
+as a kDot (e.g. 4x3 @ 3x6) used to round every product to the input type:
 XLA's elemental `EmitMulAdd` multiplies in the operand type before
-converting to the f32 accumulator (`elemental_hlo_to_mlir.cc:494-501`).
-Relative error bf16 1.4e-2, f16 6.7e-4; dots that reach GEMM are fine.
-Wrong values, not an exception: JAX's `testDotPreferredElement2` and a
-strict xfail in `tests/test_steel_gemm.py` track it.
+converting to the f32 accumulator (`elemental_hlo_to_mlir.cc:494-501`;
+relative error bf16 1.4e-2, f16 6.7e-4). `MetalDotOperandUpcaster`
+(`compiler/passes/dot_upcast.cc`) now upcasts the operands of every dot
+GemmRewriter left behind and fuses the converts with the dot, so these
+match the GEMM path; JAX's `testDotPreferredElement2` passes. It runs after
+GemmRewriter, so large 16-bit dots still reach the steel GEMM with 16-bit
+operands (`tests/test_steel_gemm.py`).
 
 ## Fixes ranked by payoff
 

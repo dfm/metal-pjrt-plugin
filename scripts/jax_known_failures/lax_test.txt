@@ -1,22 +1,12 @@
 # Known failures of JAX's tests/lax_test.py on metal, as run by
 # scripts/run_jax_tests.sh. One test id per line (without the file), '#'
-# comments. Baseline: 946 pass, 63 fail, 63 skipped.
+# comments. Baseline: 947 pass, 62 fail, 63 skipped.
 #
 # Test ids depend on the generated-case count and x64, so
 # scripts/jax_tests_plugin.py only compares against this list when the run
 # matches the config line below. Matching is by id only: a known failure
 # that starts failing for a different reason stays hidden.
 # config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0
-
-# WRONG VALUES (bugs, not accepted):
-# - testDotPreferredElement2: a 16-bit -> f32 dot (preferred_element_type)
-#   small enough that XLA leaves it in a loop fusion (e.g. 4x3 @ 3x6) rounds
-#   every product to the input type (relative error: bf16 1.4e-2, f16
-#   6.7e-4, vs 3e-6 through GEMM). XLA's elemental EmitMulAdd
-#   multiplies in the operand type and only then converts to the f32
-#   accumulator (elemental_hlo_to_mlir.cc:494-501). Dots that go to GEMM
-#   are fine.
-LaxTest::testDotPreferredElement2
 
 # UNSUPPORTED: complex values, and int4 converts (MSL emitter: unsupported
 # non-trivial unrealized_conversion_cast)
