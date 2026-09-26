@@ -8,6 +8,9 @@ if [[ -z "${JAX_METAL_LOCKED:-}" ]]; then exec env JAX_METAL_LOCKED=1 scripts/de
 if [[ -z "${BENCH_ALLOW_DEGRADED:-}" ]]; then
   scripts/gpu_health.py --strict || { echo "set BENCH_ALLOW_DEGRADED=1 to run anyway" >&2; exit 1; }
 fi
+# The Bazel server JVM holds a lot of memory after a build; the allocation
+# guard then refuses large pools (nanoGPT train step needs a 1.2 GB chunk).
+command -v bazel >/dev/null && bazel shutdown >/dev/null 2>&1
 mkdir -p bench/results
 ONLY=${BENCH_ONLY:-}
 for label in metal cpu; do
