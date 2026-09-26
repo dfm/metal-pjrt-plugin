@@ -332,3 +332,30 @@ it was enqueued. Result: no wait-only command buffers exist at all. tinygp
 parallel value+grad at n=1000: 97 command buffers per call (8 wait-only)
 -> 6 (none), same timings otherwise; the JAX device-to-host pattern (wait
 for the compute stream, copy, block) no longer costs a GPU round trip.
+
+## Persistent compilation cache (2026-09-26, night)
+
+JAX's persistent compilation cache now works for "metal" (how:
+`docs/integration-notes.md`, PJRT client). First call in a fresh process
+(jit + compile or cache load + one run, `block_until_ready`), healthy GPU,
+Metal system shader cache warm; cache written with
+`JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`:
+
+| program | no cache | cold (miss + write) | warm (hit) | entry |
+|---|---|---|---|---|
+| MLP train step 784-512-512-10, batch 128 | 64-68 ms | 72 ms | 41-42 ms | 39 KB |
+| nanoGPT train step (bench/jax_bench.py) | 695-816 ms | 788 ms | 418-431 ms | 714 KB |
+
+Steady-state nanoGPT step is ~190 ms, so a warm first call is roughly half
+executable load (deserialize, `newLibraryWithSource` hitting the system
+shader cache, buffer setup) and half the run; the hit saves ~350 ms of XLA
+compilation. Process start to first MLP result, which also covers the ~20
+small jits of parameter init, went 1463 -> 455 ms. `scripts/lax_coverage.py`
+runs in 7 s cold, 2 s warm. With the very first Metal shader compile in a
+boot (system shader cache cold) the MLP first call was 541 ms without the
+cache.
+
+Caveat: JAX only writes entries whose compile took longer than
+`jax_persistent_cache_min_compile_time_secs` (default 1 s). Both programs
+above compile in under a second on Metal, so with the defaults they are
+not cached; the plugin does not change that threshold.

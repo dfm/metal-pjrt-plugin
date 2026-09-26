@@ -181,12 +181,39 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   so `MetalExecutor` sets `runtime_version` to `{1, fingerprint(LC_UUID of
   the plugin image), fingerprint(METAL_PJRT_DISABLE_REWRITES,
   METAL_PJRT_DISABLE_LAPACK)}`: a rebuilt plugin or a different compile-time
-  setting gets a different key. (JAX 0.11.2 does not use its persistent
-  cache for platform "metal" at all: `compilation_cache.is_cache_used`
-  allows only tpu/gpu/cpu/neuron; forcing it on fails at serialization with
-  "Unsupported platform ID for XlaExecutableAbiVersion", since
-  `ExecutableAbiVersion` knows only the CUDA/ROCm/SYCL platform ids. The key
-  is right for when both are fixed.) The
-  plugin no longer sets `jax_compilation_cache_dir`; the per-setting
-  `~/.cache/jax_metal/variants/` directories an older plugin created are
-  orphaned and can be deleted.
+  setting gets a different key.
+- Persistent compilation cache. Two things kept JAX 0.11.2 from using it
+  for "metal", both fixed without an XLA patch:
+  (1) serialization failed with "Unsupported platform ID for
+  XlaExecutableAbiVersion": XLA's GPU C API shim adds a `PJRT_AbiVersion`
+  extension, so `PjRtCApiExecutable::GetAbiVersion` reports the OneAPI ABI,
+  and jaxlib's IFRT (`GetXlaExecutableVersion`,
+  `pjrt_ifrt/pjrt_executable.cc`) accepts only TPU/CUDA/ROCm ids. It falls
+  back to a version-less `XlaExecutableVersion` (as for CPU) when
+  `GetAbiVersion` is Unimplemented, which the C API client returns when the
+  extension is absent. So the plugin exports its own `GetPjrtApi`
+  (`pjrt/metal_pjrt_api.cc`, depending on `pjrt_c_api_gpu_internal`
+  instead of `pjrt_c_api_gpu`): XLA's `GetGpuPjrtApi()` with the
+  AbiVersion node dropped from the extension list. Nothing inside the
+  plugin reads that extension (its only readers are the C API client, the
+  IFRT version query and the `abi_helpers` AOT tools). Deserialization
+  (`StreamExecutorExecutable::Deserialize`) checks only the PJRT client
+  name and then loads the GPU AOT result, so with no ABI version the cache
+  key's platform version is the only guard against a foreign build, which
+  is what it is for. Executables round-trip: fusions, GEMM, sort,
+  scan/while, `metal$scan`/`metal$softmax`/LAPACK FFI calls and
+  constant-heavy programs deserialize in a fresh process and give
+  bitwise-identical results (MSL rides in the GPU executable's asm/binary,
+  the constants container in the constants module's binary).
+  (2) `compilation_cache.is_cache_used` accepts only the platforms in a
+  local list (tpu/gpu/cpu/neuron). `jax_plugins/metal` wraps it and, for
+  metal backends only, calls the original with a proxy whose `platform` is
+  "gpu" (all else forwarded), so upstream's one-shot bookkeeping still
+  runs. `tests/test_compilation_cache.py` asserts the list is still there.
+  The plugin sets `jax_compilation_cache_dir` to
+  `~/.cache/jax_metal/compilation_cache` unless one is configured
+  (`JAX_COMPILATION_CACHE_DIR`, `jax.config`); JAX's own thresholds apply
+  (only compiles over `jax_persistent_cache_min_compile_time_secs`, 1 s by
+  default, are written). Executables with metal host callbacks bypass it
+  (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`
+  directories an older plugin created are orphaned and can be deleted.

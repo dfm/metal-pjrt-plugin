@@ -25,8 +25,22 @@ cc_library(
     ],
 )
 
-# The PJRT plugin shared library. GetPjrtApi() comes from XLA's GPU C API
-# shim (patched to report the "metal" platform on macOS).
+# The exported GetPjrtApi(): XLA's GPU C API shim (patched to report the
+# "metal" platform on macOS) minus its PJRT_AbiVersion extension, so that
+# jaxlib can serialize executables (persistent compilation cache).
+cc_library(
+    name = "metal_pjrt_api",
+    srcs = ["metal_pjrt_api.cc"],
+    deps = [
+        "@com_google_absl//absl/log:initialize",
+        "@xla//xla/pjrt/c:pjrt_c_api_gpu_internal",
+        "@xla//xla/pjrt/c:pjrt_c_api_hdrs",
+        "@xla//xla/pjrt/c:pjrt_c_api_macros",
+    ],
+    alwayslink = 1,
+)
+
+# The PJRT plugin shared library.
 cc_binary(
     name = "pjrt_c_api_metal_plugin.dylib",
     linkopts = [
@@ -38,7 +52,7 @@ cc_binary(
     ],
     linkshared = True,
     deps = [
+        ":metal_pjrt_api",
         ":metal_plugin_deps",
-        "@xla//xla/pjrt/c:pjrt_c_api_gpu",
     ],
 )

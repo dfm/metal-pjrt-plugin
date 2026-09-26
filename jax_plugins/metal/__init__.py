@@ -2,7 +2,8 @@
 
 Modeled on jax_plugins/cuda/__init__.py: registers the PJRT plugin dylib
 (linked next to this file by scripts/install_dev.sh) under platform "metal",
-then installs the lowerings and host callbacks the plugin needs.
+then opts it into the persistent compilation cache and installs the
+lowerings and host callbacks the plugin needs.
 """
 
 import logging
@@ -19,6 +20,57 @@ def _get_library_path() -> pathlib.Path | None:
     if candidate.exists():
         return candidate
     return None
+
+
+class _AsGpuBackend:
+    """Forwards to a metal backend but reports platform "gpu"."""
+
+    platform = "gpu"
+
+    def __init__(self, backend):
+        self._backend = backend
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+
+def _install_is_cache_used_wrapper():
+    """Let JAX's persistent compilation cache serve the metal platform.
+
+    jax._src.compilation_cache.is_cache_used only accepts the platforms in a
+    local list (tpu/gpu/cpu/neuron; tests/test_compilation_cache.py trips if
+    that changes). Metal executables serialize like GPU ones (the plugin drops
+    the PJRT ABI-version extension, see metal_pjrt_api.cc), so ask with the
+    backend presented as "gpu"; everything else, including the one-shot
+    bookkeeping, is upstream's. The cache key hashes platform_version, which
+    encodes the plugin build and its compile-time settings.
+    """
+    from jax._src import compilation_cache
+
+    upstream = compilation_cache.is_cache_used
+    if getattr(upstream, "_metal_wrapped", False):
+        return
+
+    def is_cache_used(backend):
+        if getattr(backend, "platform", None) == "metal":
+            backend = _AsGpuBackend(backend)
+        return upstream(backend)
+
+    is_cache_used._metal_wrapped = True
+    compilation_cache.is_cache_used = is_cache_used
+
+
+def _enable_persistent_cache():
+    """Opt in, and unless a cache directory is configured
+    (jax_compilation_cache_dir / JAX_COMPILATION_CACHE_DIR) use
+    ~/.cache/jax_metal/compilation_cache. jax_enable_compilation_cache=False
+    turns it off."""
+    import jax
+
+    _install_is_cache_used_wrapper()
+    if jax.config.jax_compilation_cache_dir is None:
+        cache = pathlib.Path.home() / ".cache" / "jax_metal" / "compilation_cache"
+        jax.config.update("jax_compilation_cache_dir", str(cache))
 
 
 def initialize():
@@ -44,6 +96,10 @@ def initialize():
         "visible_devices": [0],
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)
+    try:
+        _enable_persistent_cache()
+    except Exception as e:  # noqa: BLE001 - never break plugin init
+        logger.warning("metal: persistent compilation cache unavailable: %s", e)
     # Lowering rules for primitives upstream only lowers on named platforms.
     from jax_plugins.metal import lowerings
     lowerings.register()

@@ -61,10 +61,9 @@ Runtime shader compilation works with command-line tools only (verified:
 192 ms for a trivial kernel). No cache of our own is needed across processes:
 Metal's system shader cache keys on the source, so the same MSL compiles in
 ~1.3 ms in a later process (186 ms first; measured 2026-09-26). Within a
-process `rt::Device` caches libraries by source hash. JAX's persistent
-compilation cache is not used for platform "metal" (see
-`docs/integration-notes.md`, PJRT client), so XLA compilation itself is
-repeated per process.
+process `rt::Device` caches libraries by source hash. XLA compilation
+itself is cached across processes by JAX's persistent compilation cache
+(see `docs/integration-notes.md`, PJRT client).
 
 ## Library ops
 
