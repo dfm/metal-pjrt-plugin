@@ -343,6 +343,14 @@ recorded after it, a commit waiting for it) gets FAILED_PRECONDITION
 instead of hanging. `Device::unsignaled_host_task_waits_committed()` counts
 violations and the runtime tests assert it stays 0.
 
+Bug fixed with it: `WaitForStream(other)` waited only for `other`'s last
+command buffer, not for a host task enqueued after it, so "A: host-to-device
+copy (a host task); B: wait for A; B: kernel" could run the kernel before
+the copy (silent wrong results; XLA orders transfers this way in
+`pjrt_stream_executor_client.cc`, `transfer_manager.cc` and
+`local_device_state.cc`). It now waits for the highest value `other` has
+issued.
+
 ## Persistent compilation cache (2026-09-26, night)
 
 JAX's persistent compilation cache now works for "metal" (how:

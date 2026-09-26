@@ -305,6 +305,41 @@ TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// WaitForStream covers the other stream's host tasks, not only its committed
+// GPU work: XLA orders a host-to-device copy (a host task) before compute
+// on another stream exactly this way.
+TEST_F(MetalRuntimeTest, WaitForStreamCoversHostTasks) {
+  const uint32_t n = 1 << 16;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> a = NewStream();
+  std::unique_ptr<Stream> b = NewStream();
+  ASSERT_THAT(a->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
+  ASSERT_THAT(a->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(a->Synchronize(), IsOk());
+  const uint64_t holds = dev_->host_task_holds();
+  for (int round = 0; round < 2; ++round) {
+    // Round 1 also has GPU work committed on `a` before the task.
+    if (round == 1) ASSERT_THAT(Axpy(a.get(), x, y, n, 0.0f, n / 256), IsOk());
+    ASSERT_THAT(a->HostCallback([y, n, round]() {
+      std::this_thread::sleep_for(std::chrono::milliseconds(50));
+      for (uint32_t i = 0; i < n; ++i) {
+        static_cast<float*>(y)[i] = 5.0f + round;
+      }
+    }), IsOk());
+    ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+    ASSERT_THAT(Axpy(b.get(), x, y, n, 1.0f, n / 256), IsOk());  // y += 1
+    ASSERT_THAT(b->Synchronize(), IsOk());
+    EXPECT_EQ(static_cast<float*>(y)[0], 6.0f + round) << round;
+    EXPECT_EQ(static_cast<float*>(y)[n - 1], 6.0f + round) << round;
+  }
+  EXPECT_GT(dev_->host_task_holds(), holds);
+  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  ASSERT_THAT(a->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // A host task that waits for its own stream gets an error, not a deadlock.
 TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
   std::unique_ptr<Stream> s = NewStream();

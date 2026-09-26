@@ -1395,15 +1395,21 @@ absl::Status Stream::WaitForStream(Stream* other) {
     return absl::InvalidArgumentError("WaitForStream: null stream");
   }
   if (other == this) return absl::OkStatus();
+  // Wait for the highest value `other` has issued: after its Commit that is
+  // either its last command buffer or a host task enqueued after it (whose
+  // value is signaled by the host, hence the hold rule applies). Values are
+  // monotonic in stream order: later work waits for earlier host tasks.
   uint64_t v;
+  bool host_task;
   {
     std::lock_guard<std::mutex> olock(other->mu_);
     ABSL_RETURN_IF_ERROR(other->Commit());
-    v = other->last_committed_fence_value_;
+    v = other->fence_value_;
+    host_task = v > other->last_committed_fence_value_;
   }
   if (v == 0) return absl::OkStatus();
   std::lock_guard<std::mutex> lock(mu_);
-  deferred_waits_.push_back({other->fence_, v, "stream"});
+  deferred_waits_.push_back({other->fence_, v, "stream", host_task});
   return absl::OkStatus();
 }
 
