@@ -847,10 +847,14 @@ absl::Status Stream::Synchronize() {
       }
       if (!device_->lost_status().ok()) break;  // abandon it
       if (fence_->signaledValue() >= last_committed_fence_value_) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-      } else {
-        fence_->waitUntilSignaledValue(last_committed_fence_value_, 200);
+        // The buffer's last action (the fence signal) has run, so its status
+        // flips to Completed as soon as the completion handler fires; waiting
+        // for that cannot hang. (A timed sleep here cost ~1 ms per
+        // Synchronize and dominated sync-heavy programs.)
+        cb->waitUntilCompleted();
+        break;
       }
+      fence_->waitUntilSignaledValue(last_committed_fence_value_, 200);
     }
     if (cb->status() == MTL::CommandBufferStatusError && first_failure.ok()) {
       first_failure = absl::InternalError(

@@ -228,3 +228,30 @@ run from doing it again. Now:
   logs a warning at device creation too.
 - Still unavoidable: the first reset a non-terminating kernel causes. Metal
   has no per-kernel timeout shorter than the watchdog.
+
+### Measurements after the reboot (2026-09-26, healthy GPU)
+
+ICB spike re-run: direct encoding 0.11 us CPU / 0.80 us GPU per dependent
+tiny dispatch; ICB replay 0.003 us CPU / 1.2-1.4 us GPU. Same conclusion.
+
+The bounded-wait change from the morning had a bug: when the fence was
+already signaled but the command buffer's status was not yet Completed,
+Synchronize slept 1 ms per check. Every host sync (while-loop predicates,
+host FFI calls, device-to-host copies) paid it. Fixed (wait for completion
+once the fence is signaled, which cannot hang). tinygp parallel solver,
+value+grad, Metal vs CPU, ms:
+
+| n | before fix | after fix, cb off | after fix, cb on | CPU |
+|---|---|---|---|---|
+| 1000 | 252 | 38 | 35 | 4.6 |
+| 20000 | 423 | 122 | 106 | 74 |
+| 200000 | 742 | 238 | 231 | 668 |
+
+Command buffers on their own: chain of 256 tiny fusions 3.4 vs 3.9 us per
+kernel; a single-kernel call still costs ~170 us end to end; a 2000-step
+scan costs ~50 us per iteration either way (being profiled). Remaining
+tinygp gaps: predict on the parallel solver (27 s at n=200000) and the
+sequential solver (~1 ms per step) are dominated by something else; the
+parallel solver's value+grad still spends most of its time in ~200 command
+buffers per call, 60 of them host syncs from the host-side LAPACK FFI
+(getrf + two triangular solves per 4x4 batched solve) and small argsorts.
