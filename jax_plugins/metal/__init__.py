@@ -45,12 +45,14 @@ def initialize():
     # options. The BFC pool matters even with unified memory: a fresh
     # MTLBuffer costs ~60 us/MB of page faults on first touch, so per-call
     # allocation of outputs dominated memory-bound kernels. The pool grows on
-    # demand (no preallocation) up to memory_fraction of the working set.
+    # demand (no preallocation) up to memory_fraction of the process's budget,
+    # which the plugin derives from free system memory at startup (unified
+    # memory is shared with every other process on the machine).
     options = {
         "platform_name": "metal",
         "allocator": os.environ.get("JAX_METAL_ALLOCATOR", "bfc"),
         "preallocate": False,
-        "memory_fraction": float(os.environ.get("JAX_METAL_MEMORY_FRACTION", "0.7")),
+        "memory_fraction": float(os.environ.get("JAX_METAL_MEMORY_FRACTION", "0.6")),
         "visible_devices": [0],
     }
     xb.register_plugin("metal", priority=500, library_path=str(path), options=options)

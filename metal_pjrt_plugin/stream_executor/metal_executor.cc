@@ -168,7 +168,10 @@ absl::StatusOr<MemorySpace> MetalExecutor::GetPointerMemorySpace(
 }
 
 bool MetalExecutor::DeviceMemoryUsage(int64_t* free, int64_t* total) const {
-  int64_t t = static_cast<int64_t>(device_->info().recommended_working_set);
+  // XLA sizes its BFC pool as memory_fraction * total, so "total" is this
+  // process's budget (derived from free system memory at startup), not the
+  // whole GPU working set: on unified memory that is everyone's RAM.
+  int64_t t = static_cast<int64_t>(device_->memory_budget());
   int64_t used = static_cast<int64_t>(device_->allocated_bytes());
   *total = t;
   *free = t > used ? t - used : 0;

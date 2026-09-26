@@ -73,3 +73,33 @@ elementwise chain and transpose within 1.3x; cumsum 3x behind; bf16 GEMM
   once and the stream recovers (a stuck error state made whole test runs
   fail), and command buffers are committed after 2^29 dispatched threads so a
   batch of heavy kernels cannot approach the watchdog.
+
+## Memory and reset policy (2026-09-25, after the wedge)
+
+Root cause of the wedge was memory exhaustion, not a GPU fault: a jetsam
+event preceded the first watchdog timeout by 40 minutes, with ~100 MB free,
+2.6 GB wired, the browser holding ~5 GB and two JAX test processes each
+entitled to 70% of the GPU working set. On unified memory the GPU stalls on
+paged-out memory until the watchdog fires; killing workers with in-flight
+work then left them stuck inside the driver.
+
+Policy now:
+
+- **Budget from free memory.** At device creation the plugin computes a
+  per-process budget = min(recommended working set, reclaimable system
+  memory - 1 GB), never below 256 MB, and reports it to XLA as the device
+  total, so the BFC pool is sized as a fraction of that (default 0.6) rather
+  than of all RAM. A second process started later sees less.
+- **Allocation guard.** Any allocation of 1 MB or more is refused with
+  RESOURCE_EXHAUSTED if it would leave less than 512 MB reclaimable, so a
+  program fails cleanly instead of pushing the machine into swap.
+- **Watchdog resets are sticky.** A command buffer that fails with a timeout,
+  access-revoked or device-removed error marks the device lost for the
+  process; all further GPU work fails with FAILED_PRECONDITION telling the
+  user to restart. Fault errors (bad pointer, page fault) are reported once
+  to the waiting caller and the stream recovers.
+- **Smaller command buffers**: 32 dispatches or 2^27 dispatched threads.
+- **One GPU job at a time.** `scripts/device_lock.py` serializes test suites,
+  benchmarks and sweeps; `scripts/run_jax_tests.sh` runs JAX's tests in one
+  process with per-test in-process timeouts (pytest-timeout, thread method)
+  and never signal-kills workers.

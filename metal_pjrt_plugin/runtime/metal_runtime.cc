@@ -1,4 +1,5 @@
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt_plugin/runtime/system_memory.h"
 
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
@@ -130,7 +131,20 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
       static_cast<uint32_t>(d->maxThreadgroupMemoryLength());
   info.gpu_family = HighestAppleFamily(d);
   info.supports_metal4 = info.gpu_family >= 9;
-  info.simd_width = 32;  // All Apple GPUs; confirmed per-pipeline on creation.
+  info.simd_width = 32;
+  {
+    // Leave 1 GB for the OS and other processes; never budget less than
+    // 256 MB so a busy machine still gets a usable device.
+    const uint64_t kReserve = 1ull << 30, kMinBudget = 256ull << 20;
+    uint64_t reclaimable = ReclaimableMemoryBytes();
+    uint64_t budget = reclaimable > kReserve ? reclaimable - kReserve : 0;
+    budget = std::max(budget, kMinBudget);
+    budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
+    dev->memory_budget_ = budget;
+    LOG(INFO) << "Metal device " << ordinal << " (" << info.name
+              << "): memory budget " << (budget >> 20) << " MB of "
+              << (reclaimable >> 20) << " MB reclaimable system memory";
+  }  // All Apple GPUs; confirmed per-pipeline on creation.
   return dev;
 }
 
@@ -154,6 +168,23 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         "Metal allocation of %d bytes exceeds the device's maxBufferLength of "
         "%d bytes (device %d, %s)",
         requested, info_.max_buffer_length, ordinal_, info_.name));
+  }
+  // Refuse allocations that would push the system into swap: on unified
+  // memory a GPU touching paged-out memory stalls until the watchdog fires,
+  // and that is how the machine got wedged once. Keep a reserve for the OS.
+  if (size >= (1u << 20)) {
+    const uint64_t kReserve = 512ull << 20;
+    uint64_t reclaimable = ReclaimableMemoryBytes();
+    if (reclaimable < kReserve || size > reclaimable - kReserve) {
+      return absl::ResourceExhaustedError(absl::StrFormat(
+          "Metal allocation of %d bytes refused: only %d bytes of system "
+          "memory are reclaimable and %d bytes are reserved for the OS "
+          "(device %d, %d bytes already allocated by this process, budget %d "
+          "bytes). Reduce the working set or close other memory-heavy "
+          "processes.",
+          requested, reclaimable, kReserve, ordinal_, allocated_bytes(),
+          memory_budget_));
+    }
   }
   // Default (tracked) hazard mode: Metal orders dispatches touching the same
   // buffer for us. Untracked mode with manual barriers is a later optimization.
@@ -209,6 +240,21 @@ absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   return absl::InvalidArgumentError(absl::StrFormat(
       "pointer %p is not inside any allocation on Metal device %d", ptr,
       ordinal_));
+}
+
+absl::Status Device::lost_status() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return lost_;
+}
+
+void Device::MarkLost(const absl::Status& why) {
+  std::lock_guard<std::mutex> lock(mu_);
+  if (lost_.ok()) {
+    lost_ = absl::FailedPreconditionError(absl::StrCat(
+        "the Metal GPU was reset while this process had work in flight; no "
+        "further GPU work is accepted in this process (restart it). Cause: ",
+        why.message()));
+  }
 }
 
 uint64_t Device::allocated_bytes() const {
@@ -404,6 +450,7 @@ absl::Status Stream::CheckAsyncError() {
 
 absl::Status Stream::EnsureCommandBuffer() {
   if (cmd_ != nullptr) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(device_->lost_status());
   // Retained references: XLA frees device buffers as soon as the host no
   // longer needs them and relies on the driver to keep memory alive until
   // enqueued GPU work completes (as CUDA does). Metal only does that for
@@ -479,6 +526,14 @@ absl::Status Stream::Commit() {
             std::lock_guard<std::mutex> lock(err_mu_);
             if (async_error_.ok()) async_error_ = error;
           }
+          // Watchdog timeouts and revoked/removed devices mean the GPU was
+          // reset underneath us: stop submitting from this process.
+          const long code = cb->error() ? cb->error()->code() : 0;
+          if (code == MTL::CommandBufferErrorTimeout ||
+              code == MTL::CommandBufferErrorAccessRevoked ||
+              code == MTL::CommandBufferErrorDeviceRemoved) {
+            device_->MarkLost(error);
+          }
           if (fence->signaledValue() < v) fence->setSignaledValue(v);
           for (auto& sv : signals) {
             if (sv.first->signaledValue() < sv.second) {
@@ -540,6 +595,8 @@ absl::Status Stream::Synchronize() {
   // context error), so report the failure once, to the caller waiting on
   // this work, and let the stream recover for subsequent work.
   absl::Status error = async_error_;
+  absl::Status lost = device_->lost_status();
+  if (!lost.ok()) return lost;  // sticky: the GPU was reset
   async_error_ = absl::OkStatus();
   async_error_reported_ = false;
   return error;

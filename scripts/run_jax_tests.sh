@@ -1,0 +1,14 @@
+#!/bin/bash
+# Run files from JAX's own test suite on the Metal backend, safely:
+#  - one process, no xdist (concurrent GPU processes over-commit memory)
+#  - per-test timeout raised inside the process (never signal-kill a worker
+#    with GPU work in flight: that is how the driver got wedged)
+#  - device lock so benchmarks/sweeps cannot run at the same time
+# Usage: scripts/run_jax_tests.sh tests/lax_test.py [pytest args]
+set -uo pipefail
+cd "$(dirname "$0")/.."
+T=${JAX_TESTS_DIR:-$HOME/.cache/jax_metal/jax-tests}
+FILE=${1:?test file relative to the jax repo, e.g. tests/lax_test.py}; shift
+exec scripts/device_lock.py -- env JAX_PLATFORMS=metal,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
+  .venv/bin/python -m pytest "$T/$FILE" -p no:cacheprovider -n 0 \
+  --timeout=${PYTEST_TIMEOUT:-180} --timeout_method=thread -q -rfE --tb=line "$@"

@@ -36,7 +36,12 @@ brew install bazelisk
 scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/metal, pip install -e .
 JAX_PLATFORMS=metal python scripts/smoke_test.py
 bazel test --test_tag_filters=local //metal_pjrt_plugin/...   # device tests
+scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized and time-limited
+bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
 ```
+
+Run one GPU-heavy job at a time (the scripts take a device lock); see
+`docs/performance.md` for the memory policy and why.
 
 `scripts/build_spike.sh` is the staged overnight build of XLA's GPU stack used
 to establish that the dependency graph compiles here at all.

@@ -2,6 +2,8 @@
 # Runs every backend and writes bench/results/<label>.jsonl, then a table.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# Serialize against other GPU jobs (see scripts/device_lock.py).
+if [[ -z "${JAX_METAL_LOCKED:-}" ]]; then exec env JAX_METAL_LOCKED=1 scripts/device_lock.py -- "$0" "$@"; fi
 mkdir -p bench/results
 ONLY=${BENCH_ONLY:-}
 for label in metal cpu; do

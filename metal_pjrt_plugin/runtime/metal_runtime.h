@@ -151,6 +151,18 @@ class Device {
   Device& operator=(const Device&) = delete;
 
   const DeviceInfo& info() const { return info_; }
+
+  // Memory the allocator pool may grow to in this process. Computed at
+  // creation from what the system actually had free (minus a reserve for the
+  // OS and other processes), capped by the GPU's recommended working set.
+  uint64_t memory_budget() const { return memory_budget_; }
+
+  // Set when the GPU had to be reset (watchdog timeout, access revoked,
+  // device removed). Sticky for the process: continuing to submit work to a
+  // GPU that is being reset makes recovery less likely, and CUDA treats the
+  // equivalent as a fatal context error too.
+  absl::Status lost_status() const;
+  void MarkLost(const absl::Status& why);
   int ordinal() const { return ordinal_; }
   MTL::Device* mtl() const { return device_; }
 
@@ -182,6 +194,8 @@ class Device {
   // Keyed by start address; value is the buffer and its size.
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
   uint64_t allocated_bytes_ = 0;
+  uint64_t memory_budget_ = 0;
+  absl::Status lost_ = absl::OkStatus();
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
 };
@@ -265,12 +279,12 @@ class Stream {
 
   // Number of dispatches encoded into the current open command buffer before
   // it is automatically committed.
-  static constexpr int kMaxOpsPerCommandBuffer = 64;
+  static constexpr int kMaxOpsPerCommandBuffer = 32;
   // Also commit once this many threads have been dispatched into one command
   // buffer (roughly tens of milliseconds of GPU work), so a batch of heavy
   // kernels cannot approach the GPU watchdog timeout, especially under
   // contention from other processes.
-  static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 29;
+  static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 27;
 
  private:
   friend class Device;

@@ -1,6 +1,8 @@
 // Tests for the runtime layer on its own (no XLA). Needs a Metal device.
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt_plugin/runtime/system_memory.h"
 
+#include <algorithm>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -239,3 +241,25 @@ TEST_F(MetalRuntimeTest, ArgumentBufferLaunch) {
 }  // namespace
 }  // namespace rt
 }  // namespace metal_pjrt
+
+namespace metal_pjrt::rt {
+namespace {
+using ::absl_testing::StatusIs;
+
+TEST_F(MetalRuntimeTest, MemoryBudgetAndAllocationGuard) {
+  // The budget is derived from free system memory and capped by the working
+  // set; it must be usable but never the whole machine.
+  EXPECT_GE(dev_->memory_budget(), 256ull << 20);
+  EXPECT_LE(dev_->memory_budget(), dev_->info().recommended_working_set);
+  EXPECT_LE(dev_->memory_budget(), PhysicalMemoryBytes());
+  // Asking for more than the machine can hand out without swapping is
+  // refused cleanly (RESOURCE_EXHAUSTED), not attempted.
+  uint64_t too_much = std::min<uint64_t>(dev_->info().max_buffer_length,
+                                         PhysicalMemoryBytes());
+  EXPECT_THAT(dev_->Allocate(too_much),
+              StatusIs(absl::StatusCode::kResourceExhausted));
+  EXPECT_EQ(dev_->allocated_bytes(), 0);
+}
+
+}  // namespace
+}  // namespace metal_pjrt::rt

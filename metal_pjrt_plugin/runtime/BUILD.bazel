@@ -11,8 +11,12 @@ cc_library(
     srcs = [
         "metal_cpp_impl.cc",
         "metal_runtime.cc",
+        "system_memory.cc",
     ],
-    hdrs = ["metal_runtime.h"],
+    hdrs = [
+        "metal_runtime.h",
+        "system_memory.h",
+    ],
     linkopts = METAL_LINKOPTS,
     deps = [
         "@com_google_absl//absl/log",
