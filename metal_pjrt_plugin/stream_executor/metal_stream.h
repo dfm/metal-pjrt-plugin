@@ -26,10 +26,14 @@ class MetalExecutor;
 // A stream is one MTLCommandQueue (see runtime/metal_runtime.h for the
 // command-buffer batching policy).
 //
-// Error state: a failed GPU command buffer or a failed host callback (one
-// without an error_cb) puts the stream into the error state
-// (StreamCommon::CheckStatus, so ok() turns false) and BlockHostUntilDone
-// reports the failure from then on.
+// Errors: BlockHostUntilDone returns the status of the work it waited for
+// (a failed command buffer, or a failed dependency; see metal_runtime.h),
+// once; the stream then recovers, except after a lost device. A host
+// callback ordered after failed work does not run: its error_cb gets the
+// error instead (XLA marks the buffers' definition events failed with it).
+// A failed host callback without an error_cb puts the stream into the error
+// state (StreamCommon::CheckStatus, so ok() turns false) and
+// BlockHostUntilDone reports it from then on.
 class MetalStream : public StreamCommon {
  public:
   static absl::StatusOr<std::unique_ptr<MetalStream>> Create(
@@ -54,8 +58,9 @@ class MetalStream : public StreamCommon {
   absl::Status BlockHostUntilDone() override;
   absl::Status DoHostCallbackWithStatus(
       absl::AnyInvocable<absl::Status() &&> callback) override;
-  // With a non-null `error_cb`, a failing callback's status goes to error_cb
-  // instead of putting the stream into the error state.
+  // With a non-null `error_cb`, a failing callback's status (or the error of
+  // the work it is ordered after) goes to error_cb instead of putting the
+  // stream into the error state.
   absl::Status DoHostCallbackWithStatus(
       absl::AnyInvocable<absl::Status() &&> callback,
       absl::AnyInvocable<void(absl::Status) &&> error_cb) override;

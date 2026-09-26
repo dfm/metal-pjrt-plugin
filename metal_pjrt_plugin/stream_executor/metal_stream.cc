@@ -104,12 +104,10 @@ absl::Status MetalStream::Memset32(DeviceAddressBase* location,
 }
 
 absl::Status MetalStream::BlockHostUntilDone() {
-  absl::Status s = rt_stream_->Synchronize();
-  if (!s.ok()) {
-    // GPU failure; the runtime stream is sticky too, so this only records it.
-    SetError(s);
-    return s;
-  }
+  // As on CUDA, a GPU failure is returned, not recorded as the stream's
+  // error state: the runtime stream recovers after reporting it (XLA CHECKs
+  // ok() on pooled streams).
+  ABSL_RETURN_IF_ERROR(rt_stream_->Synchronize());
   absl::MutexLock lock(&error_mu_);
   return error_;
 }
@@ -129,17 +127,26 @@ absl::Status MetalStream::DoHostCallbackWithStatus(
   };
   auto shared = std::make_shared<Callbacks>(
       Callbacks{std::move(callback), std::move(error_cb)});
-  absl::Status enqueued = rt_stream_->HostCallback([this, shared]() {
-    absl::Status s = std::move(shared->callback)();
-    if (s.ok()) return;
-    if (shared->error_cb) {
+  // The runtime passes an error (the callback's, or that of the work it is
+  // ordered after, in which case the callback does not run) to on_error.
+  std::function<void(absl::Status)> on_error;
+  if (shared->error_cb) {
+    on_error = [shared](absl::Status s) {
       std::move(shared->error_cb)(std::move(s));
-      return;
-    }
-    SetError(absl::Status(
-        s.code(), absl::StrFormat("Metal host callback failed on device %d: %s",
-                                  executor_->device_ordinal(), s.message())));
-  });
+    };
+  }
+  absl::Status enqueued = rt_stream_->HostCallback(
+      [this, shared]() {
+        absl::Status s = std::move(shared->callback)();
+        if (!s.ok() && !shared->error_cb) {
+          SetError(absl::Status(
+              s.code(),
+              absl::StrFormat("Metal host callback failed on device %d: %s",
+                              executor_->device_ordinal(), s.message())));
+        }
+        return s;
+      },
+      std::move(on_error));
   if (!enqueued.ok() && shared->error_cb) {
     std::move(shared->error_cb)(enqueued);
   }

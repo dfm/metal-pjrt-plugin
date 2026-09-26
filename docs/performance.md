@@ -355,6 +355,45 @@ C's host task). `RecordEvent` publishes the event's value only after its
 buffer is committed, so no one can wait on a value whose signaling buffer
 is still held behind a host task.
 
+## GPU errors through events (2026-09-26, night)
+
+A failed command buffer used to force-signal its events and report OK to
+every waiter but its own stream's Synchronize, so PJRT consumed a faulted
+kernel's output as valid. Now every value signaled on a stream fence or an
+Event has a status (`rt::Device` value table; `metal_runtime.h` has the
+rules): a buffer or host task fails if it failed itself, if a value it waited
+for failed, or if the previous value on its stream failed. Host waits and
+host tasks see that status; a host task ordered after failed work does not
+run and hands the error to its `error_cb`, which is how XLA marks result
+buffers' definition events failed, so `block_until_ready`, `np.asarray` and
+dependent computations raise (`INTERNAL: Metal command buffer failed ...
+[executable_name=...]`). `MetalEvent::PollForStatus` returns kError.
+
+- Sticky for the device: watchdog timeouts, revoked/removed devices (as
+  before) and page faults. Everything else (out of memory, invalid resource,
+  ...) fails only the buffer and what depends on it, and a Synchronize
+  (`BlockHostUntilDone`) reports it once, after which the stream recovers.
+  Caveat: dependence on the same stream is by stream order, so later work on
+  that stream keeps failing until a Synchronize on it (PJRT rarely
+  synchronizes the compute stream, so in practice a failed execution also
+  fails later executions on that device until then). Cutting the chain
+  earlier would need data-flow tracking; CUDA makes such errors fatal for the
+  whole context.
+- `BlockHostUntilDone` no longer puts the StreamExecutor stream into its
+  error state on a GPU failure (as on CUDA; XLA CHECKs `ok()` on pooled
+  streams); a failing host callback without `error_cb` still does.
+- Cost: host queries of a value wait for its completion handler, which cost
+  ~5-10 us per round trip (jit(x*2+1) median 166-171 -> 172-176 us). A fast
+  path skips the wait while no failure was ever recorded on the device
+  (sound because a failing root settles its values before they are signaled);
+  with it the numbers match the baseline (166-169 us; two-kernel 146-149 us).
+- Tests: runtime tests inject failures (`FailNextCommandBufferForTesting`,
+  no real GPU fault); `metal_executor_test` checks error_cb, events and
+  BlockHostUntilDone; `scripts/gpu_error_check.py` runs a JAX program with
+  `METAL_PJRT_FAIL_COMMAND_BUFFER=n` (testing only: the n-th committed
+  command buffer counts as failed) for n = 1..8 and checks that every step
+  either returns correct values or raises, and that each failure surfaces.
+
 ## Persistent compilation cache (2026-09-26, night)
 
 JAX's persistent compilation cache now works for "metal" (how:

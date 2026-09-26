@@ -16,9 +16,12 @@ class MetalEvent : public Event {
       : event_(std::move(event)) {}
   ~MetalEvent() override = default;
 
+  // kError when the work that should have signaled the event failed (a GPU
+  // error or a failed dependency); Synchronize returns that error.
   Event::Status PollForStatus() override {
-    return event_->IsComplete() ? Event::Status::kComplete
-                                : Event::Status::kPending;
+    absl::StatusOr<bool> done = event_->Poll();
+    if (!done.ok()) return Event::Status::kError;
+    return *done ? Event::Status::kComplete : Event::Status::kPending;
   }
 
   absl::Status Synchronize() override { return event_->WaitOnHost(); }

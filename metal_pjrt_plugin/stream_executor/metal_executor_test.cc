@@ -12,6 +12,7 @@
 #include "absl/status/statusor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
+#include "metal_pjrt_plugin/stream_executor/metal_stream.h"
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/kernel.h"
 #include "xla/stream_executor/kernel_args.h"
@@ -150,6 +151,47 @@ TEST(MetalExecutorTest, HostCallbackErrorPoisonsStream) {
   EXPECT_THAT(s.message(), ::testing::HasSubstr("boom"));
   EXPECT_FALSE(stream->ok());
   EXPECT_EQ(stream->BlockHostUntilDone().code(), absl::StatusCode::kDataLoss);
+}
+
+// A GPU failure reaches the host callbacks ordered after it (their error_cb;
+// XLA marks buffer definition events failed this way), events recorded after
+// it and BlockHostUntilDone, once; the stream stays usable.
+TEST(MetalExecutorTest, GpuErrorReachesCallbacksAndEvents) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+  TF_ASSERT_OK_AND_ASSIGN(auto stream, executor->CreateStream());
+  TF_ASSERT_OK_AND_ASSIGN(auto event, executor->CreateEvent());
+  DeviceAddressBase mem = executor->Allocate(4096, 0);
+  ASSERT_FALSE(mem.is_null());
+  static_cast<MetalStream*>(stream.get())
+      ->rt_stream()
+      ->FailNextCommandBufferForTesting(absl::InternalError("injected"));
+  TF_ASSERT_OK(stream->Memset32(&mem, 0x3f800000u, 4096));
+  TF_ASSERT_OK(stream->RecordEvent(event.get()));
+  bool ran = false;
+  absl::Status seen;
+  TF_ASSERT_OK(stream->DoHostCallbackWithStatus(
+      [&ran] {
+        ran = true;
+        return absl::OkStatus();
+      },
+      [&seen](absl::Status s) { seen = std::move(s); }));
+  absl::Status s = stream->BlockHostUntilDone();
+  EXPECT_EQ(s.code(), absl::StatusCode::kInternal);
+  EXPECT_THAT(s.message(), ::testing::HasSubstr("injected"));
+  EXPECT_FALSE(ran);
+  EXPECT_EQ(seen.code(), absl::StatusCode::kInternal);
+  EXPECT_EQ(event->PollForStatus(), Event::Status::kError);
+  EXPECT_EQ(event->Synchronize().code(), absl::StatusCode::kInternal);
+  EXPECT_TRUE(stream->ok());
+  TF_EXPECT_OK(stream->BlockHostUntilDone());
+  TF_ASSERT_OK(stream->Memset32(&mem, 0, 4096));
+  TF_ASSERT_OK(stream->RecordEvent(event.get()));
+  TF_EXPECT_OK(stream->BlockHostUntilDone());
+  EXPECT_EQ(event->PollForStatus(), Event::Status::kComplete);
+  executor->Deallocate(&mem);
 }
 
 TEST(MetalExecutorTest, AllocationFailureReturnsNull) {

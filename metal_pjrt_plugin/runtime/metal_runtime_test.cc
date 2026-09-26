@@ -25,6 +25,7 @@ namespace rt {
 namespace {
 
 using ::absl_testing::IsOk;
+using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 
@@ -135,7 +136,10 @@ TEST_F(MetalRuntimeTest, LaunchCopyAndEvents) {
 
   // Host callback ordering + Memset32.
   int calls = 0;
-  ASSERT_THAT(s->HostCallback([&calls]() { ++calls; }), IsOk());
+  ASSERT_THAT(s->HostCallback([&calls]() {
+    ++calls;
+    return absl::OkStatus();
+  }), IsOk());
   ASSERT_THAT(s->Memset32(z, 0x3f800000u, n * 4), IsOk());  // 1.0f pattern
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_EQ(calls, 1);
@@ -267,6 +271,7 @@ TEST_F(MetalRuntimeTest, DeferredWaits) {
   ASSERT_THAT(s->HostCallback([&]() {
     static_cast<float*>(y)[0] = 1000.0f;
     ran = 1;
+    return absl::OkStatus();
   }), IsOk());
   ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, groups), IsOk());  // y[0] = 1001
   ASSERT_THAT(s->Synchronize(), IsOk());
@@ -292,6 +297,7 @@ TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
   ASSERT_THAT(s->HostCallback([y]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     static_cast<float*>(y)[0] = 100.0f;
+    return absl::OkStatus();
   }), IsOk());
   // Encoded behind the task; its commit waits for the task on the host.
   ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
@@ -326,6 +332,7 @@ TEST_F(MetalRuntimeTest, WaitForStreamCoversHostTasks) {
       for (uint32_t i = 0; i < n; ++i) {
         static_cast<float*>(y)[i] = 5.0f + round;
       }
+      return absl::OkStatus();
     }), IsOk());
     ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
     ASSERT_THAT(Axpy(b.get(), x, y, n, 1.0f, n / 256), IsOk());  // y += 1
@@ -363,6 +370,7 @@ TEST_F(MetalRuntimeTest, WaitForStreamIncludesTheOtherStreamsWaits) {
       for (uint32_t i = 0; i < n; ++i) {
         static_cast<float*>(y)[i] = 100.0f * round;
       }
+      return absl::OkStatus();
     }), IsOk());
     ASSERT_THAT(a->WaitForStream(c.get()), IsOk());
     ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
@@ -402,6 +410,7 @@ TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
     // The event recorded after this task is not published until its buffer
     // is committed, so waiting for it returns at once.
     event_status = e->WaitOnHost();
+    return absl::OkStatus();
   }), IsOk());
   ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
   go = true;
@@ -414,6 +423,124 @@ TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
   // The work refused inside the task is committed later from outside it.
   EXPECT_THAT(b->Synchronize(), IsOk());
   EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A failed command buffer's error reaches everything that depends on it:
+// its events, work on other streams that waited for them, later work on its
+// own stream, and host tasks (which then do not run). Each Synchronize
+// reports it once; the streams recover afterwards.
+TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  std::unique_ptr<Stream> s3 = NewStream();
+  auto new_event = [&]() {
+    absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
+    EXPECT_THAT(e, IsOk());
+    return *std::move(e);
+  };
+  std::unique_ptr<Event> e1 = new_event(), e2 = new_event(), e3 = new_event();
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+
+  s->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(s->RecordEvent(e1.get()), IsOk());  // the failing buffer
+  EXPECT_THAT(e1->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
+                                         HasSubstr("injected fault")));
+  EXPECT_FALSE(e1->Poll().ok());
+  // Later work on the same stream (its own buffer succeeds).
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(s->RecordEvent(e3.get()), IsOk());
+  EXPECT_THAT(e3->WaitOnHost(), StatusIs(absl::StatusCode::kInternal));
+  // Another stream waiting for the event, and a third waiting for that one.
+  ASSERT_THAT(s2->WaitForEvent(e1.get()), IsOk());
+  ASSERT_THAT(Axpy(s2.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(s2->RecordEvent(e2.get()), IsOk());
+  EXPECT_THAT(e2->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
+                                         HasSubstr("injected fault")));
+  ASSERT_THAT(s3->WaitForStream(s2.get()), IsOk());
+  // A host task ordered after the failure does not run; on_error gets it.
+  bool ran = false;
+  absl::Status task_error;
+  ASSERT_THAT(s3->HostCallback(
+                  [&]() {
+                    ran = true;
+                    return absl::OkStatus();
+                  },
+                  [&](absl::Status st) { task_error = st; }),
+              IsOk());
+  EXPECT_THAT(s3->Synchronize(), StatusIs(absl::StatusCode::kInternal));
+  EXPECT_FALSE(ran);
+  EXPECT_THAT(task_error, StatusIs(absl::StatusCode::kInternal,
+                                   HasSubstr("injected fault")));
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kInternal));
+  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kInternal));
+
+  // Reported once; the streams and the device recover.
+  EXPECT_THAT(dev_->lost_status(), IsOk());
+  for (Stream* st : {s.get(), s2.get(), s3.get()}) {
+    EXPECT_THAT(st->Synchronize(), IsOk());
+    ASSERT_THAT(Axpy(st, x, y, n, 1.0f, n / 256), IsOk());
+    ASSERT_THAT(st->RecordEvent(e1.get()), IsOk());
+    EXPECT_THAT(e1->WaitOnHost(), IsOk());
+    EXPECT_THAT(e1->Poll(), IsOkAndHolds(true));
+    EXPECT_THAT(st->Synchronize(), IsOk());
+  }
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A failing host task poisons the work ordered after it.
+TEST_F(MetalRuntimeTest, HostTaskErrorsPropagate) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
+  ASSERT_THAT(e, IsOk());
+  // Handled by on_error: nothing downstream fails.
+  absl::Status seen;
+  ASSERT_THAT(s->HostCallback([]() { return absl::DataLossError("handled"); },
+                              [&](absl::Status st) { seen = st; }),
+              IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(seen, StatusIs(absl::StatusCode::kDataLoss));
+  // Unhandled: the work ordered after it fails.
+  ASSERT_THAT(s->HostCallback([]() { return absl::DataLossError("task"); }),
+              IsOk());
+  ASSERT_THAT(s->Memset32(x, 0, n * 4), IsOk());
+  ASSERT_THAT(s->RecordEvent(e->get()), IsOk());
+  EXPECT_THAT((*e)->WaitOnHost(), StatusIs(absl::StatusCode::kDataLoss,
+                                           HasSubstr("task")));
+  ASSERT_THAT(s2->WaitForStream(s.get()), IsOk());
+  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kDataLoss));
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kDataLoss));
+  EXPECT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+}
+
+// Page faults (like watchdog resets) are sticky for the device.
+TEST_F(MetalRuntimeTest, PageFaultIsStickyForTheDevice) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  s->FailNextCommandBufferForTesting(absl::InternalError("injected fault"),
+                                     /*page_fault=*/true);
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition,
+                                         HasSubstr("page fault")));
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition));
+  // Unrelated streams refuse new work too.
+  EXPECT_THAT(Axpy(s2.get(), x, y, n, 1.0f, n / 256),
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition));
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }

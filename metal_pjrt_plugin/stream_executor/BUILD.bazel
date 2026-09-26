@@ -87,6 +87,7 @@ cc_test(
     srcs = ["metal_executor_test.cc"],
     tags = ["local", "manual"],  # needs a Metal device
     deps = [
+        ":metal_executor",
         ":metal_platform",
         ":metal_platform_id",
         "@com_google_absl//absl/status",

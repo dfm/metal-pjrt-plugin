@@ -20,8 +20,19 @@
 //   InvalidArgumentError    caller mistake (unknown pointer, bad size/args)
 //   UnimplementedError      known gap (e.g. more than 31 buffer arguments
 //                           for a kernel without an argument buffer)
-//   FailedPreconditionError the stream is in the error state after an earlier
-//                           GPU failure
+//   FailedPreconditionError the device is unusable after a GPU reset or page
+//                           fault (sticky), or a host task waited for itself
+//
+// GPU errors travel with the work that depends on them. Every value signaled
+// on a stream fence or an Event gets a status: that of the command buffer or
+// host task signaling it, which is its own error, else the first error among
+// the values it waited on, else the status of the previous value on its
+// stream. Host waits (Event::WaitOnHost, Stream::Synchronize) and host tasks
+// return / receive that status, so the output of a failed kernel is never
+// consumed as valid. A Synchronize that reports an error lets the stream
+// recover: later work no longer inherits it. Watchdog timeouts, revoked or
+// removed devices and page faults are sticky for the device instead (as a
+// CUDA illegal-address error is for the context).
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
@@ -35,6 +46,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -178,11 +190,11 @@ class Device {
   uint64_t memory_budget() const { return memory_budget_; }
 
   // Set when the GPU had to be reset (watchdog timeout, access revoked,
-  // device removed). Sticky for the process: continuing to submit work to a
-  // GPU that is being reset makes recovery less likely, and CUDA treats the
-  // equivalent as a fatal context error too.
+  // device removed) or a kernel hit a page fault. Sticky for the process:
+  // continuing to submit work to a GPU that is being reset makes recovery
+  // less likely, and CUDA treats the equivalent as a fatal context error too.
   absl::Status lost_status() const;
-  void MarkLost(const absl::Status& why);
+  void MarkLost(const absl::Status& why, bool reset = true);
   int ordinal() const { return ordinal_; }
   MTL::Device* mtl() const { return device_; }
 
@@ -274,6 +286,29 @@ class Device {
   int resets_since_boot_ = 0;
   std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
   friend class Stream;
+  friend class Event;
+  // Status of values signaled on shared events (stream fences and Events),
+  // see the file comment. A value is pending from submission until the
+  // command buffer's completion handler (or the host task) has settled its
+  // status; failed values are kept until the event is destroyed.
+  void BeginValue(const MTL::SharedEvent* ev, uint64_t v);
+  void EndValue(const MTL::SharedEvent* ev, uint64_t v,
+                const absl::Status& status);
+  // Blocks until `v` is settled (bounded: gives up once the device is lost).
+  absl::Status ValueStatus(const MTL::SharedEvent* ev, uint64_t v);
+  // Non-blocking: false while `v` is pending, else sets *status.
+  bool TryValueStatus(const MTL::SharedEvent* ev, uint64_t v,
+                      absl::Status* status);
+  void ForgetValues(const MTL::SharedEvent* ev);
+  struct ValueRecord {
+    std::set<uint64_t> pending;
+    std::map<uint64_t, absl::Status> failed;
+  };
+  std::mutex values_mu_;
+  std::condition_variable values_cv_;
+  std::unordered_map<const MTL::SharedEvent*, ValueRecord> values_;
+  // Failures ever recorded (TryValueStatus's fast path).
+  std::atomic<uint64_t> failures_{0};
   std::atomic<uint64_t> host_task_holds_{0};
   std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
 };
@@ -285,8 +320,12 @@ class Event {
   ~Event();
   Event(const Event&) = delete;
   Event& operator=(const Event&) = delete;
-  // True once the last recorded value has been signaled.
+  // True once the last recorded value has been signaled (whatever its
+  // status).
   bool IsComplete() const;
+  // Non-blocking: false while pending, true once complete and OK, or the
+  // error of the work that should have signaled it.
+  absl::StatusOr<bool> Poll();
   // Block the host until complete. Safe from host tasks: a value is
   // published only once its signaling buffer is committed, and committed
   // buffers never wait for unfinished host tasks.
@@ -352,7 +391,14 @@ class Stream {
   // for its own stream: Synchronize, Event::WaitOnHost and commits that would
   // wait for the running task (or later work on its stream) return
   // FailedPreconditionError instead of deadlocking.
-  absl::Status HostCallback(std::function<void()> fn);
+  //
+  // If the work the task is ordered after failed, `fn` does not run; the
+  // task takes that error, passes it to `on_error` (if given) and on to work
+  // waiting for the task. If `fn` itself fails, its error goes to `on_error`
+  // when given (handled there), else on to work waiting for the task.
+  absl::Status HostCallback(
+      std::function<absl::Status()> fn,
+      std::function<void(absl::Status)> on_error = nullptr);
 
   absl::Status RecordEvent(Event* event);
   absl::Status WaitForEvent(Event* event);
@@ -360,11 +406,17 @@ class Stream {
   // including its host tasks and the waits it has not encoded yet.
   absl::Status WaitForStream(Stream* other);
 
-  // Commit any open work and block until the stream is idle. Returns the GPU
-  // error (InternalError) the first time a failure is observed and
-  // FailedPreconditionError on every later call: the stream stays in the error
-  // state and also refuses new work.
+  // Commit any open work and block until the stream is idle. Returns the
+  // status of everything enqueued (see the file comment): a GPU or host-task
+  // error is reported once, after which the stream recovers; a lost device
+  // is reported on every call.
   absl::Status Synchronize();
+
+  // Testing only: the next committed command buffer is treated as failed
+  // with `error` (it still runs; only its status fails). With `page_fault`
+  // the failure is sticky for the device, as a real page fault is.
+  void FailNextCommandBufferForTesting(absl::Status error,
+                                       bool page_fault = false);
   // Commit any open work without waiting.
   absl::Status Flush();
 
@@ -455,13 +507,17 @@ class Stream {
   // State shared with completion handlers, which may run after the stream is
   // gone (~Stream abandons in-flight buffers once the device is lost).
   struct CompletionState {
-    // First GPU failure (set by a failed command buffer's completion handler
-    // or by Synchronize).
-    std::mutex mu;
-    absl::Status error;
     // Committed command buffers whose completion handler has not run yet.
     std::atomic<int> pending{0};
   };
+  // The value whose status the next value on this stream inherits (the last
+  // one issued); 0 at creation and after Synchronize reported an error.
+  uint64_t status_predecessor_ = 0;
+  // Values up to here had their error reported by Synchronize.
+  uint64_t reported_through_ = 0;
+  // FailNextCommandBufferForTesting.
+  absl::Status inject_error_;
+  bool inject_page_fault_ = false;
   const std::shared_ptr<CompletionState> completion_ =
       std::make_shared<CompletionState>();
   // ResolveCached state (guarded by mu_).
@@ -519,15 +575,14 @@ class Stream {
   // last committed command buffer waited on.
   std::string DebugState();
  private:
-  // FailedPreconditionError if the stream is in the error state.
-  absl::Status CheckAsyncError();
-
   // Host work ordered on the stream: each task waits for the fence to reach
   // wait_value, runs, then signals signal_value so later GPU work proceeds.
   struct HostTask {
     uint64_t wait_value;
-    std::function<void()> fn;
+    std::function<absl::Status()> fn;
+    std::function<void(absl::Status)> on_error;
     uint64_t signal_value;
+    uint64_t status_predecessor;
     // Cross-stream waits that were pending when the task was enqueued: the
     // task also waits for these (retained events).
     std::vector<std::pair<MTL::SharedEvent*, uint64_t>> extra_waits;
