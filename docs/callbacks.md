@@ -1,24 +1,67 @@
 # Host callbacks on metal (`io_callback`, `pure_callback`, `jax.debug.*`)
 
-Status: **not supported.** `io_callback`, `pure_callback`, `jax.debug.print`,
-`jax.debug.callback`, and checkify's runtime-error path all fail at lowering
-with
+Status: **supported** under `jit` on a single metal device:
+`jax.pure_callback` (including `vmap_method=...` and custom_jvp wrappers),
+`jax.experimental.io_callback` (ordered and unordered), `jax.debug.callback`
+and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
+exception in the callback surfaces as a `JaxRuntimeError` carrying its
+message. Tests: `scripts/callback_check.py` (compares against cpu),
+`scripts/lax_coverage.py` (three callback cases), and tinygp's quasiseparable
+solver (`jax.debug.callback(_check_sorted, ...)`) in `scripts/tinygp_check.py`.
+checkify's runtime-error path still uses the TPU rule (`debug_check` is a
+no-op; see `jax_plugins/metal/lowerings.py`).
 
-    ValueError: `EmitPythonCallback` not supported on metal backend.
+## How the metal path works
 
-(`debug_print`/`debug_callback` lowering rules are registered for metal in
-`jax_plugins/metal/lowerings.py` so they produce this same error rather than
-"MLIR translation rule ... not found". `checkify.check` uses the TPU rule:
-`debug_check` is a no-op, functionalized `checkify.checkify` works, and
-unfunctionalized checks raise the usual functionalization error.)
+jaxlib forwards an executable's host callbacks to the FFI handler only for the
+cpu/cuda/rocm/oneapi platform ids (details below), and `emit_python_callback`
+rejects "metal", so the plugin uses a self-managed table ("option A" below):
 
-There is no honest pure-Python workaround: every path needs the compiled
-program to stop, hand buffers to Python, and resume. Treating `debug.print` as
-a no-op would silently drop output, so we don't. The rest of this note is what
-real support requires. References are to JAX 0.11.2 (`.venv/.../jax/_src`), the
-XLA checkout the plugin builds against (`external/xla+`), and a jaxlib source
-checkout (`~/src/jax-ml/jax`, Oct 2025 -- structure unchanged, re-verify
-details against the 0.11.2 tag).
+* **Lowering** (`jax_plugins/metal/callbacks.py`, installed by
+  `jax_plugins.metal.initialize`): `jax._src.callback.emit_python_callback`
+  is wrapped; for modules lowered only for "metal" it wraps the callable with
+  upstream's output shape/dtype checks, registers it in a process-global
+  table under a fresh 64-bit `callback_id` (random per-process salt in the
+  high bits), and emits a typed-FFI (api_version 4) custom call
+  `xla_ffi_python_metal_callback` with attribute `callback_id: u64`,
+  `has_side_effect` as upstream, and a leading `!stablehlo.token`
+  operand/result for ordered effects (same threading as the cpu/gpu path).
+  All lowering rules (callback.py, debugging.py, checkify.py) look the name
+  up on the module at call time, so nothing else is patched for lowering.
+* **Lifetime**: the wrapped callable is also added to
+  `module_context.host_callbacks`, so the compiled executable owns it (jaxlib
+  wraps it in a `PyFfiLoadedHostCallback` that is never invoked on metal;
+  it also makes JAX run the executable with runtime tokens, like cpu). The
+  table holds a weak reference, removed when the executable dies.
+* **Handler** (`metal_pjrt_plugin/ffi/python_callback_ffi.cc`, registered
+  statically for "METAL"): binds `Ctx<Stream>`, `Attr<u64>("callback_id")`,
+  remaining args/rets; calls `rt::Stream::Synchronize()` so all earlier GPU
+  work is done, then calls a C trampoline with (pointer, PrimitiveType,
+  dims) descriptors for the non-token args and results. Buffers are
+  shared-storage MTLBuffers whose device pointers are host addresses, so no
+  staging copies are needed. A nonzero return plus message becomes an
+  `InternalError`.
+* **Trampoline**: the dylib exports
+  `metal_pjrt_register_python_callback_trampoline(fn)`; Python loads the
+  already-loaded dylib with `ctypes.CDLL` (same handle) and installs a
+  `CFUNCTYPE` function. ctypes takes the GIL on the XLA thread. It copies the
+  args into numpy arrays (callees may keep them; XLA reuses the buffers),
+  calls the callable, writes the results in place (row-major, the custom
+  call's default layout), and turns any exception into the error message.
+* **Persistent compilation cache**: callback ids are per-process, so
+  `compiler.compile_or_get_cached` is wrapped to compile executables whose
+  `host_callbacks` contain a metal callback without the persistent cache
+  (upstream cpu/gpu can cache because ids are positions re-bound on load).
+  If a stale executable were loaded anyway, the handler fails with "unknown
+  metal host callback id" rather than calling the wrong function.
+
+Limitations: single device only (no per-shard/partitioned semantics beyond
+one device); sub-byte dtypes (int4 etc.) and complex types the backend lacks
+are rejected; the callback runs on an XLA execution thread while the stream
+is drained -- dispatching new metal work from inside a callback and waiting
+on it is untested and may deadlock; each callback costs a full stream
+synchronization (a GPU pipeline bubble), so callbacks in hot loops are slow;
+executables with callbacks are recompiled in every process.
 
 ## How it works on cpu / cuda today
 
@@ -100,13 +143,18 @@ details against the 0.11.2 tag).
    executor platform name (`kMetalPlatformId->ToName()`), so these must
    match.
 
-## What the metal plugin would need
+## Design options that were considered
 
 Because of the `platform_id` gate in step 3 (compiled into jaxlib; can't be
 changed from the plugin), we cannot rely on `FfiLoadedHostCallbacks` user
 data. Two options:
 
-### Option A (works with stock jaxlib): self-managed callback table
+### Option A (implemented, works with stock jaxlib): self-managed callback table
+
+(As built, see above: the handler is registered statically in the plugin
+dylib and Python reaches it through an exported C function and a ctypes
+trampoline, so no nanobind extension or `register_custom_call_handler` is
+needed; the persistent cache is bypassed rather than salted.)
 
 * **C++ (new nanobind extension shipped in `jax_plugins/metal`, e.g.
   `metal_plugin_extension.so`)**:
@@ -175,7 +223,7 @@ data. Two options:
     (e.g. salt the module with a random attribute). The simplest correct
     choice is the latter.
 
-### Option B (upstream change): make metal a first-class callback platform
+### Option B (upstream change, would restore persistent caching): make metal a first-class callback platform
 
 * jaxlib: add `MetalId()` to the `platform_id` gate in
   `PjRtLoadedExecutable::Execute` (or better, gate on "client exposes the

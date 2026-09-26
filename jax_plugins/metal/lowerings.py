@@ -22,10 +22,8 @@ Registered for platform "metal":
   and the usual "functionalize with checkify" error otherwise (the runtime
   error path needs host callbacks).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
-  goes through ``emit_python_callback``, which currently rejects "metal", so
-  these now fail with the same explicit "`EmitPythonCallback` not supported
-  on metal backend" error as ``io_callback``/``pure_callback`` rather than a
-  missing-rule error. See docs/callbacks.md for what real support needs.
+  goes through ``emit_python_callback``, which jax_plugins/metal/callbacks.py
+  redirects to the metal host-callback custom call. See docs/callbacks.md.
 
 Primitives that already lower via generic rules and need nothing here:
 cholesky (CholeskyExpander), triangular_solve, lu (``_lu_python``),
