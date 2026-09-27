@@ -241,8 +241,8 @@ const PrimitiveType kValueTypes[] = {xla::PRIMITIVE_TYPE_INVALID, xla::U8,
 // Rows around the one-threadgroup limit (2048) and the tile boundaries.
 TEST_F(CubSortTest, Sweep) {
   const std::pair<int64_t, int64_t> shapes[] = {
-      {1, 1}, {1, 17}, {3, 17}, {1, 2048}, {2, 2049},
-      {1, 4095}, {3, 4097}, {5, 100}};
+      {1, 1}, {1, 17}, {3, 17}, {1, 2047}, {1, 2048}, {2, 2049},
+      {1, 4095}, {2, 4096}, {3, 4097}, {5, 100}};
   for (PrimitiveType kt : kKeyTypes) {
     for (PrimitiveType vt : kValueTypes) {
       for (bool desc : {false, true}) {
