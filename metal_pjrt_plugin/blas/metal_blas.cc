@@ -427,11 +427,11 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
   // Steel applies the epilogue in its store (bias index = column of the
   // row-major view of D, i.e. the stored minor dimension).
-  if (mps::UseSteelGemm(p, /*has_epilogue=*/true)) {
+  if (mps::UseSteelGemm(p)) {
     return std::make_unique<MatmulPlan>(device_, p, swap, epi);
   }
 
-  // MPS (large f32, METAL_PJRT_GEMM=mps): a second kernel over the row-major
+  // MPS (f32, METAL_PJRT_GEMM=mps): a second kernel over the row-major
   // view of D: the bias index is the column, aux shares D's layout.
   if (m > UINT32_MAX || n > UINT32_MAX || batch > 65535) {
     return absl::UnimplementedError(absl::StrCat(

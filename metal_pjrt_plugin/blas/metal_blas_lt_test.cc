@@ -1,8 +1,8 @@
 // BlasLt epilogues (bias / ReLU / GELU / SiLU, with and without aux output)
 // through the Metal StreamExecutor, against a host reference. Needs a Metal
-// device. By default every epilogue runs fused in steel (f32 included); the
-// metal_blas_lt_mps_test target runs this file with METAL_PJRT_GEMM=mps
-// (MPS GEMM + the second-pass epilogue kernel).
+// device. By default f16/bf16 epilogues run fused in steel and f32 ones on
+// MPS + the second-pass epilogue kernel; the metal_blas_lt_mps_test target
+// runs this file with METAL_PJRT_GEMM=mps (MPS + second pass throughout).
 #include <cmath>
 #include <cstdint>
 #include <cstring>

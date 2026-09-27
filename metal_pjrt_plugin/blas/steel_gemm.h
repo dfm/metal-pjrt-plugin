@@ -8,11 +8,10 @@
 // like any other kernel. C is read from (and written to) params.c in place
 // when beta != 0; with beta == 0 it is never read.
 //
-// Backend policy (UseSteelGemm): f16/bf16 inputs go to steel, and so do f32
-// GEMMs with a BlasLt epilogue (applied in steel's store, SteelEpilogue) up
-// to batch*m*n*k = 2^33; other f32 GEMMs go to MPS (plus a second pass for
-// an epilogue, metal_blas.cc). METAL_PJRT_GEMM=mps|steel forces one
-// backend for every supported case (A/B testing).
+// Backend policy (UseSteelGemm): f16/bf16 inputs go to steel (a BlasLt
+// epilogue is applied in its store, SteelEpilogue); f32 goes to MPS (plus a
+// second pass for an epilogue, metal_blas.cc). METAL_PJRT_GEMM=mps|steel
+// forces one backend for every supported case (A/B testing).
 // METAL_PJRT_STEEL_TILE=bm,bn,bk,wm,wn overrides the tile config.
 #ifndef METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
 #define METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
@@ -47,9 +46,9 @@ SteelTile ChooseSteelTile(const GemmParams& p);
 // receives the reason when not.
 bool SteelGemmSupports(const GemmParams& p, std::string* why = nullptr);
 
-// Policy: whether the BLAS dispatcher should use steel for `p` (dtype and
-// epilogue policy plus METAL_PJRT_GEMM, and SteelGemmSupports).
-bool UseSteelGemm(const GemmParams& p, bool has_epilogue = false);
+// Policy: whether the BLAS dispatcher should use steel for `p` (dtype
+// policy plus METAL_PJRT_GEMM, and SteelGemmSupports).
+bool UseSteelGemm(const GemmParams& p);
 
 // Encodes the GEMM onto `stream`. `tile` null means ChooseSteelTile(p);
 // `epi` null means none. InvalidArgumentError for bad shapes/strides or

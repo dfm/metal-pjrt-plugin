@@ -581,9 +581,15 @@ Nothing to parallelize.
 BlasLt epilogues (bias, ReLU, GELU, SiLU, aux) are applied in steel's
 `store_result` instead of a second kernel over D: v = alpha AB + beta C +
 bias[col], aux = v, D = act(v), in f32 with one rounding. GEMMs with an
-epilogue go to steel for f16/bf16 (as before) and now for f32 up to
-batch*m*n*k = 2^33; larger f32 ones and `METAL_PJRT_GEMM=mps` keep MPS + the
-second pass. f32 without an epilogue stays on MPS.
+epilogue go to steel for f16/bf16 (as before); f32 ones and
+`METAL_PJRT_GEMM=mps` keep MPS + the second pass.
+
+f32 routing, removed (2026-09-27): 7704d02 also sent f32 GEMMs with an
+epilogue to steel up to batch*m*n*k = 2^33. It was a third GEMM path and a
+size threshold tuned on one M3 for 0-7% on mid shapes, with the nanoGPT
+train step unchanged (180-182 ms either way), so it was dropped in the
+simplification pass; f32 is MPS + second pass again (bitwise identical
+results, see below). The f32 rows below are the measurements behind that.
 
 A/B, same machine, 2-3 interleaved rounds, 30 calls each, p10 / median /
 p90 ms, "before" = MPS + second pass for f32, steel + second pass for bf16:
@@ -607,8 +613,8 @@ p90 ms, "before" = MPS + second pass for f32, steel + second pass for bf16:
 | nanoGPT train step, median | 180.4-185.6 | 180.3-181.9 |
 
 steel's f32 GEMM is 2-15% slower than MPS's from batch*m*n*k ~ 1.7e10 up,
-more than the second pass saves, hence the 2^33 threshold; with it those
-shapes measure as before (4096x1024x4096 13.43 vs 13.43, 8192x4096x1024
+more than the second pass saves, hence the (now removed) 2^33 threshold;
+with it those shapes measured as before (4096x1024x4096 13.43 vs 13.43, 8192x4096x1024
 24.50 vs 24.46). At 2^33 the shape decides (2048x1024x4096 3-5% faster,
 8192x1024x1024 ~1.5% slower). In the MLP fwd+bwd only the forward GEMMs have
 an epilogue; the ~1% there is within its round-to-round spread.

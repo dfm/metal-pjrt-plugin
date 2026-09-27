@@ -196,19 +196,10 @@ bool SteelGemmSupports(const GemmParams& p, std::string* why) {
   return true;
 }
 
-bool UseSteelGemm(const GemmParams& p, bool has_epilogue) {
+bool UseSteelGemm(const GemmParams& p) {
   const Forced f = ForcedBackend();
   if (f == Forced::kMps) return false;
-  if (f != Forced::kSteel && p.a.dtype == MpsDType::kF32) {
-    // f32 goes to steel only to fuse an epilogue, and only up to
-    // batch*m*n*k = 2^33: beyond that MPS's f32 GEMM is 2-15% faster, which
-    // outweighs the second pass over D (docs/performance.md).
-    const double work = static_cast<double>(std::max<int64_t>(
-                            p.batch_count, 1)) *
-                        static_cast<double>(p.m) * static_cast<double>(p.n) *
-                        static_cast<double>(p.k);
-    if (!has_epilogue || work > 8589934592.0) return false;
-  }
+  if (f != Forced::kSteel && p.a.dtype == MpsDType::kF32) return false;
   return SteelGemmSupports(p);
 }
 

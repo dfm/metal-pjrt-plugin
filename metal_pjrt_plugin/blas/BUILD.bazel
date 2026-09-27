@@ -89,7 +89,8 @@ cc_test(
 )
 
 # BlasLt epilogues through the Metal StreamExecutor; needs a Metal device.
-# Fused in steel by default; the _mps variant forces MPS + second pass.
+# f16/bf16 fused in steel by default; the _mps variant forces MPS + second
+# pass.
 METAL_BLAS_LT_TEST_DEPS = [
     "//metal_pjrt_plugin/stream_executor:metal_platform",
     "@com_google_absl//absl/status",

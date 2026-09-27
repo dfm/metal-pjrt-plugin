@@ -15,10 +15,9 @@
 // Supported: f32, f16, bf16 inputs; output of the same type, or f32 for
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
 // (including stride-0 broadcast); every BlasLt epilogue (bias, ReLU, GELU,
-// SiLU, with or without aux output). GEMMs with an epilogue run on steel,
-// which applies it in its store (f32 up to a size threshold, see
-// UseSteelGemm); large f32 ones and METAL_PJRT_GEMM=mps run on MPS plus a
-// small MSL kernel over D afterwards.
+// SiLU, with or without aux output). f16/bf16 GEMMs with an epilogue run on
+// steel, which applies it in its store; f32 ones (and METAL_PJRT_GEMM=mps)
+// run on MPS plus a small MSL kernel over D afterwards.
 // Complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
 #ifndef METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 #define METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_

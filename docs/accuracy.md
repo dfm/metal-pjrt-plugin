@@ -145,8 +145,8 @@ bf16 (0.5) are unchanged; f16 log_softmax 1.0 vs 0.55.
 ## GEMM epilogue fused into steel (2026-09-27)
 
 Bias / activation now run in steel's store with one rounding
-(docs/performance.md, "GEMM epilogue inside steel"). f32 results are bitwise
-identical to MPS + the old second pass; f16/bf16 epilogue GEMMs lose the
-intermediate rounding of D (normwise ulps e.g. f16 bias 0.74 -> 0.50,
-bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm "+bias relu" 0.61-0.93 ->
-0.34-0.50).
+(docs/performance.md, "GEMM epilogue inside steel"). f32 epilogue GEMMs stay
+on MPS + the second pass (fused steel gave bitwise identical results);
+f16/bf16 epilogue GEMMs lose the intermediate rounding of D (normwise ulps
+e.g. f16 bias 0.74 -> 0.50, bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm
+"+bias relu" 0.61-0.93 -> 0.34-0.50).
