@@ -709,3 +709,68 @@ never drain (fixed in 9545c5b; nanoGPT reached 5.5 GB and then
 RESOURCE_EXHAUSTED before). A loop over the other Metal paths (blit copy,
 LAPACK, small-n GPU cholesky, steel, scan, sort, host callbacks, small H2D;
 200 calls each with caching off) shows no growth.
+
+## Host LAPACK as a stream host task: decided against (2026-09-27, roadmap 3.1)
+
+The host LAPACK handlers (n > 32, `linalg/lapack_ffi.cc`) synchronize the
+stream and run on the thunk thread. Tried: validate on the thunk thread, then
+enqueue the LAPACK work with `rt::Stream::HostCallback` (pointers and sizes
+captured by value, workspace in `std::vector` inside the task, info > 0 ->
+NaN, so no data can fail the task and set the sticky error). It worked (the
+tests below pass with it) but is not faster, so it was not kept.
+
+Interleaved, 16 rounds, fresh process per arm and round, per-call wall time
+in us pooled over rounds (p10 / median / p90); CPU is `JAX_PLATFORMS=cpu`:
+
+| program | CPU | sync (kept) | host task |
+|---|---|---|---|
+| cholesky 128 | 26 / 28 / 29 | 270 / 313 / 680 | 246 / 299 / 681 |
+| solve 128x16 | 50 / 56 / 58 | 314 / 348 / 362 | 314 / 354 / 384 |
+| qr 128 | 150 / 151 / 156 | 527 / 544 / 594 | 523 / 571 / 614 |
+| 100x cho_solve 64 (no block between) | 456 / 460 / 478 | 1663 / 2086 / 2213 | 1818 / 2345 / 2490 |
+| pure_callback 1K (unchanged path) | | 179 / 196 / 218 | 178 / 196 / 231 |
+
+6 more rounds: time until `jit(cholesky)(x)` returns (not blocking) 135 /
+173 / 361 sync vs 169 / 179 / 370 host task; 20 unblocked steps of
+{cholesky + l @ l.T, independent 1024^2 matmul} 24.6 / 24.8 / 25.3 ms vs
+23.0 / 23.4 / 26.0.
+
+Why it cannot approach "CPU + one dispatch":
+
+- The programs put GPU work on both sides of the LAPACK call.
+  `jnp.linalg.cholesky` is transpose fusion (symmetrize) -> `metal$cholesky`
+  -> select fusion (mask), two command buffers (METAL_PJRT_TRACE). The
+  LAPACK work needs the first buffer's result and the second needs LAPACK's,
+  so every call pays two dependent GPU round trips (~130 us each on this M3)
+  whether the thunk thread waits or a worker thread does.
+- The thunk thread does not get free either: under the hold rule (never
+  commit a buffer that waits on an unsignaled host task), the executable's
+  final commit (its RecordEvent) host-waits for the task, so `f(x)` returns
+  no earlier. Removing that wait needs the deferred held-buffer commit queue
+  that the design postponed, and would still leave the two round trips.
+- A chain of LAPACK-only programs (cho_solve: two triangular solves and no
+  GPU kernel) never waited for the GPU before (synchronizing an idle stream
+  is cheap). As host tasks it pays a worker wakeup and a CPU-signaled fence
+  per call: +12% at the median and p90.
+
+What would reach the target instead is not running the small fusions
+around the call on the GPU (or folding them into the handler). That is a
+separate item, not scheduled.
+
+Python host callbacks stay synchronous too (coordinator decision, not
+measured): with the hold rule a commit host-waits for unfinished host tasks
+on the calling thread. If that thread held the GIL (jaxlib paths we cannot
+audit; the py_client sources are not in the pinned checkout), a callback
+task that needs the GIL would deadlock for good, in a process with GPU work
+in flight that cannot be killed safely. Making them asynchronous needs the
+same deferred held-buffer commit path, just for Python tasks.
+
+Tests added (they exercise the synchronous path and passed with the host
+task too): `test_host_lapack_in_order` (cholesky, triangular solve and LU at
+n = 33, 100, 500, 2000 with GPU work before and after, vs float64
+numpy/scipy) and `test_lapack_failures_are_values` (non-PD cholesky, a
+singular solve, eigh/svd of a NaN matrix give NaN as on CPU, a singular LU
+stays finite, a malformed `metal$cholesky` call raises INVALID_ARGUMENT, and
+an unrelated jit still works after each). Both failed under mutations of
+the host-task version (task run without waiting; info > 0 made an error,
+which set the sticky error and killed the child).

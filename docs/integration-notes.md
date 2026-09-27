@@ -195,7 +195,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   gesdd_novec}` (targets of `jax_plugins/openmetal/linalg_lowerings.py`,
   column-major operands via layout constraints). Each handler calls
   `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
-  the shared-storage buffers (zero copy), synchronously on the thunk thread.
+  the shared-storage buffers (zero copy), synchronously on the thunk thread
+  (a stream host task was measured and not faster: docs/performance.md).
   f32 only. `METAL_PJRT_DISABLE_LAPACK=1` is the one switch for both
   (checked per compile by the pass and per lowering by the Python rules) and
   falls back to XLA's expanders / JAX's generic lowerings. Ownership table:

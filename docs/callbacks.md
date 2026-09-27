@@ -61,7 +61,10 @@ are rejected; the callback runs on an XLA execution thread while the stream
 is drained -- dispatching new metal work from inside a callback and waiting
 on it is untested and may deadlock; each callback costs a full stream
 synchronization (a GPU pipeline bubble), so callbacks in hot loops are slow;
-executables with callbacks are recompiled in every process.
+executables with callbacks are recompiled in every process. The
+synchronization is deliberate: callbacks stay off the stream's host-task
+worker so that no stream commit can end up waiting for a task that needs the
+GIL (docs/performance.md, "Host LAPACK as a stream host task").
 
 ## How it works on cpu / cuda today
 

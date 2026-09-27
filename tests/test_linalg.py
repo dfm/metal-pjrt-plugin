@@ -238,3 +238,91 @@ def test_disable_lapack(monkeypatch):
   assert called() == set()
   monkeypatch.delenv("METAL_PJRT_DISABLE_LAPACK")
   assert called() == targets
+
+
+# Host LAPACK (n > 32, lapack_ffi.cc) between GPU work in one program: the
+# GPU work before it and after it must see it in order, at sizes from just
+# above the GPU small-matrix path to large.
+@pytest.mark.parametrize("n", [33, 100, 500, 2000])
+def test_host_lapack_in_order(n):
+  import scipy.linalg
+  a = mat(n, n)
+  eye = np.eye(n, dtype=np.float32)
+  b = mat(n, 3)
+
+  @jax.jit
+  def f(a, b):
+    k = a @ a.T / n + eye  # GPU before
+    l = jnp.linalg.cholesky(k)
+    x = jax.scipy.linalg.solve_triangular(l, b, lower=True)
+    lu, piv = jax.scipy.linalg.lu_factor(k + a)
+    return l * 2.0, x + 1.0, lu - 1.0, piv  # GPU after
+
+  l, x, lu, piv = (np.asarray(t, np.float64) for t in f(a, b))
+  a64 = a.astype(np.float64)
+  k = a64 @ a64.T / n + np.eye(n)
+  l_ref = np.linalg.cholesky(k)
+  x_ref = scipy.linalg.solve_triangular(l_ref, b, lower=True)
+  lu_ref, piv_ref = scipy.linalg.lu_factor(k + a64)
+  err = lambda got, want: np.abs(got - want).max() / np.abs(want).max()
+  assert err(l / 2, l_ref) < 1e-4
+  assert err(x - 1, x_ref) < 1e-4
+  if np.array_equal(piv, piv_ref):  # same pivots: same factors
+    assert err(lu + 1, lu_ref) < 1e-3
+  pa = k + a64  # row swaps applied in order (0-based pivots) give P A = L U
+  for i, j in enumerate(piv.astype(int)):
+    pa[[i, j]] = pa[[j, i]]
+  lo = np.tril(lu + 1, -1) + np.eye(n)
+  assert err(lo @ np.triu(lu + 1), pa) < 1e-4
+
+
+# Data-dependent LAPACK outcomes are values (NaN, as on JAX's CPU backend),
+# never errors, and leave the device usable (were LAPACK ever moved into a
+# stream host task, a failing task would set the device's sticky error and
+# break every later computation in the process). A malformed call fails only
+# that call. Fresh process, so a regression cannot poison the rest of the
+# suite.
+FAILURE_CHILD = r"""
+import numpy as np, jax, jax.numpy as jnp
+f = jax.jit(lambda x: jnp.sin(x) * 2.0)
+x = np.arange(64, dtype=np.float32)
+def healthy():
+  return np.allclose(np.asarray(f(x)), np.sin(x.astype(np.float64)) * 2, atol=1e-5)
+def run(name, fn):
+  try:
+    out = [np.asarray(t) for t in jax.tree.leaves(fn())]
+    res = "nan" if any(np.isnan(t).any() for t in out) else "finite"
+  except Exception as e:
+    res = "raised " + str(e).splitlines()[0][:100]
+  print(f"{name}: {res} healthy={healthy()}")
+n = 64
+a = np.random.default_rng(0).standard_normal((n, n)).astype(np.float32)
+sing = a.copy(); sing[:, 3] = 0
+nanm = a @ a.T; nanm[5, 7] = nanm[7, 5] = np.nan
+run("cholesky not PD", lambda: jnp.linalg.cholesky(-np.eye(n, dtype=np.float32)))
+run("solve singular", lambda: jnp.linalg.solve(sing, a[:, :2]))
+run("lu singular", lambda: jax.scipy.linalg.lu_factor(sing))
+run("eigh nan", lambda: jnp.linalg.eigh(nanm))
+run("svd nan", lambda: jnp.linalg.svd(nanm))
+run("svd novec nan", lambda: jnp.linalg.svd(nanm, compute_uv=False))
+run("bad call", lambda: jax.ffi.ffi_call(
+    "metal$cholesky", jax.ShapeDtypeStruct((40, 48), jnp.float32))(
+        np.ones((40, 48), np.float32), lower=True))
+"""
+
+
+def test_lapack_failures_are_values():
+  import os, subprocess, sys
+  env = dict(os.environ, JAX_PLATFORMS="openmetal")
+  # No timeout: never kill a process with GPU work in flight.
+  out = subprocess.run([sys.executable, "-c", FAILURE_CHILD], env=env,
+                       capture_output=True, text=True)
+  got = dict(l.split(": ", 1) for l in out.stdout.splitlines() if ": " in l)
+  assert out.returncode == 0 and len(got) == 7, (out.returncode, got, out.stderr[-2000:])
+  assert all(v.endswith("healthy=True") for v in got.values()), got
+  expect = {"cholesky not PD": "nan", "solve singular": "nan",
+            "lu singular": "finite", "eigh nan": "nan", "svd nan": "nan",
+            "svd novec nan": "nan"}
+  for k, v in expect.items():
+    assert got[k].startswith(v + " "), (k, got[k])
+  assert got["bad call"].startswith("raised INVALID_ARGUMENT"), got["bad call"]

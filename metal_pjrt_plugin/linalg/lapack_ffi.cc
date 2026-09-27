@@ -101,6 +101,9 @@ constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 // Waits for all work enqueued on the stream so far. The FFI handler runs on
 // the host thread that enqueues the executable's thunks, so after this the
 // buffers hold their final values and nothing on the GPU is using them.
+// Running the LAPACK work as a stream host task instead (HostCallback) was
+// measured and not faster (docs/performance.md, "Host LAPACK as a stream
+// host task").
 absl::Status SyncStream(stream_executor::Stream* stream) {
   absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();
