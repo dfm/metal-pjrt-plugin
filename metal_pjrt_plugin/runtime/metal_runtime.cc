@@ -97,6 +97,11 @@ int HighestAppleFamily(MTL::Device* d) {
 // failed (work committed after a reset may never run, and an unbounded wait
 // leaves the process unable to exit, which is how the driver got wedged
 // once).
+// The error check is load-bearing, not an optimization to drop: after a
+// failure, fences and events are force-signaled from the host, and an
+// earlier buffer still in flight can then signal a LOWER value on the GPU
+// (MTLSharedEvent signals are not monotonic), so a satisfied value may move
+// backwards and a waiter must end on the error instead.
 absl::Status WaitForValueOnHost(Device* device, MTL::SharedEvent* ev,
                                 uint64_t v) {
   while (!ev->waitUntilSignaledValue(v, /*milliseconds=*/200)) {
@@ -1250,6 +1255,8 @@ absl::Status Stream::Commit() {
     // The error is sticky and the GPU may have been reset: drop the buffer
     // instead of committing it, and end it as a failed buffer's handler
     // does, so waiters on its values wake up (and then see the error).
+    // An earlier buffer still in flight may later signal the fence to a
+    // lower value (see WaitForValueOnHost: host waits check the error).
     EndEncoder();
     const uint64_t v = ++fence_value_;
     last_committed_fence_value_ = v;
