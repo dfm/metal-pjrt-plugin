@@ -1,5 +1,5 @@
-// BLAS support for the Metal StreamExecutor, backed by Metal Performance
-// Shaders (see mps_gemm.h).
+// BLAS support for the Metal StreamExecutor: f32 GEMMs on Metal Performance
+// Shaders (mps_gemm.h), f16/bf16 on the steel kernels (steel_gemm.h).
 //
 // GEMMs reach it through gpu::BlasLt (CublasLtMatmulThunk,
 // "__cublas$lt$matmul"): GemmRewriter routes *every* GEMM there when the
@@ -10,9 +10,10 @@
 // Supported: f32, f16, bf16 inputs; output of the same type, or f32 for
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
 // (including stride-0 broadcast); every BlasLt epilogue (bias, ReLU, GELU,
-// SiLU, with or without aux output). f16/bf16 GEMMs with an epilogue run on
-// steel, which applies it in its store; f32 ones (and METAL_PJRT_GEMM=mps)
-// run on MPS plus a small MSL kernel over D afterwards.
+// SiLU, with or without aux output). Steel applies an epilogue in its store;
+// f32 GEMMs run on MPS plus a small MSL kernel over D afterwards. f16/bf16
+// shapes steel cannot run (32-bit index limits) are refused at compile
+// time (CheckBlasLtShape).
 // Complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
 #ifndef METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 #define METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
@@ -51,7 +52,7 @@ class MetalBlasLt : public gpu::BlasLt {
     // bind from MemoryArgs with a/b swapped when `swap_operands`. A
     // non-trivial `epilogue` runs in steel's store when `epilogue_kernel`
     // is null, else `epilogue_kernel` applies it to D after an MPS GEMM
-    // (METAL_PJRT_GEMM=mps); see metal_blas.cc.
+    // (f32); see metal_blas.cc.
     MatmulPlan(metal_pjrt::rt::Device* device,
                metal_pjrt::blas::GemmParams params, bool swap_operands,
                EpilogueSpec epilogue = {},

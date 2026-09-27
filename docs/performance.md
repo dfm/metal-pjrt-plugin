@@ -589,8 +589,10 @@ Nothing to parallelize.
 BlasLt epilogues (bias, ReLU, GELU, SiLU, aux) are applied in steel's
 `store_result` instead of a second kernel over D: v = alpha AB + beta C +
 bias[col], aux = v, D = act(v), in f32 with one rounding. GEMMs with an
-epilogue go to steel for f16/bf16 (as before); f32 ones and
-`METAL_PJRT_GEMM=mps` keep MPS + the second pass.
+epilogue go to steel for f16/bf16 (as before); f32 ones keep MPS + the
+second pass. (Since 2026-09-27 f16/bf16 GEMMs run only on steel:
+`METAL_PJRT_GEMM` and MPS's bf16 staging are gone, and shapes past steel's
+32-bit index limits are refused at compile time.)
 
 f32 routing, removed (2026-09-27): 7704d02 also sent f32 GEMMs with an
 epilogue to steel up to batch*m*n*k = 2^33. It was a third GEMM path and a

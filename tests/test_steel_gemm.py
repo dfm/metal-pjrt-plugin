@@ -79,3 +79,18 @@ def test_unsupported_gemm_fails_at_compile_time():
     f = jax.jit(lambda a, b: jax.lax.dot(a, b, preferred_element_type=jnp.int32))
     with pytest.raises(Exception, match=r"S8 x S8 -> S32 .*dot_general.* at .*test_steel_gemm.py:\d+"):
         f.lower(x, x.T).compile()
+
+
+@pytest.mark.parametrize("dt", ["bfloat16", "float16"])
+def test_gemm_past_steel_limits_fails_at_compile_time(dt):
+    """f16/bf16 GEMMs run only on steel, whose index math is 32-bit: a row
+    of more than INT32_MAX / 256 elements is refused when compiling (nothing
+    is allocated), naming the limit and the op, and the device stays usable."""
+    k = (1 << 23) + 16
+    f = jax.jit(lambda a, b: jnp.matmul(a, b, preferred_element_type=jnp.float32))
+    a = jax.ShapeDtypeStruct((2, k), jnp.dtype(dt))
+    b = jax.ShapeDtypeStruct((k, 2), jnp.dtype(dt))
+    with pytest.raises(Exception, match=r"steel kernels.*leading dimension.* exceeds 8388607 .*dot_general.* at .*test_steel_gemm.py:\d+"):
+        f.lower(a, b).compile()
+    x = jnp.ones((64, 64), dt)
+    np.testing.assert_array_equal(np.asarray(f(x, x)), 64.0)

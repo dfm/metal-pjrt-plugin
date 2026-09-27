@@ -86,13 +86,10 @@ absl::Status Encode(rt::Device* device, Stream* stream,
         "Metal BLAS: stream has no Metal handle (not a Metal stream?)");
   }
   VLOG(3) << "Metal BLAS: " << mps::GemmParamsDebugString(params);
-  // --- steel GEMM dispatch (steel_gemm.h) ---
-  // f16/bf16 inputs run on native MSL kernels (MPS has no bf16 and would stage
-  // through f32); METAL_PJRT_GEMM=mps|steel forces one backend.
-  if (mps::UseSteelGemm(params)) {
+  // f16/bf16 run on the steel kernels (steel_gemm.h), f32 on MPS.
+  if (params.a.dtype != mps::MpsDType::kF32) {
     return mps::RunSteelGemm(device, rs, params);
   }
-  // --- end steel GEMM dispatch ---
   return rs->EncodeExternal([&](void* cmd) {
     return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
   });
@@ -110,33 +107,8 @@ struct EpilogueParams {
 
 constexpr char kEpilogueKernelName[] = "xla_metal_gemm_epilogue";
 
-std::string EpilogueSource(mps::MpsDType t, const EpilogueSpec& e) {
-  std::string storage, load, store;
-  switch (t) {
-    case mps::MpsDType::kF32:
-      storage = "float";
-      load = "inline float ld_(float v) { return v; }\n";
-      store = "inline float st_(float v) { return v; }\n";
-      break;
-    case mps::MpsDType::kF16:
-      storage = "half";
-      load = "inline float ld_(half v) { return float(v); }\n";
-      store = "inline half st_(float v) { return half(v); }\n";
-      break;
-    case mps::MpsDType::kBF16:
-      // Raw bits; round to nearest even, NaN stays (quiet) NaN.
-      storage = "ushort";
-      load =
-          "inline float ld_(ushort v) {\n"
-          "  return as_type<float>(uint(v) << 16);\n}\n";
-      store =
-          "inline ushort st_(float v) {\n"
-          "  uint u = as_type<uint>(v);\n"
-          "  if (isnan(v)) return ushort((u >> 16) | 0x40u);\n"
-          "  u += 0x7fffu + ((u >> 16) & 1u);\n"
-          "  return ushort(u >> 16);\n}\n";
-      break;
-  }
+// The f32 epilogue kernel run after an MPS GEMM.
+std::string EpilogueSource(const EpilogueSpec& e) {
   std::string act;
   switch (e.act) {
     case Activation::kNone:
@@ -157,22 +129,22 @@ std::string EpilogueSource(mps::MpsDType t, const EpilogueSpec& e) {
       break;
   }
   return absl::StrCat(
-      "#include <metal_stdlib>\nusing namespace metal;\n", load, store,
+      "#include <metal_stdlib>\nusing namespace metal;\n",
       "inline float act_(float x) {\n", act, "}\n",
       "struct EpiParams { uint m; uint n; ulong ld; ulong batch_stride; };\n",
       "kernel void ", kEpilogueKernelName, "(\n",
-      "    device ", storage, "* d [[buffer(0)]],\n",
-      "    device const ", storage, "* bias [[buffer(1)]],\n",
-      "    device ", storage, "* aux [[buffer(2)]],\n",
+      "    device float* d [[buffer(0)]],\n",
+      "    device const float* bias [[buffer(1)]],\n",
+      "    device float* aux [[buffer(2)]],\n",
       "    constant EpiParams& p [[buffer(3)]],\n",
       "    uint3 gid [[thread_position_in_grid]]) {\n",
       "  if (gid.x >= p.n || gid.y >= p.m) return;\n",
       "  ulong i = ulong(gid.z) * p.batch_stride + ulong(gid.y) * p.ld + "
       "gid.x;\n",
-      "  float x = ld_(d[i]);\n",
-      e.bias ? "  x += ld_(bias[gid.x]);\n" : "",
-      e.aux ? "  aux[i] = st_(x);\n" : "",
-      "  d[i] = st_(act_(x));\n}\n");
+      "  float x = d[i];\n",
+      e.bias ? "  x += bias[gid.x];\n" : "",
+      e.aux ? "  aux[i] = x;\n" : "",
+      "  d[i] = act_(x);\n}\n");
 }
 
 }  // namespace
@@ -323,21 +295,31 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   p.a = operand(lhs, ta);
   p.b = operand(rhs, tb);
   p.c = operand(out, tout);  // row-major after the swap above
-  if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
-  // Steel applies the epilogue in its store (bias index = column of the
-  // row-major view of D, i.e. the stored minor dimension).
-  if (mps::UseSteelGemm(p)) {
+  if (ta != mps::MpsDType::kF32) {
+    // f16/bf16 run only on steel. CheckPostGemmRewriter refuses the shapes
+    // it cannot run at compile time (CheckBlasLtShape), so this is a
+    // backstop.
+    std::string why;
+    if (!mps::SteelGemmSupports(p, &why)) {
+      return absl::InvalidArgumentError(
+          absl::StrCat("Metal BlasLt: the steel GEMM cannot run this ",
+                       mps::MpsDTypeName(ta), " GEMM (", why,
+                       "): ", mps::GemmParamsDebugString(p)));
+    }
+    // Steel applies any epilogue in its store (bias index = column of the
+    // row-major view of D, i.e. the stored minor dimension).
     return std::make_unique<MatmulPlan>(device_, p, swap, epi);
   }
+  if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
 
-  // MPS (f32, METAL_PJRT_GEMM=mps): a second kernel over the row-major
-  // view of D: the bias index is the column, aux shares D's layout.
+  // MPS (f32): a second kernel over the row-major view of D: the bias index
+  // is the column, aux shares D's layout.
   if (m > UINT32_MAX || n > UINT32_MAX || batch > 65535) {
     return absl::UnimplementedError(absl::StrCat(
         "Metal BlasLt: epilogue on a ", batch, "x", m, "x", n, " output"));
   }
   ABSL_ASSIGN_OR_RETURN(MTL::Library * lib,
-                        device_->CompileLibrary(EpilogueSource(tout, epi)));
+                        device_->CompileLibrary(EpilogueSource(epi)));
   ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> kernel,
                         device_->CreateKernel(lib, kEpilogueKernelName));
   return std::make_unique<MatmulPlan>(

@@ -1,8 +1,7 @@
 // BlasLt epilogues (bias / ReLU / GELU / SiLU, with and without aux output)
 // through the Metal StreamExecutor, against a host reference. Needs a Metal
-// device. By default f16/bf16 epilogues run fused in steel and f32 ones on
-// MPS + the second-pass epilogue kernel; the metal_blas_lt_mps_test target
-// runs this file with METAL_PJRT_GEMM=mps (MPS + second pass throughout).
+// device. f16/bf16 epilogues run fused in steel, f32 ones on MPS + the
+// second-pass epilogue kernel.
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -200,6 +199,40 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
   }
   for (DeviceAddressBase* mem : {&da, &db, &dbias, &dd, &daux}) {
     executor->Deallocate(mem);
+  }
+}
+
+// f16/bf16 GEMMs run only on steel: a shape past its 32-bit index limits
+// is refused when the plan is created (before any buffer or GPU work; the
+// compiler refuses it earlier still, CheckBlasLtShape), and f32 is not
+// limited.
+TEST(MetalBlasLtTest, SteelOnlyShapeLimit) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+  gpu::BlasLt* lt = executor->AsBlas()->GetBlasLt();
+  ASSERT_NE(lt, nullptr);
+  const int64_t k = (int64_t{1} << 23) + 16;  // lda > INT32_MAX / 256
+  for (xla::PrimitiveType t : {xla::BF16, xla::F16, xla::F32}) {
+    const gpu::MatrixLayout out(t, 2, 2, Order::kRowMajor);
+    gpu::GemmConfig cfg{gpu::MatrixLayout(t, 2, k, Order::kRowMajor),
+                        gpu::MatrixLayout(t, k, 2, Order::kRowMajor), out,
+                        out};
+    cfg.alpha = 1.0;
+    cfg.beta = 0.0;
+    cfg.compute_precision = 0;
+    cfg.precision_algorithm = xla::PrecisionConfig::ALG_UNSET;
+    cfg.grad_x = cfg.grad_y = false;
+    auto plan = lt->GetMatmulPlan(cfg, Epilogue::kDefault);
+    if (t == xla::F32) {
+      EXPECT_TRUE(plan.ok()) << plan.status();
+    } else {
+      EXPECT_EQ(plan.status().code(), absl::StatusCode::kInvalidArgument);
+      EXPECT_NE(plan.status().message().find("leading dimension too large"),
+                std::string::npos)
+          << plan.status();
+    }
   }
 }
 

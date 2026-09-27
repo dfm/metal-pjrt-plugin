@@ -33,12 +33,12 @@ struct MpsOperand {
 //
 //   C[b] (m x n) = alpha * op(A[b]) * op(B[b]) + beta * C[b]
 //
-// where op(A) is m x k and op(B) is k x n. bf16 operands are staged through
-// f32 temporaries (MPSMatrixMultiplication asserts on bf16), as are operands
-// whose buffer is too short for MPS's whole-matrix validation (last row
-// padding missing when ld > cols); batch_stride 0 broadcasts an operand. A stored matrix is (m x k) when
-// !a.transpose and (k x m) when a.transpose (likewise for B). C is never
-// transposed and its dtype may differ from A/B (f16/bf16 in, f32 out).
+// where op(A) is m x k and op(B) is k x n, all f32 (f16/bf16 GEMMs run on
+// steel, steel_gemm.h; MpsDType is shared with it). Operands whose buffer is
+// too short for MPS's whole-matrix validation (last row padding missing when
+// ld > cols) are staged through f32 temporaries; batch_stride 0 broadcasts an
+// operand. A stored matrix is (m x k) when !a.transpose and (k x m) when
+// a.transpose (likewise for B). C is never transposed.
 struct GemmParams {
   int64_t m = 0, n = 0, k = 0;
   int64_t batch_count = 1;
@@ -50,7 +50,7 @@ struct GemmParams {
 // committed, no encoder open). `mtl_device` may be null, in which case the
 // command buffer's device is used. Errors: InvalidArgumentError for invalid
 // shapes, strides, offsets or null buffers; UnimplementedError for unsupported
-// cases (k == 0, dtype combinations, devices without MPS); InternalError when a
+// cases (k == 0, non-f32 dtypes, devices without MPS); InternalError when a
 // Metal/MPS object cannot be created; ResourceExhaustedError when a staging
 // buffer cannot be allocated. Staging work may already be encoded when an error
 // is returned; everything it references is kept alive.

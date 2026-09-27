@@ -119,6 +119,7 @@ cc_library(
         "@xla//xla/service/gpu:backend_configs_cc",
         "@xla//xla/service/gpu:cublas_cudnn",
         "@xla//xla/service/gpu:matmul_utils",
+        "@xla//xla/stream_executor:device_description",
         "@xla//xla/tsl/platform:statusor",
     ],
 )

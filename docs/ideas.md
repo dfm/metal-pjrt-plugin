@@ -65,7 +65,7 @@ Touches the emitter, so this is the follow-up once the library path exists.
 
 Once there are two or more implementations per op (MPS matrix kernels, steel,
 MPSGraph), wire XLA's existing GEMM / conv autotuner in front of them so the
-per-shape choice stops being the `METAL_PJRT_GEMM` environment variable.
+per-shape choice is measured (today: f32 on MPS, f16/bf16 on steel, fixed).
 
 ## float64 by double-float emulation (2026-09-25)
 

@@ -20,6 +20,7 @@
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
+#include "xla/stream_executor/device_description.h"
 #include "absl/types/span.h"
 #include "xla/tsl/platform/statusor.h"
 #include "xla/xla_data.pb.h"
@@ -65,6 +66,12 @@ absl::Status CheckGemm(const HloInstruction& instr) {
         gpublas_lt::AsBlasLtEpilogue(config.gemm_backend_config().epilogue());
     s = e.ok() ? stream_executor::metal::DecodeEpilogue(*e).status()
                : e.status();
+  }
+  if (s.ok()) {
+    // A config XLA itself cannot build fails at thunk emission anyway.
+    absl::StatusOr<GemmConfig> gemm = GemmConfig::For(
+        &instr, se::GpuComputeCapability(se::OneAPIComputeCapability()));
+    if (gemm.ok()) s = stream_executor::metal::CheckBlasLtShape(*gemm);
   }
   if (s.ok()) return s;
   return absl::Status(s.code(),

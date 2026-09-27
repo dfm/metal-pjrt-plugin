@@ -1,17 +1,15 @@
 // Native half-precision GEMM ("steel", after the MLX kernels it is ported
-// from; see steel_gemm_msl.h). MPSMatrixMultiplication has no bf16, so the MPS
-// path (mps_gemm.h) stages bf16 through f32 copies; this path runs bf16/f16
-// directly with simdgroup-matrix MSL kernels that accumulate in f32.
+// from; see steel_gemm_msl.h): bf16/f16 with simdgroup-matrix MSL kernels
+// that accumulate in f32 (MPSMatrixMultiplication has no bf16).
 //
 // Same GemmParams contract as RunMpsGemm (row-major, operand buffers already
 // bound to (MTLBuffer, offset)), except that it is launched on an rt::Stream
 // like any other kernel. C is read from (and written to) params.c in place
 // when beta != 0; with beta == 0 it is never read.
 //
-// Backend policy (UseSteelGemm): f16/bf16 inputs go to steel (a BlasLt
+// Backend policy (metal_blas.cc): f16/bf16 GEMMs run only here (a BlasLt
 // epilogue is applied in its store, SteelEpilogue); f32 goes to MPS (plus a
-// second pass for an epilogue, metal_blas.cc). METAL_PJRT_GEMM=mps|steel
-// forces one backend for every supported case (A/B testing).
+// second pass for an epilogue).
 #ifndef METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
 #define METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
 
@@ -41,13 +39,10 @@ struct SteelEpilogue {
 // Tile config the dispatcher picks for `p`.
 SteelTile ChooseSteelTile(const GemmParams& p);
 
-// True when the steel kernel can run `p` (dtypes, index ranges). `why`
-// receives the reason when not.
+// True when the steel kernel can run `p` (dtypes, index ranges; the same
+// limits as CheckBlasLtShape in blas_lt_support.h, which refuses the rest at
+// compile time). `why` receives the reason when not.
 bool SteelGemmSupports(const GemmParams& p, std::string* why = nullptr);
-
-// Policy: whether the BLAS dispatcher should use steel for `p` (dtype
-// policy plus METAL_PJRT_GEMM, and SteelGemmSupports).
-bool UseSteelGemm(const GemmParams& p);
 
 // Encodes the GEMM onto `stream`. `tile` null means ChooseSteelTile(p);
 // `epi` null means none. InvalidArgumentError for bad shapes/strides or

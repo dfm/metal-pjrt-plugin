@@ -16,7 +16,6 @@ test_suite(
     name = "device_tests",
     tags = ["manual"],
     tests = [
-        "//metal_pjrt_plugin/blas:metal_blas_lt_mps_test",
         "//metal_pjrt_plugin/blas:metal_blas_lt_test",
         "//metal_pjrt_plugin/blas:mps_gemm_test",
         "//metal_pjrt_plugin/blas:steel_gemm_test",

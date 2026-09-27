@@ -269,22 +269,6 @@ TEST_F(MpsGemmTest, MatchesCpuReference) {
   { Case c{"f32 buffer offset", 5, 7, 3}; c.base_offset_elems = 3; add(c); }
   { Case c{"f32 k=1", 6, 4, 1}; add(c); }
   { Case c{"f32 m=n=1", 1, 1, 64}; add(c); }
-  for (MpsDType in : {MpsDType::kF16, MpsDType::kBF16}) {
-    std::string nm = in == MpsDType::kF16 ? "f16" : "bf16";
-    for (bool ta : {false, true}) {
-      Case c{nm + (ta ? " TN" : " NN"), 33, 17, 9};
-      c.in = c.out = in;
-      c.ta = ta;
-      add(c);
-    }
-    { Case c{nm + " odd k (rowBytes%4!=0)", 7, 5, 3}; c.in = c.out = in; add(c); }
-    { Case c{nm + " ->f32", 20, 12, 16}; c.in = in; c.out = MpsDType::kF32; add(c); }
-    { Case c{nm + " batched beta", 10, 8, 6}; c.in = c.out = in; c.batch = 2; c.beta = 1.0; add(c); }
-    { Case c{nm + " odd offset", 5, 3, 3}; c.in = c.out = in; c.base_offset_elems = 1; add(c); }
-    { Case c{nm + " padded odd offset", 5, 3, 3}; c.in = c.out = in; c.pad = 1; c.base_offset_elems = 1; c.beta = 1.0; add(c); }
-    { Case c{nm + " padded broadcast TT", 6, 5, 4}; c.in = c.out = in; c.batch = 3; c.pad = 1; c.broadcast_b = true; c.ta = c.tb = true; c.alpha = 2.0; c.beta = 0.5; add(c); }
-    { Case c{nm + " 64", 64, 48, 80}; c.in = c.out = in; add(c); }
-  }
   for (const Case& c : cases) RunCase(dev_.get(), stream_.get(), c);
 }
 
@@ -356,6 +340,9 @@ TEST_F(MpsGemmTest, ErrorCodes) {
   EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kInvalidArgument));
   bad = p;
   bad.k = 0;
+  EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kUnimplemented));
+  bad = p;
+  bad.a.dtype = bad.b.dtype = bad.c.dtype = MpsDType::kBF16;  // steel's
   EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kUnimplemented));
   EXPECT_THAT(RunMpsGemm(nullptr, nullptr, p),
               StatusIs(absl::StatusCode::kInvalidArgument));

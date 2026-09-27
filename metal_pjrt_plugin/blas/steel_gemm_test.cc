@@ -325,23 +325,23 @@ TEST_F(SteelGemmTest, LargeK) {
   Run(c);
 }
 
-TEST_F(SteelGemmTest, Policy) {
+TEST_F(SteelGemmTest, Supports) {
   GemmParams p;
   p.m = p.n = p.k = 16;
+  p.a.ld = p.b.ld = p.c.ld = 16;
   p.a.dtype = p.b.dtype = p.c.dtype = kBF16;
-  const char* env = std::getenv("METAL_PJRT_GEMM");
-  if (env == nullptr) {
-    EXPECT_TRUE(UseSteelGemm(p));
-    p.a.dtype = p.b.dtype = p.c.dtype = kF32;
-    EXPECT_FALSE(UseSteelGemm(p));
-  }
+  EXPECT_TRUE(SteelGemmSupports(p));
   p.a.dtype = kF16;
-  p.b.dtype = kBF16;
   EXPECT_FALSE(SteelGemmSupports(p));
+  p.a.dtype = kBF16;
+  p.a.ld = int64_t{1} << 23;  // > INT32_MAX / 256
+  std::string why;
+  EXPECT_FALSE(SteelGemmSupports(p, &why));
+  EXPECT_EQ(why, "leading dimension too large");
 }
 
 
-// Timing, not correctness: min wall time over reps of steel vs MPS.
+// Timing, not correctness: min wall time over reps per tile config.
 //   bazel run :steel_gemm_test -- --gtest_filter='*Benchmark*' \
 //     --gtest_also_run_disabled_tests
 TEST_F(SteelGemmTest, DISABLED_Benchmark) {
@@ -397,11 +397,6 @@ TEST_F(SteelGemmTest, DISABLED_Benchmark) {
                   (long long)sh.k, (long long)sh.batch, sh.tb ? "NT " : "NN ",
                   what.c_str(), ms, flop / ms / 1e9);
     };
-    report("mps        ", time([&] {
-             return stream_->EncodeExternal([&](void* cmd) {
-               return RunMpsGemm(device_->mtl(), cmd, p);
-             });
-           }));
     report("steel auto ", time([&] {
              return RunSteelGemm(device_, stream_, p);
            }));

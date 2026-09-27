@@ -34,19 +34,6 @@ struct SteelGemmParams {
 };
 static_assert(sizeof(SteelGemmParams) == 72, "layout must match the MSL");
 
-enum class Forced { kNone, kMps, kSteel };
-
-Forced ForcedBackend() {
-  static const Forced f = [] {
-    const char* e = std::getenv("METAL_PJRT_GEMM");
-    if (e == nullptr) return Forced::kNone;
-    if (std::strcmp(e, "mps") == 0) return Forced::kMps;
-    if (std::strcmp(e, "steel") == 0) return Forced::kSteel;
-    return Forced::kNone;
-  }();
-  return f;
-}
-
 const char* MslType(MpsDType t) {
   switch (t) {
     case MpsDType::kF32:
@@ -179,13 +166,6 @@ bool SteelGemmSupports(const GemmParams& p, std::string* why) {
   if (p.batch_count > std::numeric_limits<int32_t>::max())
     return no("batch too large");
   return true;
-}
-
-bool UseSteelGemm(const GemmParams& p) {
-  const Forced f = ForcedBackend();
-  if (f == Forced::kMps) return false;
-  if (f != Forced::kSteel && p.a.dtype == MpsDType::kF32) return false;
-  return SteelGemmSupports(p);
 }
 
 absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,

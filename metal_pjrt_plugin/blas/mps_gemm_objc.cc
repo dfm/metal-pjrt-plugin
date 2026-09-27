@@ -14,6 +14,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "metal_pjrt_plugin/runtime/system_memory.h"
@@ -67,22 +68,6 @@ std::string GemmParamsDebugString(const GemmParams& p) {
 
 namespace {
 
-bool ToMpsDataType(MpsDType t, MPSDataType* out) {
-  switch (t) {
-    case MpsDType::kF32:
-      *out = MPSDataTypeFloat32;
-      return true;
-    case MpsDType::kF16:
-      *out = MPSDataTypeFloat16;
-      return true;
-    case MpsDType::kBF16:
-      // MPSMatrixMultiplication asserts on MPSDataTypeBFloat16 (verified on
-      // macOS 26); bf16 goes through f32 staging buffers instead.
-      return false;
-  }
-  return false;
-}
-
 // Stored (row-major) shape of an operand.
 struct Stored {
   int64_t rows, cols;
@@ -134,13 +119,11 @@ int64_t RequiredElems(const MpsOperand& x, const Stored& s, int64_t batches,
 }
 
 // ---------------------------------------------------------------------------
-// Staging kernels: bf16 <-> f32 conversion (MPSMatrixMultiplication has no
-// bf16) and a 16-bit-granular copy (for operands whose buffer is too short for
-// MPS's whole-matrix validation; blit copies need 4-byte alignment on macOS).
-// Each thread handles element (col, row, batch) at off + batch*bs + row*ld +
-// col on both sides, so only the elements of the matrices are touched, never
-// row padding. Buffers are bound at offset 0 and indexed with element offsets,
-// so no binding-offset alignment applies.
+// Staging kernel: a copy for operands whose buffer is too short for MPS's
+// whole-matrix validation. Each thread copies element (col, row, batch) at
+// off + batch*bs + row*ld + col on both sides, so only the elements of the
+// matrices are touched, never row padding. Buffers are bound at offset 0 and
+// indexed with element offsets, so no binding-offset alignment applies.
 
 struct StagingArgs {  // must match `Args` in kStagingMsl
   uint64_t in_off, out_off, ld, bs;
@@ -151,89 +134,50 @@ constexpr const char* kStagingMsl = R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 struct Args { ulong in_off, out_off, ld, bs; uint cols, rows, batches, pad; };
-#define INDEX                                                         \
-  if (g.x >= a.cols || g.y >= a.rows || g.z >= a.batches) return;     \
-  ulong e = ulong(g.z) * a.bs + ulong(g.y) * a.ld + ulong(g.x);
-kernel void bf16_to_f32(device const ushort* in [[buffer(0)]],
-                        device float* out [[buffer(1)]],
-                        constant Args& a [[buffer(2)]],
-                        uint3 g [[thread_position_in_grid]]) {
-  INDEX
-  out[a.out_off + e] = as_type<float>(uint(in[a.in_off + e]) << 16);
-}
-kernel void f32_to_bf16(device const float* in [[buffer(0)]],
-                        device ushort* out [[buffer(1)]],
-                        constant Args& a [[buffer(2)]],
-                        uint3 g [[thread_position_in_grid]]) {
-  INDEX
-  uint u = as_type<uint>(in[a.in_off + e]);
-  ushort r;
-  if ((u & 0x7fffffffu) > 0x7f800000u) {
-    r = ushort((u >> 16) | 0x40u);  // quiet NaN
-  } else {
-    r = ushort((u + 0x7fffu + ((u >> 16) & 1u)) >> 16);  // nearest even
-  }
-  out[a.out_off + e] = r;
-}
-kernel void copy_u16(device const ushort* in [[buffer(0)]],
-                     device ushort* out [[buffer(1)]],
+kernel void copy_f32(device const uint* in [[buffer(0)]],
+                     device uint* out [[buffer(1)]],
                      constant Args& a [[buffer(2)]],
                      uint3 g [[thread_position_in_grid]]) {
-  INDEX
+  if (g.x >= a.cols || g.y >= a.rows || g.z >= a.batches) return;
+  ulong e = ulong(g.z) * a.bs + ulong(g.y) * a.ld + ulong(g.x);
   out[a.out_off + e] = in[a.in_off + e];
 }
 )MSL";
 
-struct StagingPipelines {
-  id<MTLComputePipelineState> bf16_to_f32;
-  id<MTLComputePipelineState> f32_to_bf16;
-  id<MTLComputePipelineState> copy_u16;
-};
-
-absl::Status GetStagingPipelines(id<MTLDevice> device, StagingPipelines* out) {
+absl::StatusOr<id<MTLComputePipelineState>> GetStagingPipeline(
+    id<MTLDevice> device) {
   static std::mutex mu;
-  static NSMutableDictionary* cache = nil;  // registryID -> NSArray of PSOs
+  static NSMutableDictionary* cache = nil;  // registryID -> PSO
   std::lock_guard<std::mutex> lock(mu);
   if (cache == nil) cache = [NSMutableDictionary dictionary];
   NSNumber* key = @(device.registryID);
-  NSArray* hit = cache[key];
+  id<MTLComputePipelineState> hit = cache[key];
   if (hit == nil) {
     NSError* err = nil;
     id<MTLLibrary> lib =
         [device newLibraryWithSource:@(kStagingMsl) options:nil error:&err];
     if (lib == nil) {
       return absl::InternalError(absl::StrCat(
-          "RunMpsGemm: compiling the staging kernels failed: ",
+          "RunMpsGemm: compiling the staging kernel failed: ",
           NSErrorToString(err)));
     }
-    NSMutableArray* psos = [NSMutableArray array];
-    for (NSString* name in @[ @"bf16_to_f32", @"f32_to_bf16", @"copy_u16" ]) {
-      id<MTLFunction> fn = [lib newFunctionWithName:name];
-      if (fn == nil) {
-        return absl::InternalError(absl::StrCat(
-            "RunMpsGemm: staging kernel ", name.UTF8String, " not found"));
-      }
-      id<MTLComputePipelineState> pso =
-          [device newComputePipelineStateWithFunction:fn error:&err];
-      if (pso == nil) {
-        return absl::InternalError(absl::StrCat(
-            "RunMpsGemm: creating the ", name.UTF8String,
-            " staging pipeline failed: ", NSErrorToString(err)));
-      }
-      [psos addObject:pso];
+    id<MTLFunction> fn = [lib newFunctionWithName:@"copy_f32"];
+    if (fn == nil) {
+      return absl::InternalError("RunMpsGemm: staging kernel not found");
     }
-    hit = psos;
+    hit = [device newComputePipelineStateWithFunction:fn error:&err];
+    if (hit == nil) {
+      return absl::InternalError(absl::StrCat(
+          "RunMpsGemm: creating the staging pipeline failed: ",
+          NSErrorToString(err)));
+    }
     cache[key] = hit;
   }
-  out->bf16_to_f32 = hit[0];
-  out->f32_to_bf16 = hit[1];
-  out->copy_u16 = hit[2];
-  return absl::OkStatus();
+  return hit;
 }
 
-// Copies/converts the matrices of an operand between `in` and `out`, which
-// share ld/bs. For copy_u16 all quantities are in 16-bit words (scale element
-// counts by the element size / 2); for the conversions, in elements.
+// Copies the matrices of an operand between `in` and `out`, which share
+// ld/bs (all quantities in elements).
 absl::Status EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState> pso,
                    id<MTLBuffer> in, id<MTLBuffer> out, const StagingArgs& a) {
   id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
@@ -260,7 +204,11 @@ absl::Status CheckParams(const GemmParams& p) {
     return Invalid("null buffer", p);
   }
   if (p.c.transpose) return Invalid("transposed output", p);
-  if (p.a.dtype != p.b.dtype) return Invalid("mixed input dtypes", p);
+  if (p.a.dtype != MpsDType::kF32 || p.b.dtype != MpsDType::kF32 ||
+      p.c.dtype != MpsDType::kF32) {
+    return absl::UnimplementedError(
+        Describe("f32 only (f16/bf16 GEMMs run on steel)", p));
+  }
   const Stored sa = StoredA(p), sb = StoredB(p);
   if (p.a.ld < sa.cols || p.b.ld < sb.cols || p.c.ld < p.n) {
     return Invalid("leading dimension smaller than stored columns", p);
@@ -269,20 +217,16 @@ absl::Status CheckParams(const GemmParams& p) {
     return Invalid("negative batch stride", p);
   }
   for (const MpsOperand* x : {&p.a, &p.b, &p.c}) {
-    if (x->offset % 2 != 0) return Invalid("misaligned operand offset", p);
+    if (x->offset % 4 != 0) return Invalid("misaligned operand offset", p);
   }
   return absl::OkStatus();
 }
 
 absl::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
                          const GemmParams& p, NSMutableArray* keep_alive) {
-  MPSDataType ta, tc;
-  if (!ToMpsDataType(p.a.dtype, &ta) || !ToMpsDataType(p.c.dtype, &tc)) {
-    // bf16 is staged to f32 before this point.
-    return absl::UnimplementedError(Describe("unsupported dtype", p));
-  }
+  const MPSDataType ta = MPSDataTypeFloat32, tc = MPSDataTypeFloat32;
   const Stored sa = StoredA(p), sb = StoredB(p), sc{p.m, p.n};
-  const int64_t ea = MpsDTypeSize(p.a.dtype), ec = MpsDTypeSize(p.c.dtype);
+  const int64_t ea = 4, ec = 4;
   id<MTLBuffer> buf_a = (__bridge id<MTLBuffer>)p.a.buffer;
   id<MTLBuffer> buf_b = (__bridge id<MTLBuffer>)p.b.buffer;
   id<MTLBuffer> buf_c = (__bridge id<MTLBuffer>)p.c.buffer;
@@ -385,13 +329,12 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
   }];
 
   // Stage an operand into a private temporary with the same ld/batch stride
-  // when it is bf16 (converted to f32) or when its buffer is too short for
-  // MPS's whole-matrix validation. Only matrix elements are copied, in and
-  // (for C) back out, so row padding in the caller's buffer is never written.
+  // when its buffer is too short for MPS's whole-matrix validation. Only
+  // matrix elements are copied, in and (for C) back out, so row padding in
+  // the caller's buffer is never written.
   const bool batched = UseBatched(p);
   const int64_t batches = p.batch_count;
-  StagingPipelines pipes;
-  bool have_pipes = false;
+  id<MTLComputePipelineState> pipe = nil;
   GemmParams q = p;
   struct Staged {
     bool active = false;
@@ -399,20 +342,16 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
   };
   auto stage = [&](MpsOperand& x, const Stored& st, bool load,
                    Staged* out) -> absl::Status {
-    const int64_t es = MpsDTypeSize(x.dtype);
+    constexpr int64_t es = 4;
     id<MTLBuffer> buf = (__bridge id<MTLBuffer>)x.buffer;
     const int64_t required = RequiredElems(x, st, batches, batched);
-    const bool convert = x.dtype == MpsDType::kBF16;
-    const bool too_short =
-        buf.length < x.offset + static_cast<uint64_t>(required * es);
-    if (!convert && !too_short) return absl::OkStatus();
-    if (!have_pipes) {
-      ABSL_RETURN_IF_ERROR(GetStagingPipelines(device, &pipes));
-      have_pipes = true;
+    if (buf.length >= x.offset + static_cast<uint64_t>(required * es)) {
+      return absl::OkStatus();
     }
-    const MpsDType staged_dtype = convert ? MpsDType::kF32 : x.dtype;
-    const int64_t staged_es = MpsDTypeSize(staged_dtype);
-    const int64_t tmp_bytes = required * staged_es;
+    if (pipe == nil) {
+      ABSL_ASSIGN_OR_RETURN(pipe, GetStagingPipeline(device));
+    }
+    const int64_t tmp_bytes = required * es;
     // Staging buffers come straight from the device, not the pool; they
     // still obey the allocation guard.
     uint64_t reclaimable = 0;
@@ -435,22 +374,18 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
           p));
     }
     [keep_alive addObject:tmp];
-    // In 16-bit words for copies, in elements for conversions.
-    const uint64_t w = convert ? 1 : static_cast<uint64_t>(es / 2);
-    // x.offset / 2 is in 16-bit words, which for bf16 is also elements.
-    StagingArgs args{x.offset / 2, 0, x.ld * w, x.batch_stride * w,
-                     static_cast<uint32_t>(st.cols * w),
+    StagingArgs args{x.offset / es, 0, static_cast<uint64_t>(x.ld),
+                     static_cast<uint64_t>(x.batch_stride),
+                     static_cast<uint32_t>(st.cols),
                      static_cast<uint32_t>(st.rows),
                      static_cast<uint32_t>(batches), 0};
     if (load) {
-      ABSL_RETURN_IF_ERROR(EncodeStaging(
-          cmd, convert ? pipes.bf16_to_f32 : pipes.copy_u16, buf, tmp, args));
+      ABSL_RETURN_IF_ERROR(EncodeStaging(cmd, pipe, buf, tmp, args));
     }
     out->active = true;
     out->tmp = tmp;
     x.buffer = (__bridge void*)tmp;
     x.offset = 0;
-    x.dtype = staged_dtype;
     return absl::OkStatus();
   };
   Staged ga, gb, gc;
@@ -462,14 +397,12 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
   ABSL_RETURN_IF_ERROR(stage(q.c, sc, /*load=*/p.beta != 0.0, &gc));
   ABSL_RETURN_IF_ERROR(EncodeMpsGemm(device, cmd, q, keep_alive));
   if (gc.active) {
-    const bool to_bf16 = p.c.dtype == MpsDType::kBF16;
-    const uint64_t w = to_bf16 ? 1 : static_cast<uint64_t>(MpsDTypeSize(p.c.dtype) / 2);
-    StagingArgs args{0, p.c.offset / 2, p.c.ld * w, p.c.batch_stride * w,
-                     static_cast<uint32_t>(p.n * w), static_cast<uint32_t>(p.m),
+    StagingArgs args{0, p.c.offset / 4, static_cast<uint64_t>(p.c.ld),
+                     static_cast<uint64_t>(p.c.batch_stride),
+                     static_cast<uint32_t>(p.n), static_cast<uint32_t>(p.m),
                      static_cast<uint32_t>(batches), 0};
-    ABSL_RETURN_IF_ERROR(
-        EncodeStaging(cmd, to_bf16 ? pipes.f32_to_bf16 : pipes.copy_u16,
-                      gc.tmp, (__bridge id<MTLBuffer>)p.c.buffer, args));
+    ABSL_RETURN_IF_ERROR(EncodeStaging(
+        cmd, pipe, gc.tmp, (__bridge id<MTLBuffer>)p.c.buffer, args));
   }
   return absl::OkStatus();
 }

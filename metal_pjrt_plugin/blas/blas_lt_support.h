@@ -4,6 +4,8 @@
 // What MetalBlasLt supports, without Metal: shared by MetalBlasLt and the
 // compiler's post-GemmRewriter checks (compiler/passes/postconditions.h).
 
+#include <cstdint>
+
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "xla/stream_executor/gpu/gpu_blas_lt.h"
@@ -27,10 +29,10 @@ namespace metal {
 // * SILU is x * sigmoid(x) (only fused on ROCm >= 7, supported anyway).
 // * aux has D's shape, element type, leading dimension and batch stride.
 //
-// Steel applies the epilogue in its store, in f32 with one rounding
-// (steel_gemm.h SteelEpilogue). With METAL_PJRT_GEMM=mps, one elementwise
-// kernel applies it in f32 after the MPS GEMM (which leaves alpha AB + beta C
-// in D, rounded) and writes D (and aux).
+// Steel (f16/bf16) applies the epilogue in its store, in f32 with one
+// rounding (steel_gemm.h SteelEpilogue). For f32, one elementwise kernel
+// applies it after the MPS GEMM (which leaves alpha AB + beta C in D) and
+// writes D (and aux).
 
 enum class Activation { kNone = 0, kReLU = 1, kGELU = 2, kSILU = 3 };
 
@@ -46,6 +48,13 @@ absl::StatusOr<EpilogueSpec> DecodeEpilogue(gpu::BlasLt::Epilogue e);
 // f32, f16 or bf16 operands of one type; output of the same type, or f32.
 absl::Status CheckBlasLtTypes(xla::PrimitiveType a, xla::PrimitiveType b,
                               xla::PrimitiveType out);
+
+// f16/bf16 GEMMs run only on steel, whose index math is 32-bit: every
+// dimension and the batch count must fit in int32, and every leading
+// dimension in kSteelMaxLd elements (steel_gemm.cc SteelGemmSupports checks
+// the same again before encoding). f32 GEMMs (MPS) have no such limits.
+inline constexpr int64_t kSteelMaxLd = 2147483647 / 256;
+absl::Status CheckBlasLtShape(const gpu::GemmConfig& cfg);
 
 }  // namespace metal
 }  // namespace stream_executor
