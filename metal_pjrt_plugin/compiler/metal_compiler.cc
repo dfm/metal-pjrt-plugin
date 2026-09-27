@@ -37,6 +37,11 @@
 #include "xla/service/call_inliner.h"
 #include "xla/service/dump.h"
 #include "xla/service/triangular_solve_expander.h"
+#include "xla/service/topk_rewriter.h"
+#include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/shape.h"
+#include "xla/shape_util.h"
 #include "xla/service/gpu/target_constants.h"
 
 namespace xla {
@@ -169,7 +174,17 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     // network: it measured 3-180x faster there than the radix sort's one
     // threadgroup per row (docs/performance.md). Smaller sorts are left
     // alone here and expanded later, as before.
+    // top_k is still a kTopK here; XLA turns it into a sort later (TopkDecomposer
+    // and TopkRewriter in the pre-SPMD pipeline), which SortRewriter would then
+    // take. Decompose the same short-row ones now so they stay bitonic too
+    // (radix measured ~40x slower on top_k of f32[4096,8]).
     HloPassPipeline pipeline("metal-small-sorts");
+    pipeline.AddPass<TopkDecomposer>([](const HloInstruction* instr) {
+      if (instr->opcode() != HloOpcode::kTopK) return false;
+      const Shape& shape = instr->operand(0)->shape();
+      return shape.dimensions(shape.dimensions().size() - 1) <= 64 &&
+             ShapeUtil::ElementsIn(shape) > 16384;
+    });
     pipeline.AddPass<MetalSortExpander>(/*max_sort_dim=*/64,
                                         /*min_elements=*/16384);
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());

@@ -78,6 +78,18 @@ def test_tiny_rows_stay_bitonic():
         same_bits(run_on(metal(), fn, *args), run_on(cpu(), fn, *args))
 
 
+def test_top_k_short_rows_stay_bitonic():
+    # XLA turns top_k into a sort after our pre-hook; short rows are
+    # decomposed early so they stay bitonic (10-23x faster than radix here).
+    for shape, k in (((4096, 8), 2), ((12500, 4), 1)):
+        x = floats(shape[0] * shape[1]).reshape(shape)
+        fn = lambda a: lax.top_k(a, k)
+        assert not any("cub_sort" in t for t in targets(fn, x))
+        same_bits(run_on(metal(), fn, x), run_on(cpu(), fn, x))
+    x = floats(64 * 4096).reshape(64, 4096)  # long rows: still radix
+    assert any("cub_sort" in t for t in targets(lambda a: lax.top_k(a, 8), x))
+
+
 def test_disable_cubsort(monkeypatch):
     # METAL_PJRT_DISABLE_REWRITES=cubsort: MetalSortExpander takes every sort.
     x = floats(20000)
