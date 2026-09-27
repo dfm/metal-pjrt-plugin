@@ -106,11 +106,10 @@ holds memory the allocation guard then refuses to hand out.
 
 ## Environment and state
 
-`JAX_OPENMETAL_ALLOCATOR` (`platform`: the runtime's caching allocator, which
-returns memory ~2 s after it is freed or on system memory pressure; `bfc`:
-XLA's pool, which keeps it), `JAX_OPENMETAL_MEMORY_FRACTION` (scales the
-memory budget, half of RAM; beyond it allocations fail with
-RESOURCE_EXHAUSTED); the runtime's knobs are `METAL_PJRT_*`
+`JAX_OPENMETAL_MEMORY_FRACTION` scales the memory budget (half of RAM;
+beyond it allocations fail with RESOURCE_EXHAUSTED). Device memory comes
+from the runtime's caching allocator, which returns memory ~2 s after it is
+freed or on system memory pressure. The runtime's knobs are `METAL_PJRT_*`
 (`docs/performance.md`).
 
 State (GPU reset log, device lock, JAX test checkout) lives in `~/.cache/openmetal/` (`METAL_PJRT_STATE_DIR` moves

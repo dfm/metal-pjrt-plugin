@@ -649,8 +649,9 @@ is added before the single rounding (normwise ulps, pass -> fused): bias
 ## Memory policy: a caching platform allocator (2026-09-27, roadmap 3.3)
 
 The default allocator is now XLA's pass-through `platform` allocator over
-`rt::Device::Allocate`, which caches freed buffers by size;
-`JAX_OPENMETAL_ALLOCATOR=bfc` keeps XLA's BFC pool for A/B. Policy:
+`rt::Device::Allocate`, which caches freed buffers by size (the
+`JAX_OPENMETAL_ALLOCATOR=bfc` A/B arm below was removed afterwards: the
+cache won on every axis). Policy:
 
 - Lengths are rounded (powers of two up to a 16 KB page, whole pages above);
   a request reuses a cached buffer of at most min(2x, +2 pages) its length,

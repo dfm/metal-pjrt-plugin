@@ -10,7 +10,6 @@ lowerings and host callbacks the plugin needs.
 """
 
 import logging
-import os
 import pathlib
 
 logger = logging.getLogger(__name__)
@@ -101,15 +100,13 @@ def initialize():
     # (a fresh MTLBuffer costs ~60 us/MB of page faults on first touch),
     # releases them after ~2 s unused or on a system memory-pressure warning,
     # and refuses (RESOURCE_EXHAUSTED) beyond the process budget or when the
-    # system is short of memory. JAX_OPENMETAL_ALLOCATOR=bfc selects XLA's BFC
-    # pool instead, which never returns memory to the system. The budget
-    # (JAX_OPENMETAL_MEMORY_FRACTION scales it) is applied by the runtime, so
-    # memory_fraction stays 1.
+    # system is short of memory. The budget (JAX_OPENMETAL_MEMORY_FRACTION
+    # scales it) is applied by the runtime, so memory_fraction stays 1.
     # "platform_name" selects the StreamExecutor platform ("METAL"), not the
     # JAX/PJRT one (PLATFORM, from MetalName() in the XLA patch).
     options = {
         "platform_name": "METAL",
-        "allocator": os.environ.get("JAX_OPENMETAL_ALLOCATOR", "platform"),
+        "allocator": "platform",
         "preallocate": False,
         "memory_fraction": 1.0,
         "visible_devices": [0],
