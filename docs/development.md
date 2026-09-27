@@ -58,18 +58,10 @@ either version differs (`JAX_VERSION`, checked against `pyproject.toml` by
 venv and running `tests/test_smoke.py`, `test_sort.py` and
 `test_callbacks.py` from outside the checkout.
 
-Fresh-clone check (2026-09-27, at 2d777cf): `git clone` into a scratch
-directory, a new `.venv`, `METAL_PJRT_STATE_DIR` pointing at an empty
-scratch directory, then `scripts/install_dev.sh`: 73 s of Bazel (13790
-actions from the shared disk cache, 5 run locally; a machine without the
-cache builds XLA for ~2 hours), and `tests/test_smoke.py`,
-`test_packaging.py` and `test_memory.py` passed under the device lock. Two
-manual steps came up and are now in `install_dev.sh`: creating `.venv`
-(without one it installed into whatever `python3` was on the path) and
-installing pytest (the `test` extra). Clean up a scratch clone with
-`bazel clean --expunge` in it before deleting it (its output base is
-separate, ~8 GB). Only the build, not the uv venv creation, was re-run
-after that change.
+A fresh clone builds with `scripts/install_dev.sh` alone (checked at
+2d777cf: 73 s from the shared disk cache; ~2 hours without it). Before
+deleting a scratch clone, run `bazel clean --expunge` in it: its output base
+is separate (~8 GB).
 
 `scripts/install_dev.sh` installs the `openmetal_pjrt_plugin` package (editable,
 with the `test` extra) into `.venv`, with
@@ -90,8 +82,9 @@ same reason child processes go through `metal_testing.run_python` and
 tests get a faulthandler stack dump and GPU hangs end through the runtime's
 bounded waits.
 
-Run one GPU-heavy job at a time (the scripts take a device lock); see
-`docs/performance.md` for the memory policy and why. The lock is re-entrant
+Run one GPU-heavy job at a time (the scripts take a device lock): two
+processes can together over-commit memory, and a GPU stalled on swapped-out
+pages trips the watchdog (`docs/design.md`, "Runtime"). The lock is re-entrant
 for descendants of its holder, so wrapping `scripts/run_jax_tests.sh` (which
 locks itself) in `scripts/device_lock.py` is fine.
 
@@ -104,15 +97,35 @@ opportunistic and depend on matching action keys. Shut the Bazel server
 down (`bazel shutdown`) before measuring or running large workloads: its JVM
 holds memory the allocation guard then refuses to hand out.
 
-## Environment and state
+## Environment variables
 
-`JAX_OPENMETAL_MEMORY_FRACTION` scales the memory budget (half of RAM;
-beyond it allocations fail with RESOURCE_EXHAUSTED). Device memory comes
-from the runtime's caching allocator, which returns memory ~2 s after it is
-freed or on system memory pressure. The runtime's knobs are `METAL_PJRT_*`
-(`docs/performance.md`).
+Every variable the plugin, tests and scripts read. "Compile-time" ones
+change the compiled program and are part of the persistent-cache key
+(`PluginVersion` in `stream_executor/metal_executor.cc`); the others are
+read at run time.
 
-State (GPU reset log, device lock, JAX test checkout) lives in `~/.cache/openmetal/` (`METAL_PJRT_STATE_DIR` moves
-the reset log). Before the rename it was `~/.cache/jax_metal/`;
-`scripts/device_lock.py` also takes the old lock there (creating it), so
-older checkouts still exclude this one.
+| variable | read by | effect |
+|---|---|---|
+| `JAX_PLATFORMS` | JAX | `openmetal,cpu` selects the plugin (it is not JAX's default backend) |
+| `JAX_OPENMETAL_MEMORY_FRACTION` | runtime, at device creation | scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED |
+| `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all` |
+| `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time | any value but `0`: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
+| `METAL_PJRT_TRACE` | runtime | `1` logs one line per committed command buffer (op count, GPU time) |
+| `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/openmetal`) |
+| `METAL_PJRT_QUARANTINE_STRIKES` | runtime, `gpu_health.py` | resets since boot that quarantine a kernel (default 2; 0 disables) |
+| `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | runtime | memory the system guard keeps free (default 512; for tests) |
+| `METAL_PJRT_FAIL_COMMAND_BUFFER` | runtime | `n` fails the n-th committed command buffer (tests of the error path) |
+| `METAL_TEST_REPORT_ULPS` | `tests/metal_testing.py` | print every measured error (with `pytest -s`) |
+| `JAX_OPENMETAL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |
+| `JAX_TESTS_DIR` | `scripts/run_jax_tests.sh` | JAX checkout with the tests (default `~/.cache/openmetal/jax-tests`) |
+| `JAX_NUM_GENERATED_CASES`, `PYTEST_TIMEOUT` | `scripts/run_jax_tests.sh` | JAX's generated cases per test (default 3); seconds before a slow test's stack dump (default 180; the test is not stopped) |
+| `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED` | `bench/run_all.sh` | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot |
+| `BENCH_OUT`, `BENCH_LABEL` | `bench/*.py` | set by `run_all.sh`: the JSONL file and the backend label of the rows |
+
+## State
+
+State (GPU reset log, device lock, JAX test checkout) lives in
+`~/.cache/openmetal/`. Before the platform rename it was
+`~/.cache/jax_metal/`; `scripts/device_lock.py` also takes the old lock
+there (creating it) until the next pin bump, so a `git bisect` to
+pre-rename commits still excludes this checkout.

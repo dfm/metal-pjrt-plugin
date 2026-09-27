@@ -2,8 +2,9 @@
 
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
 works. "Verified" means observed in `tests/test_lax.py` (against a float64
-CPU reference, with tolerances in ulps; 166/167 cases pass on 2026-09-26, int4
-is the known failure). File references are into the XLA tree.
+CPU reference, with tolerances in ulps; int4 is an expected failure). File
+references are into the XLA tree. Missing pieces worth building (a native
+FFT, int8 GEMM, c64) are in `docs/roadmap.md`.
 
 ## Execution paths the backend implements
 
@@ -61,7 +62,7 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `tests/test_scan.py` calls `metal$scan` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$scan`, the radix sort, the Python callback handler) and `metal_pjrt_plugin/linalg`; `tests/test_scan.py` calls `metal$scan` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 
@@ -94,17 +95,3 @@ GemmRewriter left behind and fuses the converts with the dot, so these
 match the GEMM path; JAX's `testDotPreferredElement2` passes. It runs after
 GemmRewriter, so large 16-bit dots still reach the steel GEMM with 16-bit
 operands (`tests/test_steel_gemm.py`).
-
-## Fixes ranked by payoff
-
-1. ~~Sort~~ (done: `MetalSortExpander` bitonic network).
-2. ~~`TriangularSolveExpander` in MetalCompiler~~ (done; f32 solves and
-   Cholesky go to LAPACK / small-matrix GPU kernels via `MetalLinalgRewriter`).
-3. ~~`xla_gpu_enable_cub_radix_sort=false` by default~~ (done; re-enabled with Metal handlers, roadmap 2.2).
-4. ~~BlasLt epilogues~~ (done).
-5. ~~Argument buffers for kernels with more than 31 buffers~~ (done).
-6. ~~bf16/f8 conversion rounding~~ (not a bug: excess precision, above).
-7. ~~Reject f64 and complex in the BLAS thunk explicitly~~ (done:
-   UNIMPLEMENTED from `metal_blas.cc`).
-8. A native FFT (the dense-DFT lowering is O(n^2); MPS has no FFT for
-   arbitrary sizes).

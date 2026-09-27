@@ -54,7 +54,8 @@ golden list. Both have an `--update` mode.
   Default-constructed reads as CUDA 0.0. v1 reports **OneAPI** so that the
   SPIR-V/Intel branches are taken (scalar-only transpose, explicit NaN
   propagation, command buffers off, `ExecutableAbiVersion` accepted, atomics
-  via the SPIRV path). Adding an Apple alternative is a later patch.
+  via the SPIRV path). No Apple alternative is planned: the tripwire test
+  checks the OneAPI branches instead.
 
 ## StreamExecutor contract (what MetalExecutor must implement)
 
@@ -199,7 +200,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   rows <= 64 of such sorts with `MetalSortExpander` first.
   `METAL_PJRT_DISABLE_REWRITES=cubsort` turns SortRewriter off.
   (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
-  end-to-end A/B, docs/performance.md.)
+  end-to-end A/B, docs/performance.md, "Measured and rejected".)
 - Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
@@ -211,7 +212,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   handler calls
   `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
   the shared-storage buffers (zero copy), synchronously on the thunk thread
-  (a stream host task was measured and not faster: docs/performance.md).
+  (a stream host task was measured and not faster: docs/performance.md,
+  "Measured and rejected").
   f32 only. `METAL_PJRT_DISABLE_LAPACK=1` is the one switch for both
   (checked per compile by the pass and per lowering by the Python rules) and
   falls back to XLA's expanders / JAX's generic lowerings. Ownership table:
@@ -220,8 +222,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 ## PJRT client
 
 - `GetStreamExecutorGpuClient` builds `LocalDeviceState`s, allocators
-  (`kPlatform` is the simplest that works; `kBFC` needs the two
-  `CreateMemoryAllocator` kinds), and calls `GpuCollectives::Resolve(name)`
+  (the plugin always asks for `kPlatform`, a pass-through to
+  `MetalExecutor::Allocate` and the runtime's buffer cache; `kBFC` would
+  need the two `CreateMemoryAllocator` kinds), and calls `GpuCollectives::Resolve(name)`
   which CHECK-fails without a registration (hence the stub under `MetalName()`).
 - `//xla/service:gpu_plugin` is empty on macOS (all deps behind
   `if_gpu_is_configured`), so our plugin target lists `gpu_compiler`,
@@ -273,15 +276,12 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   cache on for CPU-only users too. Users configure it
   (`JAX_COMPILATION_CACHE_DIR`, `jax.config`; README, "Compilation cache");
   `tests/test_compilation_cache.py` checks the plugin leaves it unset.
-  `~/.cache/openmetal/compilation_cache`, the default the plugin used to
-  set, is orphaned and can be deleted. JAX's own thresholds apply
-  (only compiles over `jax_persistent_cache_min_compile_time_secs`, 1 s by
-  default, are written). Executables with metal host callbacks bypass it
-  (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`
-  directories an older plugin created, and `~/.cache/jax_metal/compilation_cache`
-  from before the "openmetal" rename, are orphaned and can be deleted.
+  JAX's own thresholds apply (only compiles over
+  `jax_persistent_cache_min_compile_time_secs`, 1 s by default, are
+  written). Executables with metal host callbacks bypass it
+  (`docs/callbacks.md`).
 
-## Host transfers (2026-09-27, roadmap 3.2 step 0)
+## Host transfers
 
 - The client option `should_stage_host_to_device_transfers` is False. It was
   already moot: `ShouldStageHostToDeviceTransfers` also requires
@@ -300,20 +300,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   sub-byte inputs take XLA's synchronous `kImmutableOnlyDuringCall` path.
   Cost (5 interleaved rounds, medians): device_put 100 MB 2.56 -> 5.14 ms,
   1 MB 84 -> 104 us, 8 floats 72 -> 73 us; D2H unchanged.
-- Roadmap 3.2 step 1 (part): `Stream::MemcpyHostToDevice/DeviceToHost`
-  memcpy on the calling thread when the stream is idle (no open command
-  buffer, deferred waits all satisfied, fence caught up); otherwise a host
-  task as before.
-- Only `pinned_host` memory kinds still use XLA's host BFC pool (never
+- `Stream::MemcpyHostToDevice/DeviceToHost` `memcpy` on the calling thread
+  when the stream is idle (no open command buffer, deferred waits all
+  satisfied, fence caught up); otherwise they enqueue a host task.
+- Only `pinned_host` memory kinds use XLA's host BFC pool (never
   shrinks).
 
-## Owning the PJRT entry point: decided against (roadmap 3.4, 2026-09-27)
-
-Not doing a `MetalPjRtClient` behind our own `GetPjrtApi`: owning the entry
-point would remove only ~15 of patch 0001's ~200 lines; XLA has no
-`StreamExecutorGpuClient` class to subclass at this pin (the client is built
-by `GetStreamExecutorGpuClient`); and zero-copy host import
-(`BufferFromHostBufferSupportsZeroCopy` / `ImportForeignMemory`) would need a
-~400-line client fork. The small `GetPjrtApi` wrapper in
-`pjrt/metal_pjrt_api.cc` stays (drops the ABI-version extension, copies
-device_put's host data). (For roadmap.md's "Decided against".)

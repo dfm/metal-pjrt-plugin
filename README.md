@@ -192,9 +192,11 @@ resets since boot is refused until a reboot or
 
 ## More
 
-`docs/design.md` (design), `docs/integration-notes.md` (the source-verified
-contract with XLA), `docs/op-coverage.md`, `docs/performance.md`
-(measurements and the memory policy), `docs/accuracy.md`,
-`docs/roadmap.md`, `docs/mlx-comparison.md` (how this differs from
-MLX-based approaches) and `docs/development.md` (layout, building, tests,
-benchmarks, environment variables).
+`docs/design.md` (design, runtime policies, how this differs from MLX),
+`docs/integration-notes.md` (the source-verified contract with XLA),
+`docs/op-coverage.md`, `docs/accuracy.md`, `docs/callbacks.md`,
+`docs/performance.md` (current numbers, methodology, what was measured and
+dropped), `docs/roadmap.md` (decisions and what is next),
+`docs/development.md` (layout, building, tests, benchmarks, environment
+variables) and `docs/archive/` (the dated performance log and the review
+roadmap, kept as history).
