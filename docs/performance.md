@@ -2,8 +2,9 @@
 
 Methodology: `bench/jax_bench.py` (same jitted programs on every JAX backend,
 warmup, median of 10 with `block_until_ready`), `bench/mlx_bench.py` (same
-workloads in MLX with `mx.compile`), `bench/latency.py` (fixed per-call
-cost), `bench/run_all.sh` to produce `bench/results/table.md`. Machine: M3,
+workloads in MLX with `mx.compile`), `bench/dispatch_bound.py` (fixed
+per-call cost and chains of tiny kernels; it absorbed `bench/latency.py`),
+`bench/run_all.sh` to produce `bench/results/table.md`. Machine: M3,
 10-core GPU, 8 GB. Per-command-buffer GPU timing: `METAL_PJRT_TRACE=1`.
 
 ## Findings so far (2026-09-24)

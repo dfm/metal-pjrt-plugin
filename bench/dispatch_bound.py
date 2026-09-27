@@ -1,5 +1,6 @@
-"""Dispatch-bound programs: long chains of tiny kernels and a scan with tiny
-state, where per-launch host cost and command-buffer batching dominate.
+"""Dispatch-bound programs: the fixed per-call cost (tiny arrays), long
+chains of tiny kernels and a scan with tiny state, where per-launch host
+cost and command-buffer batching dominate.
 
 The GPU runs these tiny kernels in one of two performance states (~4.2 vs
 ~2.3 us of GPU time per dispatch, METAL_PJRT_TRACE=1), chosen by the OS from
@@ -47,6 +48,11 @@ def chain(n):
         return x
     return jax.jit(f)
 
+
+f1 = jax.jit(lambda x: x * 2.0 + 1.0)
+report("jit(x*2+1) on 1K floats", 0, lambda: f1(x), warmup=10, iters=200)
+f2 = jax.jit(lambda x: jnp.sum(jnp.exp(x)) + jnp.sum(x * x))  # two kernels
+report("two-kernel program", 0, lambda: f2(x), warmup=10, iters=200)
 
 for n in (16, 64, 256):
     f = chain(n)

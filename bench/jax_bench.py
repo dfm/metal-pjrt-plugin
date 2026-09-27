@@ -67,8 +67,13 @@ for n in (1024, 2048, 4096):
     run(f"matmul f32 {n}", lambda a: a @ a, a, flops=2 * n**3)
 a16 = jax.random.normal(key, (2048, 2048), jnp.bfloat16)
 run("matmul bf16 2048", lambda a: a @ a, a16, flops=2 * 2048**3)
+run("matmul bf16 2048 a@a.T", lambda a: a @ a.T, a16, flops=2 * 2048**3)
+h16 = jax.random.normal(key, (2048, 2048), jnp.float16)
+run("matmul f16 2048", lambda a: a @ a, h16, flops=2 * 2048**3)
 ab = jax.random.normal(key, (16, 512, 512), f32)
 run("batched matmul 16x512", lambda a: jnp.einsum("bij,bjk->bik", a, a), ab, flops=16 * 2 * 512**3)
+run("batched matmul bf16 16x512", lambda a: jnp.einsum("bij,bjk->bik", a, a),
+    ab.astype(jnp.bfloat16), flops=16 * 2 * 512**3)
 
 # --- attention ---
 B, H, S, D = 8, 8, 512, 64
