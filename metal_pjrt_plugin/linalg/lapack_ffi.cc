@@ -45,6 +45,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -335,6 +336,16 @@ kernel void small_getrf(device const float* a [[buffer(0)]],
 }
 )";
 
+// The small kernels compute offsets (b * n * n, gid) in 32-bit uint: at 2^32
+// elements or threads they would wrap and silently alias other batch
+// elements, so such calls take the host path instead.
+bool FitsSmallKernel(std::initializer_list<uint64_t> counts) {
+  for (uint64_t c : counts) {
+    if (c > 0xffffffffu) return false;
+  }
+  return true;
+}
+
 absl::Status LaunchSmall(stream_executor::Stream* stream, const char* function,
                          const std::vector<const void*>& buffers,
                          const SmallParams& params, uint64_t threads) {
@@ -359,7 +370,8 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$cholesky: matrix must be square");
   }
-  if (d->rows <= kSmallMatrixMax && d->rows > 0) {
+  if (d->rows <= kSmallMatrixMax && d->rows > 0 &&
+      FitsSmallKernel({static_cast<uint64_t>(d->batch * d->rows * d->cols)})) {
     SmallParams p{static_cast<uint32_t>(d->batch), 0,
                   static_cast<uint32_t>(d->rows), 0, lower ? kFlagLower : 0u};
     return LaunchSmall(stream, "small_cholesky",
@@ -415,15 +427,17 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
   // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
   // 3 = ADJOINT (the same as TRANSPOSE for real types).
   const bool trans = transpose_a == 2 || transpose_a == 3;
-  if (k <= kSmallMatrixMax && k > 0 && db->rows > 0 &&
-      db->cols > 0) {
+  const uint64_t lines = left_side ? db->cols : db->rows;
+  if (k <= kSmallMatrixMax && k > 0 && db->rows > 0 && db->cols > 0 &&
+      FitsSmallKernel({static_cast<uint64_t>(da->batch * k * k),
+                       static_cast<uint64_t>(db->batch * db->rows * db->cols),
+                       static_cast<uint64_t>(db->batch) * lines})) {
     SmallParams p{static_cast<uint32_t>(db->batch),
                   static_cast<uint32_t>(db->rows),
                   static_cast<uint32_t>(db->cols), static_cast<uint32_t>(k),
                   (lower ? kFlagLower : 0u) | (left_side ? kFlagLeft : 0u) |
                       (trans ? kFlagTrans : 0u) |
                       (unit_diagonal ? kFlagUnit : 0u)};
-    const uint64_t lines = left_side ? db->cols : db->rows;
     return LaunchSmall(stream, "small_trsm",
                        {a.untyped_data(), b.untyped_data(), out->untyped_data()},
                        p, db->batch * lines);
@@ -463,7 +477,8 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
   if (d->rows <= kSmallMatrixMax &&
-      d->cols <= kSmallMatrixMax && d->rows > 0 && d->cols > 0) {
+      d->cols <= kSmallMatrixMax && d->rows > 0 && d->cols > 0 &&
+      FitsSmallKernel({static_cast<uint64_t>(d->batch * d->rows * d->cols)})) {
     SmallParams p{static_cast<uint32_t>(d->batch),
                   static_cast<uint32_t>(d->rows),
                   static_cast<uint32_t>(d->cols),
