@@ -43,8 +43,8 @@ From source, as an editable install into `.venv` (see `docs/development.md`):
 
 ```
 git clone <this repository> jax-openmetal && cd jax-openmetal
-uv venv --python 3.12 .venv
-scripts/install_dev.sh
+scripts/install_dev.sh     # creates .venv with uv, builds, installs (editable, with pytest)
+scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 ```
 
 ## Use

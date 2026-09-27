@@ -60,9 +60,23 @@ either version differs (`JAX_VERSION`, checked against `pyproject.toml` by
 venv and running `tests/test_smoke.py`, `test_sort.py` and
 `test_callbacks.py` from outside the checkout.
 
-`scripts/install_dev.sh` installs the `jax-openmetal` package (editable)
-into `.venv`, with `jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib`
-a link into `bazel-bin`. The tests and scripts select the platform
+Fresh-clone check (2026-09-27, at 2d777cf): `git clone` into a scratch
+directory, a new `.venv`, `METAL_PJRT_STATE_DIR` pointing at an empty
+scratch directory, then `scripts/install_dev.sh`: 73 s of Bazel (13790
+actions from the shared disk cache, 5 run locally; a machine without the
+cache builds XLA for ~2 hours), and `tests/test_smoke.py`,
+`test_packaging.py` and `test_memory.py` passed under the device lock. Two
+manual steps came up and are now in `install_dev.sh`: creating `.venv`
+(without one it installed into whatever `python3` was on the path) and
+installing pytest (the `test` extra). Clean up a scratch clone with
+`bazel clean --expunge` in it before deleting it (its output base is
+separate, ~8 GB). Only the build, not the uv venv creation, was re-run
+after that change.
+
+`scripts/install_dev.sh` installs the `jax-openmetal` package (editable,
+with the `test` extra) into `.venv`, with
+`jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib` a link into
+`bazel-bin`. The tests and scripts select the platform
 themselves (`JAX_PLATFORMS=openmetal,cpu`), since openmetal is not JAX's
 default backend.
 
