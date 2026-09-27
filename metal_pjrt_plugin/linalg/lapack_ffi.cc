@@ -41,6 +41,7 @@
 //
 // Only f32 is supported (JAX's x64 mode is off on this backend).
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -48,6 +49,7 @@
 #include <vector>
 
 #include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "metal_pjrt_plugin/ffi/metal_ffi.h"
@@ -150,6 +152,21 @@ void CopyIfDistinct(void* dst, const void* src, size_t bytes) {
 absl::Status LapackError(const char* name, int info) {
   return absl::InternalError(
       absl::StrCat(name, ": LAPACK reported illegal argument ", -info));
+}
+
+// The workspace size for a float `query` result (LAPACK's lwork = -1 call),
+// at least `minimum` (the documented minimum). Above 2^24 the float can round
+// below the size LAPACK then requires, so round up to the next float and
+// take the documented minimum too (as jaxlib does).
+absl::StatusOr<int> Workspace(const char* name, float query, int64_t minimum) {
+  const double w = std::max<double>(
+      std::ceil(std::nextafter(query, std::numeric_limits<float>::infinity())),
+      static_cast<double>(std::max<int64_t>(minimum, 1)));
+  if (w > std::numeric_limits<int>::max()) {
+    return absl::InvalidArgumentError(
+        absl::StrCat(name, ": workspace too large for 32-bit LAPACK"));
+  }
+  return static_cast<int>(w);
 }
 
 //===--------------------------------------------------------------------===//
@@ -504,7 +521,9 @@ absl::Status Geqrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   float wq = 0;
   sgeqrf_(&m, &n, x, &lda, t, &wq, &lwork, &info);
   if (info < 0) return LapackError(kName, info);
-  lwork = std::max(1, static_cast<int>(wq));
+  absl::StatusOr<int> ws = Workspace(kName, wq, n);
+  if (!ws.ok()) return ws.status();
+  lwork = *ws;
   std::vector<float> work(lwork);
   for (int64_t b = 0; b < d->batch; ++b) {
     sgeqrf_(&m, &n, x + b * int64_t{m} * n, &lda, t + b * k, work.data(),
@@ -539,7 +558,9 @@ absl::Status Orgqr(stream_executor::Stream* stream, xffi::AnyBuffer a,
   float wq = 0;
   sorgqr_(&m, &n, &k, x, &lda, t, &wq, &lwork, &info);
   if (info < 0) return LapackError(kName, info);
-  lwork = std::max(1, static_cast<int>(wq));
+  absl::StatusOr<int> ws = Workspace(kName, wq, n);
+  if (!ws.ok()) return ws.status();
+  lwork = *ws;
   std::vector<float> work(lwork);
   for (int64_t b = 0; b < d->batch; ++b) {
     sorgqr_(&m, &n, &k, x + b * int64_t{m} * n, &lda, t + b * k, work.data(),
@@ -574,8 +595,12 @@ absl::Status Syevd(stream_executor::Stream* stream, xffi::AnyBuffer a,
   int iwq = 0;
   ssyevd_(&jobz, &uplo, &n, x, &n, wv, &wq, &lwork, &iwq, &liwork, &info);
   if (info < 0) return LapackError(kName, info);
-  lwork = std::max(1, static_cast<int>(wq));
-  liwork = std::max(1, iwq);
+  // Documented minimums for jobz = 'V'.
+  absl::StatusOr<int> ws =
+      Workspace(kName, wq, 1 + 6 * int64_t{n} + 2 * int64_t{n} * n);
+  if (!ws.ok()) return ws.status();
+  lwork = *ws;
+  liwork = std::max(3 + 5 * n, iwq);
   std::vector<float> work(lwork);
   std::vector<int> iwork(liwork);
   for (int64_t b = 0; b < d->batch; ++b) {
@@ -619,7 +644,18 @@ absl::Status GesddImpl(stream_executor::Stream* stream, xffi::AnyBuffer a,
   sgesdd_(&jobz, &m, &n, x, &m, s, uv ? u : &udummy, &ldu,
           uv ? vt : &vtdummy, &ldvt, &wq, &lwork, iwork.data(), &info);
   if (info < 0) return LapackError(kName, info);
-  lwork = std::max(1, static_cast<int>(wq));
+  // Documented minimums: jobz = 'N' needs 3mn + max(mx, 7mn); 'S' and 'A'
+  // need 4mn^2 + 7mn and 4mn^2 + 6mn + mx (LAPACK 3.7+), older releases
+  // 3mn + max(mx, 4mn^2 + 4mn). Take the largest that applies.
+  const int64_t mn = k;
+  const int64_t mx = std::max(m, n);
+  const int64_t min_work =
+      !uv ? 3 * mn + std::max(mx, 7 * mn)
+          : std::max({4 * mn * mn + 7 * mn, 4 * mn * mn + 6 * mn + mx,
+                      3 * mn + std::max(mx, 4 * mn * mn + 4 * mn)});
+  absl::StatusOr<int> ws = Workspace(kName, wq, min_work);
+  if (!ws.ok()) return ws.status();
+  lwork = *ws;
   std::vector<float> work(lwork);
   for (int64_t b = 0; b < d->batch; ++b) {
     float* xb = x + b * int64_t{m} * n;

@@ -325,3 +325,27 @@ def test_lapack_failures_are_values():
   for k, v in expect.items():
     assert got[k].startswith(v + " "), (k, got[k])
   assert got["bad call"].startswith("raised INVALID_ARGUMENT"), got["bad call"]
+
+
+# LAPACK returns workspace sizes as floats: above 2^24 the value can round
+# below the minimum (ssyevd at n=3000 needs 1 + 6n + 2n^2 = 18,018,001 and
+# reported 18,018,000), which LAPACK rejects (info=-8) and which then failed
+# the call. Fresh process: such a failure used to poison the device.
+BIG_EIGH_CHILD = r"""
+import numpy as np, jax, jax.numpy as jnp
+n = 3000
+a = np.random.default_rng(0).standard_normal((n, n)).astype(np.float32)
+a = (a + a.T) / 2
+f = lambda a: jnp.linalg.eigh(a)[0]
+got = np.asarray(jax.jit(f)(jax.device_put(a, jax.devices("openmetal")[0])))
+want = np.asarray(jax.jit(f)(jax.device_put(a, jax.devices("cpu")[0])))
+print("err:", np.abs(got - want).max() / np.abs(want).max())
+"""
+
+
+def test_eigh_workspace_above_2_24():
+  import os
+  env = dict(os.environ, JAX_PLATFORMS="openmetal,cpu")
+  out = run_python(BIG_EIGH_CHILD, env)
+  assert out.returncode == 0 and "err:" in out.stdout, (out.returncode, out.stdout, out.stderr[-2000:])
+  assert float(out.stdout.split("err:")[1]) < 1e-5, out.stdout
