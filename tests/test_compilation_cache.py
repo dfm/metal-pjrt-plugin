@@ -4,16 +4,18 @@ No GPU needed: .venv/bin/python -m pytest tests/test_compilation_cache.py
 """
 
 import inspect
+import os
 
 from jax._src import compilation_cache
 
 import jax_plugins.openmetal as openmetal
+from metal_testing import run_python
 
 
 def test_is_cache_used_still_has_local_platform_list():
     # Tripwire for JAX upgrades: the opt-in presents openmetal backends as "gpu"
     # to this check. If upstream changes it (e.g. adds "openmetal" or moves the
-    # list), revisit _enable_persistent_cache.
+    # list), revisit _install_is_cache_used_wrapper.
     src = inspect.getsource(compilation_cache)
     assert 'supported_platforms = ["tpu", "gpu", "cpu", "neuron"]' in src
     assert "backend.platform in supported_platforms" in src
@@ -52,3 +54,18 @@ def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     # Installing twice does not stack wrappers.
     openmetal._install_is_cache_used_wrapper()
     assert compilation_cache.is_cache_used is wrapped
+
+
+def test_plugin_sets_no_cache_dir():
+    # Installing the plugin must not turn on JAX's persistent cache: its
+    # initialize() runs whatever JAX_PLATFORMS says (CPU only here, no GPU).
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("JAX_COMPILATION_CACHE_DIR", "JAX_ENABLE_COMPILATION_CACHE")}
+    env["JAX_PLATFORMS"] = "cpu"
+    out = run_python(
+        "import jax, jax._src.xla_bridge as xb\n"
+        "jax.devices()\n"
+        "assert 'openmetal' in xb._backend_factories, 'plugin not initialized'\n"
+        "print(jax.config.jax_compilation_cache_dir)\n", env)
+    assert out.returncode == 0, out.stderr[-2000:]
+    assert out.stdout.strip() == "None", out.stdout

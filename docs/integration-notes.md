@@ -262,11 +262,14 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   openmetal backends only, calls the original with a proxy whose `platform` is
   "gpu" (all else forwarded), so upstream's one-shot bookkeeping still
   runs. `tests/test_compilation_cache.py` asserts the list is still there.
-  The plugin sets `jax_compilation_cache_dir` to
-  `~/.cache/openmetal/compilation_cache` unless one is configured
-  (`JAX_COMPILATION_CACHE_DIR`, `jax.config`). The setting is process-wide:
-  installing the plugin turns the persistent cache on for every backend in
-  the process, CPU compiles included. JAX's own thresholds apply
+  The plugin never sets `jax_compilation_cache_dir` (dfm, 2026-09-27): the
+  setting is process-wide and `initialize()` runs for every installed
+  plugin whatever `JAX_PLATFORMS` says, so a default directory turned the
+  cache on for CPU-only users too. Users configure it
+  (`JAX_COMPILATION_CACHE_DIR`, `jax.config`; README, "Compilation cache");
+  `tests/test_compilation_cache.py` checks the plugin leaves it unset.
+  `~/.cache/openmetal/compilation_cache`, the default the plugin used to
+  set, is orphaned and can be deleted. JAX's own thresholds apply
   (only compiles over `jax_persistent_cache_min_compile_time_secs`, 1 s by
   default, are written). Executables with metal host callbacks bypass it
   (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`

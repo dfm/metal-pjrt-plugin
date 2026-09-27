@@ -91,10 +91,25 @@ environments are simpler.
   `fft` as a dense DFT (correct, O(n^2) per axis).
 - `pure_callback`, `io_callback`, `jax.debug.print` and
   `jax.debug.callback`.
-- JAX's persistent compilation cache (in `~/.cache/openmetal/` unless you
-  configure a directory; JAX's defaults decide what gets cached).
+- JAX's persistent compilation cache, when you turn it on (below).
 
 `docs/op-coverage.md` has the full table.
+
+## Compilation cache
+
+JAX's persistent compilation cache works for openmetal but, as in JAX, is
+off until you give it a directory. The plugin never sets one: the setting
+is process-wide, so it would also cache your CPU compiles.
+
+```
+export JAX_COMPILATION_CACHE_DIR=~/.cache/jax   # or jax.config.update("jax_compilation_cache_dir", ...)
+export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
+```
+
+The second line matters: JAX only caches compiles that took over 1 s, and
+most openmetal compiles are faster. With both set, the first call of the
+nanoGPT training step in `bench/jax_bench.py` in a new process takes ~0.42 s
+from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
 
 ## What is refused (with an error, never a wrong answer)
 

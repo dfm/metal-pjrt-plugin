@@ -473,7 +473,9 @@ cache.
 Caveat: JAX only writes entries whose compile took longer than
 `jax_persistent_cache_min_compile_time_secs` (default 1 s). Both programs
 above compile in under a second on Metal, so with the defaults they are
-not cached; the plugin does not change that threshold.
+not cached; the plugin does not change that threshold. (Since 2026-09-27 the
+plugin sets no cache directory either; the README says how to turn the
+cache on.)
 
 ## Metal-only rewrites: end-to-end A/B (2026-09-27)
 

@@ -4,7 +4,8 @@ Modeled on jax_plugins/cuda/__init__.py: registers the PJRT plugin dylib
 next to this file (packaged by scripts/build_wheel.sh, or a link into
 bazel-bin made by scripts/install_dev.sh) under platform
 "openmetal" (not "metal", which is Apple's jax-metal plugin),
-then opts it into the persistent compilation cache and installs the
+then lets JAX's persistent compilation cache serve it (when the user
+configures a cache directory; the plugin never sets one) and installs the
 lowerings and host callbacks the plugin needs.
 """
 
@@ -72,19 +73,6 @@ def _install_is_cache_used_wrapper():
     compilation_cache.is_cache_used = is_cache_used
 
 
-def _enable_persistent_cache():
-    """Opt in, and unless a cache directory is configured
-    (jax_compilation_cache_dir / JAX_COMPILATION_CACHE_DIR) use
-    ~/.cache/openmetal/compilation_cache. jax_enable_compilation_cache=False
-    turns it off."""
-    import jax
-
-    _install_is_cache_used_wrapper()
-    if jax.config.jax_compilation_cache_dir is None:
-        cache = pathlib.Path.home() / ".cache" / "openmetal" / "compilation_cache"
-        jax.config.update("jax_compilation_cache_dir", str(cache))
-
-
 def _check_versions():
     import jax
     import jaxlib
@@ -138,8 +126,11 @@ def initialize():
     # JAX_PLATFORMS=openmetal,cpu (or jax.config.update("jax_platforms", ...))
     # or use jax.devices("openmetal") explicitly.
     xb.register_plugin(PLATFORM, priority=-100, library_path=str(path), options=options)
+    # Only makes the cache usable for openmetal. The cache directory is
+    # process-wide JAX config (it would turn caching on for CPU too, and this
+    # runs whenever the plugin is installed), so it is left to the user.
     try:
-        _enable_persistent_cache()
+        _install_is_cache_used_wrapper()
     except Exception as e:  # noqa: BLE001 - never break plugin init
         logger.warning("openmetal: persistent compilation cache unavailable: %s", e)
     # Lowering rules for primitives upstream only lowers on named platforms.
