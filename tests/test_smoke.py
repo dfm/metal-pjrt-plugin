@@ -12,7 +12,26 @@ pytestmark = pytest.mark.metal
 
 
 def test_backend_is_openmetal():
+    # conftest sets JAX_PLATFORMS=openmetal,cpu.
     assert jax.default_backend() == "openmetal", jax.default_backend()
+
+
+def test_opt_in():
+    # Installed but not selected: CPU stays JAX's default backend, and
+    # openmetal is there to use explicitly.
+    import os, subprocess, sys
+    env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
+    code = (
+        "import jax, jax.numpy as jnp\n"
+        "assert jax.default_backend() == 'cpu', jax.default_backend()\n"
+        "d = jax.devices('openmetal')[0]\n"
+        "x = jax.device_put(jnp.arange(4.0), d)\n"
+        "y = jax.jit(lambda x: x * 2 + 1)(x)\n"
+        "assert y.devices() == {d} and y.tolist() == [1.0, 3.0, 5.0, 7.0]\n"
+        "print('OK')\n")
+    out = subprocess.run([sys.executable, "-c", code], env=env,
+                         capture_output=True, text=True)
+    assert out.returncode == 0 and "OK" in out.stdout, out.stderr[-2000:]
 
 
 def test_transfer():

@@ -112,7 +112,11 @@ def initialize():
         # explicit.)
         "should_stage_host_to_device_transfers": False,
     }
-    xb.register_plugin(PLATFORM, priority=500, library_path=str(path), options=options)
+    # Opt-in: a priority below CPU's (0), so installing the plugin does not
+    # change JAX's default backend. Select it with
+    # JAX_PLATFORMS=openmetal,cpu (or jax.config.update("jax_platforms", ...))
+    # or use jax.devices("openmetal") explicitly.
+    xb.register_plugin(PLATFORM, priority=-100, library_path=str(path), options=options)
     try:
         _enable_persistent_cache()
     except Exception as e:  # noqa: BLE001 - never break plugin init

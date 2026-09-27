@@ -1,9 +1,11 @@
 """tinygp value+grad and predict timings (ms, mean of 5) on metal and CPU,
 for the configurations tests/test_tinygp.py checks.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=openmetal,cpu .venv/bin/python bench/tinygp_bench.py
+  scripts/device_lock.py -- .venv/bin/python bench/tinygp_bench.py
 """
 import os, sys, time
+# openmetal is opt-in (not the default backend).
+os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 import jax
 from test_tinygp import P0, build, data  # noqa: E402

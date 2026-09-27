@@ -1,11 +1,14 @@
 """Median wall times (ms) of linear algebra on metal and CPU.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=openmetal,cpu .venv/bin/python bench/linalg_bench.py [n ...]
+  scripts/device_lock.py -- .venv/bin/python bench/linalg_bench.py [n ...]
 
 Sizes default to 256, 1000, 3000; eigh / svd are only timed for n <= 1000.
 """
+import os
 import sys
 
+# openmetal is opt-in (not the default backend).
+os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
 import numpy as np
 import jax
 import jax.numpy as jnp

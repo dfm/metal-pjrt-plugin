@@ -7,6 +7,8 @@ standard, and on metal with METAL_PJRT_TRACE=1 the GPU time (common.gpu_ms).
 """
 import functools, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
+# openmetal is opt-in (not the default backend); JAX_PLATFORMS=cpu for the CPU arm.
+os.environ.setdefault("JAX_PLATFORMS", "openmetal")
 import numpy as np
 import jax, jax.numpy as jnp
 from common import timeit, emit, gpu_ms, selected

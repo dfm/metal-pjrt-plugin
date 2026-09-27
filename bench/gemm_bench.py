@@ -1,6 +1,8 @@
 # Same GEMM cases as bench/jax_bench.py, without its unrelated setup.
 import os, sys
 sys.path.insert(0, "/Users/dfm/src/dfm/jax-plugin/bench")
+# openmetal is opt-in (not the default backend); JAX_PLATFORMS=cpu for the CPU arm.
+os.environ.setdefault("JAX_PLATFORMS", "openmetal")
 import jax, jax.numpy as jnp
 from common import timeit, emit
 B = os.environ.get("BENCH_LABEL", jax.default_backend())

@@ -66,11 +66,12 @@ bench/run_all.sh                                               # benchmarks vs c
 `.venv`; JAX discovers it through the `jax_plugins` entry point and registers
 the platform `"openmetal"` (the dylib is
 `jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib`, a link into
-`bazel-bin`). With `JAX_PLATFORMS` unset it is the default backend:
+`bazel-bin`). It is opt-in: with `JAX_PLATFORMS` unset CPU stays the
+default backend and openmetal is only used explicitly:
 
 ```
-.venv/bin/python -c 'import jax; print(jax.default_backend(), jax.devices("openmetal"))'
-JAX_PLATFORMS=openmetal,cpu .venv/bin/python my_script.py   # openmetal plus CPU, nothing else
+.venv/bin/python -c 'import jax; print(jax.default_backend(), jax.devices("openmetal"))'  # cpu [OpenmetalDevice(id=0)]
+JAX_PLATFORMS=openmetal,cpu .venv/bin/python my_script.py   # openmetal is the default
 ```
 
 Environment: `JAX_OPENMETAL_ALLOCATOR` (`platform`: the runtime's caching
