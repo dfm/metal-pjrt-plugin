@@ -774,3 +774,50 @@ stays finite, a malformed `metal$cholesky` call raises INVALID_ARGUMENT, and
 an unrelated jit still works after each). Both failed under mutations of
 the host-task version (task run without waiting; info > 0 made an error,
 which set the sticky error and killed the child).
+
+## Sort via SortRewriter: MSL radix sort (2026-09-27, roadmap 2.2)
+
+`ApplyMetalDefaults` now enables `xla_gpu_enable_cub_radix_sort`, and the
+`xla.gpu.ext.cub_sort_{keys,pairs}` targets run an MSL LSD radix sort
+(`ffi/cub_sort_ffi.cc`): 4-bit digits, 256 threads x 8 items per tile,
+stable in-tile ranking by one scan over per-thread digit counts. Rows of at
+most 2048 are sorted by one threadgroup each in threadgroup memory (one
+dispatch); longer rows take hist / scan / scatter dispatches per digit pass
+(24 for 32-bit keys), ping-ponging through scratch.
+
+Interleaved in one process (the arm is `METAL_PJRT_DISABLE_REWRITES`, read
+per compile), 8 rounds x 15 calls, per-call wall us pooled, p10 / median /
+p90. `bitonic` = `METAL_PJRT_DISABLE_REWRITES=cubsort` (MetalSortExpander
+only, the previous behaviour):
+
+| program | radix | bitonic |
+|---|---|---|
+| jnp.sort f32 20k | 296 / 307 / 541 | 13839 / 14014 / 14707 |
+| jnp.sort f32 100k | 424 / 429 / 448 | 20483 / 20688 / 21092 |
+| jnp.sort f32 1M | 2491 / 2557 / 2677 | 107699 / 108463 / 109864 |
+| jnp.sort i32 1M | 1630 / 1644 / 1710 | 107981 / 108687 / 111015 |
+| argsort f32 20k | 297 / 311 / 316 | 13573 / 14004 / 14167 |
+| argsort f32 1M | 3757 / 3843 / 4085 | 107834 / 108335 / 110687 |
+| sort rows f32 16x65536 | 2302 / 2400 / 2509 | 69070 / 69632 / 70425 |
+| sort rows f32 64x4096 | 648 / 665 / 672 | 12866 / 13343 / 13541 |
+| sort rows f32 200x1000 | 376 / 386 / 394 | 8571 / 8686 / 8864 |
+| argsort rows f32 1000x128 | 916 / 964 / 1011 | 3897 / 3960 / 4123 |
+| argsort rows f32 300x100 | 425 / 434 / 455 | 3489 / 3567 / 3724 |
+| sort rows f32 1000x65 | 891 / 946 / 995 | 3943 / 4092 / 4252 |
+| sort rows f32 1000x32 (bitonic in both) | 262 / 266 / 270 | 301 / 310 / 314 |
+| sort rows f32 5000x8 (bitonic in both) | 229 / 239 / 242 | 240 / 250 / 260 |
+| tinygp key/value i32 12500x4 (bitonic in both) | 203 / 211 / 216 | 199 / 210 / 214 |
+| tinygp key/value i32 100000x4 (bitonic in both) | 336 / 341 / 353 | 340 / 348 / 365 |
+
+16M elements: jnp.sort 41 ms, argsort 60 ms (bit-identical to numpy).
+
+SortRewriter's non-CUDA rule takes every simple sort of more than 16384
+elements however short its rows, and before the small-row fix the radix sort
+lost badly there (one 256-thread threadgroup per row): 1000x32 942 us vs
+307, 5000x8 3560 vs 250, tinygp's 12500x4 8386 vs 213 and 100000x4 64959
+vs 353. So `RunHloPasses` first expands sorts with rows of <= 64 (the
+bitonic network's straight-line case) and more than 16384 elements with
+`MetalSortExpander`; SortRewriter never sees them. Smaller sorts are left to
+the later expansion as before. tinygp (`bench/tinygp_bench.py`, 3
+interleaved rounds per arm) and the nanoGPT train step (no sorts) are
+unchanged.

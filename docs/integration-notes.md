@@ -186,6 +186,16 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   also calls it through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
   (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin.
   `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.
+- XLA's SortRewriter targets `xla.gpu.ext.cub_sort_keys` / `cub_sort_pairs`
+  (`ffi/cub_sort_ffi.cc`, mirroring `cub_sort_kernel_cuda.cc`): the
+  instantiate stage returns the scratch size as `int64_t` state, which
+  `EstimateCubSortScratchSize` reads at compile time (it calls the handler
+  with null buffers and a zero-sized scratch); execute recomputes the layout
+  and refuses a smaller scratch before encoding. Default layouts are forced
+  for these calls, so rows are contiguous. SortRewriter's non-CUDA rule is
+  total elements > 16384 regardless of row length; `RunHloPasses` expands
+  rows <= 64 of such sorts with `MetalSortExpander` first.
+  `METAL_PJRT_DISABLE_REWRITES=cubsort` turns SortRewriter off.
   (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
   end-to-end A/B, docs/performance.md.)
 - Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers

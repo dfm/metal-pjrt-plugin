@@ -263,6 +263,40 @@ ENTRY e {
   RunAndCompare(hlo, args);
 }
 
+// The RunHloPasses filter: only rows of <= 64 in sorts of more than 16384
+// elements (the ones SortRewriter would otherwise take).
+TEST_F(MetalSortExpanderTest, FilterKeepsLongRowsAndSmallSorts) {
+  const char* hlo = R"(
+HloModule m
+lt {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT c = pred[] compare(a, b), direction=LT
+}
+ENTRY e {
+  tiny_rows = f32[1000,32] parameter(0)
+  long_rows = f32[200,100] parameter(1)
+  small = f32[100,32] parameter(2)
+  sort_a = f32[1000,32] sort(tiny_rows), dimensions={1}, to_apply=lt
+  sort_b = f32[200,100] sort(long_rows), dimensions={1}, to_apply=lt
+  sort_c = f32[100,32] sort(small), dimensions={1}, to_apply=lt
+  ROOT t = (f32[1000,32], f32[200,100], f32[100,32]) tuple(sort_a, sort_b, sort_c)
+})";
+  auto module = ParseAndReturnVerifiedModule(hlo);
+  ASSERT_TRUE(module.ok()) << module.status();
+  MetalSortExpander pass(/*max_sort_dim=*/64, /*min_elements=*/16384);
+  auto changed = RunHloPass(&pass, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_TRUE(*changed);
+  std::vector<std::string> left;
+  for (const HloInstruction* i :
+       (*module)->entry_computation()->instructions()) {
+    if (i->opcode() == HloOpcode::kSort) left.push_back(std::string(i->name()));
+  }
+  std::sort(left.begin(), left.end());
+  EXPECT_EQ(left, (std::vector<std::string>{"sort_b", "sort_c"}));
+}
+
 }  // namespace
 }  // namespace gpu
 }  // namespace xla

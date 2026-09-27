@@ -31,8 +31,10 @@ namespace gpu {
 // emitters; the target-binary step hands back that MSL source or, for the
 // constants module, a serialized constants container.
 // Defaults the Metal backend needs regardless of what the client asked for:
-//  - xla_gpu_enable_cub_radix_sort=false: SortRewriter would turn large sorts
-//    into CUB FFI custom calls, which have no Metal handler.
+//  - xla_gpu_enable_cub_radix_sort=true unless METAL_PJRT_DISABLE_REWRITES
+//    lists "cubsort": SortRewriter turns simple sorts of more than 16384
+//    elements into xla.gpu.ext.cub_sort_* calls, handled by the MSL radix
+//    sort in metal_pjrt_plugin/ffi/cub_sort_ffi.cc.
 //  - xla_gpu_enable_command_buffer cleared: no command buffer support (the
 //    OneAPI capability disables them too; this makes it explicit).
 //  - xla_gpu_enable_triton_gemm=false: Triton does not target Metal.

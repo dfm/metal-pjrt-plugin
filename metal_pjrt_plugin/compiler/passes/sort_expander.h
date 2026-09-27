@@ -1,6 +1,9 @@
 #ifndef METAL_PJRT_PLUGIN_COMPILER_PASSES_SORT_EXPANDER_H_
 #define METAL_PJRT_PLUGIN_COMPILER_PASSES_SORT_EXPANDER_H_
 
+#include <cstdint>
+#include <limits>
+
 #include "absl/container/flat_hash_set.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -25,14 +28,28 @@ namespace gpu {
 // kMap when it contains non-elementwise ops) and made a strict total order by
 // breaking ties on the original index, so the result is always stable. Padded
 // elements (original position >= n) compare greater than every real element.
+//
+// By default every sort is expanded. With a filter, only sorts whose sort
+// dimension is at most `max_sort_dim` and that have more than `min_elements`
+// elements: RunHloPasses uses that to keep batched tiny sorts (the
+// straight-line network, <= 64 per row) away from XLA's SortRewriter, which
+// takes every simple sort of more than 16384 elements and whose radix sort
+// (cub_sort_ffi.cc) runs one threadgroup per row.
 class MetalSortExpander : public HloModulePass {
  public:
+  MetalSortExpander() = default;
+  MetalSortExpander(int64_t max_sort_dim, int64_t min_elements)
+      : max_sort_dim_(max_sort_dim), min_elements_(min_elements) {}
   absl::string_view name() const override { return "metal-sort-expander"; }
 
  protected:
   absl::StatusOr<bool> RunImpl(
       HloModule* module,
       const absl::flat_hash_set<absl::string_view>& execution_threads) override;
+
+ private:
+  int64_t max_sort_dim_ = std::numeric_limits<int64_t>::max();
+  int64_t min_elements_ = -1;
 };
 
 }  // namespace gpu

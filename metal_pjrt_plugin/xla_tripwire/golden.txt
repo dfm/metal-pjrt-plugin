@@ -204,7 +204,7 @@ return event_->event.event()->PollForStatus() == se::Event::Status::kComplete;
 }
 
 ### xla/backends/gpu/transforms/sort_rewriter.cc @ return Product(operand_shape.dimensions()) > 16384;
-# why: Non-CUDA CUB-sort threshold counts total elements (roadmap 2.2; ApplyMetalDefaults keeps cub radix sort off today).
+# why: Non-CUDA CUB-sort threshold counts total elements; RunHloPasses pre-expands rows <= 64 above it so SortRewriter never sees them (cub_sort_ffi.cc).
 // TODO(b/410480351): The default heuristic below is pretty bad in the general
 // case. Run benchmarks on different devices and add a heuristic per device.
 return Product(operand_shape.dimensions()) > 16384;
@@ -216,7 +216,7 @@ pipeline.AddPass<TopkSpecializer>(gpu_version);
 pipeline.AddPass<TopkDecomposer>();
 
 ### xla/service/gpu/gpu_compiler.cc @ // SortRewriter needs to run before StableSortExpander.
-# why: SortRewriter only with xla_gpu_enable_cub_radix_sort (ApplyMetalDefaults turns it off).
+# why: SortRewriter only with xla_gpu_enable_cub_radix_sort (ApplyMetalDefaults turns it on unless DISABLE_REWRITES=cubsort); runs before MetalSortExpander.
 // SortRewriter needs to run before StableSortExpander.
 if (debug_options.xla_gpu_enable_cub_radix_sort()) {
 pipeline.AddPass<SortRewriter>(gpu_target_config.device_description,

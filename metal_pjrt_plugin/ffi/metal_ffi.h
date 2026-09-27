@@ -43,6 +43,9 @@ inline constexpr char kMetalFfiPlatform[] = "METAL";
 
 // Custom-call target names of the handlers in this directory.
 inline constexpr char kScanTarget[] = "metal$scan";
+// XLA's SortRewriter targets (xla/service/gpu/cublas_cudnn.h).
+inline constexpr char kCubSortKeysTarget[] = "xla.gpu.ext.cub_sort_keys";
+inline constexpr char kCubSortPairsTarget[] = "xla.gpu.ext.cub_sort_pairs";
 
 // The runtime stream and device behind an se::Stream owned by the Metal
 // StreamExecutor. Fails for streams of other platforms.

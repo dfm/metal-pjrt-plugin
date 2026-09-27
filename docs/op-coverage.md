@@ -42,7 +42,7 @@ emitter's default case ("Unsupported instruction opcode").
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | applied in steel's store (bias, relu / tanh-gelu / silu, aux; f16/bf16); f32 and `METAL_PJRT_GEMM=mps`: MPS GEMM + one MSL epilogue kernel; verified by `tests/test_epilogue.py`, `blas:metal_blas_lt_test` and `blas:metal_blas_lt_mps_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
-| sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
+| sort, argsort, top_k, searchsorted, unique | Simple comparators on more than 16384 elements: XLA's SortRewriter -> `xla.gpu.ext.cub_sort_{keys,pairs}` FFI, an MSL LSD radix sort (`metal_pjrt_plugin/ffi/cub_sort_ffi.cc`). Everything else, and rows of <= 64 (pre-expanded in `RunHloPasses`): `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`), a bitonic network (straight-line up to 64 per row, else a while loop of gather + elementwise compare-and-swap); TopK decomposes back to sort on OneAPI | OK | bit-identical to CPU incl. 16M elements, batched, +-0/NaN and stability (`tests/test_sort.py`, `ffi:cub_sort_test`); `METAL_PJRT_DISABLE_REWRITES=cubsort` sends every sort to the bitonic network |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
@@ -100,7 +100,7 @@ operands (`tests/test_steel_gemm.py`).
 1. ~~Sort~~ (done: `MetalSortExpander` bitonic network).
 2. ~~`TriangularSolveExpander` in MetalCompiler~~ (done; f32 solves and
    Cholesky go to LAPACK / small-matrix GPU kernels via `MetalLinalgRewriter`).
-3. ~~`xla_gpu_enable_cub_radix_sort=false` by default~~ (done).
+3. ~~`xla_gpu_enable_cub_radix_sort=false` by default~~ (done; re-enabled with Metal handlers, roadmap 2.2).
 4. ~~BlasLt epilogues~~ (done).
 5. ~~Argument buffers for kernels with more than 31 buffers~~ (done).
 6. ~~bf16/f8 conversion rounding~~ (not a bug: excess precision, above).

@@ -451,9 +451,14 @@ absl::StatusOr<bool> MetalSortExpander::RunImpl(
   for (HloComputation* comp :
        module->MakeNonfusionComputations(execution_threads)) {
     for (HloInstruction* instr : comp->instructions()) {
-      if (instr->opcode() == HloOpcode::kSort) {
-        sorts.push_back(Cast<HloSortInstruction>(instr));
+      if (instr->opcode() != HloOpcode::kSort) continue;
+      auto* sort = Cast<HloSortInstruction>(instr);
+      const Shape& shape = sort->operand(0)->shape();
+      if (shape.dimensions(sort->sort_dimension()) > max_sort_dim_ ||
+          ShapeUtil::ElementsIn(shape) <= min_elements_) {
+        continue;
       }
+      sorts.push_back(sort);
     }
   }
   for (HloSortInstruction* sort : sorts) {
