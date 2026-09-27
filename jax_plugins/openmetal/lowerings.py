@@ -10,17 +10,13 @@ EighExpander, TriangularSolveExpander).
 
 Registered for platform "openmetal":
 
-* ``eigh``: ``jax._src.tpu.linalg.eigh._eigh_tpu_lowering``. n <= 256 emits
-  the XLA ``Eigh`` custom call (Jacobi; rewritten by EighExpander), larger
-  matrices use the pure-JAX QDWH spectral divide-and-conquer. This also fixes
-  ``svd``, whose generic lowering (``_svd_tpu_lowering_rule``) is QDWH-based
-  and calls ``eigh``.
 * ``fft``: a pure-JAX dense DFT (real matmuls against in-graph twiddle
   matrices). O(n^2) per transformed axis -- correct but slow; a stopgap until
   there is a native FFT (XLA's FftThunk is cuFFT/hipFFT-only).
 * ``check`` (checkify): the TPU rule, i.e. a no-op for ``debug=True`` checks
-  and the usual "functionalize with checkify" error otherwise (the runtime
-  error path needs host callbacks).
+  and the usual "functionalize with checkify" error otherwise. The cpu/gpu
+  rule, which raises from a host callback, is not wired up (host callbacks
+  work, see docs/callbacks.md; nobody has needed it).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
   goes through ``emit_python_callback``, which jax_plugins/openmetal/callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
@@ -28,8 +24,10 @@ Registered for platform "openmetal":
 Float32 cholesky, triangular_solve, lu, geqrf/householder_product (qr), eigh
 and svd go through Accelerate LAPACK instead (the C++ MetalLinalgRewriter and
 jax_plugins/openmetal/linalg_lowerings.py, registered last; its docstring has
-the ownership table). The generic rules and the rules above are their
-fallbacks for other dtypes, unsupported options and METAL_PJRT_DISABLE_LAPACK.
+the ownership table). The generic rules and the TPU ``eigh`` rule
+(``_eigh_tpu_lowering``: Jacobi via EighExpander for n <= 256, QDWH above;
+``svd``'s generic rule calls it) are their fallbacks for other dtypes,
+unsupported options and METAL_PJRT_DISABLE_LAPACK.
 
 Primitives that already lower via generic rules and need nothing here:
 lu_pivots_to_permutation, tridiagonal_solve, threefry2x32, rng_bit_generator, approx_top_k
@@ -162,12 +160,6 @@ def register() -> None:
     except Exception as e:  # noqa: BLE001 - never break plugin init
       logger.warning("openmetal: could not register lowering for %s: %s", what, e)
 
-  def _eigh():
-    from jax._src.lax import linalg as lax_linalg
-    from jax._src.tpu.linalg import eigh as tpu_eigh
-    mlir.register_lowering(lax_linalg.eigh_p, tpu_eigh._eigh_tpu_lowering,
-                           platform=PLATFORM)
-
   def _fft():
     from jax._src.lax import fft as lax_fft
     mlir.register_lowering(
@@ -189,7 +181,6 @@ def register() -> None:
                            debugging.debug_print_lowering_rule,
                            platform=PLATFORM)
 
-  reg("eigh", _eigh)
   reg("fft", _fft)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)

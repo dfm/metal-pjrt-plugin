@@ -55,3 +55,16 @@ def test_constants_and_broadcasting():
     np.testing.assert_array_equal(
         np.asarray(h(jnp.zeros((8, 4), dtype=jnp.float32))),
         np.tile([1.0, 2.0, 3.0, 4.0], (8, 1)))
+
+
+def test_grad_of_mlp():
+    rng = np.random.default_rng(0)
+    def loss(w, x): return jnp.sum(jnp.tanh(x @ w) ** 2)
+    w = rng.standard_normal((8, 4)).astype(np.float32) * 0.3
+    x = rng.standard_normal((16, 8)).astype(np.float32)
+    check(jax.grad(loss), w, x, ulps=1.8, normwise=True, name="grad mlp")
+
+
+def test_large_elementwise():
+    x = jnp.ones((2048, 2048), jnp.float32)
+    assert float(jnp.sum(x * 2 + 1)) == 3 * 2048 * 2048

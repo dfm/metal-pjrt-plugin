@@ -35,8 +35,6 @@ the plugin.
 - `tests/`: pytest suite (below); `scripts/jax_known_failures/`: the expected
   failures of JAX's own tests.
 - `bench/`: benchmarks (Python, and the C++ dispatch microbenchmark).
-- `scripts/build_spike.sh`: the staged overnight build that established that
-  XLA's GPU stack compiles here without CUDA, and what it costs.
 
 ## Building and testing
 

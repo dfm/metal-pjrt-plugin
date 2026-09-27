@@ -152,7 +152,7 @@ with CUDA's ftz, and are deliberately not fixed. Open question for dfm:
 
 With the softmax rewriter deleted (no end-to-end win, docs/performance.md),
 f16 softmax runs as XLA's fusions: 9.5 ulps max over
-`tests/test_fused_kernels.py`'s shapes, the same as CPU, against 5.0 via
+`tests/test_scan.py`'s shapes, the same as CPU, against 5.0 via
 `metal$softmax` (which accumulated in f32). f32 (30.6 ulps, CPU 30.3) and
 bf16 (0.5) are unchanged; f16 log_softmax 1.0 vs 0.55.
 

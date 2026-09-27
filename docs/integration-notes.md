@@ -184,7 +184,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   executable re-runs instantiate (checked: persistent-cache hit, same result).
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
-- Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_ffi.py`
+- Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_scan.py`
   also calls it through `jax.ffi.ffi_call`); `//metal_pjrt_plugin/ffi:cub_sort_test`
   looks handlers up in the static registry and invokes them as XLA does.
   `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.

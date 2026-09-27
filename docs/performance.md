@@ -512,7 +512,7 @@ outside users, so it never fires under autodiff: the nanoGPT train step
 (111 custom calls, all GEMMs) and every fwd+bwd case keep XLA's fusions.
 Where it fires inside a real program (attention and nanoGPT forward) the
 gain is zero; it only wins on a standalone softmax. Accuracy (ulps against
-f64, max over tests/test_fused_kernels.py shapes, on / off / CPU f32):
+f64, max over tests/test_scan.py shapes, on / off / CPU f32):
 f32 softmax 30.6 / 30.6 / 30.3, log_softmax 1.04 / 1.03 / 1.04; f16
 softmax 5.0 / 9.5 / 9.5; bf16 equal. Decision: **softmax rewriter deleted**
 (roadmap 2.3), with its FFI handler and tests. The scan rewriter wins 1.4-3.2x

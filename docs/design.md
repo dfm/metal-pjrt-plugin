@@ -81,7 +81,7 @@ float64 (Metal has none; reject, consider double-float emulation later).
 
 ## Milestones
 
-1. Build spike (`scripts/build_spike.sh`): does the GPU compiler build on macOS
+1. Build spike: does the GPU compiler build on macOS
    arm64 without CUDA, and at what cost. Go/no-go.
 2. StreamExecutor Metal platform, validated with XLA's own stream_executor tests.
 3. `MetalCompiler` with a kernel compiler doing MLIR -> EmitC -> MSL (see
