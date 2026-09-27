@@ -28,6 +28,7 @@ cc_library(
         "@xla//xla/ffi",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/stream_executor:platform",
+        "@xla//xla/stream_executor:platform_manager",
         "@xla//xla/stream_executor:stream",
         "@xla//xla/stream_executor:stream_executor_h",
     ],

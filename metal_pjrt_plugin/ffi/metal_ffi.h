@@ -52,6 +52,10 @@ struct MetalContext {
 };
 absl::StatusOr<MetalContext> GetMetalContext(stream_executor::Stream* stream);
 
+// The runtime device of Metal executor 0 (the only one). For the FFI
+// instantiate stage, which runs without a stream.
+absl::StatusOr<rt::Device*> DefaultMetalDevice();
+
 // Compiles `msl_source` (once per device and source) and returns the kernel
 // `function` from it. The returned pointer lives as long as the process.
 absl::StatusOr<const rt::Kernel*> GetOrCreateKernel(
@@ -68,23 +72,17 @@ absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type);
 // A 1-D threadgroup (threads.y == threads.z == 1) larger than the pipeline's
 // maxTotalThreadsPerThreadgroup is clamped to it, rounded down to a multiple
 // of the SIMD width, so kernels must loop with a threadgroup-size stride.
+// LaunchKernel is the same for an already compiled kernel.
 template <typename Params>
-absl::Status LaunchMsl(stream_executor::Stream* stream,
-                       const std::string& msl_source,
-                       const std::string& function,
-                       const std::vector<const void*>& buffers,
-                       const Params& params, rt::Dim3 threadgroups,
-                       rt::Dim3 threads,
-                       uint32_t threadgroup_memory_bytes = 0) {
+absl::Status LaunchKernel(rt::Stream* stream, const rt::Kernel& kernel,
+                          const std::vector<const void*>& buffers,
+                          const Params& params, rt::Dim3 threadgroups,
+                          rt::Dim3 threads,
+                          uint32_t threadgroup_memory_bytes = 0) {
   static_assert(std::is_trivially_copyable_v<Params>);
-  absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
-  if (!ctx.ok()) return ctx.status();
-  absl::StatusOr<const rt::Kernel*> kernel =
-      GetOrCreateKernel(ctx->device, msl_source, function);
-  if (!kernel.ok()) return kernel.status();
   if (threads.y == 1 && threads.z == 1) {
-    uint32_t max_threads = (*kernel)->max_total_threads_per_threadgroup();
-    uint32_t width = std::max<uint32_t>((*kernel)->thread_execution_width(), 1);
+    uint32_t max_threads = kernel.max_total_threads_per_threadgroup();
+    uint32_t width = std::max<uint32_t>(kernel.thread_execution_width(), 1);
     if (max_threads > 0 && threads.x > max_threads) {
       threads.x = std::max(width, max_threads / width * width);
     }
@@ -93,8 +91,25 @@ absl::Status LaunchMsl(stream_executor::Stream* stream,
   args.reserve(buffers.size() + 1);
   for (const void* b : buffers) args.push_back(rt::KernelArg::Buffer(b));
   args.push_back(rt::KernelArg::Bytes(&params, sizeof(Params)));
-  return ctx->stream->Launch(**kernel, threadgroups, threads, args,
-                             threadgroup_memory_bytes);
+  return stream->Launch(kernel, threadgroups, threads, args,
+                        threadgroup_memory_bytes);
+}
+
+template <typename Params>
+absl::Status LaunchMsl(stream_executor::Stream* stream,
+                       const std::string& msl_source,
+                       const std::string& function,
+                       const std::vector<const void*>& buffers,
+                       const Params& params, rt::Dim3 threadgroups,
+                       rt::Dim3 threads,
+                       uint32_t threadgroup_memory_bytes = 0) {
+  absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
+  if (!ctx.ok()) return ctx.status();
+  absl::StatusOr<const rt::Kernel*> kernel =
+      GetOrCreateKernel(ctx->device, msl_source, function);
+  if (!kernel.ok()) return kernel.status();
+  return LaunchKernel(ctx->stream, **kernel, buffers, params, threadgroups,
+                      threads, threadgroup_memory_bytes);
 }
 
 }  // namespace ffi

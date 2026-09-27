@@ -94,3 +94,11 @@ both; gelu/tanh MLP 2048x1024x4096 12.9-13.0 both; softmax 8192x1024 1.04-1.06
 vs 0.99-1.06; nanoGPT train step 181.8-185.3 vs 180.9-186.1. Taking the
 polynomial is faster than Metal's `exp`/`sin`/`cos`, and the branch costs
 nothing measurable outside the range.
+
+## softmax in f16 after the metal$softmax removal (2026-09-27)
+
+With the softmax rewriter deleted (no end-to-end win, docs/performance.md),
+f16 softmax runs as XLA's fusions: 9.5 ulps max over
+`tests/test_fused_kernels.py`'s shapes, the same as CPU, against 5.0 via
+`metal$softmax` (which accumulated in f32). f32 (30.6 ulps, CPU 30.3) and
+bf16 (0.5) are unchanged; f16 log_softmax 1.0 vs 0.55.

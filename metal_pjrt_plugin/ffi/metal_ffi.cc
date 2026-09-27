@@ -13,6 +13,7 @@
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
 #include "xla/primitive_util.h"
 #include "xla/stream_executor/platform.h"
+#include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
 
 namespace metal_pjrt {
@@ -39,6 +40,22 @@ absl::StatusOr<MetalContext> GetMetalContext(stream_executor::Stream* stream) {
     return absl::InternalError("Metal FFI handler: stream has no runtime");
   }
   return ctx;
+}
+
+absl::StatusOr<rt::Device*> DefaultMetalDevice() {
+  absl::StatusOr<stream_executor::Platform*> platform =
+      stream_executor::PlatformManager::PlatformWithId(
+          stream_executor::metal::kMetalPlatformId);
+  if (!platform.ok()) return platform.status();
+  absl::StatusOr<stream_executor::StreamExecutor*> executor =
+      (*platform)->ExecutorForDevice(0);
+  if (!executor.ok()) return executor.status();
+  rt::Device* device =
+      static_cast<stream_executor::metal::MetalExecutor*>(*executor)->device();
+  if (device == nullptr) {
+    return absl::InternalError("Metal FFI: executor 0 has no runtime device");
+  }
+  return device;
 }
 
 namespace {
