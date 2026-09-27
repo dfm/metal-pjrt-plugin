@@ -79,7 +79,7 @@ runtime's knobs are `METAL_PJRT_*` (`docs/performance.md`). State (GPU reset
 log, device lock, default persistent compilation cache, JAX test checkout)
 lives in `~/.cache/openmetal/` (`METAL_PJRT_STATE_DIR` moves the reset log).
 Before the rename it was `~/.cache/jax_metal/`: the runtime copies the reset
-log from there once, and `scripts/device_lock.py` also takes the old lock, so
+log from there once, and `scripts/device_lock.py` also takes the old lock (creating it), so
 older checkouts still exclude this one; the old directory is never deleted.
 
 Run one GPU-heavy job at a time (the scripts take a device lock); see

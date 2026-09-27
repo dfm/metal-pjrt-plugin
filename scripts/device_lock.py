@@ -9,8 +9,9 @@ and, under thrashing, GPU command buffers hit the watchdog. Usage:
 
 The lock is ~/.cache/openmetal/device.lock (JAX_OPENMETAL_DEVICE_LOCK
 overrides). Transition from before the platform was renamed "openmetal":
-the lock also takes the old ~/.cache/jax_metal/device.lock first (when that
-directory exists), so this script and an older checkout's exclude each other.
+the lock also takes the old ~/.cache/jax_metal/device.lock first (creating
+it if needed, so an older checkout cannot take it unnoticed later), so this
+script and an older checkout's exclude each other.
 """
 import fcntl, os, pathlib, subprocess, sys, time
 
@@ -44,10 +45,11 @@ def main(argv):
     if not argv:
         print(__doc__); return 2
     LOCK.parent.mkdir(parents=True, exist_ok=True)
+    OLD_LOCK.parent.mkdir(parents=True, exist_ok=True)
     held = []
     # Always the old lock first, then the new one: a fixed order, so two
     # instances of this script cannot deadlock.
-    if OLD_LOCK.parent.is_dir() and OLD_LOCK.resolve() != LOCK.resolve():
+    if OLD_LOCK.resolve() != LOCK.resolve():
         held.append(acquire(OLD_LOCK, argv))
     held.append(acquire(LOCK, argv))
     # Tells tests/conftest.py the lock is held.
