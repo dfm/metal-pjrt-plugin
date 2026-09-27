@@ -42,7 +42,6 @@ archive_override(
         "//third_party/xla/patches:0001-metal-pjrt-identity.patch",
         "//third_party/xla/patches:0002-gpu-compiler-kernel-compiler-factory.patch",
         "//third_party/xla/patches:0003-macos-build-fixes.patch",
-        "//third_party/xla/patches:0004-bfc-garbage-collection.patch",
     ],
     strip_prefix = "xla-91888df6ce85102c30220e41d952065925e10886",
     urls = ["https://github.com/openxla/xla/archive/91888df6ce85102c30220e41d952065925e10886.tar.gz"],
