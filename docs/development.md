@@ -112,12 +112,10 @@ holds memory the allocation guard then refuses to hand out.
 returns memory ~2 s after it is freed or on system memory pressure; `bfc`:
 XLA's pool, which keeps it), `JAX_OPENMETAL_MEMORY_FRACTION` (scales the
 memory budget, half of RAM; beyond it allocations fail with
-RESOURCE_EXHAUSTED), `JAX_OPENMETAL_DEVICE_LOCK` (lock path for
-`scripts/device_lock.py`); the runtime's knobs are `METAL_PJRT_*`
+RESOURCE_EXHAUSTED); the runtime's knobs are `METAL_PJRT_*`
 (`docs/performance.md`).
 
 State (GPU reset log, device lock, JAX test checkout) lives in `~/.cache/openmetal/` (`METAL_PJRT_STATE_DIR` moves
-the reset log). Before the rename it was `~/.cache/jax_metal/`: the runtime
-copies the reset log from there once, and `scripts/device_lock.py` also
-takes the old lock (creating it), so older checkouts still exclude this one;
-the old directory is never deleted.
+the reset log). Before the rename it was `~/.cache/jax_metal/`;
+`scripts/device_lock.py` also takes the old lock there (creating it), so
+older checkouts still exclude this one.

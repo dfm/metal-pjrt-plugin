@@ -49,15 +49,6 @@ bool TraceEnabled() {
   return enabled;
 }
 
-int MaxOpsPerCommandBuffer() {
-  static const int n = [] {
-    const char* v = std::getenv("METAL_PJRT_MAX_OPS");
-    int x = v ? std::atoi(v) : 0;
-    return x > 0 ? x : Stream::kMaxOpsPerCommandBuffer;
-  }();
-  return n;
-}
-
 // "<description> (domain=<domain>, code=<code>)".
 std::string NSErrorToString(NS::Error* err) {
   if (err == nullptr) return "unknown Metal error (no NSError)";
@@ -168,8 +159,7 @@ void LogMemoryState(Device* device) {
   LOG(ERROR) << "  memory: live " << (m.live_bytes >> 20) << " MB + cached "
              << (m.cached_bytes >> 20) << " MB of budget "
              << (m.budget_bytes >> 20) << " MB (pressure level " << m.pressure
-             << ")"
-             << " MB, process RSS " << (rss >> 20)
+             << "), process RSS " << (rss >> 20)
              << " MB, reclaimable system memory "
              << (ReclaimableMemoryBytes() >> 20) << " MB";
 }
@@ -185,10 +175,6 @@ absl::Status Annotate(const absl::Status& s, absl::string_view context) {
 // ---------------------------------------------------------------------------
 // Kernel
 
-Kernel::~Kernel() {
-  // Pipeline states are owned by the Device cache; nothing to release here.
-}
-
 uint32_t Kernel::max_total_threads_per_threadgroup() const {
   const uint32_t pso =
       static_cast<uint32_t>(pso_->maxTotalThreadsPerThreadgroup());
@@ -198,10 +184,6 @@ uint32_t Kernel::max_total_threads_per_threadgroup() const {
 
 uint32_t Kernel::thread_execution_width() const {
   return static_cast<uint32_t>(pso_->threadExecutionWidth());
-}
-
-uint32_t Kernel::static_threadgroup_memory_length() const {
-  return static_cast<uint32_t>(pso_->staticThreadgroupMemoryLength());
 }
 
 // ---------------------------------------------------------------------------
@@ -214,7 +196,9 @@ int Device::VisibleDeviceCount() {
   return n;
 }
 
-absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
+namespace {
+// The MTL::Device for `ordinal`, retained.
+absl::StatusOr<MTL::Device*> CopyDevice(int ordinal) {
   NS::Array* devices = MTL::CopyAllDevices();
   const int count = devices ? static_cast<int>(devices->count()) : 0;
   if (ordinal < 0 || ordinal >= count) {
@@ -226,13 +210,12 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   MTL::Device* d = devices->object<MTL::Device>(ordinal);
   d->retain();
   devices->release();
+  return d;
+}
 
-  std::unique_ptr<Device> dev(new Device());
-  dev->ordinal_ = ordinal;
-  dev->device_ = d;
-  DeviceInfo& info = dev->info_;
+DeviceInfo InfoOf(MTL::Device* d) {
+  DeviceInfo info;
   info.name = d->name()->utf8String();
-  info.unified_memory = d->hasUnifiedMemory();
   info.max_buffer_length = d->maxBufferLength();
   info.recommended_working_set = d->recommendedMaxWorkingSetSize();
   info.max_threads_per_threadgroup =
@@ -240,8 +223,25 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   info.threadgroup_memory_length =
       static_cast<uint32_t>(d->maxThreadgroupMemoryLength());
   info.gpu_family = HighestAppleFamily(d);
-  info.supports_metal4 = info.gpu_family >= 9;
   info.simd_width = 32;
+  return info;
+}
+}  // namespace
+
+absl::StatusOr<DeviceInfo> Device::QueryInfo(int ordinal) {
+  ABSL_ASSIGN_OR_RETURN(MTL::Device * d, CopyDevice(ordinal));
+  DeviceInfo info = InfoOf(d);
+  d->release();
+  return info;
+}
+
+absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
+  ABSL_ASSIGN_OR_RETURN(MTL::Device * d, CopyDevice(ordinal));
+  std::unique_ptr<Device> dev(new Device());
+  dev->ordinal_ = ordinal;
+  dev->device_ = d;
+  dev->info_ = InfoOf(d);
+  const DeviceInfo& info = dev->info_;
   {
     // A ceiling, not a reservation: buffers are only mapped when used, and
     // the allocation-time guard refuses growth that would leave the system
@@ -385,18 +385,6 @@ void Device::LoadResetLog() {
     const char* home = std::getenv("HOME");
     std::string base = absl::StrCat(home != nullptr ? home : ".", "/.cache");
     state_dir_ = absl::StrCat(base, "/openmetal");
-    // One-time migration from the directory used before the platform was
-    // renamed "openmetal": copy its reset log (the quarantine is derived from
-    // it) if there is none here yet. The old directory is left alone.
-    std::string old_log = ResetLogPath(absl::StrCat(base, "/jax_metal"));
-    std::error_code ec;
-    if (!std::filesystem::exists(ResetLogPath(state_dir_), ec) &&
-        std::filesystem::exists(old_log, ec)) {
-      std::filesystem::create_directories(state_dir_, ec);
-      std::filesystem::copy_file(old_log, ResetLogPath(state_dir_),
-                                 std::filesystem::copy_options::skip_existing,
-                                 ec);
-    }
   }
   if (const char* v = std::getenv("METAL_PJRT_QUARANTINE_STRIKES")) {
     int n = 0;
@@ -569,19 +557,6 @@ std::string LastAllocationRefusal(uint64_t* size) {
 
 bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
   TrimCache(std::chrono::steady_clock::duration::zero());
-  if (FitsInSystemMemory(length, reclaimable)) return true;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    if (cached_bytes_ == 0 || !error_.ok()) return false;
-  }
-  {
-    std::unique_lock<std::mutex> lock(tickets_mu_);
-    const uint64_t last = last_ticket_;
-    tickets_cv_.wait_for(lock, kRefusalWait, [&] {
-      return outstanding_.empty() || *outstanding_.begin() > last;
-    });
-  }
-  TrimCache(std::chrono::steady_clock::duration::zero());
   return FitsInSystemMemory(length, reclaimable);
 }
 
@@ -652,8 +627,7 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
           allocated_bytes(), memory_budget_)));
     }
     // Default (tracked) hazard mode: Metal orders dispatches touching the
-    // same buffer for us. Untracked mode with manual barriers is a later
-    // optimization.
+    // same buffer for us.
     buf = device_->newBuffer(length, MTL::ResourceStorageModeShared);
     if (buf == nullptr) {
       unreserve();
@@ -666,14 +640,6 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
     }
   }
   void* ptr = buf->contents();
-  // METAL_PJRT_POISON_ALLOCATIONS=1 fills every allocation (fresh or
-  // recycled) with 0xFF (NaN for floats, huge for ints) so reads of
-  // uninitialized memory are visible and deterministic.
-  static const bool poison = [] {
-    const char* v = std::getenv("METAL_PJRT_POISON_ALLOCATIONS");
-    return v != nullptr && v[0] != '\0' && v[0] != '0';
-  }();
-  if (poison) std::memset(ptr, 0xFF, length);
   {
     std::lock_guard<std::mutex> lock(mu_);
     allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, length};
@@ -722,11 +688,8 @@ uint64_t Device::BeginWork() {
 }
 
 void Device::EndWork(uint64_t ticket) {
-  {
-    std::lock_guard<std::mutex> lock(tickets_mu_);
-    outstanding_.erase(ticket);
-  }
-  tickets_cv_.notify_all();
+  std::lock_guard<std::mutex> lock(tickets_mu_);
+  outstanding_.erase(ticket);
 }
 
 uint64_t Device::EndedBelow() {
@@ -1525,29 +1488,17 @@ absl::StatusOr<BufferRef> Stream::ResolveCached(const void* ptr) {
   return ref;
 }
 
-namespace {
-std::chrono::microseconds EarlyCommitInterval() {
-  static const std::chrono::microseconds v = [] {
-    const char* e = std::getenv("METAL_PJRT_EARLY_COMMIT_US");
-    int x = e ? std::atoi(e) : -1;
-    return std::chrono::microseconds(x >= 0 ? x
-                                            : Stream::kEarlyCommitIntervalUs);
-  }();
-  return v;
-}
-}  // namespace
-
 absl::Status Stream::FinishOp(uint64_t work) {
   threads_in_cmd_ += work;
   ++ops_in_cmd_;
-  if (ops_in_cmd_ >= MaxOpsPerCommandBuffer() ||
+  if (ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
       threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
     return Commit();
   }
   if (ops_in_cmd_ >= kEarlyCommitOps &&
       completion_->pending.load(std::memory_order_acquire) == 0 &&
       std::chrono::steady_clock::now() - last_commit_time_ >=
-          EarlyCommitInterval()) {
+          std::chrono::microseconds(kEarlyCommitIntervalUs)) {
     return Commit();
   }
   return absl::OkStatus();

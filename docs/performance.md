@@ -293,7 +293,7 @@ compute encoders inside every iteration, and each encoder boundary is a
 separate GPU "kick" (~10 us of GPU time). Three changes:
 
 - **Time-paced early commits**: at most one early commit per 500 us
-  (`kEarlyCommitIntervalUs`, `METAL_PJRT_EARLY_COMMIT_US`); syncs and the
+  (`kEarlyCommitIntervalUs`); syncs and the
   op/thread caps still commit immediately.
 - **Copies and fills as compute kernels** up to 16 MB (`Device::Builtin`
   kernels), so a stream of kernels and copies stays in one compute encoder;
@@ -560,8 +560,8 @@ dispatch is either ~4.2 us or ~2.3 us:
 | 64 steps (128) | 127 / 23 | 4.1 / 2.3 | 753 / 512 (traced) |
 | 256 steps (512) | 0 / 150 | - / 1.8 | - / 1459 (traced) |
 
-Forcing one command buffer per call (`METAL_PJRT_EARLY_COMMIT_US=1000000`)
-or an early commit every time (`=0`) does not remove it (both modes appear
+Forcing one command buffer per call (`METAL_PJRT_EARLY_COMMIT_US=1000000`,
+a knob since removed) or an early commit every time (`=0`) does not remove it (both modes appear
 under `=0`: 252 vs 456 us GPU for the same 112 ops). So it is not the
 500 us commit pacing but the GPU clock / performance state, which macOS
 picks from the duty cycle: a 128-dispatch burst every ~0.5-0.8 ms sits at
@@ -662,10 +662,7 @@ The default allocator is now XLA's pass-through `platform` allocator over
   by the runtime for both allocators): a miss evicts least recently freed
   buffers first, then fails with RESOURCE_EXHAUSTED. The 512 MB system guard
   still applies to every new buffer; when it refuses, the whole cache is
-  dropped and the guard asked again. Buffers freed while work was in flight
-  can only go once that work ends, so if some are still cached the
-  allocation waits (at most 1 s, not after a device error) for the work
-  outstanding at that moment, drops the cache and asks once more.
+  dropped (buffers whose work has ended) and the guard asked again.
 - XLA reports every refusal as "Out of memory while trying to allocate N
   with allocator ..."; the plugin's `PJRT_Error_Message` appends the
   runtime's reason (memory budget or system memory guard, with the numbers),

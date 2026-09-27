@@ -77,13 +77,11 @@ namespace rt {
 
 struct DeviceInfo {
   std::string name;
-  bool unified_memory = true;
   uint64_t max_buffer_length = 0;          // largest single MTL::Buffer
   uint64_t recommended_working_set = 0;    // bytes
   uint32_t max_threads_per_threadgroup = 1024;
   uint32_t threadgroup_memory_length = 32768;
   uint32_t simd_width = 32;
-  bool supports_metal4 = false;            // Apple9 family (M3+)
   int gpu_family = 0;                      // highest MTLGPUFamilyAppleN supported
 };
 
@@ -171,7 +169,6 @@ class Kernel {
   Kernel(MTL::ComputePipelineState* pso,
          std::shared_ptr<const KernelIdentity> identity)
       : pso_(pso), identity_(std::move(identity)) {}
-  ~Kernel();
   Kernel(const Kernel&) = delete;
   Kernel& operator=(const Kernel&) = delete;
 
@@ -192,7 +189,6 @@ class Kernel {
   void set_declared_max_threads(uint32_t n) { declared_max_threads_ = n; }
   uint32_t max_total_threads_per_threadgroup() const;
   uint32_t thread_execution_width() const;
-  uint32_t static_threadgroup_memory_length() const;
 
  private:
   MTL::ComputePipelineState* pso_;
@@ -207,6 +203,8 @@ class Stream;
 class Device {
  public:
   static absl::StatusOr<std::unique_ptr<Device>> Create(int ordinal);
+  // The info a Device for `ordinal` would have, without creating one.
+  static absl::StatusOr<DeviceInfo> QueryInfo(int ordinal);
   static int VisibleDeviceCount();
   ~Device();
   Device(const Device&) = delete;
@@ -308,8 +306,7 @@ class Device {
   // CreateKernel until a reboot or until the log is cleared
   // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
   // new key; a fix elsewhere (runtime, launch dimensions) needs --clear.
-  // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/openmetal (whose
-  // reset log starts as a copy of ~/.cache/jax_metal's, if any);
+  // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/openmetal;
   // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
   void RecordReset(absl::string_view cause,
                    absl::Span<const std::shared_ptr<const KernelIdentity>>
@@ -364,14 +361,9 @@ class Device {
   uint64_t last_ticket_ = 0;
   // Every ticket below this has ended.
   uint64_t EndedBelow();
-  std::condition_variable tickets_cv_;  // notified by EndWork
-  // After the system memory guard refused `length`: drops the cache and
-  // checks again. Buffers freed while work was in flight (e.g. the previous
-  // step's) stay cached until that work ends, so if some remain, waits
-  // (bounded by kRefusalWait, not after a device error) for the work
-  // outstanding now, drops the cache and checks once more.
+  // After the system memory guard refused `length`: drops the cache (the
+  // buffers whose work has ended) and checks again.
   bool FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable);
-  static constexpr std::chrono::seconds kRefusalWait{1};
   // libdispatch sources on memory_queue_: the memory-pressure source and a
   // timer running TrimCache(kCacheIdleRelease), resumed only while the cache
   // is not empty (trim_armed_, guarded by mu_).
@@ -486,8 +478,10 @@ class Stream {
   absl::Status EncodeExternal(
       std::function<absl::Status(void* mtl_command_buffer)> encode);
 
-  // Device-to-device copy and fill. Copies and single-byte fills use a blit
-  // encoder; other fills use the device's built-in fill kernel.
+  // Device-to-device copy and fill. Copies and fills up to
+  // kComputeCopyMaxBytes, and fills whose pattern is not one repeated byte,
+  // run as the device's built-in compute kernels; larger ones use a blit
+  // encoder.
   absl::Status MemcpyDeviceToDevice(void* dst, const void* src, uint64_t size);
   absl::Status Memset8(void* dst, uint8_t value, uint64_t size);
   absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
@@ -548,15 +542,14 @@ class Stream {
   // left to run and at least kEarlyCommitOps ops are encoded (keeps the GPU
   // fed with low latency), or when kMaxOpsPerCommandBuffer ops or
   // kMaxThreadsPerCommandBuffer thread-equivalents of work are encoded (the
-  // latter keeps each buffer far from the GPU watchdog). METAL_PJRT_MAX_OPS
-  // overrides the op cap.
+  // latter keeps each buffer far from the GPU watchdog).
   static constexpr int kMaxOpsPerCommandBuffer = 1024;
   static constexpr int kEarlyCommitOps = 16;
   // Early commits are also paced in time: submitting a command buffer costs
   // the driver ~150 us of a dedicated thread, which was the bottleneck for
   // loops of tiny kernels (700 buffers per call). At most one early commit
   // per kEarlyCommitIntervalUs; explicit syncs and the caps above still
-  // commit immediately. METAL_PJRT_EARLY_COMMIT_US overrides.
+  // commit immediately.
   static constexpr int kEarlyCommitIntervalUs = 500;
   // Copies and uniform fills up to this size run as compute kernels.
   static constexpr uint64_t kComputeCopyMaxBytes = 16ull << 20;
@@ -566,7 +559,7 @@ class Stream {
   // contention from other processes.
   static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 27;
   // Work charged for an op whose cost we cannot see (EncodeExternal, e.g. an
-  // MPS GEMM): at most 32 such ops per command buffer, as before batching.
+  // MPS GEMM): at most 32 such ops per command buffer.
   static constexpr uint64_t kExternalOpWork = kMaxThreadsPerCommandBuffer / 32;
 
  private:

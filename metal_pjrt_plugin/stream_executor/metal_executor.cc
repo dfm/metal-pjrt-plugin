@@ -399,17 +399,9 @@ SemanticVersion PluginVersion() {
 
 }  // namespace
 
-absl::StatusOr<std::unique_ptr<DeviceDescription>>
-MetalExecutor::CreateDeviceDescription() const {
-  return CreateDeviceDescription(device_ordinal());
-}
-
-absl::StatusOr<std::unique_ptr<DeviceDescription>>
-MetalExecutor::CreateDeviceDescription(int device_ordinal) {
-  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Device> dev,
-                        rt::Device::Create(device_ordinal));
-  const rt::DeviceInfo& info = dev->info();
-
+namespace {
+std::unique_ptr<DeviceDescription> DescriptionFromInfo(
+    const rt::DeviceInfo& info, int device_ordinal) {
   DeviceDescription desc;
   desc.set_name(info.name);
   desc.set_model_str(info.name);
@@ -457,6 +449,19 @@ MetalExecutor::CreateDeviceDescription(int device_ordinal) {
   desc.set_oneapi_compute_capability(static_cast<uint32_t>(info.gpu_family));
 
   return std::make_unique<DeviceDescription>(std::move(desc));
+}
+}  // namespace
+
+absl::StatusOr<std::unique_ptr<DeviceDescription>>
+MetalExecutor::CreateDeviceDescription() const {
+  return DescriptionFromInfo(device_->info(), device_ordinal());
+}
+
+absl::StatusOr<std::unique_ptr<DeviceDescription>>
+MetalExecutor::CreateDeviceDescription(int device_ordinal) {
+  ABSL_ASSIGN_OR_RETURN(rt::DeviceInfo info,
+                        rt::Device::QueryInfo(device_ordinal));
+  return DescriptionFromInfo(info, device_ordinal);
 }
 
 }  // namespace metal

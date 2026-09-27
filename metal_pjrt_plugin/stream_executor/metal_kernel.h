@@ -34,19 +34,17 @@ class MetalKernel : public Kernel {
   absl::StatusOr<int32_t> GetMaxOccupiedBlocksPerCore(
       ThreadDim threads, size_t dynamic_shared_memory_bytes) const override;
 
-  metal_pjrt::rt::Kernel* rt_kernel() const { return kernel_.get(); }
-
+ private:
   // Converts StreamExecutor kernel arguments (a device address array, or
   // packed arguments holding device pointers) to runtime arguments in HLO
-  // buffer order, checking arity and Metal's argument limits.
+  // buffer order, checking arity (rt::Stream::Launch checks Metal's
+  // argument and threadgroup limits).
   absl::Status PackArgs(const KernelArgs& args,
                         absl::InlinedVector<metal_pjrt::rt::KernelArg, 16>& out,
                         uint32_t& shared_bytes) const;
   // Rejects thread block clusters, which Metal does not have.
   static absl::Status CheckClusterDims(
       absl::string_view name, const std::optional<ClusterDim>& cluster_dims);
-
- private:
   absl::Status Launch(const ThreadDim& thread_dims, const BlockDim& block_dims,
                       const std::optional<ClusterDim>& cluster_dims,
                       Stream* stream, const KernelArgs& args) override;

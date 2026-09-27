@@ -93,16 +93,6 @@ absl::Status MetalKernel::PackArgs(
         "kernel %s expects %u arguments, got %u", name(), arity_,
         rt_args.size()));
   }
-  const size_t max_args = kernel_->uses_argument_buffer()
-                              ? rt::Stream::kMaxArgumentBufferArgs
-                              : rt::Stream::kMaxBufferArgs;
-  if (rt_args.size() > max_args) {
-    return absl::UnimplementedError(absl::StrFormat(
-        "kernel %s has %u buffer arguments; at most %u are supported%s", name(),
-        rt_args.size(), max_args,
-        kernel_->uses_argument_buffer() ? " (argument buffer)"
-                                        : " without an argument buffer"));
-  }
   return absl::OkStatus();
 }
 
@@ -114,14 +104,6 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
   absl::InlinedVector<rt::KernelArg, 16> rt_args;
   uint32_t shared_bytes = 0;
   ABSL_RETURN_IF_ERROR(PackArgs(args, rt_args, shared_bytes));
-
-  uint64_t threads_per_group = thread_dims.x * thread_dims.y * thread_dims.z;
-  if (threads_per_group > kernel_->max_total_threads_per_threadgroup()) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "kernel %s: %u threads per threadgroup exceeds pipeline limit %u",
-        name(), threads_per_group,
-        kernel_->max_total_threads_per_threadgroup()));
-  }
 
   auto* metal_stream = static_cast<MetalStream*>(stream);
   rt::Dim3 groups{static_cast<uint32_t>(block_dims.x),

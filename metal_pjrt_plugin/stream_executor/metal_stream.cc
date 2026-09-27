@@ -7,7 +7,6 @@
 #include <variant>
 
 #include "absl/functional/any_invocable.h"
-#include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
@@ -39,12 +38,7 @@ MetalStream::MetalStream(
       rt_stream_(std::move(rt_stream)) {}
 
 MetalStream::~MetalStream() {
-  absl::Status s = rt_stream_->Synchronize();
-  if (!s.ok()) {
-    LOG(ERROR) << "Metal stream on device " << executor_->device_ordinal()
-               << " destroyed with a pending error: " << s;
-  }
-  rt_stream_.reset();
+  rt_stream_.reset();  // ~rt::Stream synchronizes
   parent()->DeallocateStream(this);
 }
 
