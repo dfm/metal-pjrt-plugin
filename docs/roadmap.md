@@ -98,7 +98,9 @@ Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 Upstreaming candidate: patch 0001's `gpu_module_globals.cc` hunk
 (`CHECK_OK(stream->BlockHostUntilDone())` -> `ABSL_RETURN_IF_ERROR`). On
 any backend, a failed wait after uploading an executable's constants
-aborts the process instead of returning the error.
+aborts the process instead of returning the error. Returning an error instead
+of CHECK means the constant copies may still be queued: callers must keep
+the executable's constant storage alive until the stream drains.
 
 ## Deferred / unverified
 
