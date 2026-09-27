@@ -474,9 +474,14 @@ class Stream {
   absl::Status Memset8(void* dst, uint8_t value, uint64_t size);
   absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
 
-  // Host transfers are ordered on the stream: they run in a host callback once
-  // prior work completes, and later stream work waits for them. With unified
-  // memory these are plain memcpys.
+  // Host transfers are ordered on the stream. With unified memory they are
+  // plain memcpys: done right away on the calling thread when nothing on or
+  // for this stream is pending (no open command buffer, every wait already
+  // satisfied, every committed buffer and host task finished); otherwise in
+  // a host callback once prior work completes, with later stream work
+  // waiting for it (so `src` must stay unchanged until the stream gets
+  // there, as XLA guarantees; device_put's numpy data is copied earlier, in
+  // pjrt/metal_pjrt_api.cc).
   absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
 
@@ -649,6 +654,10 @@ class Stream {
   // Encode deferred waits into the open command buffer. Caller holds mu_ and
   // has an open command buffer; any open encoder is ended first.
   void FlushDeferredWaits();
+  // True when nothing on or for this stream is pending (see
+  // MemcpyHostToDevice); drops deferred waits that are already satisfied.
+  // Caller holds mu_.
+  bool IdleLocked();
   // Kernels encoded into the open command buffer (for the failure
   // diagnostics and the reset log).
   std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;

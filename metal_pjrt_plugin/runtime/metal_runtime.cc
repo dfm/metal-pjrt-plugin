@@ -1765,10 +1765,28 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
         "MemcpyHostToDevice(%p <- %p, %d bytes): null pointer", dst, src,
         size));
   }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (IdleLocked()) {
+      std::memcpy(dst, src, size);
+      return absl::OkStatus();
+    }
+  }
   return HostCallback([dst, src, size]() {
     std::memcpy(dst, src, size);
     return absl::OkStatus();
   });
+}
+
+bool Stream::IdleLocked() {
+  if (cmd_ != nullptr || !device_->error().ok()) return false;
+  deferred_waits_.erase(
+      std::remove_if(deferred_waits_.begin(), deferred_waits_.end(),
+                     [](const PendingWait& w) {
+                       return w.event->signaledValue() >= w.value;
+                     }),
+      deferred_waits_.end());
+  return deferred_waits_.empty() && fence_->signaledValue() >= fence_value_;
 }
 
 absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
@@ -1778,6 +1796,13 @@ absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
     return absl::InvalidArgumentError(absl::StrFormat(
         "MemcpyDeviceToHost(%p <- %p, %d bytes): null pointer", dst, src,
         size));
+  }
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (IdleLocked()) {
+      std::memcpy(dst, src, size);
+      return absl::OkStatus();
+    }
   }
   return HostCallback([dst, src, size]() {
     std::memcpy(dst, src, size);

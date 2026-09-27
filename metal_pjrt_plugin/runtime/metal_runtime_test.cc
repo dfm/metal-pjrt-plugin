@@ -639,6 +639,33 @@ TEST_F(MetalRuntimeTest, CacheReleaseWaitsForHostTasks) {
   dev_->OnMemoryPressure(0);
 }
 
+// Host transfers run on the calling thread when the stream is idle, and in
+// stream order behind pending work.
+TEST_F(MetalRuntimeTest, HostTransfersInlineWhenIdle) {
+  const uint32_t n = 1 << 16;
+  float* d = static_cast<float*>(Alloc(n * 4));
+  std::unique_ptr<Stream> s = NewStream();
+  std::vector<float> src(n, 1.0f);
+  ASSERT_THAT(s->MemcpyHostToDevice(d, src.data(), n * 4), IsOk());
+  EXPECT_EQ(d[n - 1], 1.0f);  // idle: already copied, no sync needed
+  // Busy: a host task ahead of the copy.
+  ASSERT_THAT(s->HostCallback([]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    return absl::OkStatus();
+  }),
+              IsOk());
+  std::vector<float> two(n, 2.0f);
+  ASSERT_THAT(s->MemcpyHostToDevice(d, two.data(), n * 4), IsOk());
+  EXPECT_EQ(d[0], 1.0f);  // not yet
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(d[0], 2.0f);
+  EXPECT_EQ(d[n - 1], 2.0f);
+  std::vector<float> back(n);
+  ASSERT_THAT(s->MemcpyDeviceToHost(back.data(), d, n * 4), IsOk());
+  EXPECT_EQ(back[n - 1], 2.0f);  // idle again: inline
+  EXPECT_THAT(dev_->Deallocate(d), IsOk());
+}
+
 // A failed command buffer's error is sticky for the device: its events,
 // work that depends on it (also on other streams), unrelated streams, new
 // launches and host tasks all get it, and nothing recovers.

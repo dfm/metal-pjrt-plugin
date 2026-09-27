@@ -272,7 +272,18 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (measured: the host pool never allocated; 100 MB device_put 9.4 vs 8.7 ms,
   staging option on vs off).
 - JAX 0.11.2 hands numpy arrays to `BufferFromHostBuffer` with semantics that
-  let the H2D copy run after `device_put` returns (the array is kept alive);
-  mutating it right after `device_put` shows up on the device here, and on
-  the CPU backend too for large arrays (aliased). Only `pinned_host` memory
-  kinds still use XLA's host BFC pool (never shrinks).
+  let XLA read them after `device_put` returns (the H2D is dispatched on a
+  worker thread), so refilling the array right after `device_put` (a data
+  loader) changed what the device got; this predates the staging change.
+  `metal_pjrt_api.cc` now wraps `PJRT_Client_BufferFromHostBuffer`: dense
+  data is copied into a malloc'd buffer before returning (as CUDA does for
+  pageable memory) and freed on `done_with_host_buffer`; strided and
+  sub-byte inputs take XLA's synchronous `kImmutableOnlyDuringCall` path.
+  Cost (5 interleaved rounds, medians): device_put 100 MB 2.56 -> 5.14 ms,
+  1 MB 84 -> 104 us, 8 floats 72 -> 73 us; D2H unchanged.
+- Roadmap 3.2 step 1 (part): `Stream::MemcpyHostToDevice/DeviceToHost`
+  memcpy on the calling thread when the stream is idle (no open command
+  buffer, deferred waits all satisfied, fence caught up); otherwise a host
+  task as before.
+- Only `pinned_host` memory kinds still use XLA's host BFC pool (never
+  shrinks).
