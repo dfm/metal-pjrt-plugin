@@ -1,5 +1,5 @@
 [project]
-name = "jax-openmetal"
+name = "openmetal_pjrt_plugin"
 version = "0.0.1"
 description = "Open-source Metal PJRT plugin for JAX on Apple Silicon (JAX platform \"openmetal\")"
 readme = "README.md"

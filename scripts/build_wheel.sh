@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the jax-openmetal wheel with the plugin dylib inside it as package
+# Build the openmetal_pjrt_plugin wheel with the plugin dylib inside it as package
 # data (a real file, not the dev symlink into bazel-bin).
 #   scripts/build_wheel.sh            # bazel build, then the wheel in dist/
 #   scripts/build_wheel.sh --no-build # wheel from the existing bazel-bin dylib
@@ -28,4 +28,4 @@ plat_name = macosx_${MACOS_MIN}_arm64
 EOF
 mkdir -p dist
 uv build --wheel --out-dir dist "$STAGE"
-ls -l dist/jax_openmetal-*-py3-none-macosx_${MACOS_MIN}_arm64.whl
+ls -l dist/openmetal_pjrt_plugin-*-py3-none-macosx_${MACOS_MIN}_arm64.whl

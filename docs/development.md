@@ -30,7 +30,7 @@ the plugin.
   relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
   in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
 - `jax_plugins/openmetal/`: Python registration package (dist
-  `jax-openmetal`) modeled on `jax_plugins/cuda`, plus lowerings and host
+  `openmetal_pjrt_plugin`) modeled on `jax_plugins/cuda`, plus lowerings and host
   callbacks.
 - `tests/`: pytest suite (below); `scripts/jax_known_failures/`: the expected
   failures of JAX's own tests.
@@ -49,7 +49,7 @@ bazel test //metal_pjrt_plugin/...                             # host-only C++ t
 scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
-scripts/build_wheel.sh                                         # dist/jax_openmetal-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
+scripts/build_wheel.sh                                         # dist/openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
 
 The wheel is pure Python plus the dylib (a copy, not the link), so it is
@@ -73,7 +73,7 @@ installing pytest (the `test` extra). Clean up a scratch clone with
 separate, ~8 GB). Only the build, not the uv venv creation, was re-run
 after that change.
 
-`scripts/install_dev.sh` installs the `jax-openmetal` package (editable,
+`scripts/install_dev.sh` installs the `openmetal_pjrt_plugin` package (editable,
 with the `test` extra) into `.venv`, with
 `jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib` a link into
 `bazel-bin`. The tests and scripts select the platform

@@ -1,4 +1,4 @@
-# jax-openmetal
+# openmetal_pjrt_plugin
 
 An open-source PJRT plugin that runs JAX on Apple Silicon GPUs. It treats
 Metal as a fourth XLA:GPU platform, next to CUDA, ROCm and SYCL: XLA's own
@@ -37,13 +37,13 @@ From a wheel (the plugin library is inside it; `scripts/build_wheel.sh`
 builds one into `dist/`):
 
 ```
-pip install jax==0.11.2 jaxlib==0.11.2 jax_openmetal-0.0.1-py3-none-macosx_26_0_arm64.whl
+pip install jax==0.11.2 jaxlib==0.11.2 openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl
 ```
 
 From source, as an editable install into `.venv` (see `docs/development.md`):
 
 ```
-git clone <this repository> jax-openmetal && cd jax-openmetal
+git clone <this repository> openmetal-pjrt-plugin && cd openmetal-pjrt-plugin
 scripts/install_dev.sh     # creates .venv with uv, builds, installs (editable, with pytest)
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 ```
