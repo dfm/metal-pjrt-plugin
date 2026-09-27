@@ -4,6 +4,20 @@ How accuracy is measured: `tests/metal_testing.py` (f64 CPU reference, ulps
 of the output dtype, `METAL_TEST_REPORT_ULPS=1` prints every comparison with
 the CPU float32 error next to it). Machine: M3 10-core GPU, macOS 26.2.
 
+## Known gaps
+
+Open, not being fixed right now; details in the sections below.
+
+- tinygp's parallel (quasisep-par) solver mean at n = 200000 is ~1% off;
+  cause unknown.
+- exp / sin / cos keep Metal's bias on [0.125, 1): mean +0.11 ulps for
+  exp(-x), -0.10 for sin (table below).
+- tanh, sinh / cosh and the prelude's `xla_expm1` / `erf` still use Metal's
+  biased `exp`.
+- Metal's `log` is biased by about +-0.5 ulps (+ below 1, - above), max
+  ~2.5 ulps (~2.6 for `log2`).
+- Subnormal outputs flush to zero, as with CUDA's ftz.
+
 ## Biased exp / sin / cos / log (2026-09-26)
 
 The one accuracy gap the test suite found is tinygp's gradient at n = 20000

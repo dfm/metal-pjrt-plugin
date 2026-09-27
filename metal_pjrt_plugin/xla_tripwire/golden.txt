@@ -176,13 +176,13 @@ proto.pjrt_client_name());
 }
 
 ### xla/pjrt/se/pjrt_stream_executor_client.cc @ auto deleted = stream_->DoHostCallback([chunk_ptr]() { delete chunk_ptr; });
-# why: Host callback without error_cb that must still run after a GPU failure (host tasks without on_error run anyway, 62f81f1).
+# why: Host callback without error_cb that must still run after a GPU failure (host tasks without on_error run anyway, 48ac173, sticky device error).
 auto* chunk_ptr = std::make_unique<PjRtChunk>(std::move(chunk)).release();
 auto deleted = stream_->DoHostCallback([chunk_ptr]() { delete chunk_ptr; });
 if (!deleted.ok()) {
 
 ### xla/pjrt/gpu/se_gpu_pjrt_client.cc @ return stream->DoHostCallback(
-# why: Host callback without error_cb that must still run after a GPU failure (62f81f1).
+# why: Host callback without error_cb that must still run after a GPU failure (48ac173, sticky device error).
 return stream->DoHostCallback(
 [worker = this->async_work_runner(), kv_store = kv_store_,
 key = desc.rendezvous_key(), on_done]() {
@@ -194,7 +194,7 @@ on_done(s, /*sends_were_enqueued=*/s.ok());
 });
 
 ### xla/pjrt/se/buffer_sequencing_event.cc @ bool BufferSequencingEvent::IsComplete() {
-# why: IsComplete is PollForStatus() == kComplete; MetalEvent::PollForStatus returns kError for failed work (62f81f1).
+# why: IsComplete is PollForStatus() == kComplete; MetalEvent::PollForStatus returns kError for failed work (48ac173, sticky device error).
 bool BufferSequencingEvent::IsComplete() {
 tsl::BlockUntilReady(event_);
 if (event_.IsError()) {
