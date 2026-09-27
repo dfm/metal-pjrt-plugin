@@ -287,3 +287,14 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   task as before.
 - Only `pinned_host` memory kinds still use XLA's host BFC pool (never
   shrinks).
+
+## Owning the PJRT entry point: decided against (roadmap 3.4, 2026-09-27)
+
+Not doing a `MetalPjRtClient` behind our own `GetPjrtApi`: owning the entry
+point would remove only ~15 of patch 0001's ~200 lines; XLA has no
+`StreamExecutorGpuClient` class to subclass at this pin (the client is built
+by `GetStreamExecutorGpuClient`); and zero-copy host import
+(`BufferFromHostBufferSupportsZeroCopy` / `ImportForeignMemory`) would need a
+~400-line client fork. The small `GetPjrtApi` wrapper in
+`pjrt/metal_pjrt_api.cc` stays (drops the ABI-version extension, copies
+device_put's host data). (For roadmap.md's "Decided against".)
