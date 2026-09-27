@@ -123,6 +123,17 @@ was 1.16-1.24 median, a branch on a -inf result 1.20-1.23. Memory-bound
 log over 16M (1.77-1.92 both), log_softmax 8192x1024 (1.73 both) and the
 nanoGPT train step (180.1-182.4 vs 181.2-183.0) are unchanged.
 
+### Policy (open for dfm to confirm)
+
+Current stance: fix clearly wrong values on valid inputs when the fix is
+cheap. `log(subnormal) = -inf` is fixed although XLA:CPU also returns -inf,
+so openmetal is closer to numpy / IEEE than JAX's CPU backend here. The cost
+is +19% on ALU-bound log chains; memory-bound kernels and real programs are
+unchanged. Subnormal *outputs* still flush to zero (`exp(-100)` and
+`exp(-88)` give 0 on both openmetal and XLA:CPU; `1e-10 * 1e-30` gives 0), as
+with CUDA's ftz, and are deliberately not fixed. Open question for dfm:
+"match numpy / IEEE" or "match XLA:CPU" as the rule for cases like this.
+
 ## softmax in f16 after the metal$softmax removal (2026-09-27)
 
 With the softmax rewriter deleted (no end-to-end win, docs/performance.md),
