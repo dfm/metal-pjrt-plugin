@@ -12,7 +12,9 @@ namespace xla {
 namespace gpu {
 
 // True for a kDot whose operand element type is narrower than its result
-// (e.g. bf16 x bf16 -> f32 from preferred_element_type).
+// (e.g. bf16 x bf16 -> f32 from preferred_element_type, or from
+// DotAlgorithmRewriter for ALG_DOT_BF16_BF16_F32*), with no algorithm or a
+// bf16 one.
 bool IsNarrowOperandDot(const HloInstruction* instr);
 
 // Converts the operands of every narrow-operand kDot to the result type, and

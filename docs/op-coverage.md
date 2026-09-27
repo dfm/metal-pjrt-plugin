@@ -92,6 +92,9 @@ converting to the f32 accumulator (`elemental_hlo_to_mlir.cc:494-501`;
 relative error bf16 1.4e-2, f16 6.7e-4). `MetalDotOperandUpcaster`
 (`compiler/passes/dot_upcast.cc`) now upcasts the operands of every dot
 GemmRewriter left behind and fuses the converts with the dot, so these
-match the GEMM path; JAX's `testDotPreferredElement2` passes. It runs after
+match the GEMM path; JAX's `testDotPreferredElement2` passes. The same
+holds for the bf16 x bf16 -> f32 dots that XLA's DotAlgorithmRewriter makes
+of `ALG_DOT_BF16_BF16_F32` and its `_X3`/`_X6`/`_X9` variants (a small
+`BF16_BF16_F32_X6` dot had relative error 2.5e-3). It runs after
 GemmRewriter, so large 16-bit dots still reach the steel GEMM with 16-bit
 operands (`tests/test_steel_gemm.py`).

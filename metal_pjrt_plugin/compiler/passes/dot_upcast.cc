@@ -18,11 +18,20 @@ namespace xla {
 namespace gpu {
 
 bool IsNarrowOperandDot(const HloInstruction* instr) {
-  // An explicit algorithm (e.g. ALG_DOT_BF16_BF16_F32) fixes the operand
-  // types; leave those dots alone.
-  if (instr->opcode() != HloOpcode::kDot ||
-      instr->precision_config().algorithm() != PrecisionConfig::ALG_UNSET) {
-    return false;
+  // An explicit algorithm fixes the operand types; leave those dots alone,
+  // except the bf16 ones: DotAlgorithmRewriter turns ALG_DOT_BF16_BF16_F32*
+  // into bf16 x bf16 -> f32 dots whose products must be exact in f32, and
+  // bf16 -> f32 is exact.
+  if (instr->opcode() != HloOpcode::kDot) return false;
+  switch (instr->precision_config().algorithm()) {
+    case PrecisionConfig::ALG_UNSET:
+    case PrecisionConfig::ALG_DOT_BF16_BF16_F32:
+    case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X3:
+    case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X6:
+    case PrecisionConfig::ALG_DOT_BF16_BF16_F32_X9:
+      break;
+    default:
+      return false;
   }
   PrimitiveType out = instr->shape().element_type();
   if (!primitive_util::IsFloatingPointType(out) &&

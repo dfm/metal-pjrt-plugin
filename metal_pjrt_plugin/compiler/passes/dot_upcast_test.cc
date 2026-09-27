@@ -41,6 +41,29 @@ ENTRY e {
   EXPECT_FALSE(IsNarrowOperandDot(dot));
 }
 
+// DotAlgorithmRewriter's output for ALG_DOT_BF16_BF16_F32(_X3/_X6/_X9).
+TEST_F(MetalDotOperandUpcasterTest, UpcastsBf16AlgorithmDots) {
+  auto module = ParseAndReturnVerifiedModule(R"(
+HloModule m
+ENTRY e {
+  a = bf16[4,3]{1,0} parameter(0)
+  b = bf16[3,6]{1,0} parameter(1)
+  ROOT d = f32[4,6]{1,0} dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}, algorithm=dot_bf16_bf16_f32
+})");
+  ASSERT_TRUE(module.ok()) << module.status();
+  MetalDotOperandUpcaster pass;
+  auto changed = RunHloPass(&pass, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_TRUE(*changed);
+  const HloInstruction* dot =
+      (*module)->entry_computation()->root_instruction()
+          ->fused_expression_root();
+  ASSERT_EQ(dot->opcode(), HloOpcode::kDot);
+  EXPECT_EQ(dot->operand(0)->opcode(), HloOpcode::kConvert);
+  EXPECT_EQ(dot->operand(1)->opcode(), HloOpcode::kConvert);
+  EXPECT_EQ(dot->operand(0)->shape().element_type(), F32);
+}
+
 TEST_F(MetalDotOperandUpcasterTest, UpcastsIntegerAndOnlyNarrowSide) {
   auto module = ParseAndReturnVerifiedModule(R"(
 HloModule m

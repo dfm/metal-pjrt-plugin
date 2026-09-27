@@ -294,3 +294,26 @@ def test_log_subnormal(op):
     err = (got[3:].astype(np.float64) - want[3:]) / ulp
     assert np.abs(err).max() <= 2.0, np.abs(err).max()
     assert np.all(np.isfinite(got[n:]))  # not the flushed -inf
+
+
+# Small dots (below the GEMM threshold, loop-emitted) with a bf16 dot
+# algorithm: DotAlgorithmRewriter splits them into bf16 x bf16 -> f32 dots,
+# whose products must be exact in f32 (they were rounded to bf16). The CPU
+# backend ignores these algorithms (f32), so it is the reference for the
+# multi-pass ones; one pass rounds each input to bf16 once.
+@pytest.mark.parametrize("alg,tol", [("BF16_BF16_F32", 1e-6),
+                                     ("BF16_BF16_F32_X3", 1e-4),
+                                     ("BF16_BF16_F32_X6", 1e-6),
+                                     ("BF16_BF16_F32_X9", 1e-6)])
+def test_small_dot_bf16_algorithm(alg, tol):
+    import ml_dtypes
+    a, b = R(4, 5), R(5, 3)
+    p = getattr(lax.DotAlgorithmPreset, alg)
+    f = lambda x, y: jnp.dot(x, y, precision=p, preferred_element_type=f32)
+    got = metal_testing.run_on(metal_testing.metal(), f, a, b).astype(np.float64)
+    if alg == "BF16_BF16_F32":
+        bf = lambda t: t.astype(ml_dtypes.bfloat16).astype(np.float64)
+        want = bf(a) @ bf(b)
+    else:
+        want = metal_testing.run_on(metal_testing.cpu(), jnp.dot, a, b)
+    assert np.abs(got - want).max() / np.abs(want).max() < tol
