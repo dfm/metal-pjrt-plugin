@@ -834,6 +834,39 @@ absl::Status ExpandArith(ModuleOp module) {
   if (mlir::failed(mlir::applyPatternsGreedily(module, std::move(patterns)))) {
     return absl::InternalError("MSL emitter: arith expansion failed");
   }
+  // Index is size_t in MSL, and ArithToEmitC emits divsi/remsi/shrsi on it
+  // as unsigned C operators. They come from LowerAffine (mod/floordiv of
+  // possibly negative values, after ConvertIndexType has run) and from the
+  // floordivsi/ceildivsi expansion above, and must be signed: compute them
+  // in i64 (XLA's LLVM path treats index as a signed i64 too).
+  llvm::SmallVector<Operation*> signed_index_ops;
+  module.walk([&](Operation* op) {
+    if (mlir::isa<mlir::arith::DivSIOp, mlir::arith::RemSIOp,
+                  mlir::arith::ShRSIOp>(op) &&
+        op->getResult(0).getType().isIndex()) {
+      signed_index_ops.push_back(op);
+    }
+  });
+  for (Operation* op : signed_index_ops) {
+    OpBuilder b(op);
+    const Location loc = op->getLoc();
+    auto to_i64 = [&](Value v) -> Value {
+      return mlir::arith::IndexCastOp::create(b, loc, b.getI64Type(), v);
+    };
+    Value lhs = to_i64(op->getOperand(0));
+    Value rhs = to_i64(op->getOperand(1));
+    Value r;
+    if (mlir::isa<mlir::arith::DivSIOp>(op)) {
+      r = mlir::arith::DivSIOp::create(b, loc, lhs, rhs);
+    } else if (mlir::isa<mlir::arith::RemSIOp>(op)) {
+      r = mlir::arith::RemSIOp::create(b, loc, lhs, rhs);
+    } else {
+      r = mlir::arith::ShRSIOp::create(b, loc, lhs, rhs);
+    }
+    op->getResult(0).replaceAllUsesWith(
+        mlir::arith::IndexCastOp::create(b, loc, b.getIndexType(), r));
+    op->erase();
+  }
   return absl::OkStatus();
 }
 

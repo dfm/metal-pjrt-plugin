@@ -416,6 +416,42 @@ module {
   EXPECT_THAT(kernel.status().message(), HasSubstr("unknown address space"));
 }
 
+// Index is size_t in MSL (unsigned), but arith.divsi/remsi on index (e.g.
+// from LowerAffine's mod/floordiv) are signed: -1 rem 3 must be -1 (which
+// LowerAffine's mod then corrects to 2), not SIZE_MAX % 3 == 0.
+constexpr char kSignedIndexDivRem[] = R"mlir(
+module {
+  func.func @divrem(%arg0: !llvm.ptr) {
+    %cm1 = arith.constant -1 : index
+    %c3 = arith.constant 3 : index
+    %tid = gpu.thread_id x
+    %a = arith.addi %tid, %cm1 : index
+    %r = arith.remsi %a, %c3 : index
+    %q = arith.divsi %a, %c3 : index
+    %s = arith.addi %r, %q : index
+    %v = arith.index_cast %s : index to i32
+    %ti = arith.index_castui %tid : index to i32
+    %p = llvm.getelementptr inbounds %arg0[0, %ti] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<4 x i32>
+    llvm.store %v, %p : i32, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, SignedIndexDivRem) {
+  absl::StatusOr<MslKernel> kernel = Emit(kSignedIndexDivRem, "divrem");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  // Each '/' and '%' must compute in a signed 64-bit type (it was size_t).
+  const std::regex divrem(R"((\w+) \w+ = \w+ ([/%]) \w+;)");
+  int count = 0;
+  for (auto it = std::sregex_iterator(msl.begin(), msl.end(), divrem);
+       it != std::sregex_iterator(); ++it) {
+    EXPECT_EQ((*it)[1].str(), "int64_t") << (*it)[0].str();
+    ++count;
+  }
+  EXPECT_EQ(count, 2);
+}
+
 TEST(MslLlvmBridgeTest, RoundTrip) {
   llvm::LLVMContext ctx;
   llvm::Module m("test", ctx);
