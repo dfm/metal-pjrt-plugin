@@ -547,7 +547,8 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
       ++cache_hits_;
     } else {
       ++cache_misses_;
-      while (!cache_.empty() &&
+      const uint64_t ended = EndedBelow();
+      while (!cache_.empty() && cache_.front().ticket < ended &&
              allocated_bytes_ + cached_bytes_ + length > memory_budget_) {
         EvictLocked(cache_.begin(), &evicted);
       }
@@ -620,6 +621,7 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
 absl::Status Device::Deallocate(void* ptr) {
   if (ptr == nullptr) return absl::OkStatus();
   MTL::Buffer* buf = nullptr;
+  bool under_pressure = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
     auto it = allocations_.find(reinterpret_cast<uintptr_t>(ptr));
@@ -632,19 +634,38 @@ absl::Status Device::Deallocate(void* ptr) {
     const uint64_t length = it->second.second;
     allocated_bytes_ -= length;
     allocations_.erase(it);
-    if (pressure_ == 0) {
-      cache_.push_back({buf, length, std::chrono::steady_clock::now()});
-      cache_by_size_.emplace(length, std::prev(cache_.end()));
-      cached_bytes_ += length;
-      if (!trim_armed_ && trim_timer_ != nullptr) {
-        dispatch_resume(static_cast<dispatch_source_t>(trim_timer_));
-        trim_armed_ = true;
-      }
-      return absl::OkStatus();
+    uint64_t ticket;
+    {
+      std::lock_guard<std::mutex> tlock(tickets_mu_);
+      ticket = last_ticket_;
     }
+    cache_.push_back({buf, length, std::chrono::steady_clock::now(), ticket});
+    cache_by_size_.emplace(length, std::prev(cache_.end()));
+    cached_bytes_ += length;
+    if (!trim_armed_ && trim_timer_ != nullptr) {
+      dispatch_resume(static_cast<dispatch_source_t>(trim_timer_));
+      trim_armed_ = true;
+    }
+    under_pressure = pressure_ > 0;
   }
-  ReleaseBuffers({buf});
+  if (under_pressure) TrimCache(std::chrono::steady_clock::duration::zero());
   return absl::OkStatus();
+}
+
+uint64_t Device::BeginWork() {
+  std::lock_guard<std::mutex> lock(tickets_mu_);
+  outstanding_.insert(++last_ticket_);
+  return last_ticket_;
+}
+
+void Device::EndWork(uint64_t ticket) {
+  std::lock_guard<std::mutex> lock(tickets_mu_);
+  outstanding_.erase(ticket);
+}
+
+uint64_t Device::EndedBelow() {
+  std::lock_guard<std::mutex> lock(tickets_mu_);
+  return outstanding_.empty() ? last_ticket_ + 1 : *outstanding_.begin();
 }
 
 void Device::EvictLocked(std::list<CachedBuffer>::iterator it,
@@ -673,7 +694,11 @@ void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
   {
     std::lock_guard<std::mutex> lock(mu_);
     const auto now = std::chrono::steady_clock::now();
-    while (!cache_.empty() && now - cache_.front().freed >= min_idle) {
+    // Tickets grow with free order, so the front is the first to become
+    // releasable.
+    const uint64_t ended = EndedBelow();
+    while (!cache_.empty() && now - cache_.front().freed >= min_idle &&
+           cache_.front().ticket < ended) {
       bytes += cache_.front().size;
       EvictLocked(cache_.begin(), &evicted);
     }
@@ -1041,7 +1066,10 @@ Stream::~Stream() {
     enc_->endEncoding();
     enc_->release();
   }
-  if (cmd_) cmd_->release();
+  if (cmd_) {
+    cmd_->release();
+    device_->EndWork(cmd_ticket_);
+  }
   for (MTL::CommandBuffer* cb : in_flight_) cb->release();
   fence_->release();
   queue_->release();
@@ -1087,6 +1115,8 @@ void Stream::WorkerLoop() {
     if (fence_->signaledValue() < task.signal_value) {
       fence_->setSignaledValue(task.signal_value);
     }
+    task.fn = nullptr;  // drops what it captured before the ticket ends
+    device_->EndWork(task.ticket);
   }
 }
 
@@ -1111,6 +1141,7 @@ absl::Status Stream::EnsureCommandBuffer() {
     return absl::InternalError(absl::StrCat(
         "Metal commandBuffer creation failed on device ", device_->ordinal()));
   }
+  cmd_ticket_ = device_->BeginWork();
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
   FlushDeferredWaits();
@@ -1208,11 +1239,12 @@ absl::Status Stream::Commit() {
   Device* device = device_;
   std::shared_ptr<CompletionState> state = completion_;
   const void* self = this;
+  const uint64_t ticket = cmd_ticket_;
   state->pending.fetch_add(1, std::memory_order_relaxed);
   device->AddInFlight(cmd_, fence_, v, injected_error);
   cmd_->addCompletedHandler([device, state, self, v, fence, signals, waits,
-                             traced_ops, kernels,
-                             injected_error](MTL::CommandBuffer* cb) {
+                             traced_ops, kernels, injected_error,
+                             ticket](MTL::CommandBuffer* cb) {
     if (TraceEnabled()) {
       LOG(ERROR) << "[metal-trace] stream " << self << " cb#" << v
                  << " ops=" << traced_ops << " gpu_ms="
@@ -1255,6 +1287,7 @@ absl::Status Stream::Commit() {
       }
     }
     device->RemoveInFlight(cb);
+    device->EndWork(ticket);
     for (auto& sv : signals) sv.first->release();
     for (auto& w : waits) w.event->release();
     fence->release();
@@ -1707,7 +1740,7 @@ absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
   uint64_t done_value = ++fence_value_;
   uint64_t after_prior = last_committed_fence_value_;
   HostTask task{after_prior, std::move(fn), std::move(on_error), done_value,
-                {}};
+                device_->BeginWork(), {}};
   for (const PendingWait& w : deferred_waits_) {
     w.event->retain();
     task.extra_waits.emplace_back(w.event, w.value);

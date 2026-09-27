@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <fstream>
 #include <filesystem>
@@ -603,6 +604,39 @@ TEST_F(MetalRuntimeTest, MemoryBudgetAndCache) {
   ASSERT_THAT(g, IsOk());
   ASSERT_THAT(d.Deallocate(g->ptr), IsOk());
   EXPECT_EQ(d.memory_stats().cached_bytes, mb);
+}
+
+// A freed buffer that a host task still uses (host tasks hold raw
+// pointers) stays cached through the pressure handler, a trim and the idle
+// timer, and is released once the task has run.
+TEST_F(MetalRuntimeTest, CacheReleaseWaitsForHostTasks) {
+  const uint64_t size = 4 << 20;
+  void* x = Alloc(size);
+  std::unique_ptr<Stream> s = NewStream();
+  std::atomic<bool> done{false};
+  ASSERT_THAT(s->HostCallback([x, size, &done]() {
+    std::this_thread::sleep_for(Device::kCacheIdleRelease +
+                                std::chrono::milliseconds(2000));
+    std::memset(x, 7, size);  // a use after free if x had been released
+    done = true;
+    return absl::OkStatus();
+  }),
+              IsOk());
+  const uint64_t gen = dev_->allocation_generation();
+  ASSERT_THAT(dev_->Deallocate(x), IsOk());
+  dev_->OnMemoryPressure(1);
+  dev_->TrimCache(std::chrono::seconds(0));
+  std::this_thread::sleep_for(Device::kCacheIdleRelease +
+                              std::chrono::milliseconds(1200));
+  EXPECT_FALSE(done.load());
+  EXPECT_EQ(dev_->allocation_generation(), gen);
+  EXPECT_EQ(dev_->memory_stats().cached_bytes, size);
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_TRUE(done.load());
+  dev_->TrimCache(std::chrono::seconds(0));
+  EXPECT_EQ(dev_->memory_stats().cached_bytes, 0u);
+  EXPECT_GT(dev_->allocation_generation(), gen);
+  dev_->OnMemoryPressure(0);
 }
 
 // A failed command buffer's error is sticky for the device: its events,

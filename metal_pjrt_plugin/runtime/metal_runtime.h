@@ -48,6 +48,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -227,12 +228,16 @@ class Device {
   // fresh MTL::Buffer costs ~60 us/MB of page faults on first touch. A miss
   // allocates a new buffer if live + cached + size stays within
   // memory_budget() (evicting least recently freed buffers to make room) and
-  // the system memory guard passes (dropping the whole cache and retrying
-  // once); otherwise RESOURCE_EXHAUSTED. Cached buffers are released when
-  // unused for kCacheIdleRelease, and all at once on a system memory-pressure
-  // warning (after which frees release until the level is normal again), so
-  // an idle process gives its memory back. Releasing a buffer that in-flight
-  // work still uses is safe: command buffers retain what they bind.
+  // the system memory guard passes (dropping the cache and retrying once);
+  // otherwise RESOURCE_EXHAUSTED. Cached buffers are released when unused
+  // for kCacheIdleRelease, and all at once on a system memory-pressure
+  // warning (while the level is not normal, frees are released as soon as
+  // allowed), so an idle process gives its memory back.
+  // A cached buffer is only released (evicted, trimmed or dropped) once all
+  // work that existed when it was freed has finished (see BeginWork): host
+  // tasks hold raw pointers, and a command buffer may use it through an
+  // argument buffer. Until then it stays cached (and may briefly push live +
+  // cached over the budget); reuse needs no wait, being stream-ordered.
   absl::StatusOr<Allocation> Allocate(uint64_t size);
   absl::Status Deallocate(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
@@ -257,8 +262,13 @@ class Device {
   // What the DISPATCH_SOURCE_TYPE_MEMORYPRESSURE handler calls (level as
   // above); tests call it through metal_pjrt_memory_pressure().
   void OnMemoryPressure(int level);
-  // Releases cached buffers freed at least `min_idle` ago (all with 0).
+  // Releases cached buffers freed at least `min_idle` ago (all with 0) whose
+  // work has finished.
   void TrimCache(std::chrono::steady_clock::duration min_idle);
+  // Work tickets: every command buffer holds one from creation to
+  // completion, every host task from enqueue to its end.
+  uint64_t BeginWork();
+  void EndWork(uint64_t ticket);
 
   // Compile Metal Shading Language source into a library, cached by content.
   // The library is owned by the device's cache.
@@ -328,6 +338,7 @@ class Device {
     MTL::Buffer* buffer;
     uint64_t size;
     std::chrono::steady_clock::time_point freed;
+    uint64_t ticket;  // last ticket issued when freed
   };
   std::list<CachedBuffer> cache_;
   std::multimap<uint64_t, std::list<CachedBuffer>::iterator> cache_by_size_;
@@ -340,6 +351,12 @@ class Device {
                    std::vector<MTL::Buffer*>* out);
   // Releases buffers taken out of the cache (outside mu_).
   void ReleaseBuffers(const std::vector<MTL::Buffer*>& buffers);
+  // Outstanding work tickets; lock order mu_ -> tickets_mu_.
+  std::mutex tickets_mu_;
+  std::set<uint64_t> outstanding_;
+  uint64_t last_ticket_ = 0;
+  // Every ticket below this has ended.
+  uint64_t EndedBelow();
   // libdispatch sources on memory_queue_: the memory-pressure source and a
   // timer running TrimCache(kCacheIdleRelease), resumed only while the cache
   // is not empty (trim_armed_, guarded by mu_).
@@ -577,6 +594,7 @@ class Stream {
   uint64_t fence_value_ = 0;     // last value signaled on fence_
   uint64_t last_committed_fence_value_ = 0;
   MTL::CommandBuffer* cmd_ = nullptr;
+  uint64_t cmd_ticket_ = 0;  // Device::BeginWork for cmd_
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
@@ -641,6 +659,7 @@ class Stream {
     std::function<absl::Status()> fn;
     std::function<void(absl::Status)> on_error;
     uint64_t signal_value;
+    uint64_t ticket = 0;  // Device::BeginWork
     // Cross-stream waits that were pending when the task was enqueued: the
     // task also waits for these (retained events).
     std::vector<std::pair<MTL::SharedEvent*, uint64_t>> extra_waits;
