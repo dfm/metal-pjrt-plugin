@@ -96,7 +96,8 @@ Policy now:
   does the real work.)
 - **Allocation guard.** Any allocation of 1 MB or more is refused with
   RESOURCE_EXHAUSTED if it would leave less than 512 MB reclaimable, so a
-  program fails cleanly instead of pushing the machine into swap.
+  program fails cleanly instead of pushing the machine into swap
+  (`METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` changes the 512, for tests).
 - **Watchdog resets are sticky.** A command buffer that fails with a timeout,
   access-revoked or device-removed error marks the device lost for the
   process; all further GPU work fails with FAILED_PRECONDITION telling the
@@ -656,7 +657,21 @@ The default allocator is now XLA's pass-through `platform` allocator over
   by the runtime for both allocators): a miss evicts least recently freed
   buffers first, then fails with RESOURCE_EXHAUSTED. The 512 MB system guard
   still applies to every new buffer; when it refuses, the whole cache is
-  dropped and the guard asked again.
+  dropped and the guard asked again. Buffers freed while work was in flight
+  can only go once that work ends, so if some are still cached the
+  allocation waits (at most 1 s, not after a device error) for the work
+  outstanding at that moment, drops the cache and asks once more.
+- XLA reports every refusal as "Out of memory while trying to allocate N
+  with allocator ..."; the plugin's `PJRT_Error_Message` appends the
+  runtime's reason (memory budget or system memory guard, with the numbers),
+  so it reaches Python, not only stderr.
+- A busy machine makes the guard refuse. Right after a Bazel build (server
+  still up) the nanoGPT train step's first 1.17 GiB temp allocation was
+  refused with 1.36 GB free or reclaimable (1.24 GB already live in the
+  process, budget 4 GB); the budget never was the limit. Free memory on an
+  8 GB Mac with a browser open swings by ~1 GB between runs (1.7-3.1 GB
+  before a run here), so the same step can pass a minute later: batch G's
+  round-1-only failure. The benchmarks run `bazel shutdown` first.
 - Cached buffers unused for 2 s are released by a libdispatch timer (armed
   only while the cache is not empty), and all of them on a
   `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning, after which frees release

@@ -520,13 +520,50 @@ Device::~Device() {
   if (device_) device_->release();
 }
 
+namespace {
+std::mutex g_refusal_mu;
+uint64_t g_refusal_size = 0;
+std::string g_refusal;
+
+absl::Status RecordRefusal(uint64_t size, absl::Status s) {
+  std::lock_guard<std::mutex> lock(g_refusal_mu);
+  g_refusal_size = size;
+  g_refusal = std::string(s.message());
+  return s;
+}
+}  // namespace
+
+std::string LastAllocationRefusal(uint64_t* size) {
+  std::lock_guard<std::mutex> lock(g_refusal_mu);
+  *size = g_refusal_size;
+  return g_refusal;
+}
+
+bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
+  TrimCache(std::chrono::steady_clock::duration::zero());
+  if (FitsInSystemMemory(length, reclaimable)) return true;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (cached_bytes_ == 0 || !error_.ok()) return false;
+  }
+  {
+    std::unique_lock<std::mutex> lock(tickets_mu_);
+    const uint64_t last = last_ticket_;
+    tickets_cv_.wait_for(lock, kRefusalWait, [&] {
+      return outstanding_.empty() || *outstanding_.begin() > last;
+    });
+  }
+  TrimCache(std::chrono::steady_clock::duration::zero());
+  return FitsInSystemMemory(length, reclaimable);
+}
+
 absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
   const uint64_t requested = size;
   if (size > info_.max_buffer_length) {
-    return absl::ResourceExhaustedError(absl::StrFormat(
+    return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
         "Metal allocation of %d bytes exceeds the device's maxBufferLength of "
         "%d bytes (device %d, %s)",
-        requested, info_.max_buffer_length, ordinal_, info_.name));
+        requested, info_.max_buffer_length, ordinal_, info_.name)));
   }
   uint64_t length = BufferLength(size);
   if (length > info_.max_buffer_length) length = std::max<uint64_t>(size, 1);
@@ -563,30 +600,28 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
     allocated_bytes_ -= length;
   };
   if (over_budget) {
-    return absl::ResourceExhaustedError(absl::StrFormat(
+    return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
         "Metal allocation of %d bytes refused: this process already holds %d "
         "bytes of its %d-byte memory budget (device %d; half of RAM, capped "
         "by the GPU's recommended working set, times "
         "JAX_OPENMETAL_MEMORY_FRACTION). Reduce the working set.",
-        requested, allocated_bytes(), memory_budget_, ordinal_));
+        requested, allocated_bytes(), memory_budget_, ordinal_)));
   }
   if (buf == nullptr) {
     // Refuse allocations that would push the system into swap (that is how
     // the machine got wedged once). Our own cache goes first.
     uint64_t reclaimable = 0;
-    if (!FitsInSystemMemory(length, &reclaimable)) {
-      TrimCache(std::chrono::steady_clock::duration::zero());
-      if (!FitsInSystemMemory(length, &reclaimable)) {
-        unreserve();
-        return absl::ResourceExhaustedError(absl::StrFormat(
-            "Metal allocation of %d bytes refused: only %d bytes of system "
-            "memory are reclaimable and %d bytes are reserved for the OS "
-            "(device %d, %d bytes already allocated by this process, budget "
-            "%d bytes). Reduce the working set or close other memory-heavy "
-            "processes.",
-            requested, reclaimable, kSystemMemoryReserve, ordinal_,
-            allocated_bytes(), memory_budget_));
-      }
+    if (!FitsInSystemMemory(length, &reclaimable) &&
+        !FitsAfterReleasingCache(length, &reclaimable)) {
+      unreserve();
+      return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
+          "Metal allocation of %d bytes refused by the system memory guard: "
+          "only %d bytes of system memory are free or reclaimable and %d "
+          "bytes are kept for the OS (device %d, %d bytes already allocated "
+          "by this process, budget %d bytes). Reduce the working set or "
+          "close other memory-heavy processes (e.g. `bazel shutdown`).",
+          requested, reclaimable, SystemMemoryReserve(), ordinal_,
+          allocated_bytes(), memory_budget_)));
     }
     // Default (tracked) hazard mode: Metal orders dispatches touching the
     // same buffer for us. Untracked mode with manual barriers is a later
@@ -594,12 +629,12 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
     buf = device_->newBuffer(length, MTL::ResourceStorageModeShared);
     if (buf == nullptr) {
       unreserve();
-      return absl::ResourceExhaustedError(absl::StrFormat(
+      return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
           "Metal newBuffer failed for %d bytes on device %d (%s): %d bytes "
           "already allocated, recommended working set %d bytes, "
           "maxBufferLength %d bytes",
           requested, ordinal_, info_.name, allocated_bytes(),
-          info_.recommended_working_set, info_.max_buffer_length));
+          info_.recommended_working_set, info_.max_buffer_length)));
     }
   }
   void* ptr = buf->contents();
@@ -659,8 +694,11 @@ uint64_t Device::BeginWork() {
 }
 
 void Device::EndWork(uint64_t ticket) {
-  std::lock_guard<std::mutex> lock(tickets_mu_);
-  outstanding_.erase(ticket);
+  {
+    std::lock_guard<std::mutex> lock(tickets_mu_);
+    outstanding_.erase(ticket);
+  }
+  tickets_cv_.notify_all();
 }
 
 uint64_t Device::EndedBelow() {

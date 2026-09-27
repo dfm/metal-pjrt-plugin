@@ -27,13 +27,17 @@ cc_library(
 
 # The exported GetPjrtApi(): XLA's GPU C API shim (patched to report the
 # "openmetal" platform on macOS) minus its PJRT_AbiVersion extension, so that
-# jaxlib can serialize executables (persistent compilation cache), and with
-# BufferFromHostBuffer copying the caller's host data before returning.
+# jaxlib can serialize executables (persistent compilation cache), with
+# BufferFromHostBuffer copying the caller's host data before returning, and
+# with out-of-memory error messages carrying the runtime's reason.
 cc_library(
     name = "metal_pjrt_api",
     srcs = ["metal_pjrt_api.cc"],
     deps = [
+        "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/log:initialize",
+        "@com_google_absl//absl/strings",
+        "@tsl//tsl/platform:numbers",
         "@xla//xla:shape_util",
         "@xla//xla/pjrt/c:pjrt_c_api_gpu_internal",
         "@xla//xla/pjrt/c:pjrt_c_api_hdrs",

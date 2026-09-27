@@ -17,9 +17,10 @@ uint64_t ReclaimableMemoryBytes();
 
 // Allocation guard: on unified memory a GPU touching paged-out memory stalls
 // until the watchdog fires, so allocations of 1 MB or more are refused when
-// they would leave less than kSystemMemoryReserve reclaimable. Returns
-// whether `size` fits; `*reclaimable` (if given) receives the current value.
-inline constexpr uint64_t kSystemMemoryReserve = 512ull << 20;
+// they would leave less than SystemMemoryReserve() reclaimable: 512 MB, or
+// METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB (for tests). Returns whether `size`
+// fits; `*reclaimable` (if given) receives the current value.
+uint64_t SystemMemoryReserve();
 bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable = nullptr);
 
 }  // namespace rt

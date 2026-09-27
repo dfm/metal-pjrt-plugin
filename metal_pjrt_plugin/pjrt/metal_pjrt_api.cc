@@ -1,6 +1,7 @@
 // The plugin's exported GetPjrtApi: XLA's GPU C API shim with the
-// PJRT_AbiVersion extension removed, and PJRT_Client_BufferFromHostBuffer
-// wrapped so the caller's host buffer is copied before it returns (below).
+// PJRT_AbiVersion extension removed, PJRT_Client_BufferFromHostBuffer
+// wrapped so the caller's host buffer is copied before it returns, and
+// PJRT_Error_Message wrapped so out-of-memory errors say why (below).
 //
 // With that extension, PjRtCApiExecutable::GetAbiVersion reports the OneAPI
 // executable ABI, which jaxlib's IFRT (GetXlaExecutableVersion) rejects
@@ -14,13 +15,20 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <unordered_map>
 
 #include "absl/log/initialize.h"
+#include "absl/strings/match.h"
+#include "absl/strings/str_cat.h"
+#include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_gpu_internal.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
 #include "xla/pjrt/c/pjrt_c_api_macros.h"
 #include "xla/primitive_util.h"
+#include "tsl/platform/numbers.h"
 
 namespace {
 
@@ -82,6 +90,45 @@ PJRT_Error* BufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args* args) {
   return g_gpu->PJRT_Event_OnReady(&on_ready);
 }
 
+// XLA's allocator adapter replaces the runtime's refusal (budget or system
+// memory guard, with numbers) by "Out of memory while trying to allocate
+// <size> with allocator ...". Append the runtime's reason when the last
+// refusal was of that size. The annotated text lives until the error is
+// destroyed, as the C API requires.
+std::mutex g_messages_mu;
+std::unordered_map<const PJRT_Error*, std::string>* g_messages =
+    new std::unordered_map<const PJRT_Error*, std::string>;
+
+void ErrorMessage(PJRT_Error_Message_Args* args) {
+  g_gpu->PJRT_Error_Message(args);
+  const absl::string_view message(args->message, args->message_size);
+  if (!absl::StartsWith(message, "Out of memory while trying to allocate ")) {
+    return;
+  }
+  uint64_t size = 0;
+  const std::string reason = metal_pjrt::rt::LastAllocationRefusal(&size);
+  if (reason.empty() ||
+      !absl::StrContains(message,
+                         absl::StrCat(" allocate ",
+                                      tsl::strings::HumanReadableNumBytes(size),
+                                      " "))) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(g_messages_mu);
+  auto [it, inserted] = g_messages->try_emplace(args->error);
+  if (inserted) it->second = absl::StrCat(message, " openmetal: ", reason);
+  args->message = it->second.data();
+  args->message_size = it->second.size();
+}
+
+void ErrorDestroy(PJRT_Error_Destroy_Args* args) {
+  {
+    std::lock_guard<std::mutex> lock(g_messages_mu);
+    g_messages->erase(args->error);
+  }
+  g_gpu->PJRT_Error_Destroy(args);
+}
+
 }  // namespace
 
 extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
@@ -92,6 +139,8 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
     g_gpu = gpu;
     static PJRT_Api copy = *gpu;
     copy.PJRT_Client_BufferFromHostBuffer = BufferFromHostBuffer;
+    copy.PJRT_Error_Message = ErrorMessage;
+    copy.PJRT_Error_Destroy = ErrorDestroy;
     // Copy every other extension node (they are plain structs of function
     // pointers), relinked in the same order. Allocated once, never freed.
     PJRT_Extension_Base** tail = &copy.extension_start;

@@ -61,7 +61,8 @@ try:
         held.append(make(float(i)).block_until_ready())
     raise SystemExit("no error")
 except jax.errors.JaxRuntimeError as e:
-    assert "RESOURCE_EXHAUSTED" in str(e), e
+    # XLA's generic message, then the runtime's reason.
+    assert "RESOURCE_EXHAUSTED" in str(e) and "memory budget" in str(e), e
 print("held", len(held), "live MB", stats()["live"] // MB)
 assert len(held) * 64 * MB <= s["budget"]
 # One program whose output alone exceeds the budget.
@@ -77,6 +78,22 @@ assert float(x[123]) == 6.0 and float(jnp.sum(x[:1000])) == 6000.0
 print("after: OK")
 """, JAX_OPENMETAL_MEMORY_FRACTION=small_budget_fraction())
     assert "after: OK" in out, out
+
+
+def test_system_memory_guard_says_why():
+    # A reserve larger than any Mac's RAM: every allocation of 1 MB or more is
+    # refused by the system memory guard, smaller ones still work.
+    out = run_child(r"""
+try:
+    jnp.ones((16 * MB,), jnp.float32).block_until_ready()
+    raise SystemExit("no error")
+except jax.errors.JaxRuntimeError as e:
+    assert "RESOURCE_EXHAUSTED" in str(e) and "system memory guard" in str(e), e
+    print(str(e).splitlines()[0])
+assert float(jnp.sum(jnp.ones(1000))) == 1000.0
+print("OK")
+""", METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB=str(1 << 30))
+    assert "OK" in out, out
 
 
 def test_memory_returned_after_compute():

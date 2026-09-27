@@ -5,6 +5,7 @@
 #include <sys/sysctl.h>
 
 #include <cstdint>
+#include <cstdlib>
 
 namespace metal_pjrt {
 namespace rt {
@@ -32,11 +33,21 @@ uint64_t ReclaimableMemoryBytes() {
   return pages * page;
 }
 
+uint64_t SystemMemoryReserve() {
+  static const uint64_t reserve = [] {
+    const char* v = std::getenv("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB");
+    return (v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 10) : 512)
+           << 20;
+  }();
+  return reserve;
+}
+
 bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable) {
   if (size < (1u << 20)) return true;
   const uint64_t r = ReclaimableMemoryBytes();
   if (reclaimable != nullptr) *reclaimable = r;
-  return r >= kSystemMemoryReserve && size <= r - kSystemMemoryReserve;
+  const uint64_t reserve = SystemMemoryReserve();
+  return r >= reserve && size <= r - reserve;
 }
 
 }  // namespace rt

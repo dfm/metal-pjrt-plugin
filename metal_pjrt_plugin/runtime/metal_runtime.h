@@ -159,6 +159,13 @@ struct KernelIdentity {
 // image's contents, so every rebuild that changes the code gets a new one.
 std::string ImageUuid();
 
+// The reason of the last allocation Device::Allocate refused (any device) and
+// its requested size, or "" when none was refused. XLA's allocator adapter
+// turns every refusal into a generic "Out of memory while trying to allocate
+// N" error; the plugin's PJRT_Error_Message appends this reason to it
+// (pjrt/metal_pjrt_api.cc).
+std::string LastAllocationRefusal(uint64_t* size);
+
 class Kernel {
  public:
   Kernel(MTL::ComputePipelineState* pso,
@@ -228,8 +235,8 @@ class Device {
   // fresh MTL::Buffer costs ~60 us/MB of page faults on first touch. A miss
   // allocates a new buffer if live + cached + size stays within
   // memory_budget() (evicting least recently freed buffers to make room) and
-  // the system memory guard passes (dropping the cache and retrying once);
-  // otherwise RESOURCE_EXHAUSTED. Cached buffers are released when unused
+  // the system memory guard passes (dropping the cache and retrying; see
+  // FitsAfterReleasingCache); otherwise RESOURCE_EXHAUSTED. Cached buffers are released when unused
   // for kCacheIdleRelease, and all at once on a system memory-pressure
   // warning (while the level is not normal, frees are released as soon as
   // allowed), so an idle process gives its memory back.
@@ -357,6 +364,14 @@ class Device {
   uint64_t last_ticket_ = 0;
   // Every ticket below this has ended.
   uint64_t EndedBelow();
+  std::condition_variable tickets_cv_;  // notified by EndWork
+  // After the system memory guard refused `length`: drops the cache and
+  // checks again. Buffers freed while work was in flight (e.g. the previous
+  // step's) stay cached until that work ends, so if some remain, waits
+  // (bounded by kRefusalWait, not after a device error) for the work
+  // outstanding now, drops the cache and checks once more.
+  bool FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable);
+  static constexpr std::chrono::seconds kRefusalWait{1};
   // libdispatch sources on memory_queue_: the memory-pressure source and a
   // timer running TrimCache(kCacheIdleRelease), resumed only while the cache
   // is not empty (trim_armed_, guarded by mu_).
