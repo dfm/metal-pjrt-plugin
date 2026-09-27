@@ -9,6 +9,7 @@ Status: works end to end on an M3 for f32/f16/bf16 programs (JAX's
 precision algorithms); not packaged. See `docs/design.md` for the design,
 `docs/integration-notes.md` for the source-verified contract with XLA,
 `docs/op-coverage.md` for what runs, `docs/performance.md` for measurements,
+`docs/accuracy.md` for known accuracy gaps,
 `docs/roadmap.md` for what is next, and `docs/mlx-comparison.md` for how this
 differs from the MLX-based approaches.
 
