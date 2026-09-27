@@ -38,7 +38,7 @@ emitter's default case ("Unsupported instruction opcode").
 | select-and-scatter | expander to scatter + reduce-window | OK | verified (maxpool grad) |
 | stochastic-convert, logistic, batch-norm | HLO expanders | OK | expanders run in the shared pipeline |
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
-| dot, f16/bf16/f32 | BlasLt thunk over MPS | OK | verified incl. batched, int8/int32 fell back to elemental loops |
+| dot, f16/bf16/f32 | BlasLt thunk over MPS / steel | OK | verified incl. batched. Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal BlasLt: unsupported types S8 x S8 -> S32"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | MPS GEMM + one MSL epilogue kernel (bias, relu / tanh-gelu / silu, aux); verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |

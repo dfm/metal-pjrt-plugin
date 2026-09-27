@@ -407,6 +407,25 @@ module {
   EXPECT_THAT(kernel.status().message(), HasSubstr("arith.mulsi_extended"));
 }
 
+// A pointer made from an integer we cannot trace to a known pointer has no
+// address space; the emitter refuses it instead of guessing "device".
+TEST_F(MslEmitterTest, RejectsUntracedIntToPtr) {
+  constexpr char kIr[] = R"mlir(
+module {
+  func.func @untraced(%arg0: !llvm.ptr) {
+    %a = llvm.load %arg0 : !llvm.ptr -> i64
+    %p = llvm.inttoptr %a : i64 to !llvm.ptr
+    %v = llvm.load %p : !llvm.ptr -> i32
+    llvm.store %v, %arg0 : i32, !llvm.ptr
+    return
+  }
+})mlir";
+  absl::StatusOr<MslKernel> kernel = Emit(kIr, "untraced");
+  ASSERT_FALSE(kernel.ok());
+  EXPECT_EQ(kernel.status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_THAT(kernel.status().message(), HasSubstr("unknown address space"));
+}
+
 TEST(MslLlvmBridgeTest, RoundTrip) {
   llvm::LLVMContext ctx;
   llvm::Module m("test", ctx);

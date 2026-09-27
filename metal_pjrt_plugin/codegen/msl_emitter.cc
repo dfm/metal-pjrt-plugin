@@ -1309,21 +1309,10 @@ absl::Status InferAndApplyAddressSpaces(ModuleOp module,
     });
   };
 
-  for (int round = 0; round < 64; ++round) {
-    do {
-      changed = false;
-      propagate();
-    } while (changed);
-    // Integer-derived pointers whose origin we cannot see: assume device.
-    bool defaulted = false;
-    module.walk([&](ml::IntToPtrOp i2p) {
-      if (!as.count(i2p.getResult())) {
-        set(i2p.getResult(), kMslDevice);
-        defaulted = true;
-      }
-    });
-    if (!defaulted) break;
-  }
+  do {
+    changed = false;
+    propagate();
+  } while (changed);
   if (!conflict.empty()) {
     return absl::UnimplementedError(absl::StrCat("MSL emitter: ", conflict));
   }
