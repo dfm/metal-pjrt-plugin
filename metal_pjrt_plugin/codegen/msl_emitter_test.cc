@@ -452,6 +452,35 @@ TEST_F(MslEmitterTest, SignedIndexDivRem) {
   EXPECT_EQ(count, 2);
 }
 
+// scf.for over index must compare signed: a negative upper bound means no
+// iterations, not ~2^64 of them (size_t).
+constexpr char kSignedIndexLoop[] = R"mlir(
+module {
+  func.func @loop(%arg0: !llvm.ptr) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %tid = gpu.thread_id x
+    %ub = arith.subi %c4, %tid : index
+    scf.for %j = %c0 to %ub step %c1 {
+      %ji = arith.index_cast %j : index to i32
+      %p = llvm.getelementptr inbounds %arg0[0, %ji] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<4 x i32>
+      llvm.store %ji, %p : i32, !llvm.ptr
+    }
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, SignedIndexLoop) {
+  absl::StatusOr<MslKernel> kernel = Emit(kSignedIndexLoop, "loop");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  const std::regex loop(R"(for \((\w+) \w+ = )");
+  std::smatch m;
+  ASSERT_TRUE(std::regex_search(msl, m, loop));
+  EXPECT_EQ(m[1].str(), "int64_t");
+}
+
 TEST(MslLlvmBridgeTest, RoundTrip) {
   llvm::LLVMContext ctx;
   llvm::Module m("test", ctx);

@@ -826,7 +826,8 @@ absl::Status RewriteLlvmArithmetic(ModuleOp module) {
   return absl::OkStatus();
 }
 
-// Expands arith ops that have no EmitC lowering into ones that do.
+// Expands arith ops that have no EmitC lowering into ones that do, and
+// makes signed index arithmetic and index loops signed in MSL.
 absl::Status ExpandArith(ModuleOp module) {
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
@@ -866,6 +867,28 @@ absl::Status ExpandArith(ModuleOp module) {
     op->getResult(0).replaceAllUsesWith(
         mlir::arith::IndexCastOp::create(b, loc, b.getIndexType(), r));
     op->erase();
+  }
+  // Likewise scf.for over index would become `for (size_t i = lb; i < ub;
+  // ...)`, an unsigned compare that loops ~2^64 times on a negative bound
+  // (a GPU hang). Loop over i64 instead and cast the induction variable.
+  llvm::SmallVector<mlir::scf::ForOp> index_loops;
+  module.walk([&](mlir::scf::ForOp f) {
+    if (f.getInductionVar().getType().isIndex()) index_loops.push_back(f);
+  });
+  for (mlir::scf::ForOp f : index_loops) {
+    OpBuilder b(f);
+    const Location loc = f.getLoc();
+    auto to_i64 = [&](Value v) -> Value {
+      return mlir::arith::IndexCastOp::create(b, loc, b.getI64Type(), v);
+    };
+    f.getLowerBoundMutable().assign(to_i64(f.getLowerBound()));
+    f.getUpperBoundMutable().assign(to_i64(f.getUpperBound()));
+    f.getStepMutable().assign(to_i64(f.getStep()));
+    auto iv = mlir::cast<mlir::BlockArgument>(f.getInductionVar());
+    iv.setType(b.getI64Type());
+    b.setInsertionPointToStart(f.getBody());
+    auto idx = mlir::arith::IndexCastOp::create(b, loc, b.getIndexType(), iv);
+    iv.replaceAllUsesExcept(idx, idx);
   }
   return absl::OkStatus();
 }
