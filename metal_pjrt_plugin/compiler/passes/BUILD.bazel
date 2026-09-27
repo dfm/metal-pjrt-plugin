@@ -134,6 +134,7 @@ cc_library(
         ":dot_upcast",
         "//metal_pjrt_plugin/blas:blas_lt_support",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/types:span",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@xla//xla:shape_util",

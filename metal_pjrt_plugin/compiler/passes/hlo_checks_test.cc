@@ -3,6 +3,7 @@
 
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "metal_pjrt_plugin/compiler/passes/dot_upcast.h"
 #include "metal_pjrt_plugin/compiler/passes/hlo_checks.h"
@@ -111,6 +112,91 @@ ENTRY e {
 })");
   EXPECT_EQ(s.code(), absl::StatusCode::kInternal);
   EXPECT_NE(s.message().find("TopK"), std::string::npos) << s;
+}
+
+TEST_F(MetalHloChecksTest, LegalityF64) {
+  auto legal = [&](const std::string& hlo) {
+    auto module = ParseAndReturnUnverifiedModule(hlo);
+    EXPECT_TRUE(module.ok()) << module.status();
+    return CheckPostGemmRewriter(**module);
+  };
+  // Data movement on f64 is legal.
+  EXPECT_TRUE(legal(R"(
+HloModule m
+ENTRY e {
+  x = f64[3,4] parameter(0)
+  t = f64[4,3] transpose(x), dimensions={1,0}
+  r = f64[12] reshape(t)
+  s = f64[5] slice(r), slice={[2:7]}
+  p = pred[5] parameter(1)
+  ROOT sel = f64[5] select(p, s, s)
+})").ok());
+  absl::Status s = legal(R"(
+HloModule m
+ENTRY e {
+  x = f64[3] parameter(0)
+  ROOT y = f64[3] add(x, x), metadata={op_name="jit(f)/add" source_file="f.py" source_line=3}
+})");
+  EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(s.message().find("f64"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("jit(f)/add"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("f.py:3"), std::string::npos) << s;
+  // Converting to f64 computes too.
+  EXPECT_FALSE(legal(R"(
+HloModule m
+ENTRY e {
+  x = f32[3] parameter(0)
+  ROOT y = f64[3] convert(x)
+})").ok());
+}
+
+TEST_F(MetalHloChecksTest, LegalityWideScatter) {
+  constexpr char kScatter[] = R"(
+HloModule m
+comb {
+  a = $T[] parameter(0)
+  $COMB
+}
+ENTRY e {
+  x = $T[4] parameter(0)
+  i = s32[3,1] parameter(1)
+  u = $T[3] parameter(2)
+  ROOT s = $T[4] scatter(x, i, u), update_window_dims={}, inserted_window_dims={0}, scatter_dims_to_operand_dims={0}, index_vector_dim=1, to_apply=comb
+})";
+  auto legal = [&](const std::string& t, const std::string& comb) {
+    auto module = ParseAndReturnUnverifiedModule(absl::StrReplaceAll(
+        kScatter, {{"$T", t}, {"$COMB", comb}}));
+    EXPECT_TRUE(module.ok()) << module.status();
+    return CheckPostGemmRewriter(**module);
+  };
+  auto op = [](const std::string& t, const std::string& o) {
+    return absl::StrCat("b = ", t, "[] parameter(1)\n  ROOT r = ", t, "[] ",
+                        o, "(a, b)");
+  };
+  EXPECT_FALSE(legal("s64", op("s64", "add")).ok());
+  EXPECT_FALSE(legal("u64", op("u64", "maximum")).ok());
+  EXPECT_TRUE(legal("s64", "ROOT b = s64[] parameter(1)").ok());  // overwrite
+  EXPECT_TRUE(legal("s32", op("s32", "add")).ok());
+  // unique_indices: no collisions, no atomics.
+  {
+    auto module = ParseAndReturnUnverifiedModule(absl::StrReplaceAll(
+        kScatter, {{"$T", "s64"},
+                   {"$COMB", op("s64", "add")},
+                   {"to_apply=comb", "unique_indices=true, to_apply=comb"}}));
+    ASSERT_TRUE(module.ok()) << module.status();
+    EXPECT_TRUE(CheckPostGemmRewriter(**module).ok());
+  }
+  EXPECT_TRUE(legal("f32", op("f32", "add")).ok());
+}
+
+TEST_F(MetalHloChecksTest, ComplexArithmeticIsNotChecked) {
+  EXPECT_TRUE(Check(R"(
+HloModule m
+ENTRY e {
+  a = f32[4] parameter(0)
+  c = c64[4] complex(a, a)
+  ROOT m = f32[4] abs(c)
+})").ok());
 }
 
 }  // namespace

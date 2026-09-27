@@ -34,12 +34,12 @@ emitter's default case ("Unsupported instruction opcode").
 | softmax / log-softmax over the minor dim | `MetalSoftmaxRewriter` -> `metal$softmax` (one kernel) | OK | verified f32/f16/bf16, n <= 16384 |
 | gather, dynamic-slice | elemental MLIR | OK | verified |
 | dynamic-update-slice | in-place DUS emitter or loop | OK | verified |
-| scatter | scatter MLIR emitter | OK | verified for f32; uses atomics, Metal has 32-bit atomics only, so 64-bit scatter-add is unverified |
+| scatter | scatter MLIR emitter | OK | verified for f32; uses atomics, Metal has 32-bit atomics only: a 64-bit combining scatter without `unique_indices` is refused at compile time (`CheckPostGemmRewriter`); overwrite and `unique_indices` s64 scatters run |
 | select-and-scatter | expander to scatter + reduce-window | OK | verified (maxpool grad) |
 | stochastic-convert, logistic, batch-norm | HLO expanders | OK | expanders run in the shared pipeline |
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
 | dot, f16/bf16/f32 | BlasLt thunk over MPS | OK | verified incl. batched, int8/int32 fell back to elemental loops |
-| dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64/complex fail earlier |
+| dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | MPS GEMM + one MSL epilogue kernel (bias, relu / tanh-gelu / silu, aux); verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
 | sort, argsort, top_k, searchsorted, unique | `MetalSortExpander` (`metal_pjrt_plugin/compiler/passes`) rewrites kSort pre-layout into a bitonic network: while loop of gather + elementwise compare-and-swap; TopK decomposes back to sort on OneAPI | OK | verified incl. 1e6 elements and batched; `ApplyMetalDefaults` sets `xla_gpu_enable_cub_radix_sort=false` so no CUB calls |
@@ -65,8 +65,18 @@ emitter's default case ("Unsupported instruction opcode").
 
 ## Element types
 
-The emitters accept every XLA type; nothing demotes f64 or complex, so they
-reach the MSL translation and are rejected there. bf16 and f8 conversions
+Nothing demotes f64 or complex. `CheckPostGemmRewriter`
+(`compiler/passes/hlo_checks.h`, end of post-layout optimization) refuses
+f64 arithmetic and scatters that would need 64-bit atomics (a combiner on
+64-bit elements without `unique_indices`) with an error naming the JAX op
+and source line, e.g. "Metal: scatter with a combiner on 64-bit elements
+needs 64-bit atomics, which Metal does not have: scatter-add.5
+(jit(f)/scatter-add) at f.py:7". Data movement on f64 passes the check but
+still fails in the MSL emitter (no f64 loads). The check runs late on
+purpose: an f32 -> f64 -> f32 chain is simplified away and runs. Complex is
+not checked: complex values inside a fusion lower fine (`abs(fft(x))` runs);
+only complex kernel buffers fail, in the emitter
+("unsupported non-trivial unrealized_conversion_cast"). bf16 and f8 conversions
 are expanded to integer math by XLA and round exactly (0 ulps against CPU).
 The mismatch seen earlier came from the test converting back to f32 inside
 the same jit: XLA's GPU pipeline removes f32 -> bf16/f16 -> f32 pairs

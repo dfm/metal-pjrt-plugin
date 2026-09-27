@@ -18,6 +18,15 @@ std::string DescribeOp(const HloInstruction& instr);
 // MetalDotOperandUpcaster have run (end of OptimizeHloPostLayoutAssignment):
 //  - no kDot has an operand narrower than its result (the loop emitter would
 //    multiply in the narrow type);
+//  - no arithmetic on f64 (Apple GPUs have no double precision); data
+//    movement, calls and custom calls on f64 stay legal;
+//  - no scatter on 64-bit elements with a read-modify-write combiner and
+//    possibly repeated indices (needs 64-bit atomics).
+// These run here rather than first in RunHloPasses because the simplifier
+// removes some such ops (e.g. f32 -> f64 -> f32 chains) from programs that
+// run. Complex arithmetic is not checked at all: the emitter lowers complex
+// values inside a fusion (abs(fft(x)) runs); only complex kernel buffers fail,
+// and that is only visible after fusion.
 //  - no TopK custom call is left ("TopK" is decomposed to a sort for OneAPI,
 //    "__gpu$TopK" has no Metal handler);
 //  - every cuBLASLt GEMM is a plain "__cublas$lt$matmul" whose element types
@@ -25,6 +34,7 @@ std::string DescribeOp(const HloInstruction& instr);
 // Returns an error naming the first offending op, so a violation fails at
 // compile time instead of at run time or with wrong values.
 absl::Status CheckPostGemmRewriter(const HloModule& module);
+
 
 }  // namespace gpu
 }  // namespace xla
