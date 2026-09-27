@@ -492,3 +492,66 @@ softmax 5.0 / 9.5 / 9.5; bf16 equal. Decision: **softmax rewriter deleted**
 on every minor-dim cumsum/cumprod it matches, fwd and bwd, and is at least
 as accurate (f16 cumsum 1.15 vs 2.08 ulps, bf16 0.78 vs 1.51, f32 equal):
 **kept**.
+
+## Benchmark hygiene (2026-09-27)
+
+- `bench/run_all.sh` runs `BENCH_ROUNDS` (default 3) rounds with the
+  backends interleaved inside each round (`BENCH_BACKENDS`, default `metal
+  metal-gpu cpu jax-mps mlx`); `bench/report.py` takes the median over
+  rounds. Every row records the commit (`git describe --dirty`), JAX / MLX
+  versions, the plugin's platform version and the `METAL_PJRT_*`,
+  `JAX_METAL_*`, `XLA_FLAGS`, `JAX_PLATFORMS` knobs; the table header lists
+  them. MLX and jax-mps were not re-run (that needs a freshly booted idle
+  machine); their columns in `bench/results/table.md` are the older runs
+  and are marked as having no metadata.
+- GPU time: `metal-gpu` is a second metal pass with `METAL_PJRT_TRACE=1`;
+  `common.gpu_ms` captures fd 2 while it runs the case 5 more times and sums
+  the command buffers' `GPUEndTime - GPUStartTime` from the trace lines. A
+  separate pass because the trace adds ~0.1-0.3 ms to sub-millisecond wall
+  times. No runtime change was needed. TFLOPS (at the best wall time) for
+  GEMMs, attention (the two einsums; 3x for fwd+bwd), cholesky (n^3/3),
+  solve (2n^3/3 + 2n^2 k) and qr (8n^3/3, R and Q).
+- Linear algebra cases (f32): cholesky, solve, qr at 128 / 512 / 2048, eigh
+  at 128 / 512. All run on the host through the LAPACK FFI (GPU time ~0).
+  Metal pays ~0.7-0.8 ms per call at n = 128 (cholesky 0.86 vs 0.03 ms on
+  CPU, GPU time 0.03 ms, so the cost is host-side; not profiled, the
+  synchronous round trip around the LAPACK call is the suspect, roadmap
+  3.1), and matches CPU at 2048 (cholesky 6.8 vs 8.6, qr 111 vs 112 ms).
+- softmax 8192x1024 is now 1.91 ms (was 1.24 with the deleted rewriter;
+  MLX 0.97), the price of the decision above for standalone softmax.
+
+### dispatch_bound chain64 is bimodal: GPU performance state
+
+`METAL_PJRT_TRACE=1`, one line per call (`bench/dispatch_bound.py`'s
+chain, 150 calls each): the command-buffer split (16 ops at the first
+early commit, then 112) is the same in both modes, but the GPU time per
+dispatch is either ~4.2 us or ~2.3 us:
+
+| chain | calls slow / fast | GPU us per dispatch (slow / fast) | wall us, median (slow / fast) |
+|---|---|---|---|
+| 16 steps (32 dispatches) | 150 / 0 | 4.3 / - | 373 / - |
+| 64 steps (128) | 127 / 23 | 4.1 / 2.3 | 753 / 512 (traced) |
+| 256 steps (512) | 0 / 150 | - / 1.8 | - / 1459 (traced) |
+
+Forcing one command buffer per call (`METAL_PJRT_EARLY_COMMIT_US=1000000`)
+or an early commit every time (`=0`) does not remove it (both modes appear
+under `=0`: 252 vs 456 us GPU for the same 112 ops). So it is not the
+500 us commit pacing but the GPU clock / performance state, which macOS
+picks from the duty cycle: a 128-dispatch burst every ~0.5-0.8 ms sits at
+the governor's threshold, 32 dispatches never ramp it, 512 always do. There
+is no public API to pin it. Fix in the benchmark, not the runtime:
+`dispatch_bound.py` now times 200 calls and prints p10 / median / p90 with
+the best, and its docstring says to compare A/B arms on all of them (the
+median alone flips between the modes run to run: 409 vs 510 us back to
+back on the same build).
+
+### Kernels launched with one thread per threadgroup (report only)
+
+The "22 of 125" count came from a whole-process dump (the benchmark's
+parameter init included). By module: 21 of the 22 are JAX's PRNG setup
+(`jit__normal`, `jit__threefry_seed`, `jit__threefry_fold_in`: scalar key
+arithmetic and tiny concatenates, run once at init). The nanoGPT train step
+itself has 51 emitted kernels (plus 111 GEMM custom calls), and exactly one
+is single-threaded: `loop_negate_fusion`, `f32[]` = -mean(loss), one
+element. It costs one dispatch (~2-4 us of GPU time) in a ~180 ms step.
+Nothing to parallelize.

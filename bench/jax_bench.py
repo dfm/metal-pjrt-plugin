@@ -1,13 +1,15 @@
 """JAX benchmark workloads. Run under any backend:
   JAX_PLATFORMS=metal python bench/jax_bench.py
-Cases are chosen to separate memory-bound fusion, reductions, GEMM, and a
-small end-to-end transformer training step.
+Cases are chosen to separate memory-bound fusion, reductions, GEMM, linear
+algebra, and a small end-to-end transformer training step. Rows carry the
+commit, versions and knobs (common.run_info), TFLOPS where the flop count is
+standard, and on metal with METAL_PJRT_TRACE=1 the GPU time (common.gpu_ms).
 """
 import functools, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
 import numpy as np
 import jax, jax.numpy as jnp
-from common import timeit, emit, selected
+from common import timeit, emit, gpu_ms, selected
 
 BACKEND = os.environ.get("BENCH_LABEL", jax.default_backend())
 sync = lambda r: jax.block_until_ready(r)
@@ -15,13 +17,14 @@ f32 = jnp.float32
 key = jax.random.PRNGKey(0)
 
 
-def run(name, fn, *args, **kw):
+def run(name, fn, *args, flops=None, **kw):
     if not selected(name):
         return
     try:
         jfn = jax.jit(fn)
         ms, best = timeit(lambda: jfn(*args), sync=sync, **kw)
-        emit(BACKEND, name, ms, best)
+        gpu = gpu_ms(lambda: jfn(*args), sync=sync) if jax.default_backend() == "metal" else None
+        emit(BACKEND, name, ms, best, gpu=gpu, flops=flops)
     except Exception as e:  # noqa
         emit(BACKEND, name, float("nan"), float("nan"), {"error": f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"})
 
@@ -59,11 +62,11 @@ run("adam 50x1M params", adam, params, grads, m, v)
 # --- GEMM ---
 for n in (1024, 2048, 4096):
     a = jax.random.normal(key, (n, n), f32)
-    run(f"matmul f32 {n}", lambda a: a @ a, a)
+    run(f"matmul f32 {n}", lambda a: a @ a, a, flops=2 * n**3)
 a16 = jax.random.normal(key, (2048, 2048), jnp.bfloat16)
-run("matmul bf16 2048", lambda a: a @ a, a16)
+run("matmul bf16 2048", lambda a: a @ a, a16, flops=2 * 2048**3)
 ab = jax.random.normal(key, (16, 512, 512), f32)
-run("batched matmul 16x512", lambda a: jnp.einsum("bij,bjk->bik", a, a), ab)
+run("batched matmul 16x512", lambda a: jnp.einsum("bij,bjk->bik", a, a), ab, flops=16 * 2 * 512**3)
 
 # --- attention ---
 B, H, S, D = 8, 8, 512, 64
@@ -71,8 +74,20 @@ q = jax.random.normal(key, (B, H, S, D), f32)
 def attn(q, k, v):
     s = jnp.einsum("bhsd,bhtd->bhst", q, k) / np.sqrt(D)
     return jnp.einsum("bhst,bhtd->bhsd", jax.nn.softmax(s, -1), v)
-run("attention fwd 8x8x512x64", attn, q, q, q)
-run("attention fwd+bwd", lambda q: jax.grad(lambda a: jnp.sum(attn(a, a, a)))(q), q)
+attn_flops = 4 * B * H * S * S * D  # the two einsums
+run("attention fwd 8x8x512x64", attn, q, q, q, flops=attn_flops)
+run("attention fwd+bwd", lambda q: jax.grad(lambda a: jnp.sum(attn(a, a, a)))(q), q, flops=3 * attn_flops)
+
+# --- linear algebra (f32; LAPACK FFI or GPU kernels on metal) ---
+for n in (128, 512, 2048):
+    a = jax.random.normal(jax.random.fold_in(key, n), (n, n), f32)
+    spd = a @ a.T / n + jnp.eye(n, dtype=f32)
+    b = jax.random.normal(key, (n, 16), f32)
+    run(f"cholesky {n}", jnp.linalg.cholesky, spd, flops=n**3 / 3)
+    run(f"solve {n}x16", jnp.linalg.solve, spd, b, flops=2 * n**3 / 3 + 2 * n * n * 16)
+    run(f"qr {n}", jnp.linalg.qr, a, flops=8 * n**3 / 3)  # R and Q
+    if n <= 512:
+        run(f"eigh {n}", jnp.linalg.eigh, spd)
 
 # --- nanoGPT-style training step: 6 layers, d=384, 6 heads, seq 256, batch 16 ---
 L, DM, NH, T, BS, VOCAB = 6, 384, 6, 256, 16, 4096
