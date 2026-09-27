@@ -8,8 +8,11 @@
 # Compare against MLX / jax-mps only on a freshly booted, idle machine.
 set -uo pipefail
 cd "$(dirname "$0")/.."
-# Serialize against other GPU jobs (see scripts/device_lock.py).
-if [[ -z "${JAX_OPENMETAL_LOCKED:-}" ]]; then exec env JAX_OPENMETAL_LOCKED=1 scripts/device_lock.py -- "$0" "$@"; fi
+# Serialize against other GPU jobs (see scripts/device_lock.py): re-run
+# under the lock unless a live ancestor holds it (not just an env var set).
+if ! .venv/bin/python -c 'import sys; sys.path.insert(0, "scripts"); import device_lock; sys.exit(not device_lock.held_by_ancestor())'; then
+  exec scripts/device_lock.py -- "$0" "$@"
+fi
 # Refuse to time a GPU that was reset since boot (it runs slow until reboot).
 if [[ -z "${BENCH_ALLOW_DEGRADED:-}" ]]; then
   scripts/gpu_health.py --strict || { echo "set BENCH_ALLOW_DEGRADED=1 to run anyway" >&2; exit 1; }

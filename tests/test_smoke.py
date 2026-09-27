@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from metal_testing import check
+from metal_testing import check, run_python
 
 pytestmark = pytest.mark.metal
 
@@ -19,7 +19,7 @@ def test_backend_is_openmetal():
 def test_opt_in():
     # Installed but not selected: CPU stays JAX's default backend, and
     # openmetal is there to use explicitly.
-    import os, subprocess, sys
+    import os
     env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
     code = (
         "import jax, jax.numpy as jnp\n"
@@ -29,8 +29,7 @@ def test_opt_in():
         "y = jax.jit(lambda x: x * 2 + 1)(x)\n"
         "assert y.devices() == {d} and y.tolist() == [1.0, 3.0, 5.0, 7.0]\n"
         "print('OK')\n")
-    out = subprocess.run([sys.executable, "-c", code], env=env,
-                         capture_output=True, text=True)
+    out = run_python(code, env)
     assert out.returncode == 0 and "OK" in out.stdout, out.stderr[-2000:]
 
 

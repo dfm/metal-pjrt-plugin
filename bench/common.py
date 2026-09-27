@@ -57,7 +57,7 @@ def run_info():
     info["knobs"] = {k: v for k, v in sorted(os.environ.items())
                      if (k.startswith(("METAL_PJRT_", "JAX_OPENMETAL_", "MLX_")) or
                          k in ("XLA_FLAGS", "JAX_PLATFORMS")) and
-                     k not in ("JAX_OPENMETAL_DEVICE_LOCK_HELD", "JAX_OPENMETAL_LOCKED")}
+                     k != "JAX_OPENMETAL_DEVICE_LOCK_HELD"}
     return info
 
 

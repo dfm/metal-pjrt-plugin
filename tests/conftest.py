@@ -9,13 +9,25 @@ device lock (one GPU job at a time):
 Runs are hermetic: no persistent compilation cache, x64 off, and CPU next to
 metal for references (tests/metal_testing.py).
 """
+import importlib.util
 import os
+import pathlib
 
 os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
 os.environ.setdefault("JAX_ENABLE_X64", "0")
 os.environ.setdefault("JAX_ENABLE_COMPILATION_CACHE", "false")
 
 import pytest
+
+
+def lock_held():
+    # device_lock.py's own check: the holder named in the environment is a
+    # live ancestor of this process (a stale or hand-set value does not count).
+    path = pathlib.Path(__file__).resolve().parents[1] / "scripts" / "device_lock.py"
+    spec = importlib.util.spec_from_file_location("device_lock", path)
+    device_lock = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(device_lock)
+    return device_lock.held_by_ancestor()
 
 
 @pytest.hookimpl(trylast=True)  # after -m / -k deselection
@@ -26,7 +38,7 @@ def pytest_collection_modifyitems(config, items):
     items.sort(key=lambda item: "test_gpu_errors.py" not in item.nodeid)
     if not any(item.get_closest_marker("metal") for item in items):
         return
-    if not os.environ.get("JAX_OPENMETAL_DEVICE_LOCK_HELD"):
+    if not lock_held():
         raise pytest.UsageError(
             "tests marked metal need the device lock: scripts/device_lock.py "
             "-- .venv/bin/python -m pytest ... (or deselect them: -m 'not metal')")

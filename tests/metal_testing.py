@@ -18,6 +18,8 @@ which is how the tolerances were set.
 """
 import functools
 import os
+import subprocess
+import sys
 
 import jax
 import ml_dtypes
@@ -34,6 +36,24 @@ def metal():
 @functools.cache
 def cpu():
     return jax.devices("cpu")[0]
+
+
+def run_python(code, env):
+    """Runs `python -c code` and waits for it, never killing it: it may have
+    GPU work in flight (subprocess.run SIGKILLs the child on Ctrl-C). Ctrl-C
+    reaches the child directly; the interrupt is re-raised once it exits."""
+    p = subprocess.Popen([sys.executable, "-c", code], env=env, text=True,
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    interrupted = False
+    while True:
+        try:
+            out, err = p.communicate()
+            break
+        except KeyboardInterrupt:
+            interrupted = True
+    if interrupted:
+        raise KeyboardInterrupt
+    return subprocess.CompletedProcess(p.args, p.returncode, out, err)
 
 
 def run_on(dev, fn, *args):

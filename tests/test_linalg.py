@@ -19,7 +19,7 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from metal_testing import check
+from metal_testing import check, run_python
 
 pytestmark = pytest.mark.metal
 
@@ -312,11 +312,10 @@ run("bad call", lambda: jax.ffi.ffi_call(
 
 
 def test_lapack_failures_are_values():
-  import os, subprocess, sys
+  import os
   env = dict(os.environ, JAX_PLATFORMS="openmetal")
   # No timeout: never kill a process with GPU work in flight.
-  out = subprocess.run([sys.executable, "-c", FAILURE_CHILD], env=env,
-                       capture_output=True, text=True)
+  out = run_python(FAILURE_CHILD, env)
   got = dict(l.split(": ", 1) for l in out.stdout.splitlines() if ": " in l)
   assert out.returncode == 0 and len(got) == 7, (out.returncode, got, out.stderr[-2000:])
   assert all(v.endswith("healthy=True") for v in got.values()), got

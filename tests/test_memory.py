@@ -8,10 +8,10 @@ small (JAX_OPENMETAL_MEMORY_FRACTION) and nothing here gets near physical
 memory. No timeouts: never kill a process with GPU work in flight.
 """
 import os
-import subprocess
-import sys
 
 import pytest
+
+from metal_testing import run_python
 
 pytestmark = pytest.mark.metal
 
@@ -36,9 +36,8 @@ jnp.zeros(1).block_until_ready()
 
 
 def run_child(code, **env):
-    out = subprocess.run([sys.executable, "-c", PRELUDE + code],
-                         env=dict(os.environ, JAX_PLATFORMS="openmetal", **env),
-                         capture_output=True, text=True)
+    out = run_python(PRELUDE + code,
+                     dict(os.environ, JAX_PLATFORMS="openmetal", **env))
     assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-3000:])
     return out.stdout
 

@@ -4,6 +4,8 @@ log-likelihood, its gradient and the conditional mean. A NaN in the
 reference fails the test (it used to be skipped over, which let metal pass
 whenever CPU float32 produced NaNs). Timings: bench/tinygp_bench.py.
 """
+import functools
+
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -62,6 +64,7 @@ def program(kind):
 # Known accuracy gap (not accepted; don't loosen further): parallel solver
 # mean at n = 200000: 2e5 ulps (~1% of max|mean|); CPU float32 is NaN there,
 # so no float32 baseline. Not the exp/sin/cos bias below (unchanged by it).
+# Tracked by test_tinygp_parallel_mean_gap (strict xfail at a tight tolerance).
 # The gradient gap at n = 20000 (896 / 977 ulps vs CPU 103 / 97) was
 # Metal's float32 exp / sin / cos being biased for the small arguments of
 # the transition matrices, accumulated over the 20000-step scan; fixed by
@@ -81,10 +84,9 @@ ULPS = {  # (value, gradient, mean)
 }
 
 
-@pytest.mark.parametrize("kind,n", [
-    ("quasisep-par", 1000), ("quasisep-par", 20000), ("quasisep-par", 200000),
-    ("quasisep", 1000), ("quasisep", 20000), ("dense", 1000), ("dense", 3000)])
-def test_tinygp(kind, n):
+@functools.cache
+def results(kind, n):
+    """(metal, float64 reference, CPU float32 or None) for one case."""
     fn, args = program(kind), (P0, *data(n))
     # tinygp's parallel condition() is NaN on CPU even in float64 for
     # n >= 20000, so the parallel solver is checked against the sequential
@@ -93,7 +95,24 @@ def test_tinygp(kind, n):
     assert not any(np.isnan(w).any() for w in want), "float64 reference has NaNs"
     got = run_on(metal(), fn, *args)
     cpu32 = run_on(cpu(), fn, *args) if REPORT else None
+    return got, want, cpu32
+
+
+@pytest.mark.parametrize("kind,n", [
+    ("quasisep-par", 1000), ("quasisep-par", 20000), ("quasisep-par", 200000),
+    ("quasisep", 1000), ("quasisep", 20000), ("dense", 1000), ("dense", 3000)])
+def test_tinygp(kind, n):
+    got, want, cpu32 = results(kind, n)
     for i, part in enumerate(["value", "gradient", "mean"]):
         assert_close(got[i], want[i], ULPS[kind, n][i], normwise=True,
                      name=f"{kind} n={n} {part}",
                      cpu32=None if cpu32 is None else cpu32[i])
+
+
+@pytest.mark.xfail(strict=True, reason="known gap: parallel solver mean at "
+                   "n = 200000 is ~2e5 ulps; tracked at the sequential "
+                   "solver's tolerance")
+def test_tinygp_parallel_mean_gap():
+    got, want, _ = results("quasisep-par", 200000)
+    assert_close(got[2], want[2], ULPS["quasisep", 20000][2], normwise=True,
+                 name="quasisep-par n=200000 mean (tight)")

@@ -1,3 +1,7 @@
+> Note: these results predate the rename of the JAX platform to "openmetal"
+> (36cc906); `JAX_PLATFORMS: "metal"` below is what that run used. The
+> table is not regenerated for the rename.
+
 - jax-mps: no commit/version metadata (a run from before 2026-09-27)
 - mlx: no commit/version metadata (a run from before 2026-09-27)
 - cpu commit: 64488ff-dirty

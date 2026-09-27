@@ -18,8 +18,14 @@ Re-entrant: the child's environment carries JAX_OPENMETAL_DEVICE_LOCK_HELD=
 locks itself, run under device_lock.py) whose ancestor is that live holder
 runs the command without locking again. Any other value (stale, exported by
 hand) is ignored and the lock is acquired as usual.
+
+The command is never killed from here: Ctrl-C reaches it directly (same
+process group) and this script waits for it to exit (subprocess.call would
+SIGKILL it on KeyboardInterrupt, with GPU work possibly in flight). The
+command inherits the locked files, so it keeps holding the lock even if
+this script dies first.
 """
-import fcntl, os, pathlib, subprocess, sys, time
+import fcntl, os, pathlib, signal, subprocess, sys, time
 
 LOCK = pathlib.Path(os.environ.get("JAX_OPENMETAL_DEVICE_LOCK",
                                    pathlib.Path.home() / ".cache" / "openmetal" / "device.lock"))
@@ -60,13 +66,18 @@ def held_by_ancestor():
     return False
 
 
+def run(argv, env=None, keep_fds=()):
+    signal.signal(signal.SIGINT, lambda *_: None)  # the child handles Ctrl-C
+    return subprocess.Popen(argv, env=env, pass_fds=keep_fds).wait()
+
+
 def main(argv):
     if argv and argv[0] == "--":
         argv = argv[1:]
     if not argv:
         print(__doc__); return 2
     if held_by_ancestor():
-        return subprocess.call(argv)
+        return run(argv)
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     OLD_LOCK.parent.mkdir(parents=True, exist_ok=True)
     held = []
@@ -77,7 +88,7 @@ def main(argv):
     held.append(acquire(LOCK, argv))
     # Tells tests/conftest.py the lock is held.
     env = dict(os.environ, JAX_OPENMETAL_DEVICE_LOCK_HELD=str(os.getpid()))
-    return subprocess.call(argv, env=env)
+    return run(argv, env, [f.fileno() for f in held])
 
 
 if __name__ == "__main__":

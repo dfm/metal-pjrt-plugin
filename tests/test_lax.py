@@ -166,8 +166,9 @@ case("checkpoint/remat")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(jax.ch
 # ---- random ----
 case("random uniform")(lambda: (lambda u: np.testing.assert_(0.45 < float(u.mean()) < 0.55))(jax.random.uniform(jax.random.PRNGKey(1), (4096,))))
 case("random normal")(lambda: (lambda u: np.testing.assert_(abs(float(u.std()) - 1) < 0.1))(jax.random.normal(jax.random.PRNGKey(2), (4096,))))
-case("random bits threefry")(lambda: ref(lambda k: jax.random.bits(k, (16,)).astype(f32), jax.random.PRNGKey(3), same=True))
-case("random categorical/choice")(lambda: (lambda c: np.testing.assert_(c.shape == (100,)))(jax.random.choice(jax.random.PRNGKey(4), 10, (100,))))
+case("random bits threefry")(lambda: ref(lambda k: jax.random.bits(k, (16,)), jax.random.PRNGKey(3), same=True))
+case("random categorical/choice")(lambda: ref(lambda k: (jax.random.categorical(k, jnp.log(jnp.arange(1.0, 11.0)), shape=(100,)),
+                                                         jax.random.choice(k, 10, (100,))), jax.random.PRNGKey(4), same=True))
 case("rng_bit_generator")(lambda: (lambda r: np.testing.assert_(r[1].shape == (8,)))(lax.rng_bit_generator(jnp.zeros(4, jnp.uint32), (8,), jnp.uint32)))
 # ---- misc ----
 case("lax.erf_inv grad / custom_jvp")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(jax.nn.gelu(v)))(x), A(64)))
@@ -177,7 +178,7 @@ case("layernorm fwd+bwd")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(((v -
 case("attention block")(lambda: ref(lambda q: jax.nn.softmax(q @ q.T / 8.0, -1) @ q, R(32, 64)))
 case("int64 ops (x64 off -> i32)")(lambda: ref(lambda x: (x.astype(jnp.int64) * 3).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("f64 (x64 off -> f32)")(lambda: ref(lambda x: x.astype(jnp.float64) * 2, A(16)))
-case("complex64 (expected unsupported)")(lambda: ref(lambda x: jnp.abs(x + 1j * x), A(16)))
+case("complex64 intermediate (abs)")(lambda: ref(lambda x: jnp.abs(x + 1j * x), A(16)))
 case("int8 / uint8 math")(lambda: ref(lambda x: (x.astype(jnp.int8) * 2 + x.astype(jnp.uint8)).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("int4 (expected unsupported)")(lambda: ref(lambda x: x.astype(jnp.int4).astype(f32), jnp.arange(16, dtype=jnp.int32) % 7))
 case("float8 e4m3")(lambda: ref(lambda x: x.astype(jnp.float8_e4m3fn), A(16)))
@@ -225,7 +226,7 @@ ULPS = {
     'checkpoint/remat': 4, 'lax.erf_inv grad / custom_jvp': 2.2,
     'jnp.linalg.norm': 1, 'softmax cross entropy': 2.7,
     'layernorm fwd+bwd': 5.2, 'attention block': 7.4,
-    'complex64 (expected unsupported)': 1,
+    'complex64 intermediate (abs)': 1,
     'many-arg fusion (>31 buffers)': 6.1,
 }
 # Outputs of sums, dots and whole programs: ulps of the largest output.

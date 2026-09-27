@@ -8,10 +8,10 @@ it is sticky: every step after the first one that raises raises too.
 Without injection (n=0) every step must succeed.
 """
 import os
-import subprocess
-import sys
 
 import pytest
+
+from metal_testing import run_python
 
 pytestmark = pytest.mark.metal
 
@@ -43,8 +43,7 @@ def test_injected_command_buffer_failure(n):
                METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
     # No timeout: never kill a process with GPU work in flight. The runtime's
     # own waits are bounded.
-    out = subprocess.run([sys.executable, "-c", CHILD], env=env,
-                         capture_output=True, text=True)
+    out = run_python(CHILD, env)
     lines = [l for l in out.stdout.splitlines() if ": " in l]
     assert out.returncode == 0 and len(lines) == 5, (out.returncode, lines, out.stderr[-2000:])
     assert not [l for l in lines if "WRONG" in l], lines

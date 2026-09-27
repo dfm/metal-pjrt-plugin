@@ -5,6 +5,8 @@ user.bazelrc
 __pycache__/
 .DS_Store
 dist/
+build/
+*.egg-info/
 .venv/
 .venv-mps/
 # Symlink into bazel-bin, created by scripts/install_dev.sh.
