@@ -1,7 +1,8 @@
 [project]
 name = "jax-openmetal"
 version = "0.0.1"
-description = "Open-source Metal PJRT plugin for JAX on Apple Silicon (JAX platform \"openmetal\"; work in progress)"
+description = "Open-source Metal PJRT plugin for JAX on Apple Silicon (JAX platform \"openmetal\")"
+readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
 dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
@@ -15,6 +16,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["jax_plugins*"]
+
+# The plugin dylib (scripts/build_wheel.sh copies it in; for editable
+# installs it is scripts/install_dev.sh's link into bazel-bin).
+[tool.setuptools.package-data]
+"jax_plugins.openmetal" = ["*.dylib"]
 
 # tests/: see tests/conftest.py. No pytest-timeout and no xdist: a timeout
 # ends the process with GPU work in flight, and parallel workers put several

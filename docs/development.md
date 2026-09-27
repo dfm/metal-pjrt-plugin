@@ -49,7 +49,16 @@ bazel test //metal_pjrt_plugin/...                             # host-only C++ t
 scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
+scripts/build_wheel.sh                                         # dist/jax_openmetal-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
+
+The wheel is pure Python plus the dylib (a copy, not the link), so it is
+tagged `py3-none-macosx_26_0_arm64` and depends on `jax==0.11.2` and
+`jaxlib==0.11.2`; `jax_plugins/openmetal/__init__.py` warns at import when
+either version differs (`JAX_VERSION`, checked against `pyproject.toml` by
+`tests/test_packaging.py`). Checked by installing it with `uv` into a fresh
+venv and running `tests/test_smoke.py`, `test_sort.py` and
+`test_callbacks.py` from outside the checkout.
 
 `scripts/install_dev.sh` installs the `jax-openmetal` package (editable)
 into `.venv`, with `jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib`

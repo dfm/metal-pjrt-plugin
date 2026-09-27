@@ -32,7 +32,8 @@ int4 and dot precision algorithms. Tested on one machine (M3, 8 GB, macOS
 
 ## Install
 
-From a wheel (the plugin library is inside it):
+From a wheel (the plugin library is inside it; `scripts/build_wheel.sh`
+builds one into `dist/`):
 
 ```
 pip install jax==0.11.2 jaxlib==0.11.2 jax_openmetal-0.0.1-py3-none-macosx_26_0_arm64.whl

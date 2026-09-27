@@ -1,7 +1,8 @@
 """JAX plugin registration for the Metal PJRT plugin.
 
 Modeled on jax_plugins/cuda/__init__.py: registers the PJRT plugin dylib
-(linked next to this file by scripts/install_dev.sh) under platform
+next to this file (packaged by scripts/build_wheel.sh, or a link into
+bazel-bin made by scripts/install_dev.sh) under platform
 "openmetal" (not "metal", which is Apple's jax-metal plugin),
 then opts it into the persistent compilation cache and installs the
 lowerings and host callbacks the plugin needs.
@@ -19,6 +20,11 @@ logger = logging.getLogger(__name__)
 # the PLATFORM of lowerings.py, linalg_lowerings.py and callbacks.py.
 PLATFORM = "openmetal"
 _PLUGIN_BASENAME = "pjrt_c_api_openmetal_plugin.dylib"
+# The jax/jaxlib the plugin is built against (pyproject.toml pins the same;
+# tests/test_packaging.py checks). The dylib is built from that jaxlib's XLA
+# commit, and this package imports private jax._src modules, so the pin is
+# real even where pip lets another version in.
+JAX_VERSION = "0.11.2"
 
 
 def _get_library_path() -> pathlib.Path | None:
@@ -79,8 +85,23 @@ def _enable_persistent_cache():
         jax.config.update("jax_compilation_cache_dir", str(cache))
 
 
+def _check_versions():
+    import jax
+    import jaxlib
+    found = {"jax": jax.__version__, "jaxlib": jaxlib.__version__}
+    other = {k: v for k, v in found.items() if v != JAX_VERSION}
+    if other:
+        logger.warning(
+            "openmetal is built for jax and jaxlib %s, found %s; it may fail "
+            "or compute wrong results. Install jax==%s jaxlib==%s.",
+            JAX_VERSION, ", ".join(f"{k} {v}" for k, v in other.items()),
+            JAX_VERSION, JAX_VERSION)
+
+
 def initialize():
     import jax._src.xla_bridge as xb
+
+    _check_versions()
 
     path = _get_library_path()
     if path is None:
