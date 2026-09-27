@@ -12,6 +12,12 @@ overrides). Transition from before the platform was renamed "openmetal":
 the lock also takes the old ~/.cache/jax_metal/device.lock first (creating
 it if needed, so an older checkout cannot take it unnoticed later), so this
 script and an older checkout's exclude each other.
+
+Re-entrant: the child's environment carries JAX_OPENMETAL_DEVICE_LOCK_HELD=
+<holder pid>, and a nested device_lock.py (e.g. run_jax_tests.sh, which
+locks itself, run under device_lock.py) whose ancestor is that live holder
+runs the command without locking again. Any other value (stale, exported by
+hand) is ignored and the lock is acquired as usual.
 """
 import fcntl, os, pathlib, subprocess, sys, time
 
@@ -39,11 +45,28 @@ def acquire(path, argv):
     return f  # held until this process exits
 
 
+def held_by_ancestor():
+    try:
+        holder = int(os.environ.get("JAX_OPENMETAL_DEVICE_LOCK_HELD", ""))
+    except ValueError:
+        return False
+    pid = os.getppid()
+    while pid > 1:
+        if pid == holder:
+            return True
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)],
+                             capture_output=True, text=True).stdout.strip()
+        pid = int(out) if out else 0
+    return False
+
+
 def main(argv):
     if argv and argv[0] == "--":
         argv = argv[1:]
     if not argv:
         print(__doc__); return 2
+    if held_by_ancestor():
+        return subprocess.call(argv)
     LOCK.parent.mkdir(parents=True, exist_ok=True)
     OLD_LOCK.parent.mkdir(parents=True, exist_ok=True)
     held = []

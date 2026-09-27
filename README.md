@@ -83,7 +83,9 @@ log from there once, and `scripts/device_lock.py` also takes the old lock (creat
 older checkouts still exclude this one; the old directory is never deleted.
 
 Run one GPU-heavy job at a time (the scripts take a device lock); see
-`docs/performance.md` for the memory policy and why.
+`docs/performance.md` for the memory policy and why. The lock is re-entrant
+for descendants of its holder, so wrapping `scripts/run_jax_tests.sh` (which
+locks itself) in `scripts/device_lock.py` is fine.
 
 `tests/` is a pytest suite; tests that need the GPU are marked `metal` and
 refuse to run outside `scripts/device_lock.py` (`-m "not metal"` runs the
