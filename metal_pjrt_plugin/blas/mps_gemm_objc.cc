@@ -364,10 +364,8 @@ absl::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
   return absl::OkStatus();
 }
 
-}  // namespace
-
-absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
-                        const GemmParams& p) {
+absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
+                            const GemmParams& p) {
   if (mtl_command_buffer == nullptr) {
     return Invalid("null command buffer", p);
   }
@@ -388,8 +386,8 @@ absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
         absl::StrCat("MPS does not support device ", device.name.UTF8String),
         p));
   }
-  // The runtime's command buffers use unretained references; everything
-  // created here is kept alive until the GPU is done with it.
+  // Everything created here is kept alive until the GPU is done with it (the
+  // command buffer retains the buffers it binds, not the MPS objects).
   // Registered up front so that objects referenced by commands encoded before
   // an error return are covered too; the array is filled in below.
   NSMutableArray* keep_alive = [NSMutableArray array];
@@ -485,6 +483,19 @@ absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
                       gc.tmp, (__bridge id<MTLBuffer>)p.c.buffer, args));
   }
   return absl::OkStatus();
+}
+
+}  // namespace
+
+absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
+                        const GemmParams& p) {
+  // The descriptors, MPSMatrix objects and keep_alive array are autoreleased,
+  // and XLA's execute threads never drain a pool: without this one they, and
+  // the MTLBuffers the MPSMatrix objects retain, leaked for the life of the
+  // thread (208 MB per call of a 100 MB matmul with the platform allocator).
+  @autoreleasepool {
+    return RunMpsGemmImpl(mtl_device, mtl_command_buffer, p);
+  }
 }
 
 }  // namespace blas
