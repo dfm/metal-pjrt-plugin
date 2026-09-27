@@ -2,7 +2,8 @@
 # Regenerates third_party/xla/patches/0001-metal-pjrt-identity.patch against a
 # pristine XLA tree (argument 1). The edits teach XLA's GPU PJRT client, C API
 # shim and platform utilities about the Metal platform on macOS (PJRT/JAX
-# platform name "openmetal", StreamExecutor platform "METAL").
+# platform name "openmetal", StreamExecutor platform "METAL"), plus one
+# error-handling fix in GPU constant upload (edit 6).
 set -euo pipefail
 XLA=${1:?path to pristine xla tree}
 OUT=$(cd "$(dirname "$0")" && pwd)/patches/0001-metal-pjrt-identity.patch
@@ -16,6 +17,7 @@ FILES=(
   xla/service/platform_util.cc
   xla/service/BUILD
   xla/service/gpu/gpu_executable.cc
+  xla/service/gpu/gpu_module_globals.cc
 )
 for f in "${FILES[@]}"; do
   mkdir -p "$WORK/a/$(dirname $f)" "$WORK/b/$(dirname $f)"
@@ -48,6 +50,10 @@ grep -q 'load("//xla/tsl:tsl.bzl", "if_macos")' $B/xla/service/BUILD || \
 
 # 5. GpuExecutable: tolerate platforms without a compute-capability check.
 perl -0pi -e 's|  \} else \{\n    return Internal\("Unknown platform"\);\n  \}|  } else {\n    VLOG(2) << "No compute capability check for platform "\n            << main_stream->parent()->GetPlatform()->Name();\n  }|' $B/xla/service/gpu/gpu_executable.cc
+
+# 6. Constant upload: a failed wait (a sticky device error) is returned, not a
+#    CHECK failure that aborts the process. Upstreaming candidate.
+perl -0pi -e 's|    CHECK_OK\(stream->BlockHostUntilDone\(\)\);|    ABSL_RETURN_IF_ERROR(stream->BlockHostUntilDone());|' $B/xla/service/gpu/gpu_module_globals.cc
 
 cd $WORK && (diff -ruN a b > "$OUT" || true)
 # Sanity: every file must have changed.

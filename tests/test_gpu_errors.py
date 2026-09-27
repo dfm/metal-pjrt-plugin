@@ -55,3 +55,29 @@ def test_injected_command_buffer_failure(n):
     else:
         assert any(raised), lines
         assert all(raised[raised.index(True):]), lines
+
+
+def test_array_constant_after_failure_raises():
+    """A new executable whose array constants are uploaded on first run, after
+    the device error is sticky, raises instead of aborting the process (XLA's
+    constant upload used to CHECK_OK its BlockHostUntilDone)."""
+    child = r"""
+import numpy as np, jax
+x = np.ones(4, np.float32)
+try:
+    jax.jit(lambda x: x * 2.0)(x).block_until_ready()
+    print("first: OK")
+except Exception as e:
+    print("first: RAISED")
+c = np.array([1.0, 5.0, 2.0, 7.0], np.float32)  # an XLA constant global
+try:
+    jax.jit(lambda x: x + c)(x).block_until_ready()
+    print("constant: OK")
+except Exception as e:
+    print("constant: RAISED", str(e).splitlines()[0][:120])
+"""
+    env = dict(os.environ, JAX_PLATFORMS="openmetal",
+               METAL_PJRT_FAIL_COMMAND_BUFFER="1")
+    out = run_python(child, env)
+    assert out.returncode == 0, (out.returncode, out.stdout, out.stderr[-2000:])
+    assert "constant: RAISED" in out.stdout, (out.stdout, out.stderr[-2000:])

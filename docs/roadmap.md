@@ -95,6 +95,11 @@ Open decisions for dfm:
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
+Upstreaming candidate: patch 0001's `gpu_module_globals.cc` hunk
+(`CHECK_OK(stream->BlockHostUntilDone())` -> `ABSL_RETURN_IF_ERROR`). On
+any backend, a failed wait after uploading an executable's constants
+aborts the process instead of returning the error.
+
 ## Deferred / unverified
 
 - The GPU-error path is exercised only by injected failures; no real fault
