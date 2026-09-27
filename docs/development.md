@@ -46,7 +46,7 @@ scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test 
 bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
-bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
+bench/run_all.sh                                               # benchmarks vs cpu and MLX
 scripts/build_wheel.sh                                         # dist/openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
 

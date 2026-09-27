@@ -11,3 +11,5 @@ build/
 .venv-mps/
 # Symlink into bazel-bin, created by scripts/install_dev.sh.
 jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib
+# Raw benchmark rows (bench/run_all.sh); only table.md is tracked.
+bench/results/*.jsonl

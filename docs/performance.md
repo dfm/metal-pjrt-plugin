@@ -525,7 +525,8 @@ as accurate (f16 cumsum 1.15 vs 2.08 ulps, bf16 0.78 vs 1.51, f32 equal):
 
 - `bench/run_all.sh` runs `BENCH_ROUNDS` (default 3) rounds with the
   backends interleaved inside each round (`BENCH_BACKENDS`, default `metal
-  metal-gpu cpu jax-mps mlx`); `bench/report.py` takes the median over
+  metal-gpu cpu mlx`; the jax-mps arm was dropped later, MLX is the one
+  reference); `bench/report.py` takes the median over
   rounds. Every row records the commit (`git describe --dirty`), JAX / MLX
   versions, the plugin's platform version and the `METAL_PJRT_*`,
   `JAX_OPENMETAL_*`, `XLA_FLAGS`, `JAX_PLATFORMS` knobs; the table header lists
