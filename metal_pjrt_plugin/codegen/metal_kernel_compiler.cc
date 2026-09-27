@@ -30,6 +30,10 @@ absl::StatusOr<xla::LlvmKernelSource> CompileMlirToMsl(
   // The module carries its own context (as upstream's CompileMlirToLlvm).
   mlir::OwningOpRef<mlir::ModuleOp> module = std::move(source).TakeModule();
 
+  // Before any pass folds the thread ids away.
+  const int threads_per_threadgroup =
+      ThreadsPerThreadgroupFromRanges(module.get(), entry_function_name);
+
   // Same pipeline as xla::gpu::CompileMlirToLlvm, minus PDL, with the lowering
   // stopping before SCFToControlFlow.
   mlir::PassManager pm(module->getContext());
@@ -56,7 +60,8 @@ absl::StatusOr<xla::LlvmKernelSource> CompileMlirToMsl(
   }
 
   absl::StatusOr<MslKernel> kernel =
-      EmitMslKernel(module.get(), entry_function_name, device);
+      EmitMslKernel(module.get(), entry_function_name, device,
+                    threads_per_threadgroup);
   if (!kernel.ok()) return kernel.status();
 
   auto llvm_context = std::make_unique<llvm::LLVMContext>();

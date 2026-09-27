@@ -41,4 +41,7 @@ py_test(
         ":xla_sources",
     ],
     main = "tripwire.py",
+    # tripwire.py also reads INVISIBLE files that are not declared inputs, so
+    # a cached PASS could hide a change to them (e.g. from our XLA patches).
+    tags = ["external"],
 )

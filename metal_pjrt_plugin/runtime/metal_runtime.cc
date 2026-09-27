@@ -29,6 +29,9 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/str_replace.h"
+#include "absl/strings/strip.h"
+#include "absl/strings/ascii.h"
 
 namespace metal_pjrt {
 namespace rt {
@@ -137,7 +140,10 @@ Kernel::~Kernel() {
 }
 
 uint32_t Kernel::max_total_threads_per_threadgroup() const {
-  return static_cast<uint32_t>(pso_->maxTotalThreadsPerThreadgroup());
+  const uint32_t pso =
+      static_cast<uint32_t>(pso_->maxTotalThreadsPerThreadgroup());
+  return declared_max_threads_ == 0 ? pso
+                                    : std::min(pso, declared_max_threads_);
 }
 
 uint32_t Kernel::thread_execution_width() const {
@@ -1233,6 +1239,29 @@ bool UsesArgumentBuffer(const std::string& msl_source,
                         const std::string& kernel_name) {
   return msl_source.find(absl::StrCat(kArgumentBufferMarker, "\nkernel void ",
                                       kernel_name, "(")) != std::string::npos;
+}
+
+uint32_t DeclaredMaxThreadsPerThreadgroup(const std::string& msl_source,
+                                          const std::string& kernel_name) {
+  const size_t k =
+      msl_source.find(absl::StrCat("kernel void ", kernel_name, "("));
+  if (k == std::string::npos) return 0;
+  constexpr absl::string_view kAttr = "[[max_total_threads_per_threadgroup(";
+  const size_t a = msl_source.rfind(kAttr, k);
+  if (a == std::string::npos) return 0;
+  const size_t close = msl_source.find(")]]", a);
+  if (close == std::string::npos || close > k) return 0;
+  // Only whitespace and the argument-buffer marker may separate the two.
+  std::string between = msl_source.substr(close + 3, k - close - 3);
+  absl::StrReplaceAll({{kArgumentBufferMarker, ""}}, &between);
+  if (!absl::StripAsciiWhitespace(between).empty()) return 0;
+  uint32_t n = 0;
+  if (!absl::SimpleAtoi(absl::string_view(msl_source).substr(
+                            a + kAttr.size(), close - a - kAttr.size()),
+                        &n)) {
+    return 0;
+  }
+  return n;
 }
 
 absl::StatusOr<BufferRef> Stream::ResolveCached(const void* ptr) {

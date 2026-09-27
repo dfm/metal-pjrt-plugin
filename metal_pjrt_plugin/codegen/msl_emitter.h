@@ -26,11 +26,23 @@ namespace metal_pjrt::codegen {
 void AddMslLoweringPasses(mlir::OpPassManager& pm,
                           const stream_executor::DeviceDescription& device);
 
+// Threads per threadgroup of the launch `module` was emitted for: the product
+// over x, y, z of (upper bound + 1) of the `xla.range` on the entry's
+// gpu.thread_id ops, as XLA's emitters create them (one per dimension).
+// Call before any pass runs (canonicalization folds unused or constant ids
+// away). 0 when a dimension has no ranged thread_id op.
+int ThreadsPerThreadgroupFromRanges(mlir::ModuleOp module,
+                                    absl::string_view entry_function);
+
 // Converts `module` (consumed: it is rewritten in place) to MSL. Returns
 // UnimplementedError naming the first construct that cannot be translated.
+// A positive `max_threads_per_threadgroup` is emitted as
+// [[max_total_threads_per_threadgroup(N)]] (the runtime refuses larger
+// threadgroups, see rt::DeclaredMaxThreadsPerThreadgroup).
 absl::StatusOr<MslKernel> EmitMslKernel(
     mlir::ModuleOp module, absl::string_view entry_function,
-    const stream_executor::DeviceDescription& device);
+    const stream_executor::DeviceDescription& device,
+    int max_threads_per_threadgroup = 0);
 
 // The MSL helper library that every emitted kernel starts with. Exposed for
 // tests and for the syntax checker.

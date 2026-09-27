@@ -135,6 +135,12 @@ inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
 bool UsesArgumentBuffer(const std::string& msl_source,
                         const std::string& kernel_name);
 
+// N from a `[[max_total_threads_per_threadgroup(N)]]` attribute written just
+// before `kernel void <name>(` (optionally with the argument-buffer marker in
+// between), or 0 if there is none.
+uint32_t DeclaredMaxThreadsPerThreadgroup(const std::string& msl_source,
+                                          const std::string& kernel_name);
+
 // What identifies a kernel across processes: its function name and a key
 // made of the hash of its MSL source plus the function name. Shared by the
 // Kernel and by the streams' per-command-buffer records (so recording a
@@ -171,6 +177,11 @@ class Kernel {
   // one setBytes payload of GPU addresses and marks the buffers resident.
   bool uses_argument_buffer() const { return uses_argument_buffer_; }
   void set_uses_argument_buffer(bool v) { uses_argument_buffer_ = v; }
+  // The source's declared [[max_total_threads_per_threadgroup]] (0: none).
+  // Release Metal does not check dispatches against it (a larger threadgroup
+  // is undefined behaviour on the GPU), so max_total_threads_per_threadgroup
+  // includes it and launches above it are refused before encoding.
+  void set_declared_max_threads(uint32_t n) { declared_max_threads_ = n; }
   uint32_t max_total_threads_per_threadgroup() const;
   uint32_t thread_execution_width() const;
   uint32_t static_threadgroup_memory_length() const;
@@ -179,6 +190,7 @@ class Kernel {
   MTL::ComputePipelineState* pso_;
   std::shared_ptr<const KernelIdentity> identity_;
   bool uses_argument_buffer_ = false;
+  uint32_t declared_max_threads_ = 0;
 };
 
 class Event;

@@ -742,6 +742,50 @@ TEST_F(MetalRuntimeTest, ArgumentBufferLaunch) {
   for (void* p : allocs) EXPECT_THAT(dev_->Deallocate(p), IsOk());
 }
 
+// A declared [[max_total_threads_per_threadgroup(N)]] caps the pipeline
+// limit; a larger threadgroup is refused before anything is encoded (release
+// Metal would run it as undefined behaviour).
+TEST_F(MetalRuntimeTest, DeclaredMaxThreadsRefusesLargerThreadgroups) {
+  const std::string msl =
+      "#include <metal_stdlib>\nusing namespace metal;\n"
+      "[[max_total_threads_per_threadgroup(64)]]\n"
+      "kernel void capped(device uint* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) { y[i] = i; }\n";
+  EXPECT_EQ(DeclaredMaxThreadsPerThreadgroup(msl, "capped"), 64u);
+  EXPECT_EQ(DeclaredMaxThreadsPerThreadgroup(msl, "other"), 0u);
+  EXPECT_EQ(DeclaredMaxThreadsPerThreadgroup(kMsl, "axpy"), 0u);
+  EXPECT_EQ(DeclaredMaxThreadsPerThreadgroup(
+                std::string("[[max_total_threads_per_threadgroup(32)]]\n") +
+                    kArgumentBufferMarker + "\nkernel void k(",
+                "k"),
+            32u);
+  absl::StatusOr<MTL::Library*> lib = dev_->CompileLibrary(msl);
+  ASSERT_THAT(lib, IsOk());
+  absl::StatusOr<std::unique_ptr<Kernel>> k = dev_->CreateKernel(*lib, "capped");
+  ASSERT_THAT(k, IsOk());
+  RecordProperty("pso_max_threads_with_attribute_64",
+                 static_cast<int>((*k)->max_total_threads_per_threadgroup()));
+  // Even if the pipeline reported more, the declared value is the limit.
+  (*k)->set_declared_max_threads(64);
+  EXPECT_LE((*k)->max_total_threads_per_threadgroup(), 64u);
+
+  std::unique_ptr<Stream> s = NewStream();
+  auto* y = static_cast<uint32_t*>(Alloc(256 * sizeof(uint32_t)));
+  for (int i = 0; i < 256; ++i) y[i] = 12345;
+  EXPECT_THAT(s->Launch(**k, Dim3{2, 1, 1}, Dim3{128, 1, 1},
+                        {KernelArg::Buffer(y)}),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("128 threads per threadgroup")));
+  EXPECT_THAT(s->Synchronize(), IsOk());
+  for (int i = 0; i < 256; ++i) ASSERT_EQ(y[i], 12345u) << "refused launch ran";
+  ASSERT_THAT(s->Launch(**k, Dim3{4, 1, 1}, Dim3{64, 1, 1},
+                        {KernelArg::Buffer(y)}),
+              IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  for (int i = 0; i < 256; ++i) ASSERT_EQ(y[i], static_cast<uint32_t>(i));
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 }  // namespace
 }  // namespace rt
 }  // namespace metal_pjrt

@@ -114,6 +114,14 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   then `AddLoweringPasses`: LowerTensors, SimplifyArith, SimplifyAffine,
   ConvertIndexType, float conversions, ExpandFloatOps, SCFToControlFlow,
   `createLowerToLLVMGPUPass(device)` (NVVM default, ROCDL, LLVM-SPV).
+- Launch size: XLA's `AnnotateKernelLaunchDimensions` does nothing for SPIR,
+  so `MetalKernelCompiler` reads the threadgroup size from the MLIR before
+  any pass runs (ranged `gpu.thread_id` x/y/z, or the outermost `scf.forall`
+  of the `xla/codegen/emitters` kernels) and emits
+  `[[max_total_threads_per_threadgroup(N)]]`. The runtime parses N back from
+  the source and refuses (InvalidArgument, before encoding) any launch with
+  more than min(N, pipeline limit) threads per threadgroup: release Metal
+  does not check, and a larger threadgroup is undefined behaviour on the GPU.
 - Seam: the MLIR emitters call only
   `ir_emitter_context.kernel_compiler()->CompileMlirToLlvm(...)`
   (`mlir_kernel_emitter.cc`), and `KernelCompiler::CompileMlirToLlvm` is

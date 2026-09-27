@@ -124,6 +124,47 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_THAT(msl, HasSubstr("xla_log1p("));
 }
 
+constexpr char kRangedIds[] = R"mlir(
+module {
+  func.func @ranged(%arg0: !llvm.ptr) {
+    %tx = gpu.thread_id x {xla.range = [0 : index, 127 : index]}
+    %ty = gpu.thread_id y {xla.range = [0 : index, 1 : index]}
+    %tz = gpu.thread_id z {xla.range = [0 : index, 0 : index]}
+    %s = arith.addi %tx, %ty : index
+    %t = arith.addi %s, %tz : index
+    %i = arith.index_cast %t : index to i32
+    %p = llvm.getelementptr %arg0[%i] : (!llvm.ptr, i32) -> !llvm.ptr, i32
+    llvm.store %i, %p : i32, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, MaxTotalThreadsFromThreadIdRanges) {
+  mlir::OwningOpRef<mlir::ModuleOp> module =
+      mlir::parseSourceString<mlir::ModuleOp>(kRangedIds, &context_);
+  ASSERT_TRUE(module);
+  EXPECT_EQ(ThreadsPerThreadgroupFromRanges(*module, "ranged"), 256);
+  EXPECT_EQ(ThreadsPerThreadgroupFromRanges(*module, "other"), 0);
+  stream_executor::DeviceDescription device;
+  absl::StatusOr<MslKernel> kernel =
+      EmitMslKernel(*module, "ranged", device, 256);
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  EXPECT_THAT(kernel->msl_source,
+              HasSubstr("[[max_total_threads_per_threadgroup(256)]]\n"
+                        "kernel void ranged("));
+
+  // A dimension without a ranged id (kElementwise has only an unranged x):
+  // no attribute.
+  mlir::OwningOpRef<mlir::ModuleOp> plain =
+      mlir::parseSourceString<mlir::ModuleOp>(kElementwise, &context_);
+  ASSERT_TRUE(plain);
+  EXPECT_EQ(ThreadsPerThreadgroupFromRanges(*plain, "fusion"), 0);
+  absl::StatusOr<MslKernel> k2 = Emit(kElementwise, "fusion");
+  ASSERT_TRUE(k2.ok());
+  EXPECT_THAT(k2->msl_source,
+              Not(HasSubstr("max_total_threads_per_threadgroup")));
+}
+
 // Reduction: shuffles, shared memory, barrier, atomics.
 constexpr char kReduction[] = R"mlir(
 module {

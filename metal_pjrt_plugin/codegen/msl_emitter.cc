@@ -865,6 +865,7 @@ struct ConstantGlobal {
 
 struct KernelInfo {
   std::string kernel_name;
+  int max_threads_per_threadgroup = 0;  // 0: no attribute
   std::string body_name;
   int num_buffer_args = 0;
   std::vector<SharedArray> shared;
@@ -2244,6 +2245,12 @@ std::string KernelWrapper(const KernelInfo& info) {
   // convention the kernel uses.
   const bool arg_buffer = info.num_buffer_args > kMaxDirectBufferArgs;
   std::string s;
+  // Lets the Metal compiler allocate registers for the actual threadgroup
+  // size instead of the device maximum.
+  if (info.max_threads_per_threadgroup > 0) {
+    absl::StrAppend(&s, "[[max_total_threads_per_threadgroup(",
+                    info.max_threads_per_threadgroup, ")]]\n");
+  }
   if (arg_buffer) absl::StrAppend(&s, kArgumentBufferMarker, "\n");
   absl::StrAppend(&s, "kernel void ", info.kernel_name, "(\n");
   if (arg_buffer) {
@@ -2290,9 +2297,52 @@ std::string KernelWrapper(const KernelInfo& info) {
 
 absl::string_view MslPrelude() { return kPrelude; }
 
+int ThreadsPerThreadgroupFromRanges(mlir::ModuleOp module,
+                                    absl::string_view entry_function) {
+  // 0: no information for that dimension.
+  int64_t counts[3] = {0, 0, 0};
+  bool ok = true;
+  // MlirKernelEmitter kernels: gpu.thread_id x, y and z with xla.range.
+  module.walk([&](mlir::gpu::ThreadIdOp op) {
+    auto f = op->getParentOfType<mlir::func::FuncOp>();
+    if (!f || f.getSymName().str() != entry_function) return;
+    auto range = op->getAttrOfType<mlir::ArrayAttr>("xla.range");
+    auto hi = range && range.size() == 2
+                  ? mlir::dyn_cast<mlir::IntegerAttr>(range[1])
+                  : mlir::IntegerAttr();
+    if (!hi) {
+      ok = false;
+      return;
+    }
+    int d = static_cast<int>(op.getDimension());
+    counts[d] = std::max<int64_t>(counts[d], hi.getInt() + 1);
+  });
+  // xla/codegen/emitters kernels (loop, concatenate, ...): the outermost
+  // scf.forall is the threadgroup; LowerXlaShared turns its dimensions into
+  // ranged gpu.thread_id ops and absent dimensions are 1.
+  bool forall = false;
+  module.walk([&](mlir::scf::ForallOp op) {
+    if (op->getParentOfType<mlir::scf::ForallOp>()) return;
+    if (!op.getDynamicUpperBound().empty() || !op.isNormalized() ||
+        op.getRank() > 3) {
+      ok = false;
+      return;
+    }
+    forall = true;
+    for (auto [d, size] : llvm::enumerate(op.getStaticUpperBound())) {
+      counts[d] = std::max<int64_t>(counts[d], size);
+    }
+  });
+  int64_t n = 1;
+  for (int64_t c : counts) n *= c == 0 && forall ? 1 : c;
+  if (!ok || n <= 0 || n > 1024) return 0;
+  return static_cast<int>(n);
+}
+
 absl::StatusOr<MslKernel> EmitMslKernel(
     mlir::ModuleOp module, absl::string_view entry_function,
-    const stream_executor::DeviceDescription& device) {
+    const stream_executor::DeviceDescription& device,
+    int max_threads_per_threadgroup) {
   (void)device;
   mlir::MLIRContext* ctx = module.getContext();
   ctx->getOrLoadDialect<mlir::emitc::EmitCDialect>();
@@ -2317,6 +2367,7 @@ absl::StatusOr<MslKernel> EmitMslKernel(
 
   KernelInfo info;
   info.kernel_name = std::string(entry_function);
+  info.max_threads_per_threadgroup = max_threads_per_threadgroup;
   info.body_name = absl::StrCat(info.kernel_name, "_impl");
 
   if (absl::Status s = CleanUpUnrealizedCasts(module); !s.ok()) return s;
