@@ -557,6 +557,19 @@ std::string LastAllocationRefusal(uint64_t* size) {
 
 bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
   TrimCache(std::chrono::steady_clock::duration::zero());
+  if (FitsInSystemMemory(length, reclaimable)) return true;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (cached_bytes_ == 0 || !error_.ok()) return false;
+  }
+  {
+    std::unique_lock<std::mutex> lock(tickets_mu_);
+    const uint64_t last = last_ticket_;
+    tickets_cv_.wait_for(lock, kRefusalWait, [&] {
+      return outstanding_.empty() || *outstanding_.begin() > last;
+    });
+  }
+  TrimCache(std::chrono::steady_clock::duration::zero());
   return FitsInSystemMemory(length, reclaimable);
 }
 
@@ -688,8 +701,11 @@ uint64_t Device::BeginWork() {
 }
 
 void Device::EndWork(uint64_t ticket) {
-  std::lock_guard<std::mutex> lock(tickets_mu_);
-  outstanding_.erase(ticket);
+  {
+    std::lock_guard<std::mutex> lock(tickets_mu_);
+    outstanding_.erase(ticket);
+  }
+  tickets_cv_.notify_all();
 }
 
 uint64_t Device::EndedBelow() {

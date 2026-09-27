@@ -361,9 +361,14 @@ class Device {
   uint64_t last_ticket_ = 0;
   // Every ticket below this has ended.
   uint64_t EndedBelow();
-  // After the system memory guard refused `length`: drops the cache (the
-  // buffers whose work has ended) and checks again.
+  std::condition_variable tickets_cv_;  // notified by EndWork
+  // After the system memory guard refused `length`: drops the cache and
+  // checks again. Buffers freed while work was in flight (e.g. the previous
+  // step's) stay cached until that work ends, so if some remain, waits
+  // (bounded by kRefusalWait, not after a device error) for the work
+  // outstanding now, drops the cache and checks once more.
   bool FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable);
+  static constexpr std::chrono::seconds kRefusalWait{1};
   // libdispatch sources on memory_queue_: the memory-pressure source and a
   // timer running TrimCache(kCacheIdleRelease), resumed only while the cache
   // is not empty (trim_armed_, guarded by mu_).

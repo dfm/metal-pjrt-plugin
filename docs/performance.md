@@ -662,7 +662,10 @@ The default allocator is now XLA's pass-through `platform` allocator over
   by the runtime for both allocators): a miss evicts least recently freed
   buffers first, then fails with RESOURCE_EXHAUSTED. The 512 MB system guard
   still applies to every new buffer; when it refuses, the whole cache is
-  dropped (buffers whose work has ended) and the guard asked again.
+  dropped and the guard asked again. Buffers freed while work was in flight
+  can only go once that work ends, so if some are still cached the
+  allocation waits (at most 1 s, not after a device error) for the work
+  outstanding at that moment, drops the cache and asks once more.
 - XLA reports every refusal as "Out of memory while trying to allocate N
   with allocator ..."; the plugin's `PJRT_Error_Message` appends the
   runtime's reason (memory budget or system memory guard, with the numbers),
