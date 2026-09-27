@@ -1,7 +1,5 @@
 #include "metal_pjrt_plugin/codegen/msl_emitter.h"
 
-#include <cstdlib>
-#include <fstream>
 #include <memory>
 #include <optional>
 #include <regex>
@@ -54,15 +52,7 @@ class MslEmitterTest : public ::testing::Test {
         mlir::parseSourceString<mlir::ModuleOp>(ir, &context_);
     if (!module) return absl::InvalidArgumentError("failed to parse test IR");
     stream_executor::DeviceDescription device;
-    absl::StatusOr<MslKernel> kernel = EmitMslKernel(*module, entry, device);
-    // Keep the generated MSL for msl_syntax_check.
-    if (kernel.ok()) {
-      if (const char* dir = std::getenv("TEST_UNDECLARED_OUTPUTS_DIR")) {
-        std::ofstream(std::string(dir) + "/" + entry + ".metal")
-            << kernel->msl_source;
-      }
-    }
-    return kernel;
+    return EmitMslKernel(*module, entry, device);
   }
 
   mlir::MLIRContext context_;

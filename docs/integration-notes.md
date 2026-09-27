@@ -185,8 +185,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
 - Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_ffi.py`
-  also calls it through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
-  (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin.
+  also calls it through `jax.ffi.ffi_call`); `//metal_pjrt_plugin/ffi:cub_sort_test`
+  looks handlers up in the static registry and invokes them as XLA does.
   `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.
 - XLA's SortRewriter targets `xla.gpu.ext.cub_sort_keys` / `cub_sort_pairs`
   (`ffi/cub_sort_ffi.cc`, mirroring `cub_sort_kernel_cuda.cc`): the

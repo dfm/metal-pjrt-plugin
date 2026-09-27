@@ -35,6 +35,10 @@ namespace gpu {
 // straight-line network, <= 64 per row) away from XLA's SortRewriter, which
 // takes every simple sort of more than 16384 elements and whose radix sort
 // (cub_sort_ffi.cc) runs one threadgroup per row.
+// Sort dimensions up to this size are expanded straight-line (every substage
+// a fusion, no while loop).
+inline constexpr int64_t kMaxUnrolledSortDim = 64;
+
 class MetalSortExpander : public HloModulePass {
  public:
   MetalSortExpander() = default;

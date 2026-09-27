@@ -391,14 +391,16 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   s.arrays.push_back(comp->AddInstruction(
       HloInstruction::CreateIota(ShapeUtil::MakeShape(itype, {m}), 0)));
 
-  // Small sort dimensions (up to 64 elements, 21 substages) are emitted
+  // Small sort dimensions (up to kMaxUnrolledSortDim = 64 elements, 21
+  // substages) are emitted
   // straight-line: each substage becomes a fusion, and the whole sort then
   // runs inside one command buffer with no while loop (a while loop costs a
   // thunk-level loop per sort, which dominated batched argsorts of a few
   // elements per row, e.g. LU pivot inversion in jnp.linalg.solve).
   // Larger sorts run the two-substages-per-iteration while loop below, with an
   // odd substage count leaving one step to run before it.
-  constexpr int64_t kMaxUnrolledSteps = 21;
+  constexpr int64_t kMaxUnrolledSteps = 21;  // log2(64) * (log2(64) + 1) / 2
+  static_assert(kMaxUnrolledSortDim == 64);
   const int64_t pre_steps =
       num_steps <= kMaxUnrolledSteps ? num_steps : num_steps % 2;
   for (int64_t step = 0; step < pre_steps; ++step) {

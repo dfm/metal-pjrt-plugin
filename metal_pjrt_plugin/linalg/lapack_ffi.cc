@@ -162,18 +162,9 @@ absl::Status LapackError(const char* name, int info) {
 // kSmallMatrixMax rows/cols are therefore factorized or solved by one GPU
 // thread per matrix (per right-hand-side column for triangular solves),
 // enqueued on the stream like any kernel, with no synchronization.
-// METAL_PJRT_SMALL_LINALG=0 forces the host path (for A/B testing).
 //===--------------------------------------------------------------------===//
 
 constexpr int64_t kSmallMatrixMax = 32;
-
-bool SmallLinalgEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("METAL_PJRT_SMALL_LINALG");
-    return v == nullptr || v[0] == '\0' || v[0] != '0';
-  }();
-  return enabled;
-}
 
 // SmallParams::flags bits.
 constexpr uint32_t kFlagLower = 1;
@@ -351,7 +342,7 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$cholesky: matrix must be square");
   }
-  if (SmallLinalgEnabled() && d->rows <= kSmallMatrixMax && d->rows > 0) {
+  if (d->rows <= kSmallMatrixMax && d->rows > 0) {
     SmallParams p{static_cast<uint32_t>(d->batch), 0,
                   static_cast<uint32_t>(d->rows), 0, lower ? kFlagLower : 0u};
     return LaunchSmall(stream, "small_cholesky",
@@ -407,7 +398,7 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
   // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
   // 3 = ADJOINT (the same as TRANSPOSE for real types).
   const bool trans = transpose_a == 2 || transpose_a == 3;
-  if (SmallLinalgEnabled() && k <= kSmallMatrixMax && k > 0 && db->rows > 0 &&
+  if (k <= kSmallMatrixMax && k > 0 && db->rows > 0 &&
       db->cols > 0) {
     SmallParams p{static_cast<uint32_t>(db->batch),
                   static_cast<uint32_t>(db->rows),
@@ -454,7 +445,7 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   }
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
-  if (SmallLinalgEnabled() && d->rows <= kSmallMatrixMax &&
+  if (d->rows <= kSmallMatrixMax &&
       d->cols <= kSmallMatrixMax && d->rows > 0 && d->cols > 0) {
     SmallParams p{static_cast<uint32_t>(d->batch),
                   static_cast<uint32_t>(d->rows),

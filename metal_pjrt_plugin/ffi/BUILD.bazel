@@ -36,52 +36,6 @@ cc_library(
     alwayslink = True,
 )
 
-# metal$test_scale (y = x * scale): a handler for tests only, kept out of the
-# plugin.
-cc_library(
-    name = "test_scale_ffi",
-    testonly = True,
-    srcs = ["test_scale_ffi.cc"],
-    deps = [
-        ":metal_ffi",
-        "@com_google_absl//absl/status",
-        "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/backends/gpu:ffi",
-        "@xla//xla/ffi",
-        "@xla//xla/ffi:ffi_api",
-    ],
-    alwayslink = True,
-)
-
-# Looks metal$test_scale up in the static FFI registry and invokes it on a
-# Metal stream, as XLA's CustomCallThunk does. Needs a Metal device.
-cc_test(
-    name = "ffi_test",
-    srcs = ["ffi_test.cc"],
-    tags = DEVICE_TEST_TAGS,
-    timeout = "eternal",
-    deps = [
-        ":test_scale_ffi",
-        "//metal_pjrt_plugin/stream_executor:metal_platform",
-        "@com_google_googletest//:gtest",
-        "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/ffi:attribute_map",
-        "@xla//xla/ffi:call_frame",
-        "@xla//xla/ffi",
-        "@xla//xla/ffi:ffi_api",
-        "@xla//xla/ffi:ffi_registry",
-        "@xla//xla/ffi:invoke",
-        "@xla//xla/stream_executor:device_address",
-        "@xla//xla/stream_executor:platform_manager",
-        "@xla//xla/stream_executor:stream",
-        "@xla//xla/stream_executor:stream_executor_h",
-        "@xla//xla/tsl/lib/core:status_test_util",
-        "@xla//xla/tsl/platform:statusor",
-        "@xla//xla/tsl/platform:test",
-        "@xla//xla/tsl/platform:test_main",
-    ],
-)
-
 # The radix sort handlers (cub_sort_ffi.cc) against a CPU stable sort.
 # Needs a Metal device.
 cc_test(

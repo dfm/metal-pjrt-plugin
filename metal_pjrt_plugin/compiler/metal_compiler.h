@@ -2,7 +2,6 @@
 #define METAL_PJRT_PLUGIN_COMPILER_METAL_COMPILER_H_
 
 #include <memory>
-#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,10 +43,12 @@ class MetalCompiler : public GpuCompiler {
  public:
   MetalCompiler();
 
-  // Forces the debug options the Metal backend depends on, runs
-  // MetalScanRewriter (it must see JAX's reduce-window scans before
-  // AssociativeScanRewriter / ReduceWindowRewriter in RunOptimizationPasses),
-  // then runs the stock GPU HLO pipeline.
+  // Forces the debug options the Metal backend depends on and runs the
+  // passes that must see the HLO before RunOptimizationPasses:
+  // MetalLinalgRewriter (before CholeskyExpander / TriangularSolveExpander),
+  // MetalScanRewriter (JAX's reduce-window scans, before
+  // AssociativeScanRewriter / ReduceWindowRewriter) and the short-row sort
+  // and top_k expansion (before SortRewriter); then the stock GPU pipeline.
   absl::StatusOr<std::unique_ptr<HloModule>> RunHloPasses(
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
       const CompileOptions& options) override;

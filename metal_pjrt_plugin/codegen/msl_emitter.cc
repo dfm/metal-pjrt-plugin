@@ -127,9 +127,6 @@ constexpr int kNumIdArgs = 12;  // tid.xyz, bid.xyz, bdim.xyz, gdim.xyz
 constexpr absl::string_view kPrelude = R"msl(#include <metal_stdlib>
 using namespace metal;
 
-#ifndef XLA_MSL_PRELUDE
-#define XLA_MSL_PRELUDE
-
 // Spellings used by MLIR's C++ emitter.
 #define _Float16 half
 #define __bf16 bfloat
@@ -391,8 +388,6 @@ inline T xla_ipowi(T b, T e) {
   }
   return r;
 }
-
-#endif  // XLA_MSL_PRELUDE
 )msl";
 
 // ---------------------------------------------------------------------------
@@ -2339,8 +2334,6 @@ std::string KernelWrapper(const KernelInfo& info) {
 }
 
 }  // namespace
-
-absl::string_view MslPrelude() { return kPrelude; }
 
 int ThreadsPerThreadgroupFromRanges(mlir::ModuleOp module,
                                     absl::string_view entry_function) {

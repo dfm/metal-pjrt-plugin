@@ -1,16 +1,11 @@
 // BLAS support for the Metal StreamExecutor, backed by Metal Performance
 // Shaders (see mps_gemm.h).
 //
-// Two entry points reach GEMMs in XLA:
-//   * blas::BlasSupport::DoBlasGemm* (GemmThunk, "__cublas$gemm"): legacy
-//     cuBLAS-style column-major calls. The GemmRewriter no longer emits
-//     these; without an algorithm they carry no output type, so only f32 is
-//     accepted there.
-//   * gpu::BlasLt (CublasLtMatmulThunk, "__cublas$lt$matmul"): GemmRewriter
-//     routes *every* GEMM here when the compute capability is OneAPI, which is
-//     what the Metal platform reports (gemm_rewriter.cc,
-//     GetNonFp8GemmCustomCallTarget). So MetalBlasLt is the path actually
-//     exercised in practice; both share RunMpsGemm.
+// GEMMs reach it through gpu::BlasLt (CublasLtMatmulThunk,
+// "__cublas$lt$matmul"): GemmRewriter routes *every* GEMM there when the
+// compute capability is OneAPI, which is what the Metal platform reports
+// (gemm_rewriter.cc, GetNonFp8GemmCustomCallTarget). The legacy
+// blas::BlasSupport::DoBlasGemm* entry points return Unimplemented.
 //
 // Supported: f32, f16, bf16 inputs; output of the same type, or f32 for
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
@@ -105,7 +100,7 @@ class MetalBlasLt : public gpu::BlasLt {
 class MetalBlas : public blas::BlasSupport {
  public:
   explicit MetalBlas(metal_pjrt::rt::Device* device)
-      : device_(device), blas_lt_(device) {}
+      : blas_lt_(device) {}
   ~MetalBlas() override = default;
 
   gpu::BlasLt* GetBlasLt() override { return &blas_lt_; }
@@ -113,17 +108,6 @@ class MetalBlas : public blas::BlasSupport {
   TENSORFLOW_STREAM_EXECUTOR_GPU_BLAS_SUPPORT_OVERRIDES
 
  private:
-  // Column-major (BLAS convention) GEMM, possibly strided-batched.
-  absl::Status DoGemm(Stream* stream, blas::Transpose transa,
-                      blas::Transpose transb, uint64_t m, uint64_t n,
-                      uint64_t k, blas::DataType type_ab,
-                      blas::DataType type_c, const void* alpha,
-                      const void* beta, const DeviceAddressBase& a, int lda,
-                      int64_t stride_a, const DeviceAddressBase& b, int ldb,
-                      int64_t stride_b, DeviceAddressBase* c, int ldc,
-                      int64_t stride_c, int batch_count);
-
-  metal_pjrt::rt::Device* device_;
   MetalBlasLt blas_lt_;
 };
 

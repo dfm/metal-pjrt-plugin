@@ -39,20 +39,12 @@ struct MpsOperand {
 // padding missing when ld > cols); batch_stride 0 broadcasts an operand. A stored matrix is (m x k) when
 // !a.transpose and (k x m) when a.transpose (likewise for B). C is never
 // transposed and its dtype may differ from A/B (f16/bf16 in, f32 out).
-//
-// A column-major BLAS call (cuBLAS convention) maps onto this by swapping
-// operands and dimensions: C^T = op(B)^T op(A)^T, see ColumnMajorToRowMajor.
 struct GemmParams {
   int64_t m = 0, n = 0, k = 0;
   int64_t batch_count = 1;
   double alpha = 1.0, beta = 0.0;
   MpsOperand a, b, c;
 };
-
-// Rewrites a column-major (BLAS/cuBLAS) description into row-major form, in
-// place: the transposes of the stored matrices are the same flags, but the
-// roles of A and B and of m and n swap.
-void ColumnMajorToRowMajor(GemmParams* p);
 
 // Encodes the GEMM into `mtl_command_buffer` (id<MTLCommandBuffer>, not
 // committed, no encoder open). `mtl_device` may be null, in which case the

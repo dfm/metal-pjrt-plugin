@@ -121,16 +121,3 @@ cc_test(
         "@xla//xla/stream_executor:device_description",
     ],
 )
-
-# Compiles MSL files with the system Metal compiler (needs a Metal device):
-#   bazel run //metal_pjrt_plugin/codegen:msl_syntax_check -- /abs/path/k.metal
-cc_binary(
-    name = "msl_syntax_check",
-    srcs = ["msl_syntax_check.cc"],
-    linkopts = [
-        "-framework Metal",
-        "-framework Foundation",
-    ],
-    tags = ["manual"],
-    deps = ["@metal_cpp"],
-)

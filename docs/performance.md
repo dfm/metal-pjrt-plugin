@@ -304,8 +304,8 @@ separate GPU "kick" (~10 us of GPU time). Three changes:
 - **Small dense linalg on the GPU**: matrices up to 32x32 in
   `metal$cholesky`, `metal$triangular_solve` and `metal$lapack_getrf` run
   as one GPU thread per matrix (per right-hand-side column for solves)
-  instead of a synchronizing host LAPACK call (`METAL_PJRT_SMALL_LINALG=0`
-  restores the host path). A batched 4x4 `solve` cost three GPU round trips.
+  instead of a synchronizing host LAPACK call. A batched 4x4 `solve` cost
+  three GPU round trips.
 
 Results (ms; Metal vs CPU):
 

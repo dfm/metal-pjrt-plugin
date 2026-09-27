@@ -48,17 +48,6 @@ const char* MpsDTypeName(MpsDType t) {
   return "?";
 }
 
-void ColumnMajorToRowMajor(GemmParams* p) {
-  // A column-major matrix with leading dimension ld is, byte for byte, the
-  // row-major transpose with the same ld. So column-major
-  //   C = op(A) op(B)          (m x n)
-  // is row-major
-  //   C^T = op(B)^T op(A)^T    (n x m)
-  // and op(X)^T of the row-major view is "transpose iff X was transposed".
-  std::swap(p->a, p->b);
-  std::swap(p->m, p->n);
-}
-
 std::string GemmParamsDebugString(const GemmParams& p) {
   std::ostringstream os;
   auto op = [&os](const char* name, const MpsOperand& x) {

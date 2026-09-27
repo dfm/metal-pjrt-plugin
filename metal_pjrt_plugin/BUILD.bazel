@@ -21,7 +21,6 @@ test_suite(
         "//metal_pjrt_plugin/blas:mps_gemm_test",
         "//metal_pjrt_plugin/blas:steel_gemm_test",
         "//metal_pjrt_plugin/ffi:cub_sort_test",
-        "//metal_pjrt_plugin/ffi:ffi_test",
         "//metal_pjrt_plugin/runtime:metal_runtime_test",
         "//metal_pjrt_plugin/stream_executor:metal_executor_test",
     ],

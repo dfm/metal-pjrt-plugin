@@ -44,10 +44,6 @@ absl::StatusOr<MslKernel> EmitMslKernel(
     const stream_executor::DeviceDescription& device,
     int max_threads_per_threadgroup = 0);
 
-// The MSL helper library that every emitted kernel starts with. Exposed for
-// tests and for the syntax checker.
-absl::string_view MslPrelude();
-
 }  // namespace metal_pjrt::codegen
 
 #endif  // METAL_PJRT_PLUGIN_CODEGEN_MSL_EMITTER_H_

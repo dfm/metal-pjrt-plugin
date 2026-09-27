@@ -87,7 +87,6 @@ struct Case {
   double alpha = 1.0, beta = 0.0;
   int64_t pad = 0;             // extra elements per row (ld = cols + pad)
   bool broadcast_b = false;    // B batch stride 0
-  bool column_major = false;   // describe in BLAS column-major convention
   uint64_t base_offset_elems = 0;  // operands live at an offset in a buffer
   bool tight = true;  // buffers end at the last element (no last-row padding),
                       // like XLA's exactly sized buffers
@@ -194,15 +193,6 @@ void RunCase(Device* dev, Stream* stream, const Case& c) {
   p.a = operand(A, c.ta);
   p.b = operand(B, c.tb);
   p.c = operand(C, false);
-  if (c.column_major) {
-    // The same memory viewed column-major: C^T (n x m) = op(B)^T op(A)^T,
-    // i.e. a BLAS call with (A:=B, B:=A, m:=n, n:=m) and unchanged flags.
-    GemmParams q = p;
-    std::swap(q.a, q.b);
-    std::swap(q.m, q.n);
-    ColumnMajorToRowMajor(&q);  // must undo the swap
-    p = q;
-  }
 
   ASSERT_THAT(stream->EncodeExternal(
                   [&](void* cmd) { return RunMpsGemm(nullptr, cmd, p); }),
@@ -275,7 +265,7 @@ TEST_F(MpsGemmTest, MatchesCpuReference) {
   { Case c{"f32 batched padded (roomy buffers)", 8, 6, 5}; c.batch = 3; c.pad = 2; c.tight = false; add(c); }
   { Case c{"f32 padded offset TT beta", 9, 7, 4}; c.pad = 1; c.ta = c.tb = true; c.beta = 2.0; c.base_offset_elems = 5; add(c); }
   { Case c{"f32 broadcast B", 8, 6, 5}; c.batch = 3; c.broadcast_b = true; add(c); }
-  { Case c{"f32 column-major NT", 9, 14, 11}; c.column_major = true; c.tb = true; add(c); }
+  { Case c{"f32 NT", 9, 14, 11}; c.tb = true; add(c); }
   { Case c{"f32 buffer offset", 5, 7, 3}; c.base_offset_elems = 3; add(c); }
   { Case c{"f32 k=1", 6, 4, 1}; add(c); }
   { Case c{"f32 m=n=1", 1, 1, 64}; add(c); }
@@ -293,7 +283,7 @@ TEST_F(MpsGemmTest, MatchesCpuReference) {
     { Case c{nm + " odd offset", 5, 3, 3}; c.in = c.out = in; c.base_offset_elems = 1; add(c); }
     { Case c{nm + " padded odd offset", 5, 3, 3}; c.in = c.out = in; c.pad = 1; c.base_offset_elems = 1; c.beta = 1.0; add(c); }
     { Case c{nm + " padded broadcast TT", 6, 5, 4}; c.in = c.out = in; c.batch = 3; c.pad = 1; c.broadcast_b = true; c.ta = c.tb = true; c.alpha = 2.0; c.beta = 0.5; add(c); }
-    { Case c{nm + " column-major 64", 64, 48, 80}; c.in = c.out = in; c.column_major = true; add(c); }
+    { Case c{nm + " 64", 64, 48, 80}; c.in = c.out = in; add(c); }
   }
   for (const Case& c : cases) RunCase(dev_.get(), stream_.get(), c);
 }

@@ -373,8 +373,8 @@ namespace {
 // environment variables that change what the compiler emits, so a rebuilt
 // plugin or a different setting never loads another's executables:
 // {1, fingerprint(build UUID), fingerprint(compile-time settings)}.
-// Variables read only at run time (METAL_PJRT_GEMM, _STEEL_TILE,
-// _SMALL_LINALG, _TRACE, ...) are deliberately excluded. A new variable
+// Variables read only at run time (METAL_PJRT_GEMM, _TRACE, ...) are
+// deliberately excluded. A new variable
 // that changes compiled code must be added here (its getenv site says so).
 SemanticVersion PluginVersion() {
   static const SemanticVersion version = [] {

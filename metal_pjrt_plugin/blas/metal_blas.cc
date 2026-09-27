@@ -39,20 +39,6 @@ bool Unsupported(const char* what) {
   return false;
 }
 
-absl::StatusOr<mps::MpsDType> FromBlasType(blas::DataType t) {
-  switch (t) {
-    case blas::DataType::kFloat:
-      return mps::MpsDType::kF32;
-    case blas::DataType::kHalf:
-      return mps::MpsDType::kF16;
-    case blas::DataType::kBF16:
-      return mps::MpsDType::kBF16;
-    default:
-      return absl::UnimplementedError(absl::StrCat(
-          "Metal BLAS: unsupported data type ", blas::DataTypeString(t)));
-  }
-}
-
 absl::StatusOr<mps::MpsDType> FromPrimitiveType(xla::PrimitiveType t) {
   switch (t) {
     case xla::F32:
@@ -66,11 +52,6 @@ absl::StatusOr<mps::MpsDType> FromPrimitiveType(xla::PrimitiveType t) {
           "Metal BLAS: unsupported element type ",
           xla::PrimitiveType_Name(t)));
   }
-}
-
-// Output types the MPS path supports for a given input type.
-bool SupportedTypes(mps::MpsDType in, mps::MpsDType out) {
-  return in == out || out == mps::MpsDType::kF32;
 }
 
 // Resolves a raw device pointer into (MTLBuffer, byte offset).
@@ -115,15 +96,6 @@ absl::Status Encode(rt::Device* device, Stream* stream,
   return rs->EncodeExternal([&](void* cmd) {
     return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
   });
-}
-
-// alpha/beta arrive as float for f16/bf16/f32 (the typed wrappers upcast
-// half-precision scales), double for f64.
-double ReadScale(const void* p, blas::DataType scale_type) {
-  if (scale_type == blas::DataType::kDouble) {
-    return *static_cast<const double*>(p);
-  }
-  return *static_cast<const float*>(p);
 }
 
 // BlasLt epilogues: semantics and DecodeEpilogue in blas_lt_support.h.
@@ -206,40 +178,9 @@ std::string EpilogueSource(mps::MpsDType t, const EpilogueSpec& e) {
 }  // namespace
 
 // ---------------------------------------------------------------------------
-// Legacy BlasSupport GEMMs (column-major, cuBLAS convention)
-
-absl::Status MetalBlas::DoGemm(
-    Stream* stream, blas::Transpose transa, blas::Transpose transb,
-    uint64_t m, uint64_t n, uint64_t k, blas::DataType type_ab,
-    blas::DataType type_c, const void* alpha, const void* beta,
-    const DeviceAddressBase& a, int lda, int64_t stride_a,
-    const DeviceAddressBase& b, int ldb, int64_t stride_b,
-    DeviceAddressBase* c, int ldc, int64_t stride_c, int batch_count) {
-  ABSL_ASSIGN_OR_RETURN(mps::MpsDType in, FromBlasType(type_ab));
-  ABSL_ASSIGN_OR_RETURN(mps::MpsDType out, FromBlasType(type_c));
-  if (!SupportedTypes(in, out)) {
-    return absl::UnimplementedError(
-        absl::StrCat("Metal BLAS: unsupported type combination ",
-                     blas::DataTypeString(type_ab), " -> ",
-                     blas::DataTypeString(type_c)));
-  }
-  mps::GemmParams p;
-  p.m = static_cast<int64_t>(m);
-  p.n = static_cast<int64_t>(n);
-  p.k = static_cast<int64_t>(k);
-  p.batch_count = batch_count;
-  p.alpha = ReadScale(alpha, type_c);
-  p.beta = ReadScale(beta, type_c);
-  // Column-major description; conjugate transpose == transpose for reals.
-  p.a = {nullptr, 0, lda, stride_a, in, transa != blas::Transpose::kNoTranspose};
-  p.b = {nullptr, 0, ldb, stride_b, in, transb != blas::Transpose::kNoTranspose};
-  p.c = {nullptr, 0, ldc, stride_c, out, false};
-  ABSL_RETURN_IF_ERROR(Bind(device_, a, "A", &p.a));
-  ABSL_RETURN_IF_ERROR(Bind(device_, b, "B", &p.b));
-  ABSL_RETURN_IF_ERROR(Bind(device_, *c, "C", &p.c));
-  mps::ColumnMajorToRowMajor(&p);
-  return Encode(device_, stream, p);
-}
+// Legacy BlasSupport GEMMs (GemmThunk, "__cublas$gemm"): the GemmRewriter
+// sends every GEMM to BlasLt on OneAPI (tripwired), and hlo_checks refuses
+// any other GEMM custom call at compile time.
 
 absl::Status MetalBlas::DoBlasGemm(
     Stream* stream, blas::Transpose transa, blas::Transpose transb,
@@ -248,9 +189,7 @@ absl::Status MetalBlas::DoBlasGemm(
     const DeviceAddressBase& b, int ldb, const void* beta,
     DeviceAddressBase* c, int ldc, const EngineOptions& engine_options,
     blas::CallContext context) {
-  return DoBlasGemmStridedBatched(stream, transa, transb, m, n, k, dtype,
-                                  alpha, a, lda, 0, b, ldb, 0, beta, c, ldc, 0,
-                                  1, engine_options, context);
+  return absl::UnimplementedError("Metal BLAS: legacy GEMM (use BlasLt)");
 }
 
 absl::Status MetalBlas::DoBlasGemmStridedBatched(
@@ -260,19 +199,7 @@ absl::Status MetalBlas::DoBlasGemmStridedBatched(
     const DeviceAddressBase& b, int ldb, int64_t stride_b, const void* beta,
     DeviceAddressBase* c, int ldc, int64_t stride_c, int batch_count,
     const EngineOptions& engine_options, blas::CallContext context) {
-  // This entry point (GemmThunk, "__cublas$gemm") carries only the input
-  // type, and XLA's RunGemm also routes (bf16|f16) x (bf16|f16) -> f32 here,
-  // so a half-precision output cannot be told apart from an f32 one. The
-  // GemmRewriter sends every GEMM to BlasLt on OneAPI and no longer emits
-  // legacy calls, so refuse rather than guess.
-  if (dtype != blas::DataType::kFloat) {
-    return absl::UnimplementedError(absl::StrCat(
-        "Metal BLAS: legacy GEMM entry point supports f32 only, got ",
-        blas::DataTypeString(dtype), " (use the BlasLt path)"));
-  }
-  return DoGemm(stream, transa, transb, m, n, k, dtype, dtype, alpha, beta, a,
-                lda, stride_a, b, ldb, stride_b, c, ldc, stride_c,
-                batch_count);
+  return absl::UnimplementedError("Metal BLAS: legacy GEMM (use BlasLt)");
 }
 
 absl::Status MetalBlas::DoBlasGemmWithAlgorithm(
@@ -284,10 +211,7 @@ absl::Status MetalBlas::DoBlasGemmWithAlgorithm(
     blas::ComputationType computation_type, blas::AlgorithmType algorithm,
     const EngineOptions& engine_options,
     blas::ProfileResult* output_profile_result, blas::CallContext context) {
-  return DoBlasGemmStridedBatchedWithAlgorithm(
-      stream, transa, transb, m, n, k, alpha, a, type_a, lda, 0, b, type_b,
-      ldb, 0, beta, c, type_c, ldc, 0, 1, computation_type, algorithm,
-      engine_options, output_profile_result, context);
+  return absl::UnimplementedError("Metal BLAS: legacy GEMM (use BlasLt)");
 }
 
 absl::Status MetalBlas::DoBlasGemmStridedBatchedWithAlgorithm(
@@ -300,32 +224,7 @@ absl::Status MetalBlas::DoBlasGemmStridedBatchedWithAlgorithm(
     blas::ComputationType computation_type, blas::AlgorithmType algorithm,
     const EngineOptions& engine_options,
     blas::ProfileResult* output_profile_result, blas::CallContext context) {
-  if (type_a != type_b) {
-    return absl::UnimplementedError(
-        absl::StrCat("Metal BLAS: mixed input types ",
-                     blas::DataTypeString(type_a), " x ",
-                     blas::DataTypeString(type_b)));
-  }
-  // MPS picks its own accumulation precision (f32 for f16/bf16 inputs as far
-  // as we can tell); computation_type and algorithm are accepted and ignored.
-  auto start = std::chrono::steady_clock::now();
-  if (output_profile_result != nullptr) {
-    ABSL_RETURN_IF_ERROR(stream->BlockHostUntilDone());
-    start = std::chrono::steady_clock::now();
-  }
-  absl::Status s =
-      DoGemm(stream, transa, transb, m, n, k, type_a, type_c, alpha, beta, a,
-             lda, stride_a, b, ldb, stride_b, c, ldc, stride_c, batch_count);
-  if (output_profile_result != nullptr) {
-    if (s.ok()) s = stream->BlockHostUntilDone();
-    output_profile_result->set_is_valid(s.ok());
-    output_profile_result->set_algorithm(algorithm);
-    output_profile_result->set_elapsed_time_in_ms(
-        std::chrono::duration<float, std::milli>(
-            std::chrono::steady_clock::now() - start)
-            .count());
-  }
-  return s;
+  return absl::UnimplementedError("Metal BLAS: legacy GEMM (use BlasLt)");
 }
 
 bool MetalBlas::GetBlasGemmAlgorithms(

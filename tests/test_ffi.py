@@ -1,8 +1,7 @@
 """jax.ffi.ffi_call reaches handlers registered in the Metal plugin
 (metal_pjrt_plugin/ffi). Handlers are registered statically in C++ under
 platform "METAL"; nothing is registered from Python. Uses the production
-metal$scan handler (the test-only metal$test_scale is covered by
-//metal_pjrt_plugin/ffi:ffi_test). The reference is float64 numpy.
+metal$scan handler. The reference is float64 numpy.
 """
 import jax
 import numpy as np

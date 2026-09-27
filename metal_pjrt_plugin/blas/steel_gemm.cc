@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <limits>
@@ -46,19 +45,6 @@ Forced ForcedBackend() {
     return Forced::kNone;
   }();
   return f;
-}
-
-bool EnvTile(SteelTile* t) {
-  static const std::pair<bool, SteelTile> env = [] {
-    SteelTile t;
-    const char* e = std::getenv("METAL_PJRT_STEEL_TILE");
-    if (e == nullptr) return std::make_pair(false, t);
-    bool ok = std::sscanf(e, "%d,%d,%d,%d,%d", &t.bm, &t.bn, &t.bk, &t.wm,
-                          &t.wn) == 5;
-    return std::make_pair(ok, t);
-  }();
-  if (env.first) *t = env.second;
-  return env.first;
 }
 
 const char* MslType(MpsDType t) {
@@ -156,7 +142,6 @@ bool FitsInt(int64_t v) {
 
 SteelTile ChooseSteelTile(const GemmParams& p) {
   SteelTile t;
-  if (EnvTile(&t) && ValidTileFor(t, p)) return t;
   const bool nt = !p.a.transpose && p.b.transpose;
   const int64_t tiles64 = ((p.m + 63) / 64) * ((p.n + 63) / 64) *
                           std::max<int64_t>(p.batch_count, 1);

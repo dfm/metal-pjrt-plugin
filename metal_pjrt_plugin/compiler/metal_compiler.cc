@@ -179,14 +179,16 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     // take. Decompose the same short-row ones now so they stay bitonic too
     // (radix measured ~40x slower on top_k of f32[4096,8]).
     HloPassPipeline pipeline("metal-small-sorts");
+    constexpr int64_t kCubSortMinElements = 16384;  // sort_rewriter.cc
     pipeline.AddPass<TopkDecomposer>([](const HloInstruction* instr) {
       if (instr->opcode() != HloOpcode::kTopK) return false;
       const Shape& shape = instr->operand(0)->shape();
-      return shape.dimensions(shape.dimensions().size() - 1) <= 64 &&
-             ShapeUtil::ElementsIn(shape) > 16384;
+      return shape.dimensions(shape.dimensions().size() - 1) <=
+                 kMaxUnrolledSortDim &&
+             ShapeUtil::ElementsIn(shape) > kCubSortMinElements;
     });
-    pipeline.AddPass<MetalSortExpander>(/*max_sort_dim=*/64,
-                                        /*min_elements=*/16384);
+    pipeline.AddPass<MetalSortExpander>(kMaxUnrolledSortDim,
+                                        kCubSortMinElements);
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
   }
   return GpuCompiler::RunHloPasses(std::move(module), stream_exec, options);

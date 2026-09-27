@@ -12,7 +12,6 @@
 // epilogue is applied in its store, SteelEpilogue); f32 goes to MPS (plus a
 // second pass for an epilogue, metal_blas.cc). METAL_PJRT_GEMM=mps|steel
 // forces one backend for every supported case (A/B testing).
-// METAL_PJRT_STEEL_TILE=bm,bn,bk,wm,wn overrides the tile config.
 #ifndef METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
 #define METAL_PJRT_PLUGIN_BLAS_STEEL_GEMM_H_
 
@@ -39,7 +38,7 @@ struct SteelEpilogue {
   void* aux = nullptr;         // null: no aux output
 };
 
-// Tile config the dispatcher picks for `p` (after any env override).
+// Tile config the dispatcher picks for `p`.
 SteelTile ChooseSteelTile(const GemmParams& p);
 
 // True when the steel kernel can run `p` (dtypes, index ranges). `why`
