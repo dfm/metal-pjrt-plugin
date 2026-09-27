@@ -20,21 +20,20 @@
 //   InvalidArgumentError    caller mistake (unknown pointer, bad size/args)
 //   UnimplementedError      known gap (e.g. more than 31 buffer arguments
 //                           for a kernel without an argument buffer)
-//   FailedPreconditionError the device is unusable after a GPU reset or page
-//                           fault (sticky), or a host task waited for itself
+//   FailedPreconditionError a quarantined kernel, or a host task waited for
+//                           itself
 //
-// GPU errors travel with the work that depends on them. Every value signaled
-// on a stream fence or an Event gets a status: that of the command buffer or
-// host task signaling it, which is its own error, else the first error among
-// the values it waited on, else the status of the previous value on its
-// stream. Host waits (Event::WaitOnHost, Stream::Synchronize) and host tasks
-// return / receive that status, so the output of a failed kernel is never
-// consumed as valid. Only a Synchronize that reports the error lets the
-// stream recover (later work no longer inherits it); PJRT never synchronizes
-// its compute stream, so there a failure keeps failing every later execution
-// on that stream until the process restarts. Watchdog timeouts, revoked or
-// removed devices and page faults are sticky for the whole device (as a CUDA
-// illegal-address error is for the context).
+// GPU failures are sticky for the device, as a CUDA context error is for the
+// context: the first failed command buffer (whatever the error: watchdog
+// timeout, page fault, out of memory, ...) or host task without an error
+// callback sets Device::error(), and from then on every Synchronize,
+// Event::WaitOnHost/Poll, host task and new launch gets that error. The
+// output of failed work is therefore never consumed as valid, and there is
+// no recovery short of restarting the process (PJRT never synchronizes its
+// compute stream, so under JAX a failure was effectively sticky anyway).
+// Host waiters do not wait for completion handlers to learn about a
+// failure: after seeing a signal they check the status of the command
+// buffers still in flight (Device::CheckInFlight).
 #ifndef METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 #define METAL_PJRT_PLUGIN_RUNTIME_METAL_RUNTIME_H_
 
@@ -48,10 +47,10 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <set>
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "absl/container/inlined_vector.h"
@@ -211,12 +210,11 @@ class Device {
   // OS and other processes), capped by the GPU's recommended working set.
   uint64_t memory_budget() const { return memory_budget_; }
 
-  // Set when the GPU had to be reset (watchdog timeout, access revoked,
-  // device removed) or a kernel hit a page fault. Sticky for the process:
-  // continuing to submit work to a GPU that is being reset makes recovery
-  // less likely, and CUDA treats the equivalent as a fatal context error too.
-  absl::Status lost_status() const;
-  void MarkLost(const absl::Status& why, bool reset = true);
+  // The first GPU (or unhandled host-task) failure; sticky for the
+  // process (see the file comment). Continuing to submit work to a GPU that
+  // is being reset makes recovery less likely, so new work is refused.
+  absl::Status error() const;
+  void SetError(const absl::Status& why);
   int ordinal() const { return ordinal_; }
   MTL::Device* mtl() const { return device_; }
 
@@ -294,14 +292,7 @@ class Device {
   uint64_t allocated_bytes_ = 0;
   std::atomic<uint64_t> allocation_generation_{0};
   uint64_t memory_budget_ = 0;
-  absl::Status lost_ = absl::OkStatus();
-  std::vector<Stream*> live_streams_;  // guarded by mu_; for diagnostics
- public:
-  void RegisterStream(Stream* s);
-  void UnregisterStream(Stream* s);
-  // Log every live stream's DebugState (used when a command buffer times out).
-  void DumpStreams();
- private:
+  absl::Status error_ = absl::OkStatus();
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
   std::unordered_map<MTL::Library*, std::string> library_keys_;  // hash
@@ -316,41 +307,32 @@ class Device {
   std::string build_;  // hex ImageUuid, recorded with each reset
   friend class Stream;
   friend class Event;
-  // Status of values signaled on shared events (stream fences and Events),
-  // see the file comment. A value is pending from submission until the
-  // command buffer's completion handler (or the host task) settles it with
-  // its own status and the values it depends on. Completion handlers never
-  // block: a value's final status (own error, else its dependencies' first)
-  // is resolved lazily, by queries and when later values settle, and
-  // memoized. Resolved OK values are dropped; failed ones are kept until the
-  // event is destroyed.
-  struct ValueRef {
-    const MTL::SharedEvent* event;
+  // Committed command buffers whose completion handler has not run yet
+  // (retained, with their stream fence, retained, and the fence value they
+  // end by signaling; `injected` is FailNextCommandBufferForTesting's error,
+  // which counts as the buffer's status). Completion handlers remove
+  // theirs; they never block.
+  struct InFlight {
+    MTL::CommandBuffer* cb;
+    MTL::SharedEvent* fence;
     uint64_t value;
+    absl::Status injected;
   };
-  void BeginValue(const MTL::SharedEvent* ev, uint64_t v);
-  void EndValue(const MTL::SharedEvent* ev, uint64_t v,
-                const absl::Status& status, std::vector<ValueRef> deps = {});
-  // Blocks until `v` is resolved (bounded: gives up once the device is
-  // lost). Host threads only, never completion handlers.
-  absl::Status ValueStatus(const MTL::SharedEvent* ev, uint64_t v);
-  // Non-blocking: false while `v` (or a value it depends on) is pending,
-  // else sets *status.
-  bool TryValueStatus(const MTL::SharedEvent* ev, uint64_t v,
-                      absl::Status* status);
-  void ForgetValues(const MTL::SharedEvent* ev);
-  // Caller holds values_mu_.
-  bool ResolveLocked(const MTL::SharedEvent* ev, uint64_t v,
-                     absl::Status* status);
-  struct ValueRecord {
-    std::set<uint64_t> pending;
-    // Settled with an OK own status, waiting for dependencies to resolve.
-    std::map<uint64_t, std::vector<ValueRef>> unresolved;
-    std::map<uint64_t, absl::Status> failed;
-  };
-  std::mutex values_mu_;
-  std::condition_variable values_cv_;
-  std::unordered_map<const MTL::SharedEvent*, ValueRecord> values_;
+  std::mutex in_flight_mu_;
+  std::vector<InFlight> in_flight_;
+  void AddInFlight(MTL::CommandBuffer* cb, MTL::SharedEvent* fence,
+                   uint64_t value, absl::Status injected);
+  void RemoveInFlight(MTL::CommandBuffer* cb);
+  // Called by host waiters after they saw a signal: sets error() if any
+  // in-flight command buffer has failed. A buffer whose fence value is
+  // signaled has run to its end, so with `wait` its final status is waited
+  // for (Metal sets it before running handlers); without, returns false if
+  // some such status is not final yet. This covers every buffer the waiter
+  // depends on, on any queue, without waiting for handlers (which Metal
+  // does not order across queues): a buffer that ran its signals signaled
+  // its fence first (see Stream::Commit), and one that did not is
+  // force-signaled by its handler after the error is recorded.
+  bool CheckInFlight(bool wait);
   std::atomic<uint64_t> host_task_holds_{0};
   std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
 };
@@ -362,11 +344,10 @@ class Event {
   ~Event();
   Event(const Event&) = delete;
   Event& operator=(const Event&) = delete;
-  // True once the last recorded value has been signaled (whatever its
-  // status).
+  // True once the last recorded value has been signaled (also on failure).
   bool IsComplete() const;
-  // Non-blocking: false while pending, true once complete and OK, or the
-  // error of the work that should have signaled it.
+  // Non-blocking: false while pending, true once complete, or the device's
+  // sticky error.
   absl::StatusOr<bool> Poll();
   // Block the host until complete. Safe from host tasks: a value is
   // published only once its signaling buffer is committed, and committed
@@ -434,11 +415,11 @@ class Stream {
   // wait for the running task (or later work on its stream) return
   // FailedPreconditionError instead of deadlocking.
   //
-  // If the work the task is ordered after failed, the task takes that error
-  // and passes it on to work waiting for the task; with `on_error`, `fn` is
-  // skipped and `on_error` gets the error, without it `fn` still runs. If
-  // `fn` itself fails, its error goes to `on_error` when given (handled
-  // there), else on to work waiting for the task.
+  // After a failure (the device's sticky error), a task with `on_error` does
+  // not run and `on_error` gets the error; one without it still runs (XLA's
+  // plain callbacks free memory or complete transfers). If `fn` itself
+  // fails, its error goes to `on_error` when given (handled there), else it
+  // becomes the device's sticky error.
   absl::Status HostCallback(
       std::function<absl::Status()> fn,
       std::function<void(absl::Status)> on_error = nullptr);
@@ -450,21 +431,17 @@ class Stream {
   absl::Status WaitForStream(Stream* other);
 
   // Commit any open work and block until the stream is idle. Returns the
-  // status of everything enqueued (see the file comment): a GPU or host-task
-  // error is reported once, after which the stream recovers; a lost device
-  // is reported on every call.
+  // device's sticky error, if any (see the file comment).
   absl::Status Synchronize();
 
   // Testing only: the next committed command buffer is treated as failed
-  // with `error` (it still runs; only its status fails). With `page_fault`
-  // the failure is sticky for the device, as a real page fault is.
-  void FailNextCommandBufferForTesting(absl::Status error,
-                                       bool page_fault = false);
-  // Testing only: the next committed command buffer's completion handler
-  // sleeps this long before doing anything.
-  void DelayNextCompletionHandlerForTesting(int milliseconds);
-  // Committed command buffers whose completion handler has not finished.
-  int completion_handlers_pending() const { return completion_->pending; }
+  // with `error`. Its work runs but its signals do not; its completion
+  // handler records the error and force-signals them, as for a buffer the
+  // GPU aborted.
+  void FailNextCommandBufferForTesting(absl::Status error);
+  // Testing only: the fence value the last committed command buffer
+  // signals, and the fence's signaled value now.
+  std::pair<uint64_t, uint64_t> FenceForTesting();
   // Commit any open work without waiting.
   absl::Status Flush();
 
@@ -538,10 +515,6 @@ class Stream {
   // sits on the GPU waiting for host work. Host-task workers never take mu_,
   // so waiting here while holding it cannot deadlock with them.
   absl::Status Commit();
-  // Signal/wait on the stream's private timeline (used for host callbacks and
-  // cross-stream ordering).
-  uint64_t SignalFence();
-
   Device* device_;
   MTL::CommandQueue* queue_;
   MTL::SharedEvent* fence_;      // private timeline for this stream
@@ -553,20 +526,13 @@ class Stream {
   uint64_t threads_in_cmd_ = 0;
   std::chrono::steady_clock::time_point last_commit_time_{};
   // State shared with completion handlers, which may run after the stream is
-  // gone (~Stream abandons in-flight buffers once the device is lost).
+  // gone (~Stream abandons in-flight buffers after a failure).
   struct CompletionState {
     // Committed command buffers whose completion handler has not run yet.
     std::atomic<int> pending{0};
   };
-  // The value whose status the next value on this stream inherits (the last
-  // one issued); 0 at creation and after Synchronize reported an error.
-  uint64_t status_predecessor_ = 0;
-  // Values up to here had their error reported by Synchronize.
-  uint64_t reported_through_ = 0;
   // FailNextCommandBufferForTesting.
   absl::Status inject_error_;
-  bool inject_page_fault_ = false;
-  int inject_handler_delay_ms_ = 0;
   const std::shared_ptr<CompletionState> completion_ =
       std::make_shared<CompletionState>();
   // ResolveCached state (guarded by mu_).
@@ -584,10 +550,12 @@ class Stream {
   // callers may free resources immediately afterwards.
   std::vector<MTL::CommandBuffer*> in_flight_;
   std::mutex mu_;
-  // Events signaled by the open command buffer; on GPU error they are
-  // force-signaled so host waiters wake up instead of hanging.
+  // Events the open command buffer signals, encoded by Commit after the
+  // fence signal (so a signaled event means the buffer has run to its end;
+  // see Device::CheckInFlight). On failure they are force-signaled so
+  // waiters wake up instead of hanging.
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
-  // Waits encoded into the open command buffer, kept for diagnostics.
+  // Waits encoded into the open command buffer (hold rule, diagnostics).
   struct PendingWait {
     MTL::SharedEvent* event;
     uint64_t value;
@@ -607,23 +575,9 @@ class Stream {
   // Encode deferred waits into the open command buffer. Caller holds mu_ and
   // has an open command buffer; any open encoder is ended first.
   void FlushDeferredWaits();
-  // Guards last_committed_waits_ and last_committed_kernels_, which
-  // DebugState reads from other threads without taking mu_.
-  std::mutex diag_mu_;
-  // Waits of the most recently committed command buffer (diagnostics); the
-  // events are retained until overwritten or ~Stream.
-  std::vector<PendingWait> last_committed_waits_;
-  // Kernels encoded into the open / last committed command buffer (for the
-  // timeout diagnostics and the reset log).
+  // Kernels encoded into the open command buffer (for the failure
+  // diagnostics and the reset log).
   std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
-  std::shared_ptr<const std::vector<std::shared_ptr<const KernelIdentity>>>
-      last_committed_kernels_;
-  uint64_t last_committed_signal_ = 0;
- public:
-  // Diagnostics: one line describing this stream's fence state and what its
-  // last committed command buffer waited on.
-  std::string DebugState();
- private:
   // Host work ordered on the stream: each task waits for the fence to reach
   // wait_value, runs, then signals signal_value so later GPU work proceeds.
   struct HostTask {
@@ -631,7 +585,6 @@ class Stream {
     std::function<absl::Status()> fn;
     std::function<void(absl::Status)> on_error;
     uint64_t signal_value;
-    uint64_t status_predecessor;
     // Cross-stream waits that were pending when the task was enqueued: the
     // task also waits for these (retained events).
     std::vector<std::pair<MTL::SharedEvent*, uint64_t>> extra_waits;

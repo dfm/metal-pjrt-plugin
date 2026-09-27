@@ -3,8 +3,9 @@
 Runs a small JAX program in a fresh process with
 METAL_PJRT_FAIL_COMMAND_BUFFER=n (the runtime treats the n-th committed
 command buffer as failed; testing only, no real GPU fault) and checks that
-every step either returns the right values or raises, and that the injected
-failure surfaces. Without injection (n=0) every step must succeed.
+no step returns wrong values, that the injected failure surfaces, and that
+it is sticky: every step after the first one that raises raises too.
+Without injection (n=0) every step must succeed.
 """
 import os
 import subprocess
@@ -47,7 +48,11 @@ def test_injected_command_buffer_failure(n):
     lines = [l for l in out.stdout.splitlines() if ": " in l]
     assert out.returncode == 0 and len(lines) == 5, (out.returncode, lines, out.stderr[-2000:])
     assert not [l for l in lines if "WRONG" in l], lines
-    raised = sum("RAISED" in l for l in lines)
+    raised = ["RAISED" in l for l in lines]
     # n > 0: the injected failure must surface (the program commits more
-    # than 8 command buffers); n == 0: nothing may fail.
-    assert raised > 0 if n > 0 else raised == 0, lines
+    # than 8 command buffers) and stay; n == 0: nothing may fail.
+    if n == 0:
+        assert not any(raised), lines
+    else:
+        assert any(raised), lines
+        assert all(raised[raised.index(True):]), lines

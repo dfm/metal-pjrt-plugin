@@ -11,8 +11,6 @@
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_format.h"
-#include "absl/synchronization/mutex.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "metal_pjrt_plugin/stream_executor/metal_event.h"
 #include "metal_pjrt_plugin/stream_executor/metal_executor.h"
@@ -46,19 +44,8 @@ MetalStream::~MetalStream() {
     LOG(ERROR) << "Metal stream on device " << executor_->device_ordinal()
                << " destroyed with a pending error: " << s;
   }
-  // Joins the runtime's host-callback worker while this object (whose
-  // callbacks may call SetError) is still alive.
   rt_stream_.reset();
   parent()->DeallocateStream(this);
-}
-
-void MetalStream::SetError(absl::Status status) {
-  {
-    absl::MutexLock lock(&error_mu_);
-    if (!error_.ok()) return;
-    error_ = status;
-  }
-  CheckStatus(std::move(status));  // logs and sets StreamCommon's error state
 }
 
 absl::Status MetalStream::WaitFor(Stream* other) {
@@ -104,12 +91,7 @@ absl::Status MetalStream::Memset32(DeviceAddressBase* location,
 }
 
 absl::Status MetalStream::BlockHostUntilDone() {
-  // As on CUDA, a GPU failure is returned, not recorded as the stream's
-  // error state: the runtime stream recovers after reporting it (XLA CHECKs
-  // ok() on pooled streams).
-  ABSL_RETURN_IF_ERROR(rt_stream_->Synchronize());
-  absl::MutexLock lock(&error_mu_);
-  return error_;
+  return rt_stream_->Synchronize();
 }
 
 absl::Status MetalStream::DoHostCallbackWithStatus(
@@ -127,8 +109,8 @@ absl::Status MetalStream::DoHostCallbackWithStatus(
   };
   auto shared = std::make_shared<Callbacks>(
       Callbacks{std::move(callback), std::move(error_cb)});
-  // The runtime passes an error (the callback's, or that of the work it is
-  // ordered after, in which case the callback does not run) to on_error.
+  // The runtime passes an error (the callback's, or the device's sticky
+  // error, in which case the callback does not run) to on_error.
   std::function<void(absl::Status)> on_error;
   if (shared->error_cb) {
     on_error = [shared](absl::Status s) {
@@ -136,16 +118,7 @@ absl::Status MetalStream::DoHostCallbackWithStatus(
     };
   }
   absl::Status enqueued = rt_stream_->HostCallback(
-      [this, shared]() {
-        absl::Status s = std::move(shared->callback)();
-        if (!s.ok() && !shared->error_cb) {
-          SetError(absl::Status(
-              s.code(),
-              absl::StrFormat("Metal host callback failed on device %d: %s",
-                              executor_->device_ordinal(), s.message())));
-        }
-        return s;
-      },
+      [shared]() { return std::move(shared->callback)(); },
       std::move(on_error));
   if (!enqueued.ok() && shared->error_cb) {
     std::move(shared->error_cb)(enqueued);

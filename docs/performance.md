@@ -100,7 +100,8 @@ Policy now:
   access-revoked or device-removed error marks the device lost for the
   process; all further GPU work fails with FAILED_PRECONDITION telling the
   user to restart. Fault errors (bad pointer, page fault) are reported once
-  to the waiting caller and the stream recovers.
+  to the waiting caller and the stream recovers. (Since 2026-09-27 every
+  GPU failure is sticky; see "GPU errors" below.)
 - **Smaller command buffers**: 32 dispatches or 2^27 dispatched threads.
 - **One GPU job at a time.** `scripts/device_lock.py` serializes test suites,
   benchmarks and sweeps; `scripts/run_jax_tests.sh` runs JAX's tests in one
@@ -373,58 +374,77 @@ C's host task). `RecordEvent` publishes the event's value only after its
 buffer is committed, so no one can wait on a value whose signaling buffer
 is still held behind a host task.
 
-## GPU errors through events (2026-09-26, night)
+## GPU errors: sticky for the process (2026-09-27)
 
-A failed command buffer used to force-signal its events and report OK to
-every waiter but its own stream's Synchronize, so PJRT consumed a faulted
-kernel's output as valid. Now every value signaled on a stream fence or an
-Event has a status (`rt::Device` value table; `metal_runtime.h` has the
-rules): a buffer or host task fails if it failed itself, if a value it waited
-for failed, or if the previous value on its stream failed. Host waits and
-host tasks see that status; a host task ordered after failed work does not
-run and hands the error to its `error_cb`, which is how XLA marks result
-buffers' definition events failed, so `block_until_ready`, `np.asarray` and
-dependent computations raise (`INTERNAL: Metal command buffer failed ...
-[executable_name=...]`). `MetalEvent::PollForStatus` returns kError.
+Any GPU failure is sticky for the process; restart it. The first failed
+command buffer, whatever the error (watchdog timeout, page fault, out of
+memory, invalid resource, ...), or a failed host callback without an
+`error_cb`, sets the device's error (`rt::Device::error()`, like a CUDA
+context error). From then on every `BlockHostUntilDone`, event wait and
+`PollForStatus` (kError) and every new launch returns it, and a host
+callback with an `error_cb` does not run: the `error_cb` gets the error,
+which is how XLA marks result buffers' definition events failed, so
+`block_until_ready`, `np.asarray` and later computations raise (`INTERNAL:
+Metal command buffer failed ... (Metal device 0; no further GPU work is
+accepted in this process, restart it)`, or XLA's own "Unknown predetermined
+error" for buffers whose definition failed). A host callback without an
+`error_cb` still runs (XLA's plain callbacks free memory or complete
+transfers). The StreamExecutor stream error state (`ok()`) is never set, as
+on CUDA: XLA CHECKs it on pooled streams. This is what PJRT effectively did
+before anyway: it never synchronizes its compute stream, so a failure used
+to fail every later execution on that stream too.
 
-- Sticky for the device: watchdog timeouts, revoked/removed devices (as
-  before) and page faults. Everything else (out of memory, invalid resource,
-  ...) fails the buffer, what waits for it, and everything later on its
-  stream (same-stream dependence is by stream order), until a Synchronize
-  (`BlockHostUntilDone`) on that stream reports it. **PJRT waits on events
-  and never calls BlockHostUntilDone on the compute stream, so under JAX one
-  such failure fails every later execution on that stream until the process
-  restarts: effectively sticky.** Cutting the chain earlier would need
-  data-flow tracking; CUDA makes such errors fatal for the whole context.
-- Completion handlers never block: a handler records its buffer's own
-  status and the values it depended on, and the final status is resolved
-  lazily (memoized) by whoever asks, so a handler can never wait on another
-  handler queued behind it. A host task ordered after failed work runs
-  anyway when it has no error callback (XLA's plain callbacks free memory or
-  complete transfers) and passes the error on; with one, it is skipped and
-  the callback gets the error.
-- Known limitation: a dependency on a value whose Event or Stream was
-  already destroyed resolves as OK (its records go with it), so the error is
-  lost if a failed stream or Event dies before its dependents are queried;
-  rare with PJRT, which keeps its streams and pooled events alive.
-- `BlockHostUntilDone` no longer puts the StreamExecutor stream into its
-  error state on a GPU failure (as on CUDA; XLA CHECKs `ok()` on pooled
-  streams); a failing host callback without `error_cb` still does.
-- Cost: a host query of a signaled value waits for the completion handler
-  that settles it. bench/latency.py, interleaved A/B in one build: jit(x*2+1)
-  median 173-176 us vs 157-168 us without the wait, two-kernel program 162
-  vs 143-152 us (+8-12 us per synchronizing round trip); dispatch_bound.py
-  unchanged. A fast path (treat signaled values as OK while no failure was
-  ever recorded) would remove it, but it assumes a failing buffer never runs
-  its trailing signals before its handler, which may not hold for page
-  faults (the GPU may continue past a faulting access). Kept the sound
-  version; the fast path is a 5-line change if the latency matters more.
-- Tests: runtime tests inject failures (`FailNextCommandBufferForTesting`,
-  no real GPU fault); `metal_executor_test` checks error_cb, events and
-  BlockHostUntilDone; `tests/test_gpu_errors.py` runs a JAX program with
-  `METAL_PJRT_FAIL_COMMAND_BUFFER=n` (testing only: the n-th committed
-  command buffer counts as failed) for n = 1..8 and checks that every step
-  either returns correct values or raises, and that each failure surfaces.
+What keeps a failure from hanging or crashing anything:
+
+- A failed buffer's completion handler records the error, then
+  force-signals the buffer's fence and events, so no waiter hangs.
+  Handlers never block.
+- Host waits are bounded: they give up once the device has failed (work
+  committed after a reset may never run).
+- No CHECK or abort on any error path.
+- Watchdog timeouts and revoked/removed devices are still recorded in the
+  reset log and feed the kernel quarantine (the only place the error code
+  still matters).
+
+Soundness (no wrong values): a host waiter learns of a failure without
+waiting for completion handlers, which Metal does not order across queues.
+After it sees a signal it checks the command buffers still in flight on the
+device (`Device::CheckInFlight`): any buffer whose fence value is signaled
+has run to its end, so its final status is waited for (`waitUntilCompleted`)
+and an error recorded. Buffers signal their fence before their events, so a
+waiter that saw an event value covers the buffer that signaled it, and any
+buffer on another queue it depended on (runtime test
+`EventSignalsFollowTheFenceSignal` guards the order).
+
+Replaced: batch B's per-value status table (62f81f1, c7a86d0, 5353799:
+every signaled value carried a status resolved through its waits and its
+stream predecessor, reported once per stream, then the stream recovered),
+the per-stream diagnostics dump (`DebugState`, `DumpStreams`), and the
+host-callback error state in `MetalStream`. A failed buffer still logs its
+own waits (with their signaled values), kernels and memory state. Net
+-257 lines of runtime and adapter code (-294 with the tests).
+
+Cost: none saved. Waiting for a signaled buffer's final status costs the
+same as waiting for its handler (Metal sets the status just before running
+handlers). bench/latency.py, three builds interleaved over 10 rounds, p10 /
+median / p90 of the per-round medians: jit(x*2+1) 171/174/182 us before,
+170/174/186 us now; two-kernel 165/165/199 before, 164/165/204 now.
+dispatch_bound.py unchanged within noise (3 rounds). Skipping that wait
+(checking only statuses already final) gives 159/168/170 and 154/156/211
+us, i.e. 6-9 us per synchronizing round trip, but is sound only if a
+failed buffer never runs its own trailing signals (then waiters are woken
+by its handler, after the error is recorded). Metal's messages say such
+buffers are "aborted", but that was not verified (no real fault was
+provoked), so the sound version is kept; the fast one is a one-line change.
+
+Tests (no real GPU fault; `FailNextCommandBufferForTesting` and
+`METAL_PJRT_FAIL_COMMAND_BUFFER=n` fail a buffer the way an aborted one
+fails: its work runs, its signals do not, and its handler records the error
+and force-signals them): runtime tests for stickiness across streams,
+events and host tasks, host-callback errors, the hold rule; the executor
+test for error_cb, events and BlockHostUntilDone; `tests/test_gpu_errors.py`
+runs a JAX program with n = 0..8 and checks that no step returns wrong
+values, the failure surfaces and every later step raises too.
 
 ## Persistent compilation cache (2026-09-26, night)
 

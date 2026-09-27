@@ -26,7 +26,6 @@ namespace rt {
 namespace {
 
 using ::absl_testing::IsOk;
-using ::absl_testing::IsOkAndHolds;
 using ::absl_testing::StatusIs;
 using ::testing::HasSubstr;
 
@@ -518,11 +517,34 @@ TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// A failed command buffer's error reaches everything that depends on it:
-// its events, work on other streams that waited for them, later work on its
-// own stream, and host tasks (which then do not run). Each Synchronize
-// reports it once; the streams recover afterwards.
-TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
+// Commit encodes a buffer's fence signal before its event signals, so an
+// event value seen on the host implies the buffer's fence value is signaled
+// (Device::CheckInFlight relies on it).
+TEST_F(MetalRuntimeTest, EventSignalsFollowTheFenceSignal) {
+  const uint32_t n = 1 << 16;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
+  ASSERT_THAT(e, IsOk());
+  ASSERT_THAT(s->Memset32(x, 0, n * 4), IsOk());
+  for (int i = 0; i < 200; ++i) {
+    ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+    ASSERT_THAT(s->RecordEvent(e->get()), IsOk());
+    const uint64_t fence_value = s->FenceForTesting().first;
+    while (!(*e)->IsComplete()) {
+    }
+    ASSERT_GE(s->FenceForTesting().second, fence_value) << i;
+  }
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A failed command buffer's error is sticky for the device: its events,
+// work that depends on it (also on other streams), unrelated streams, new
+// launches and host tasks all get it, and nothing recovers.
+TEST_F(MetalRuntimeTest, GpuErrorIsStickyForTheDevice) {
   const uint32_t n = 1 << 12;
   void* x = Alloc(n * 4);
   void* y = Alloc(n * 4);
@@ -534,35 +556,40 @@ TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
     EXPECT_THAT(e, IsOk());
     return *std::move(e);
   };
-  std::unique_ptr<Event> e1 = new_event(), e2 = new_event(), e3 = new_event();
+  std::unique_ptr<Event> e1 = new_event(), e2 = new_event();
   ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
 
   s->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
   ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
   ASSERT_THAT(s->RecordEvent(e1.get()), IsOk());  // the failing buffer
+  // Work on another stream waiting for the event: refused if the error is
+  // already recorded, else it waits for the force-signal; either way the
+  // injected error comes back.
+  absl::Status dependent = s2->WaitForEvent(e1.get());
+  if (dependent.ok()) dependent = Axpy(s2.get(), x, y, n, 1.0f, n / 256);
+  if (dependent.ok()) dependent = s2->RecordEvent(e2.get());
+  if (dependent.ok()) dependent = e2->WaitOnHost();
+  EXPECT_THAT(dependent, StatusIs(absl::StatusCode::kInternal,
+                                  HasSubstr("injected fault")));
   EXPECT_THAT(e1->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
                                          HasSubstr("injected fault")));
   EXPECT_FALSE(e1->Poll().ok());
-  // Later work on the same stream (its own buffer succeeds).
-  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
-  ASSERT_THAT(s->RecordEvent(e3.get()), IsOk());
-  EXPECT_THAT(e3->WaitOnHost(), StatusIs(absl::StatusCode::kInternal));
-  // Another stream waiting for the event, and a third waiting for that one.
-  ASSERT_THAT(s2->WaitForEvent(e1.get()), IsOk());
-  ASSERT_THAT(Axpy(s2.get(), x, y, n, 1.0f, n / 256), IsOk());
-  ASSERT_THAT(s2->RecordEvent(e2.get()), IsOk());
-  EXPECT_THAT(e2->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
-                                         HasSubstr("injected fault")));
-  ASSERT_THAT(s3->WaitForStream(s2.get()), IsOk());
-  // Without on_error, a task ordered after the failure still runs (XLA's
-  // callbacks free memory or complete transfers); the error passes on.
+  EXPECT_THAT(dev_->error(), StatusIs(absl::StatusCode::kInternal,
+                                      HasSubstr("restart")));
+  // New launches anywhere are refused.
+  EXPECT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256),
+              StatusIs(absl::StatusCode::kInternal));
+  EXPECT_THAT(Axpy(s3.get(), x, y, n, 1.0f, n / 256),
+              StatusIs(absl::StatusCode::kInternal));
+  // Host tasks: without on_error the task still runs (XLA's callbacks free
+  // memory or complete transfers); with on_error it does not, and on_error
+  // gets the error.
   bool ran_anyway = false;
   ASSERT_THAT(s3->HostCallback([&]() {
     ran_anyway = true;
     return absl::OkStatus();
   }), IsOk());
-  // With on_error, it does not run; on_error gets the error.
   bool ran = false;
   absl::Status task_error;
   ASSERT_THAT(s3->HostCallback(
@@ -577,111 +604,38 @@ TEST_F(MetalRuntimeTest, GpuErrorsPropagateToDependentWork) {
   EXPECT_FALSE(ran);
   EXPECT_THAT(task_error, StatusIs(absl::StatusCode::kInternal,
                                    HasSubstr("injected fault")));
-  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kInternal));
-  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kInternal));
-
-  // Reported once; the streams and the device recover.
-  EXPECT_THAT(dev_->lost_status(), IsOk());
-  for (Stream* st : {s.get(), s2.get(), s3.get()}) {
-    EXPECT_THAT(st->Synchronize(), IsOk());
-    ASSERT_THAT(Axpy(st, x, y, n, 1.0f, n / 256), IsOk());
-    ASSERT_THAT(st->RecordEvent(e1.get()), IsOk());
-    EXPECT_THAT(e1->WaitOnHost(), IsOk());
-    EXPECT_THAT(e1->Poll(), IsOkAndHolds(true));
-    EXPECT_THAT(st->Synchronize(), IsOk());
+  // Sticky: every Synchronize keeps reporting it.
+  for (Stream* st : {s.get(), s2.get(), s3.get(), s.get()}) {
+    EXPECT_THAT(st->Synchronize(), StatusIs(absl::StatusCode::kInternal,
+                                            HasSubstr("injected fault")));
   }
+  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// Completion handlers never wait for each other: X (another queue) waits on
-// Y's event, Y fails and its handler runs late. X's handler finishes at
-// once; X's status resolves to Y's error once Y settles.
-TEST_F(MetalRuntimeTest, CompletionHandlersDoNotBlockOnEachOther) {
-  const uint32_t n = 1 << 12;
-  void* x = Alloc(n * 4);
-  void* y = Alloc(n * 4);
-  std::unique_ptr<Stream> sy = NewStream();
-  std::unique_ptr<Stream> sx = NewStream();
-  absl::StatusOr<std::unique_ptr<Event>> ey = dev_->CreateEvent();
-  absl::StatusOr<std::unique_ptr<Event>> ex = dev_->CreateEvent();
-  ASSERT_THAT(ey, IsOk());
-  ASSERT_THAT(ex, IsOk());
-  sy->DelayNextCompletionHandlerForTesting(300);
-  sy->FailNextCommandBufferForTesting(absl::InternalError("injected late"));
-  ASSERT_THAT(Axpy(sy.get(), x, y, n, 1.0f, n / 256), IsOk());
-  ASSERT_THAT(sy->RecordEvent(ey->get()), IsOk());
-  ASSERT_THAT(sx->WaitForEvent(ey->get()), IsOk());
-  ASSERT_THAT(Axpy(sx.get(), x, y, n, 1.0f, n / 256), IsOk());
-  ASSERT_THAT(sx->RecordEvent(ex->get()), IsOk());
-  // X ran on the GPU (the injected Y still signals); its handler must not
-  // wait for Y's, which is still sleeping.
-  const auto start = std::chrono::steady_clock::now();
-  while (sx->completion_handlers_pending() > 0 &&
-         std::chrono::steady_clock::now() - start < std::chrono::seconds(2)) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  const auto x_done = std::chrono::steady_clock::now() - start;
-  EXPECT_EQ(sx->completion_handlers_pending(), 0);
-  EXPECT_LT(x_done, std::chrono::milliseconds(150));
-  EXPECT_EQ(sy->completion_handlers_pending(), 1);  // Y's handler: later
-  EXPECT_THAT((*ex)->Poll(), IsOkAndHolds(false));  // unresolved until Y
-  EXPECT_THAT((*ex)->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
-                                            HasSubstr("injected late")));
-  EXPECT_THAT(sx->Synchronize(), StatusIs(absl::StatusCode::kInternal));
-  EXPECT_THAT(sy->Synchronize(), StatusIs(absl::StatusCode::kInternal));
-  EXPECT_THAT(dev_->Deallocate(x), IsOk());
-  EXPECT_THAT(dev_->Deallocate(y), IsOk());
-}
-
-// A failing host task poisons the work ordered after it.
-TEST_F(MetalRuntimeTest, HostTaskErrorsPropagate) {
+// A host task's own failure goes to its on_error when it has one; without
+// one it becomes the device's sticky error.
+TEST_F(MetalRuntimeTest, HostTaskErrors) {
   const uint32_t n = 1 << 12;
   void* x = Alloc(n * 4);
   std::unique_ptr<Stream> s = NewStream();
   std::unique_ptr<Stream> s2 = NewStream();
-  absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
-  ASSERT_THAT(e, IsOk());
-  // Handled by on_error: nothing downstream fails.
   absl::Status seen;
   ASSERT_THAT(s->HostCallback([]() { return absl::DataLossError("handled"); },
                               [&](absl::Status st) { seen = st; }),
               IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_THAT(seen, StatusIs(absl::StatusCode::kDataLoss));
-  // Unhandled: the work ordered after it fails.
+  EXPECT_THAT(dev_->error(), IsOk());
   ASSERT_THAT(s->HostCallback([]() { return absl::DataLossError("task"); }),
               IsOk());
-  ASSERT_THAT(s->Memset32(x, 0, n * 4), IsOk());
-  ASSERT_THAT(s->RecordEvent(e->get()), IsOk());
-  EXPECT_THAT((*e)->WaitOnHost(), StatusIs(absl::StatusCode::kDataLoss,
-                                           HasSubstr("task")));
-  ASSERT_THAT(s2->WaitForStream(s.get()), IsOk());
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kDataLoss,
+                                         HasSubstr("task")));
   EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kDataLoss));
-  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kDataLoss));
-  EXPECT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(s2->Memset32(x, 0, n * 4),
+              StatusIs(absl::StatusCode::kDataLoss));
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
-}
-
-// Page faults (like watchdog resets) are sticky for the device.
-TEST_F(MetalRuntimeTest, PageFaultIsStickyForTheDevice) {
-  const uint32_t n = 1 << 12;
-  void* x = Alloc(n * 4);
-  void* y = Alloc(n * 4);
-  std::unique_ptr<Stream> s = NewStream();
-  std::unique_ptr<Stream> s2 = NewStream();
-  s->FailNextCommandBufferForTesting(absl::InternalError("injected fault"),
-                                     /*page_fault=*/true);
-  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
-  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition,
-                                         HasSubstr("page fault")));
-  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition));
-  // Unrelated streams refuse new work too.
-  EXPECT_THAT(Axpy(s2.get(), x, y, n, 1.0f, n / 256),
-              StatusIs(absl::StatusCode::kFailedPrecondition));
-  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kFailedPrecondition));
-  EXPECT_THAT(dev_->Deallocate(x), IsOk());
-  EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
 TEST_F(MetalRuntimeTest, ErrorCodes) {
