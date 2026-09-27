@@ -425,9 +425,14 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   p.b = operand(rhs, tb);
   p.c = operand(out, tout);  // row-major after the swap above
   if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
+  // Steel applies the epilogue in its store (bias index = column of the
+  // row-major view of D, i.e. the stored minor dimension).
+  if (mps::UseSteelGemm(p, /*has_epilogue=*/true)) {
+    return std::make_unique<MatmulPlan>(device_, p, swap, epi);
+  }
 
-  // Epilogue kernel over the row-major view of D: the bias index is the
-  // column (the stored minor dimension), aux shares D's layout.
+  // MPS (large f32, METAL_PJRT_GEMM=mps): a second kernel over the row-major
+  // view of D: the bias index is the column, aux shares D's layout.
   if (m > UINT32_MAX || n > UINT32_MAX || batch > 65535) {
     return absl::UnimplementedError(absl::StrCat(
         "Metal BlasLt: epilogue on a ", batch, "x", m, "x", n, " output"));
@@ -437,8 +442,7 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> kernel,
                         device_->CreateKernel(lib, kEpilogueKernelName));
   return std::make_unique<MatmulPlan>(
-      device_, p, swap, std::shared_ptr<rt::Kernel>(std::move(kernel)),
-      epi.bias, epi.aux);
+      device_, p, swap, epi, std::shared_ptr<rt::Kernel>(std::move(kernel)));
 }
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
@@ -468,8 +472,15 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
     ABSL_RETURN_IF_ERROR(stream->BlockHostUntilDone());
     start = std::chrono::steady_clock::now();
   }
-  absl::Status s = Encode(device_, stream, p);
-  if (s.ok() && epilogue_kernel_ != nullptr) s = RunEpilogue(stream, args);
+  absl::Status s;
+  if (epilogue_.trivial()) {
+    s = Encode(device_, stream, p);
+  } else if (epilogue_kernel_ == nullptr) {
+    s = RunSteelWithEpilogue(stream, p, args);
+  } else {
+    s = Encode(device_, stream, p);
+    if (s.ok()) s = RunEpilogue(stream, args);
+  }
   if (profile_result != nullptr) {
     if (s.ok()) s = stream->BlockHostUntilDone();
     profile_result->set_is_valid(s.ok());
@@ -482,10 +493,12 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
   return s;
 }
 
-absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
-    Stream* stream, const gpu::BlasLt::MemoryArgs& args) const {
+// Checks D, bias and aux against the plan and returns (bias, aux) device
+// pointers, D's where the epilogue has none.
+absl::StatusOr<std::pair<const void*, void*>>
+MetalBlasLt::MatmulPlan::EpilogueBuffers(
+    const gpu::BlasLt::MemoryArgs& args) const {
   const mps::GemmParams& p = params_;
-  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
   const uint64_t elem = mps::MpsDTypeSize(p.c.dtype);
   const uint64_t batch_stride = p.batch_count > 1 ? p.c.batch_stride : 0;
   // Extent of D (and aux) in elements.
@@ -497,7 +510,7 @@ absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
         extent * elem));
   }
   const void* bias = args.d.opaque();
-  if (has_bias_) {
+  if (epilogue_.bias) {
     if (args.bias.opaque() == nullptr ||
         args.bias.size() < static_cast<uint64_t>(p.n) * elem) {
       return absl::InvalidArgumentError(absl::StrCat(
@@ -508,7 +521,7 @@ absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
     bias = args.bias.opaque();
   }
   void* aux = args.d.opaque();
-  if (has_aux_) {
+  if (epilogue_.aux) {
     if (args.aux.opaque() == nullptr || args.aux.size() < extent * elem) {
       return absl::InvalidArgumentError(absl::StrCat(
           "Metal BlasLt epilogue: aux buffer (", args.aux.size(),
@@ -516,6 +529,35 @@ absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
     }
     aux = args.aux.opaque();
   }
+  return std::make_pair(bias, aux);
+}
+
+absl::Status MetalBlasLt::MatmulPlan::RunSteelWithEpilogue(
+    Stream* stream, const mps::GemmParams& p,
+    const gpu::BlasLt::MemoryArgs& args) const {
+  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
+  ABSL_ASSIGN_OR_RETURN(auto buffers, EpilogueBuffers(args));
+  rt::Stream* rs = RtStream(stream);
+  if (rs == nullptr) {
+    return absl::InvalidArgumentError(
+        "Metal BlasLt: stream has no Metal handle (not a Metal stream?)");
+  }
+  mps::SteelEpilogue e;
+  e.act = static_cast<int>(epilogue_.act);
+  if (epilogue_.bias) e.bias = buffers.first;
+  if (epilogue_.aux) e.aux = buffers.second;
+  VLOG(3) << "Metal BLAS: steel + epilogue: " << mps::GemmParamsDebugString(p);
+  return mps::RunSteelGemm(device_, rs, p, /*tile=*/nullptr, &e);
+}
+
+absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
+    Stream* stream, const gpu::BlasLt::MemoryArgs& args) const {
+  const mps::GemmParams& p = params_;
+  if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
+  ABSL_ASSIGN_OR_RETURN(auto buffers, EpilogueBuffers(args));
+  const void* bias = buffers.first;
+  void* aux = buffers.second;
+  const uint64_t batch_stride = p.batch_count > 1 ? p.c.batch_stride : 0;
   rt::Stream* rs = RtStream(stream);
   if (rs == nullptr) {
     return absl::InvalidArgumentError(

@@ -27,8 +27,10 @@ namespace metal {
 // * SILU is x * sigmoid(x) (only fused on ROCm >= 7, supported anyway).
 // * aux has D's shape, element type, leading dimension and batch stride.
 //
-// After the MPS GEMM (which leaves alpha AB + beta C in D) one elementwise
-// kernel applies bias/activation in f32 and writes D (and aux).
+// Steel applies the epilogue in its store, in f32 with one rounding
+// (steel_gemm.h SteelEpilogue). With METAL_PJRT_GEMM=mps, one elementwise
+// kernel applies it in f32 after the MPS GEMM (which leaves alpha AB + beta C
+// in D, rounded) and writes D (and aux).
 
 enum class Activation { kNone = 0, kReLU = 1, kGELU = 2, kSILU = 3 };
 

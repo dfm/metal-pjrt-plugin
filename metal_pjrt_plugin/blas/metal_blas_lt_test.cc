@@ -1,6 +1,8 @@
 // BlasLt epilogues (bias / ReLU / GELU / SiLU, with and without aux output)
 // through the Metal StreamExecutor, against a host reference. Needs a Metal
-// device.
+// device. By default every epilogue runs fused in steel (f32 included); the
+// metal_blas_lt_mps_test target runs this file with METAL_PJRT_GEMM=mps
+// (MPS GEMM + the second-pass epilogue kernel).
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -103,12 +105,16 @@ float Act(int act, float x) {
   }
 }
 
+struct Shape {
+  int64_t m, n, k;
+};
+
 class MetalBlasLtEpilogueTest
     : public ::testing::TestWithParam<
-          std::tuple<Case, xla::PrimitiveType, Order>> {};
+          std::tuple<Case, xla::PrimitiveType, Order, Shape>> {};
 
 TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
-  const auto& [c, dtype, out_order] = GetParam();
+  const auto& [c, dtype, out_order, shape] = GetParam();
   TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
                           PlatformManager::PlatformWithName("METAL"));
   TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
@@ -118,7 +124,7 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
   gpu::BlasLt* lt = executor->AsBlas()->GetBlasLt();
   ASSERT_NE(lt, nullptr);
 
-  const int64_t batch = 2, m = 5, n = 7, k = 3;
+  const int64_t batch = 2, m = shape.m, n = shape.n, k = shape.k;
   // Row-major A (m x k), B (k x n) per batch; small values, exact products.
   std::vector<float> a(batch * m * k), b(batch * k * n);
   for (size_t i = 0; i < a.size(); ++i) a[i] = ((i * 7) % 9) * 0.25f - 1.0f;
@@ -217,13 +223,18 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Combine(::testing::ValuesIn(kCases),
                        ::testing::Values(xla::F32, xla::F16, xla::BF16),
                        ::testing::Values(Order::kRowMajor,
-                                         Order::kColumnMajor)),
+                                         Order::kColumnMajor),
+                       // Edge tiles only (steel's store_result_safe), and
+                       // whole tiles (store_result) plus a K remainder.
+                       ::testing::Values(Shape{5, 7, 3}, Shape{64, 96, 36})),
     [](const auto& info) {
       const Case& c = std::get<0>(info.param);
+      const Shape& s = std::get<3>(info.param);
       return absl::StrCat(
           "epilogue", static_cast<int>(c.epilogue), "_",
           xla::PrimitiveType_Name(std::get<1>(info.param)), "_",
-          std::get<2>(info.param) == Order::kRowMajor ? "row" : "col");
+          std::get<2>(info.param) == Order::kRowMajor ? "row" : "col", "_",
+          s.m, "x", s.n, "x", s.k);
     });
 
 }  // namespace

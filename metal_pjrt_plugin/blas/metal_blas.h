@@ -15,7 +15,10 @@
 // Supported: f32, f16, bf16 inputs; output of the same type, or f32 for
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
 // (including stride-0 broadcast); every BlasLt epilogue (bias, ReLU, GELU,
-// SiLU, with or without aux output) via a small MSL kernel run after the GEMM.
+// SiLU, with or without aux output). GEMMs with an epilogue run on steel,
+// which applies it in its store (f32 up to a size threshold, see
+// UseSteelGemm); large f32 ones and METAL_PJRT_GEMM=mps run on MPS plus a
+// small MSL kernel over D afterwards.
 // Complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
 #ifndef METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 #define METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
@@ -25,10 +28,12 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "metal_pjrt_plugin/blas/blas_lt_support.h"
 #include "metal_pjrt_plugin/blas/mps_gemm.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "xla/stream_executor/blas.h"
@@ -49,20 +54,20 @@ class MetalBlasLt : public gpu::BlasLt {
   class MatmulPlan : public gpu::BlasLt::MatmulPlan {
    public:
     // `params` holds everything but buffers, in row-major form; operands
-    // bind from MemoryArgs with a/b swapped when `swap_operands`.
-    // `epilogue_kernel` (null for kDefault) applies bias / activation to D
-    // after the GEMM and writes aux; see metal_blas.cc.
+    // bind from MemoryArgs with a/b swapped when `swap_operands`. A
+    // non-trivial `epilogue` runs in steel's store when `epilogue_kernel`
+    // is null, else `epilogue_kernel` applies it to D after an MPS GEMM
+    // (METAL_PJRT_GEMM=mps); see metal_blas.cc.
     MatmulPlan(metal_pjrt::rt::Device* device,
                metal_pjrt::blas::GemmParams params, bool swap_operands,
+               EpilogueSpec epilogue = {},
                std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel =
-                   nullptr,
-               bool has_bias = false, bool has_aux = false)
+                   nullptr)
         : device_(device),
           params_(params),
           swap_operands_(swap_operands),
-          epilogue_kernel_(std::move(epilogue_kernel)),
-          has_bias_(has_bias),
-          has_aux_(has_aux) {}
+          epilogue_(epilogue),
+          epilogue_kernel_(std::move(epilogue_kernel)) {}
 
     absl::Status ExecuteOnStream(
         Stream* stream, const gpu::BlasLt::MemoryArgs& args,
@@ -76,10 +81,14 @@ class MetalBlasLt : public gpu::BlasLt {
     metal_pjrt::rt::Device* device_;
     metal_pjrt::blas::GemmParams params_;
     bool swap_operands_;
+    EpilogueSpec epilogue_;
     std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel_;
-    bool has_bias_;
-    bool has_aux_;
 
+    absl::StatusOr<std::pair<const void*, void*>> EpilogueBuffers(
+        const gpu::BlasLt::MemoryArgs& args) const;
+    absl::Status RunSteelWithEpilogue(
+        Stream* stream, const metal_pjrt::blas::GemmParams& p,
+        const gpu::BlasLt::MemoryArgs& args) const;
     absl::Status RunEpilogue(Stream* stream,
                              const gpu::BlasLt::MemoryArgs& args) const;
   };

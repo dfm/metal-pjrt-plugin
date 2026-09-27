@@ -141,3 +141,12 @@ f16 softmax runs as XLA's fusions: 9.5 ulps max over
 `tests/test_fused_kernels.py`'s shapes, the same as CPU, against 5.0 via
 `metal$softmax` (which accumulated in f32). f32 (30.6 ulps, CPU 30.3) and
 bf16 (0.5) are unchanged; f16 log_softmax 1.0 vs 0.55.
+
+## GEMM epilogue fused into steel (2026-09-27)
+
+Bias / activation now run in steel's store with one rounding
+(docs/performance.md, "GEMM epilogue inside steel"). f32 results are bitwise
+identical to MPS + the old second pass; f16/bf16 epilogue GEMMs lose the
+intermediate rounding of D (normwise ulps e.g. f16 bias 0.74 -> 0.50,
+bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm "+bias relu" 0.61-0.93 ->
+0.34-0.50).

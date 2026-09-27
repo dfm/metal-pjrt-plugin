@@ -100,7 +100,7 @@ bool ValidTileFor(const SteelTile& t, const GemmParams& p) {
 
 std::string VariantSource(MpsDType in, MpsDType out, const SteelTile& t,
                           bool ta, bool tb, bool mn_aligned, bool k_aligned,
-                          bool use_c) {
+                          bool use_c, const SteelEpilogue& epi) {
   auto b = [](bool v) { return v ? "true" : "false"; };
   return absl::StrCat(
       "#include <metal_stdlib>\nusing namespace metal;\n",
@@ -114,7 +114,10 @@ std::string VariantSource(MpsDType in, MpsDType out, const SteelTile& t,
       "constant constexpr bool TRANS_B = ", b(tb), ";\n",
       "constant constexpr bool MN_ALIGNED = ", b(mn_aligned), ";\n",
       "constant constexpr bool K_ALIGNED = ", b(k_aligned), ";\n",
-      "constant constexpr bool USE_C = ", b(use_c), ";\n", kSteelGemmMslBody);
+      "constant constexpr bool USE_C = ", b(use_c), ";\n",
+      "constant constexpr bool EPI_BIAS = ", b(epi.bias != nullptr), ";\n",
+      "constant constexpr bool EPI_AUX = ", b(epi.aux != nullptr), ";\n",
+      "constant constexpr int EPI_ACT = ", epi.act, ";\n", kSteelGemmMslBody);
 }
 
 absl::StatusOr<std::shared_ptr<rt::Kernel>> GetKernel(
@@ -193,15 +196,31 @@ bool SteelGemmSupports(const GemmParams& p, std::string* why) {
   return true;
 }
 
-bool UseSteelGemm(const GemmParams& p) {
+bool UseSteelGemm(const GemmParams& p, bool has_epilogue) {
   const Forced f = ForcedBackend();
   if (f == Forced::kMps) return false;
-  if (f != Forced::kSteel && p.a.dtype == MpsDType::kF32) return false;
+  if (f != Forced::kSteel && p.a.dtype == MpsDType::kF32) {
+    // f32 goes to steel only to fuse an epilogue, and only up to
+    // batch*m*n*k = 2^33: beyond that MPS's f32 GEMM is 2-15% faster, which
+    // outweighs the second pass over D (docs/performance.md).
+    const double work = static_cast<double>(std::max<int64_t>(
+                            p.batch_count, 1)) *
+                        static_cast<double>(p.m) * static_cast<double>(p.n) *
+                        static_cast<double>(p.k);
+    if (!has_epilogue || work > 8589934592.0) return false;
+  }
   return SteelGemmSupports(p);
 }
 
 absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
-                          const GemmParams& p, const SteelTile* tile) {
+                          const GemmParams& p, const SteelTile* tile,
+                          const SteelEpilogue* epi) {
+  const SteelEpilogue no_epi;
+  if (epi == nullptr) epi = &no_epi;
+  if (epi->act < 0 || epi->act > 3) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("RunSteelGemm: unknown activation ", epi->act));
+  }
   std::string why;
   if (!SteelGemmSupports(p, &why)) {
     return absl::InvalidArgumentError(
@@ -241,7 +260,7 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
       std::shared_ptr<rt::Kernel> kernel,
       GetKernel(device, VariantSource(p.a.dtype, p.c.dtype, t, p.a.transpose,
                                       p.b.transpose, mn_aligned, k_aligned,
-                                      use_c)));
+                                      use_c, *epi)));
 
   const int tn = static_cast<int>((p.n + t.bn - 1) / t.bn);
   const int tm = static_cast<int>((p.m + t.bm - 1) / t.bm);
@@ -273,10 +292,15 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
   const void* d = DevicePtr(p.c);
   const void* a = p.a.buffer != nullptr ? DevicePtr(p.a) : d;
   const void* b = p.b.buffer != nullptr ? DevicePtr(p.b) : d;
+  // Unused epilogue buffers bind D (never accessed).
+  const void* bias = epi->bias != nullptr ? epi->bias : d;
+  const void* aux = epi->aux != nullptr ? epi->aux : d;
   return stream->Launch(*kernel, groups, threads,
                         {rt::KernelArg::Buffer(a), rt::KernelArg::Buffer(b),
                          rt::KernelArg::Buffer(d),
-                         rt::KernelArg::Bytes(&sp, sizeof(sp))});
+                         rt::KernelArg::Bytes(&sp, sizeof(sp)),
+                         rt::KernelArg::Buffer(bias),
+                         rt::KernelArg::Buffer(aux)});
 }
 
 }  // namespace blas

@@ -555,3 +555,59 @@ itself has 51 emitted kernels (plus 111 GEMM custom calls), and exactly one
 is single-threaded: `loop_negate_fusion`, `f32[]` = -mean(loss), one
 element. It costs one dispatch (~2-4 us of GPU time) in a ~180 ms step.
 Nothing to parallelize.
+
+## GEMM epilogue inside steel (2026-09-27, roadmap 2.1)
+
+BlasLt epilogues (bias, ReLU, GELU, SiLU, aux) are applied in steel's
+`store_result` instead of a second kernel over D: v = alpha AB + beta C +
+bias[col], aux = v, D = act(v), in f32 with one rounding. GEMMs with an
+epilogue go to steel for f16/bf16 (as before) and now for f32 up to
+batch*m*n*k = 2^33; larger f32 ones and `METAL_PJRT_GEMM=mps` keep MPS + the
+second pass. f32 without an epilogue stays on MPS.
+
+A/B, same machine, 2-3 interleaved rounds, 30 calls each, p10 / median /
+p90 ms, "before" = MPS + second pass for f32, steel + second pass for bf16:
+
+| case (f32) | before | fused steel |
+|---|---|---|
+| relu(xW+b) 128x256x256 | 0.26-0.42 / 0.42-0.43 / 0.44-0.48 | 0.24-0.40 / 0.24-0.41 / 0.41-0.42 |
+| relu(xW+b) 512x1024x1024 | 0.74-0.76 / 0.79-0.97 / 0.98-1.03 | 0.68-0.71 / 0.88-1.00 / 0.94-1.32 |
+| relu(xW+b) 2048x1024x4096 | 6.81-6.90 / 6.83-6.91 / 6.85-7.10 | 6.50-6.86 / 6.53-6.91 / 6.64-7.36 |
+| gelu(xW+b) 2048x1024x4096 | 6.78-6.90 / 6.84-6.91 / 6.85-6.94 | 6.67-6.86 / 6.70-6.89 / 6.71-6.91 |
+| xW+b 2048x1024x4096 | 6.81-6.88 / 6.85-6.91 / 6.91-6.95 | 6.49-6.58 / 6.50-6.61 / 6.52-6.71 |
+| relu(xW+b) 8192x1024x1024 | 6.82-6.88 / 6.87-6.91 / 6.90-7.01 | 6.92-7.02 / 6.97-7.07 / 7.00-7.32 |
+| relu(xW+b) 1024x1024x1024 | 1.13-1.17 / 1.20 / 1.21-1.22 | 1.10-1.11 / 1.12-1.13 / 1.13-1.14 |
+| relu(xW+b) 4096x1024x4096 (steel, no threshold) | 13.38 / 13.42-13.44 / 13.51 | 13.61-13.87 / 13.68-14.08 / 13.74-14.95 |
+| relu(xW+b) 4096x2048x4096 (idem) | 24.88-24.91 / 24.90-25.04 / 25.05-25.17 | 26.80 / 26.88-27.20 / 27.35-27.41 |
+| relu(xW+b) 2048x4096x4096 (idem) | 24.38-24.43 / 24.45-24.52 / 24.55-24.89 | 27.62-27.63 / 27.70-27.83 / 28.00-28.22 |
+| relu(xW+b) 8192x4096x1024 (idem) | 24.33-24.36 / 24.38-24.44 / 24.51-24.66 | 28.07-28.23 / 28.14-28.66 / 28.31-28.86 |
+| relu(xW+b) 4096x4096x4096 (idem) | 48.3-49.3 / 48.4-49.6 / 49.1-50.2 | 55.4-56.3 / 55.6-56.5 / 56.8-57.3 |
+| MLP 2-layer fwd+bwd 2048x1024x4096 | 33.2-33.4 / 33.4-33.5 / 33.4-33.7 | 33.6-34.1 / 33.8-34.6 / 34.2-35.4 |
+| nanoGPT fwd (loss), median | 58.4-61.8 | 56.5-57.6 |
+| nanoGPT train step, median | 180.4-185.6 | 180.3-181.9 |
+
+steel's f32 GEMM is 2-15% slower than MPS's from batch*m*n*k ~ 1.7e10 up,
+more than the second pass saves, hence the 2^33 threshold; with it those
+shapes measure as before (4096x1024x4096 13.43 vs 13.43, 8192x4096x1024
+24.50 vs 24.46). At 2^33 the shape decides (2048x1024x4096 3-5% faster,
+8192x1024x1024 ~1.5% slower). In the MLP fwd+bwd only the forward GEMMs have
+an epilogue; the ~1% there is within its round-to-round spread.
+
+| case (bf16) | before (steel + pass) | fused |
+|---|---|---|
+| relu(xW+b) 512x1024x1024 | 0.88-0.91 median | 0.71-0.77 |
+| relu(xW+b) 2048x1024x4096 | 6.19 | 5.88-5.90 |
+| gelu(xW+b) 2048x1024x4096 | 6.35 | 6.06-6.07 |
+| relu(xW+b) 8192x1024x1024 | 6.27-6.28 | 5.92 |
+| relu(xW+b) 4096x4096x4096 | 45.35-45.37 | 44.63-44.75 |
+| MLP 2-layer fwd+bwd | 29.56-29.62 | 29.20-29.29 |
+
+Numerics: the f32 outputs of fused steel and MPS + second pass are bitwise
+identical (gelu(xW+b) at 64x48x96, 512x1024x256, 2048x1024x4096; and every
+f32 line of the METAL_TEST_REPORT_ULPS=1 pytest report): both accumulate
+in f32 in the same order, and an f32 D holds the accumulator exactly, so
+the second pass never added a rounding. f16/bf16 improve because the bias
+is added before the single rounding (normwise ulps, pass -> fused): bias
+0.74 -> 0.50 (f16), 0.52 -> 0.49 (bf16); bias+gelu 0.70 -> 0.49 / 0.71 ->
+0.48; test_steel_gemm "+bias relu" 0.61-0.93 -> 0.34-0.50 (CPU float32
+0.61-0.93).
