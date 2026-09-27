@@ -249,11 +249,6 @@ class Device {
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
   // Live bytes (allocated, not freed; buffer lengths).
   uint64_t allocated_bytes() const;
-  // Bumped whenever a buffer is really released (not when one is recycled
-  // through the cache); lets streams cache Resolve results.
-  uint64_t allocation_generation() const {
-    return allocation_generation_.load(std::memory_order_acquire);
-  }
   static constexpr std::chrono::seconds kCacheIdleRelease{2};
   struct MemoryStats {
     uint64_t live_bytes = 0;
@@ -261,6 +256,7 @@ class Device {
     uint64_t budget_bytes = 0;
     uint64_t cache_hits = 0;
     uint64_t cache_misses = 0;
+    uint64_t released = 0;  // buffers released (not recycled), ever
     int pressure = 0;  // 0 normal, 1 warning, 2 critical
   };
   MemoryStats memory_stats() const;
@@ -334,7 +330,6 @@ class Device {
   // Keyed by start address; value is the buffer and its length.
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
   uint64_t allocated_bytes_ = 0;
-  std::atomic<uint64_t> allocation_generation_{0};
   uint64_t memory_budget_ = 0;
   // The free-buffer cache (see Allocate), guarded by mu_: least recently
   // freed first, and indexed by length.
@@ -349,6 +344,7 @@ class Device {
   uint64_t cached_bytes_ = 0;
   uint64_t cache_hits_ = 0;
   uint64_t cache_misses_ = 0;
+  uint64_t released_ = 0;
   int pressure_ = 0;
   // Removes `it` from the cache and appends its buffer to `out`.
   void EvictLocked(std::list<CachedBuffer>::iterator it,
@@ -576,25 +572,12 @@ class Stream {
                                         absl::Span<const KernelArg> args,
                                         uint32_t threadgroup_memory_bytes);
   // Encoders for already-resolved work. Caller holds mu_.
-  absl::Status EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
-                            Dim3 threads, absl::Span<const KernelArg> args,
-                            absl::Span<const BufferRef> refs,
-                            uint32_t threadgroup_memory_bytes);
-  absl::Status EncodeLaunchWithArgumentBuffer(
-      const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-      absl::Span<const uint64_t> addrs,
-      absl::Span<MTL::Buffer* const> resident,
-      uint32_t threadgroup_memory_bytes);
   absl::Status EncodeBuiltin(Device::Builtin kind,
                              absl::Span<const BufferRef> buffers,
                              const void* bytes, size_t bytes_len, uint64_t n);
   absl::Status EncodeCopy(BufferRef dst, BufferRef src, uint64_t size);
   absl::Status EncodeFill(BufferRef dst, uint32_t pattern, int pattern_bytes,
                           uint64_t size);
-  // Device::Resolve with a small per-stream cache of recently used
-  // allocations (invalidated whenever anything is deallocated). Caller holds
-  // mu_.
-  absl::StatusOr<BufferRef> ResolveCached(const void* ptr);
   // Account one encoded op of `work` thread-equivalents and commit the
   // command buffer if the batching policy says so. Caller holds mu_.
   absl::Status FinishOp(uint64_t work);
@@ -622,26 +605,8 @@ class Stream {
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
   std::chrono::steady_clock::time_point last_commit_time_{};
-  // State shared with completion handlers, which may run after the stream is
-  // gone (~Stream abandons in-flight buffers after a failure).
-  struct CompletionState {
-    // Committed command buffers whose completion handler has not run yet.
-    std::atomic<int> pending{0};
-  };
   // FailNextCommandBufferForTesting.
   absl::Status inject_error_;
-  const std::shared_ptr<CompletionState> completion_ =
-      std::make_shared<CompletionState>();
-  // ResolveCached state (guarded by mu_).
-  struct CachedRange {
-    uintptr_t base = 0;
-    uint64_t size = 0;
-    MTL::Buffer* buffer = nullptr;
-  };
-  static constexpr int kResolveCacheSize = 8;
-  CachedRange resolve_cache_[kResolveCacheSize];
-  int resolve_cache_next_ = 0;
-  uint64_t resolve_cache_generation_ = ~0ull;
   // Committed but possibly still executing command buffers (retained).
   // Synchronize waits for their completion, not just the fence signal, so
   // callers may free resources immediately afterwards.

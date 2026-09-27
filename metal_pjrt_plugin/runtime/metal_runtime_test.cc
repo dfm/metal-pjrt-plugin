@@ -527,7 +527,7 @@ TEST_F(MetalRuntimeTest, MemoryBudgetAndCache) {
   EXPECT_THAT(d.Allocate(40 * mb),
               StatusIs(absl::StatusCode::kResourceExhausted,
                        HasSubstr("memory budget")));
-  const uint64_t gen = d.allocation_generation();
+  const uint64_t released = d.memory_stats().released;
   ASSERT_THAT(d.Deallocate(a->ptr), IsOk());
   EXPECT_EQ(d.memory_stats().cached_bytes, 40 * mb);
   // A hit: the same buffer, and no release.
@@ -536,14 +536,14 @@ TEST_F(MetalRuntimeTest, MemoryBudgetAndCache) {
   EXPECT_EQ(b->ptr, a->ptr);
   EXPECT_EQ(d.memory_stats().cache_hits, 1u);
   ASSERT_THAT(d.Deallocate(b->ptr), IsOk());
-  EXPECT_EQ(d.allocation_generation(), gen);
+  EXPECT_EQ(d.memory_stats().released, released);
   // A miss that only fits once the cached 40 MB is evicted.
   absl::StatusOr<Allocation> c = d.Allocate(48 * mb);
   ASSERT_THAT(c, IsOk());
   Device::MemoryStats m = d.memory_stats();
   EXPECT_EQ(m.live_bytes, 48 * mb);
   EXPECT_EQ(m.cached_bytes, 0u);
-  EXPECT_GT(d.allocation_generation(), gen);
+  EXPECT_GT(d.memory_stats().released, released);
   ASSERT_THAT(d.Deallocate(c->ptr), IsOk());
 
   // The idle timer releases what nobody reused.
@@ -589,20 +589,20 @@ TEST_F(MetalRuntimeTest, CacheReleaseWaitsForHostTasks) {
     return absl::OkStatus();
   }),
               IsOk());
-  const uint64_t gen = dev_->allocation_generation();
+  const uint64_t released = dev_->memory_stats().released;
   ASSERT_THAT(dev_->Deallocate(x), IsOk());
   dev_->OnMemoryPressure(1);
   dev_->TrimCache(std::chrono::seconds(0));
   std::this_thread::sleep_for(Device::kCacheIdleRelease +
                               std::chrono::milliseconds(1200));
   EXPECT_FALSE(done.load());
-  EXPECT_EQ(dev_->allocation_generation(), gen);
+  EXPECT_EQ(dev_->memory_stats().released, released);
   EXPECT_EQ(dev_->memory_stats().cached_bytes, size);
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_TRUE(done.load());
   dev_->TrimCache(std::chrono::seconds(0));
   EXPECT_EQ(dev_->memory_stats().cached_bytes, 0u);
-  EXPECT_GT(dev_->allocation_generation(), gen);
+  EXPECT_GT(dev_->memory_stats().released, released);
   dev_->OnMemoryPressure(0);
 }
 

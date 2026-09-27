@@ -723,13 +723,12 @@ void Device::EvictLocked(std::list<CachedBuffer>::iterator it,
     }
   }
   cached_bytes_ -= it->size;
+  ++released_;
   out->push_back(it->buffer);
   cache_.erase(it);
 }
 
 void Device::ReleaseBuffers(const std::vector<MTL::Buffer*>& buffers) {
-  if (buffers.empty()) return;
-  allocation_generation_.fetch_add(1, std::memory_order_acq_rel);
   for (MTL::Buffer* b : buffers) b->release();
 }
 
@@ -777,6 +776,7 @@ Device::MemoryStats Device::memory_stats() const {
   m.budget_bytes = memory_budget_;
   m.cache_hits = cache_hits_;
   m.cache_misses = cache_misses_;
+  m.released = released_;
   m.pressure = pressure_;
   return m;
 }
@@ -1311,12 +1311,10 @@ absl::Status Stream::Commit() {
   // The handler must not touch `this`: after a failure ~Stream stops
   // waiting for in-flight buffers, whose handlers may run later.
   Device* device = device_;
-  std::shared_ptr<CompletionState> state = completion_;
   const void* self = this;
   const uint64_t ticket = cmd_ticket_;
-  state->pending.fetch_add(1, std::memory_order_relaxed);
   device->AddInFlight(cmd_, fence_, v, injected_error);
-  cmd_->addCompletedHandler([device, state, self, v, fence, signals, waits,
+  cmd_->addCompletedHandler([device, self, v, fence, signals, waits,
                              traced_ops, kernels, injected_error,
                              ticket](MTL::CommandBuffer* cb) {
     if (TraceEnabled()) {
@@ -1366,7 +1364,6 @@ absl::Status Stream::Commit() {
     for (auto& sv : signals) sv.first->release();
     for (auto& w : waits) w.event->release();
     fence->release();
-    state->pending.fetch_sub(1, std::memory_order_release);
   });
   cmd_->commit();
   last_commit_time_ = std::chrono::steady_clock::now();
@@ -1483,27 +1480,6 @@ uint32_t DeclaredMaxThreadsPerThreadgroup(const std::string& msl_source,
   return n;
 }
 
-absl::StatusOr<BufferRef> Stream::ResolveCached(const void* ptr) {
-  const uint64_t gen = device_->allocation_generation();
-  if (gen != resolve_cache_generation_) {
-    for (CachedRange& c : resolve_cache_) c = CachedRange();
-    resolve_cache_generation_ = gen;
-  }
-  const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-  for (const CachedRange& c : resolve_cache_) {
-    if (addr - c.base < c.size) return BufferRef{c.buffer, addr - c.base};
-  }
-  absl::StatusOr<BufferRef> ref = device_->Resolve(ptr);
-  if (ref.ok()) {
-    CachedRange& c = resolve_cache_[resolve_cache_next_];
-    resolve_cache_next_ = (resolve_cache_next_ + 1) % kResolveCacheSize;
-    c.base = addr - ref->offset;
-    c.size = ref->buffer->length();
-    c.buffer = ref->buffer;
-  }
-  return ref;
-}
-
 absl::Status Stream::FinishOp(uint64_t work) {
   threads_in_cmd_ += work;
   ++ops_in_cmd_;
@@ -1512,7 +1488,7 @@ absl::Status Stream::FinishOp(uint64_t work) {
     return Commit();
   }
   if (ops_in_cmd_ >= kEarlyCommitOps &&
-      completion_->pending.load(std::memory_order_acquire) == 0 &&
+      fence_->signaledValue() >= last_committed_fence_value_ &&
       std::chrono::steady_clock::now() - last_commit_time_ >=
           std::chrono::microseconds(kEarlyCommitIntervalUs)) {
     return Commit();
@@ -1576,45 +1552,13 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   BufferRef refs[kMaxBufferArgs];
   for (size_t i = 0; i < args.size(); ++i) {
     if (!args[i].is_buffer) continue;
-    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
+    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
     if (!ref.ok()) {
       return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
                                                     kernel.name(), i));
     }
     refs[i] = *ref;
   }
-  return EncodeLaunch(kernel, threadgroups, threads, args,
-                      absl::MakeConstSpan(refs, args.size()),
-                      threadgroup_memory_bytes);
-}
-
-absl::Status Stream::LaunchWithArgumentBuffer(
-    const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
-  std::lock_guard<std::mutex> lock(mu_);
-  absl::InlinedVector<uint64_t, 64> addrs(std::max<size_t>(args.size(), 1), 0);
-  absl::InlinedVector<MTL::Buffer*, 16> resident;
-  for (size_t i = 0; i < args.size(); ++i) {
-    absl::StatusOr<BufferRef> ref = ResolveCached(args[i].device_ptr);
-    if (!ref.ok()) {
-      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
-                                                    kernel.name(), i));
-    }
-    addrs[i] = ref->buffer->gpuAddress() + ref->offset;
-    if (std::find(resident.begin(), resident.end(), ref->buffer) ==
-        resident.end()) {
-      resident.push_back(ref->buffer);
-    }
-  }
-  return EncodeLaunchWithArgumentBuffer(kernel, threadgroups, threads, addrs,
-                                        resident, threadgroup_memory_bytes);
-}
-
-absl::Status Stream::EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
-                                  Dim3 threads,
-                                  absl::Span<const KernelArg> args,
-                                  absl::Span<const BufferRef> refs,
-                                  uint32_t threadgroup_memory_bytes) {
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
   pending_kernels_.push_back(kernel.identity());
@@ -1637,10 +1581,24 @@ absl::Status Stream::EncodeLaunch(const Kernel& kernel, Dim3 threadgroups,
   return FinishOp(LaunchWork(threadgroups, threads));
 }
 
-absl::Status Stream::EncodeLaunchWithArgumentBuffer(
+absl::Status Stream::LaunchWithArgumentBuffer(
     const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-    absl::Span<const uint64_t> addrs, absl::Span<MTL::Buffer* const> resident,
-    uint32_t threadgroup_memory_bytes) {
+    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
+  std::lock_guard<std::mutex> lock(mu_);
+  absl::InlinedVector<uint64_t, 64> addrs(std::max<size_t>(args.size(), 1), 0);
+  absl::InlinedVector<MTL::Buffer*, 16> resident;
+  for (size_t i = 0; i < args.size(); ++i) {
+    absl::StatusOr<BufferRef> ref = device_->Resolve(args[i].device_ptr);
+    if (!ref.ok()) {
+      return Annotate(ref.status(), absl::StrFormat("Launch %s argument %d",
+                                                    kernel.name(), i));
+    }
+    addrs[i] = ref->buffer->gpuAddress() + ref->offset;
+    if (std::find(resident.begin(), resident.end(), ref->buffer) ==
+        resident.end()) {
+      resident.push_back(ref->buffer);
+    }
+  }
   ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
   enc_->setComputePipelineState(kernel.pso());
   pending_kernels_.push_back(kernel.identity());

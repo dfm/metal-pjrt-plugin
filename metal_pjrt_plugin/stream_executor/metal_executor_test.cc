@@ -144,7 +144,7 @@ TEST(MetalExecutorTest, AllocationFailureReturnsNull) {
 
 // Allocation churn as XLA produces it (the same sizes every step): after
 // the first round every allocation is a cache hit on the same buffer, no
-// buffer is released (the resolve generation stays), and the accounting
+// buffer is released (the released count stays), and the accounting
 // balances; a trim then releases everything.
 TEST(MetalExecutorTest, AllocationChurnRecyclesBuffers) {
   TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
@@ -161,7 +161,7 @@ TEST(MetalExecutorTest, AllocationChurnRecyclesBuffers) {
                                        8 << 20, (8 << 20) + 1, 3};
   constexpr int kRounds = 50;
   std::vector<void*> first;
-  uint64_t gen = 0;
+  uint64_t released = 0;
   for (int round = 0; round < kRounds; ++round) {
     std::vector<DeviceAddressBase> mems;
     for (uint64_t size : sizes) {
@@ -174,7 +174,7 @@ TEST(MetalExecutorTest, AllocationChurnRecyclesBuffers) {
     for (const DeviceAddressBase& m : mems) ptrs.push_back(m.opaque());
     if (round == 0) {
       first = ptrs;
-      gen = device->allocation_generation();
+      released = device->memory_stats().released;
     } else {
       EXPECT_EQ(ptrs, first) << "round " << round;
     }
@@ -186,10 +186,10 @@ TEST(MetalExecutorTest, AllocationChurnRecyclesBuffers) {
             (kRounds - 1) * sizes.size());
   EXPECT_EQ(after.live_bytes, before.live_bytes);
   EXPECT_GE(after.cached_bytes - before.cached_bytes, 18u << 20);
-  EXPECT_EQ(device->allocation_generation(), gen);
+  EXPECT_EQ(device->memory_stats().released, released);
   device->TrimCache(std::chrono::seconds(0));
   EXPECT_EQ(device->memory_stats().cached_bytes, 0u);
-  EXPECT_GT(device->allocation_generation(), gen);
+  EXPECT_GT(device->memory_stats().released, released);
 }
 
 // Host callback errors and a GPU failure. The failure is sticky for the
