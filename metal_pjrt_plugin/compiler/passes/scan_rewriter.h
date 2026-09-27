@@ -29,13 +29,16 @@ namespace gpu {
 // init equal to that reducer's identity, element type f32/f16/bf16/s32, a
 // default (or absent) layout, n >= kMinRowLength, and (rows >=
 // kMinRowsForLongRows or n <= kLongRowLength) since the kernel runs one
-// threadgroup per row. Everything else
+// threadgroup per row, n <= kMaxRowLength (the kernel's 32-bit chunk loop
+// would wrap and never end) and at most 2^32 - 1 rows (one grid dimension).
+// Everything else
 // (logcumsumexp, non-minor axes, other types) is left alone.
 class MetalScanRewriter : public HloModulePass {
  public:
   static constexpr int64_t kMinRowLength = 2;
   static constexpr int64_t kLongRowLength = 4096;
   static constexpr int64_t kMinRowsForLongRows = 32;
+  static constexpr int64_t kMaxRowLength = int64_t{1} << 31;
 
   absl::string_view name() const override { return "metal-scan-rewriter"; }
 

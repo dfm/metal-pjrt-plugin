@@ -86,10 +86,14 @@ std::optional<ScanMatch> MatchScan(const HloInstruction* rw) {
   const int64_t rank = shape.dimensions().size();
   if (rank == 0 || ShapeUtil::ElementsIn(shape) == 0) return std::nullopt;
   const int64_t n = shape.dimensions(rank - 1);
-  if (n < MetalScanRewriter::kMinRowLength) return std::nullopt;
+  if (n < MetalScanRewriter::kMinRowLength ||
+      n > MetalScanRewriter::kMaxRowLength) {
+    return std::nullopt;
+  }
   // One threadgroup per row: with few long rows the kernel would run on a
   // handful of cores, where XLA's multi-kernel scan is faster.
   const int64_t rows = ShapeUtil::ElementsIn(shape) / n;
+  if (rows > int64_t{0xffffffff}) return std::nullopt;
   if (rows < MetalScanRewriter::kMinRowsForLongRows &&
       n > MetalScanRewriter::kLongRowLength) {
     return std::nullopt;

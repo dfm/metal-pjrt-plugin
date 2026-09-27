@@ -194,7 +194,9 @@ absl::Status Scan(stream_executor::Stream* stream, xffi::AnyBuffer x,
   const uint64_t n = static_cast<uint64_t>(row_length);
   if (n == 0 || x.element_count() == 0) return absl::OkStatus();
   const uint64_t rows = x.element_count() / n;
-  if (rows > 0xffffffffu || n > 0xffffffffu) {
+  // The kernel's uint chunk loop (start += 4 * threads) wraps, and never
+  // ends, for n near 2^32; MetalScanRewriter leaves such scans to XLA.
+  if (rows > 0xffffffffu || n > (uint64_t{1} << 31)) {
     return absl::UnimplementedError("metal$scan: too large");
   }
   // 4 elements per thread per chunk; 256 threads measured as fast as 512

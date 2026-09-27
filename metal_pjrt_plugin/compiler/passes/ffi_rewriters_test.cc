@@ -76,6 +76,24 @@ TEST_F(MetalFfiRewritersTest, ScanNotRewritten) {
             "");
 }
 
+// Rows longer than 2^31 would make the kernel's 32-bit chunk loop wrap (an
+// endless GPU loop): left to XLA. Parsed only, never allocated.
+TEST_F(MetalFfiRewritersTest, ScanRowTooLongNotRewritten) {
+  MetalScanRewriter pass;
+  auto hlo = [](const std::string& n) {
+    return absl::StrReplaceAll(R"(
+HloModule m
+red { a = f32[] parameter(0)  b = f32[] parameter(1)  ROOT r = f32[] add(a, b) }
+ENTRY e {
+  x = f32[32,$N]{1,0} parameter(0)
+  init = f32[] constant(0)
+  ROOT y = f32[32,$N]{1,0} reduce-window(x, init), window={size=1x$N pad=0_0x$P_0}, to_apply=red
+})", {{"$N", n}, {"$P", std::to_string(std::stoll(n) - 1)}});
+  };
+  EXPECT_NE(Rewrite(pass, hlo("2147483648"), "metal$scan"), "");
+  EXPECT_EQ(Rewrite(pass, hlo("2147483649"), "metal$scan"), "");
+}
+
 }  // namespace
 }  // namespace gpu
 }  // namespace xla
