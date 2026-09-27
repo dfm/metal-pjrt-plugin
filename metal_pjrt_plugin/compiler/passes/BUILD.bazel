@@ -118,7 +118,6 @@ cc_library(
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/service/gpu:backend_configs_cc",
         "@xla//xla/service/gpu:cublas_cudnn",
-        "@xla//xla/service/gpu:ir_emission_utils",
         "@xla//xla/service/gpu:matmul_utils",
         "@xla//xla/tsl/platform:statusor",
     ],

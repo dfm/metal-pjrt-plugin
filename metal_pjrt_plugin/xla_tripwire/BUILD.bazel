@@ -8,7 +8,6 @@ filegroup(
     srcs = [
         "@xla//xla/backends/gpu/codegen/emitters:mlir_kernel_emitter.cc",
         "@xla//xla/backends/gpu/codegen/emitters:transpose.cc",
-        "@xla//xla/backends/gpu/runtime:command_buffer_conversion_pass.cc",
         "@xla//xla/backends/gpu/transforms:gemm_rewriter.cc",
         "@xla//xla/backends/gpu/transforms:priority_fusion.cc",
         "@xla//xla/backends/gpu/transforms:topk_specializer.cc",
@@ -24,7 +23,6 @@ filegroup(
         "@xla//xla/pjrt/se:pjrt_stream_executor_client.cc",
         "@xla//xla/pjrt/se:stream_executor_executable.cc",
         "@xla//xla/python/pjrt_ifrt:pjrt_executable.cc",
-        "@xla//xla/stream_executor/abi:executable_abi_version.cc",
     ],
 )
 

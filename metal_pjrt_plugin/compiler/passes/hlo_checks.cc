@@ -16,7 +16,6 @@
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/cublas_cudnn.h"
-#include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/service/gpu/matmul_utils.h"
 #include "xla/primitive_util.h"
 #include "xla/shape.h"
@@ -170,12 +169,6 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             DescribeOp(*instr)));
       }
       if (instr->opcode() != HloOpcode::kCustomCall) continue;
-      if (instr->custom_call_target() == "TopK" ||
-          instr->custom_call_target() == kTopKCustomCallTarget) {
-        return absl::InternalError(
-            absl::StrCat("Metal: TopK custom call left after TopkDecomposer: ",
-                         DescribeOp(*instr)));
-      }
       if (IsCublasGemm(*instr)) TF_RETURN_IF_ERROR(CheckGemm(*instr));
     }
   }

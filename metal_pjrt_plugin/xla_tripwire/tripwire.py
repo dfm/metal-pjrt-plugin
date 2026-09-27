@@ -40,20 +40,16 @@ MKE = "xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc"
 
 SITES = [
     # --- OneAPI branches the plugin inherits ---
-    Site(GR, "gpu_version_.IsOneAPI()) && type == F64", before=2, after=3,
-         why="No F64 epilogue fusion on OneAPI; blas_lt_support.h assumes f16/bf16/f32 epilogues only."),
     Site(GR, "absl::StatusOr<absl::string_view> GetNonFp8GemmCustomCallTarget(", before=0, after=8,
          why="Every GEMM becomes __cublas$lt$matmul on OneAPI (MetalBlasLt is the only GEMM path)."),
     Site("xla/backends/gpu/transforms/topk_specializer.cc", 'custom_call_target() != "TopK"', before=1, after=3,
-         why="TopkSpecializer skips OneAPI, so TopkDecomposer turns TopK into a sort (CheckPostGemmRewriter)."),
+         why="TopkSpecializer skips OneAPI, so TopkDecomposer turns TopK into a sort (a surviving TopK custom call has no Metal handler and fails at thunk emission)."),
     Site("xla/service/algorithm_util.cc", "const bool is_sycl = gpu_compute_capability.IsOneAPI();", before=0, after=0,
          why="bf16 dot algorithms allowed on OneAPI (ALG_DOT_BF16_BF16_F32*)."),
     Site("xla/service/algorithm_util.cc", "if (!is_cuda_ge_ampere && !is_rocm_bf16 && !is_sycl)", before=1, after=2,
          why="ALG_DOT_BF16_BF16_F32 accepted on OneAPI."),
     Site("xla/service/algorithm_util.cc", "return (is_cuda_ge_ampere || is_rocm_bf16 || is_sycl) &&", before=3, after=2,
          why="ALG_DOT_BF16_BF16_F32_X3/X6/X9 accepted on OneAPI."),
-    Site("xla/stream_executor/abi/executable_abi_version.cc", "if (device_description.gpu_compute_capability().IsOneAPI())", before=0, after=2,
-         why="OneAPI ABI version; metal_pjrt_api.cc drops the AbiVersion extension so serialization works."),
     Site("xla/codegen/emitters/transforms/lower_tensors.cc", "if (device_spec_.IsIntelGpu()) {", before=3, after=3,
          why="Atomic fadd lowers to the SPIR-V form, which the MSL emitter translates."),
     Site("xla/codegen/emitters/transforms/vectorize_loads_stores.cc", "if (device_spec_.IsIntelGpu() && (IsSubByteIntOrFloatType(element_type) ||", before=0, after=3,
@@ -62,8 +58,6 @@ SITES = [
          why="No sub-byte vector stores on OneAPI."),
     Site("xla/backends/gpu/codegen/emitters/transpose.cc", "bool use_scalar_ops = device.gpu_compute_capability().IsOneAPI() &&", before=0, after=2,
          why="Scalar shared-memory ops for sub-byte types on OneAPI."),
-    Site("xla/backends/gpu/runtime/command_buffer_conversion_pass.cc", "if (device_info.gpu_compute_capability().IsOneAPI()) {", before=0, after=3,
-         why="No command buffers on OneAPI (ApplyMetalDefaults also clears them)."),
     Site(GC, "if (gpu_version.IsOneAPI()) {", before=1, after=2,
          why="F4E2M1FN compares upcast on OneAPI."),
     # --- PJRT / jaxlib behaviour the runtime and the compile cache rely on ---

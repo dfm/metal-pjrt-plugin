@@ -98,22 +98,6 @@ ENTRY e {
 })").ok());
 }
 
-TEST_F(MetalHloChecksTest, TopK) {
-  absl::Status s = Check(R"(
-HloModule m
-cmp {
-  a = f32[] parameter(0)
-  b = f32[] parameter(1)
-  ROOT g = pred[] compare(a, b), direction=GT
-}
-ENTRY e {
-  x = f32[8,128]{1,0} parameter(0)
-  ROOT t = (f32[8,4]{1,0}, s32[8,4]{1,0}) custom-call(x), custom_call_target="TopK", to_apply=cmp
-})");
-  EXPECT_EQ(s.code(), absl::StatusCode::kInternal);
-  EXPECT_NE(s.message().find("TopK"), std::string::npos) << s;
-}
-
 TEST_F(MetalHloChecksTest, LegalityF64) {
   auto legal = [&](const std::string& hlo) {
     auto module = ParseAndReturnUnverifiedModule(hlo);

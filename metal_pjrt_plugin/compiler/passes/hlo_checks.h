@@ -27,8 +27,6 @@ std::string DescribeOp(const HloInstruction& instr);
 // run. Complex arithmetic is not checked at all: the emitter lowers complex
 // values inside a fusion (abs(fft(x)) runs); only complex kernel buffers fail,
 // and that is only visible after fusion.
-//  - no TopK custom call is left ("TopK" is decomposed to a sort for OneAPI,
-//    "__gpu$TopK" has no Metal handler);
 //  - every cuBLASLt GEMM is a plain "__cublas$lt$matmul" whose element types
 //    and epilogue MetalBlasLt supports (blas_lt_support.h).
 // Returns an error naming the first offending op, so a violation fails at
