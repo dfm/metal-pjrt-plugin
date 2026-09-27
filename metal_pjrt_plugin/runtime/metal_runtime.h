@@ -379,6 +379,9 @@ class Device {
   void* pressure_source_ = nullptr;  // dispatch_source_t
   void* trim_timer_ = nullptr;       // dispatch_source_t
   bool trim_armed_ = false;
+  bool stopping_ = false;  // ~Device has started; guarded by mu_
+  // How long ~Device waits for completion handlers still pending.
+  static constexpr std::chrono::seconds kHandlerWait{5};
   void StartMemorySources();
   absl::Status error_ = absl::OkStatus();
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
@@ -604,9 +607,11 @@ class Stream {
   void EndEncoder();
   // Commit the current command buffer (if any). Hold rule: if the buffer
   // waits on a host-task value that is not signaled yet, first wait for it
-  // on the host (bounded, like every host wait), so no committed buffer ever
-  // sits on the GPU waiting for host work. Host-task workers never take mu_,
-  // so waiting here while holding it cannot deadlock with them.
+  // on the host (it ends when the task completes or the device fails), so no
+  // committed buffer ever sits on the GPU waiting for host work. Host-task
+  // workers never take mu_, so waiting here while holding it cannot deadlock
+  // with them. After a device error nothing is committed: the buffer is
+  // dropped and its signals are force-signaled, as a failed buffer's are.
   absl::Status Commit();
   Device* device_;
   MTL::CommandQueue* queue_;
@@ -647,7 +652,8 @@ class Stream {
   // Events the open command buffer signals, encoded by Commit after the
   // fence signal (so a signaled event means the buffer has run to its end;
   // see Device::CheckInFlight). On failure they are force-signaled so
-  // waiters wake up instead of hanging.
+  // waiters wake up instead of hanging. Retained (the Event may go away
+  // before a failed Commit is retried).
   std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
   // Waits encoded into the open command buffer (hold rule, diagnostics).
   struct PendingWait {

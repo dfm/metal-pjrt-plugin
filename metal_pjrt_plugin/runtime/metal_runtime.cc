@@ -491,6 +491,23 @@ void Device::RecordReset(
 }
 
 Device::~Device() {
+  // After a failure Synchronize stops waiting for committed buffers, so a
+  // completion handler (which uses this device) may still be pending. Wait
+  // for it, bounded: after a reset it may never come.
+  const auto deadline = std::chrono::steady_clock::now() + kHandlerWait;
+  while (true) {
+    {
+      std::lock_guard<std::mutex> lock(in_flight_mu_);
+      if (in_flight_.empty()) break;
+    }
+    if (std::chrono::steady_clock::now() > deadline) {
+      LOG(ERROR) << "Metal device " << ordinal_
+                 << " destroyed with command buffers whose completion "
+                    "handlers have not run";
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
   {
     std::lock_guard<std::mutex> lock(g_devices_mu);
     g_devices.erase(std::find(g_devices.begin(), g_devices.end(), this));
@@ -498,7 +515,13 @@ Device::~Device() {
   if (memory_queue_ != nullptr) {
     auto timer = static_cast<dispatch_source_t>(trim_timer_);
     auto pressure = static_cast<dispatch_source_t>(pressure_source_);
-    if (!trim_armed_) dispatch_resume(timer);  // suspended sources can't go
+    {
+      // TrimCache (on the timer's queue) must not suspend the timer again.
+      std::lock_guard<std::mutex> lock(mu_);
+      stopping_ = true;
+      if (!trim_armed_) dispatch_resume(timer);  // suspended sources can't go
+      trim_armed_ = true;
+    }
     dispatch_source_cancel(timer);
     dispatch_source_cancel(pressure);
     // Wait out a handler that is already running.
@@ -740,7 +763,7 @@ void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
       bytes += cache_.front().size;
       EvictLocked(cache_.begin(), &evicted);
     }
-    if (cache_.empty() && trim_armed_) {
+    if (cache_.empty() && trim_armed_ && !stopping_) {
       dispatch_suspend(static_cast<dispatch_source_t>(trim_timer_));
       trim_armed_ = false;
     }
@@ -1108,6 +1131,7 @@ Stream::~Stream() {
     cmd_->release();
     device_->EndWork(cmd_ticket_);
   }
+  for (auto& sv : pending_signals_) sv.first->release();
   for (MTL::CommandBuffer* cb : in_flight_) cb->release();
   fence_->release();
   queue_->release();
@@ -1159,11 +1183,13 @@ void Stream::WorkerLoop() {
 }
 
 absl::Status Stream::EnsureCommandBuffer() {
+  // Checked for an open buffer too: after an error on another stream, no
+  // more work goes into it (Commit drops it).
+  ABSL_RETURN_IF_ERROR(device_->error());
   if (cmd_ != nullptr) {
     FlushDeferredWaits();
     return absl::OkStatus();
   }
-  ABSL_RETURN_IF_ERROR(device_->error());
   // Retained references: XLA frees device buffers as soon as the host no
   // longer needs them and relies on the driver to keep memory alive until
   // enqueued GPU work completes (as CUDA does). Metal only does that for
@@ -1220,6 +1246,31 @@ void Stream::EndEncoder() {
 
 absl::Status Stream::Commit() {
   if (cmd_ == nullptr) return absl::OkStatus();
+  if (!device_->error().ok()) {
+    // The error is sticky and the GPU may have been reset: drop the buffer
+    // instead of committing it, and end it as a failed buffer's handler
+    // does, so waiters on its values wake up (and then see the error).
+    EndEncoder();
+    const uint64_t v = ++fence_value_;
+    last_committed_fence_value_ = v;
+    if (fence_->signaledValue() < v) fence_->setSignaledValue(v);
+    for (auto& sv : pending_signals_) {
+      if (sv.first->signaledValue() < sv.second) {
+        sv.first->setSignaledValue(sv.second);
+      }
+      sv.first->release();
+    }
+    pending_signals_.clear();
+    pending_waits_.clear();
+    pending_kernels_.clear();
+    inject_error_ = absl::OkStatus();
+    cmd_->release();
+    cmd_ = nullptr;
+    device_->EndWork(cmd_ticket_);
+    ops_in_cmd_ = 0;
+    threads_in_cmd_ = 0;
+    return absl::OkStatus();
+  }
   for (const PendingWait& w : pending_waits_) {
     if (!w.host_task || w.event->signaledValue() >= w.value) continue;
     ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(w.event, w.value));
@@ -1255,7 +1306,6 @@ absl::Status Stream::Commit() {
     cmd_->encodeSignalEvent(fence_, v);
     for (auto& sv : signals) cmd_->encodeSignalEvent(sv.first, sv.second);
   }
-  for (auto& sv : signals) sv.first->retain();
   std::vector<PendingWait> waits;
   waits.swap(pending_waits_);
   for (const PendingWait& w : waits) {
@@ -1324,8 +1374,9 @@ absl::Status Stream::Commit() {
         }
       }
     }
-    device->RemoveInFlight(cb);
     device->EndWork(ticket);
+    // Last use of the device: ~Device waits for in_flight_ to empty.
+    device->RemoveInFlight(cb);
     for (auto& sv : signals) sv.first->release();
     for (auto& w : waits) w.event->release();
     fence->release();
@@ -1817,7 +1868,12 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
 }
 
 bool Stream::IdleLocked() {
-  if (cmd_ != nullptr || !device_->error().ok()) return false;
+  // CheckInFlight: a buffer that ran to its end may still have failed
+  // (its handler not run yet); an inline copy must not read its output.
+  if (cmd_ != nullptr || !device_->CheckInFlight(/*wait=*/false) ||
+      !device_->error().ok()) {
+    return false;
+  }
   deferred_waits_.erase(
       std::remove_if(deferred_waits_.begin(), deferred_waits_.end(),
                      [](const PendingWait& w) {
@@ -1859,6 +1915,7 @@ absl::Status Stream::RecordEvent(Event* event) {
     std::lock_guard<std::mutex> elock(event->mu_);
     v = ++event->next_value_;
   }
+  event->event_->retain();  // released by Commit's handler (or ~Stream)
   pending_signals_.emplace_back(event->event_, v);  // encoded by Commit
   // Commit so a host or another stream waiting on the event can make
   // progress, and publish the value only then: Commit may first wait for a

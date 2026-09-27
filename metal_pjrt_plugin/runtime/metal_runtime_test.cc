@@ -739,6 +739,41 @@ TEST_F(MetalRuntimeTest, GpuErrorIsStickyForTheDevice) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// Work encoded before another stream's failure is never committed: the open
+// command buffer is dropped (its fence and events force-signaled), and no
+// more work goes into it.
+TEST_F(MetalRuntimeTest, NothingIsCommittedAfterTheStickyError) {
+  const uint32_t n = 1 << 12;
+  float* x = static_cast<float*>(Alloc(n * 4));
+  float* y = static_cast<float*>(Alloc(n * 4));
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  // One launch stays in s's open command buffer (below the commit caps).
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+
+  s2->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
+  ASSERT_THAT(Axpy(s2.get(), x, x, n, 1.0f, n / 256), IsOk());
+  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kInternal,
+                                          HasSubstr("injected fault")));
+
+  // The open buffer takes no more work, and ending it commits nothing.
+  EXPECT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256),
+              StatusIs(absl::StatusCode::kInternal));
+  EXPECT_THAT(s->Flush(), IsOk());
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kInternal,
+                                         HasSubstr("injected fault")));
+  const auto [committed, signaled] = s->FenceForTesting();
+  EXPECT_GE(signaled, committed);  // waiters on the dropped buffer wake up
+  // Never ran on the GPU (the injected buffer did: it only fails on report).
+  EXPECT_EQ(y[0], 0.0f);
+  EXPECT_EQ(y[n - 1], 0.0f);
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // A host task's own failure goes to its on_error when it has one; without
 // one it becomes the device's sticky error.
 TEST_F(MetalRuntimeTest, HostTaskErrors) {
