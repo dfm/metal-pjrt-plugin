@@ -19,8 +19,10 @@ golden list. Both have an `--update` mode.
   `tsl::Fingerprint64("openmetal")`. Not "metal": that is Apple's
   closed-source jax-metal plugin, and both may be installed together.
   The StreamExecutor, FFI and XLA-internal names stay "METAL"/"metal": they
-  live in registries private to our dylib (it exports only `GetPjrtApi` and
-  the callback trampoline), so they cannot collide with another plugin.
+  live in registries private to our dylib (it exports only `GetPjrtApi`,
+  the callback trampoline and two testing hooks, `metal_pjrt_memory_stats`
+  and `metal_pjrt_memory_pressure`, used by `tests/test_memory.py` via
+  ctypes; they are not an API), so they cannot collide with another plugin.
   JAX looks lowerings up by `backend.platform`, i.e. `MetalName()`, so
   `register_plugin`'s name and every `PLATFORM` in `jax_plugins/openmetal`
   must be exactly "openmetal".
@@ -203,7 +205,10 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
   row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,
   gesdd_novec}` (targets of `jax_plugins/openmetal/linalg_lowerings.py`,
-  column-major operands via layout constraints). Each handler calls
+  column-major operands via layout constraints). Matrices up to 32x32 in
+  `metal$cholesky`, `metal$triangular_solve` and `metal$lapack_getrf` run as
+  GPU kernels on the stream, with no synchronization. Above that, each
+  handler calls
   `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
   the shared-storage buffers (zero copy), synchronously on the thunk thread
   (a stream host task was measured and not faster: docs/performance.md).

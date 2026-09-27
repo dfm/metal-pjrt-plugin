@@ -73,7 +73,8 @@ elementwise chain and transpose within 1.3x; cumsum 3x behind; bf16 GEMM
   while command buffers are in flight; use pytest timeouts per test instead.
 - Runtime changes prompted by this: a failed command buffer is now reported
   once and the stream recovers (a stuck error state made whole test runs
-  fail), and command buffers are committed after 2^29 dispatched threads so a
+  fail; superseded: any GPU failure is now sticky for the process, see "GPU
+  errors: sticky for the process" below), and command buffers are committed after 2^29 dispatched threads so a
   batch of heavy kernels cannot approach the watchdog.
 
 ## Memory and reset policy (2026-09-25, after the wedge)
@@ -208,6 +209,8 @@ implements StreamExecutor's `CommandBuffer` on top of
   does not fall back when recording fails, so those types must stay off.
   Controls: `METAL_PJRT_COMMAND_BUFFERS=0` disables the conversion,
   `METAL_PJRT_MIN_GRAPH_SIZE=n` overrides XLA's minimum run length (5).
+  (Superseded: command buffers and both knobs were removed; see "Command
+  buffers: removed" below.)
 - Not done: Metal indirect command buffers (slower on the GPU per the spike),
   concurrent replay of independent commands.
 

@@ -10,8 +10,11 @@ patch 0005 and the visibility override) are not repeated here.
 Guiding rules: mirror what XLA does on CUDA; measure before building; delete
 what does not earn its keep; no new upstream patches unless unavoidable.
 
-Status lines (*Status:*) are as of 2026-09-27, the MVP batch; commit hashes
-are on `main`. What is open is collected under "Next" at the end.
+Status lines (*Status:*) are as of 2026-09-27, the MVP batch and the fix
+batch after it; commit hashes are on `main`. Item text is as written at the
+review; names may since have changed (the JAX platform "metal" is now
+"openmetal", `jax_plugins/metal` is `jax_plugins/openmetal`). What is open is
+collected under "Next" at the end.
 
 ## Phase 0: trust (silent wrong results first)
 
@@ -58,7 +61,9 @@ are on `main`. What is open is collected under "Next" at the end.
      monotonic check); MPS staging buffers bypass the pool and the allocation
      guard; `device_lock.py` truncates the holder's record by opening with
      `"w"` before locking; test timeouts `os._exit` with GPU work in flight.
-   *Status:* done, 943e5cb; every triage item was real and fixed.
+   *Status:* done, 943e5cb; every triage item was real. All are fixed except
+   that MPS staging buffers still bypass the pool (they now pass the system
+   memory guard).
 5. **Tests that run.** The README's `bazel test --test_tag_filters=local
    //metal_pjrt_plugin/...` matches nothing (device tests are `manual`, which
    `//...` excludes); add a `test_suite` naming them. Turn the `scripts/*_check.py`
@@ -67,8 +72,8 @@ are on `main`. What is open is collected under "Next" at the end.
    63 known fails) so regressions show. Tighten tolerances (ulp-based per op,
    f64 CPU reference); fix `tinygp_check.py` passing Metal whenever CPU is NaN.
    *Status:* done, aa3f2c1, c5660d6, d0d028b, a4fc954, a7212d9, 987e510.
-   Now 645 pytest cases + 3 xfail, 8 device tests, lax_test 947 pass / 62
-   known.
+   Now 647 pytest cases + 4 strict xfail, 8 device tests, lax_test 947
+   pass / 62 known.
 6. **Hygiene.** Untrack the dylib symlink (it points at an absolute
    `bazel-bin` path). Move `metal$test_scale` out of the production FFI
    library and `dispatch_bench.cc` out of `runtime/`. Fix stale docs: README
@@ -110,8 +115,9 @@ sort, callbacks); it costs us only where CUDA would have fused.
    implement the `__cub$DeviceRadixSort{Keys,Pairs}` targets as Metal FFI
    handlers (MSL radix sort). `MetalSortExpander` stays as the fallback for
    comparators SortRewriter rejects.
-   *Status:* done, e93e731 (+ 5da4fb1 tests): 20k-1M sorts ~40x faster
-   than the bitonic network, bit-identical to CPU; rows <= 64 stay bitonic.
+   *Status:* done, e93e731 (+ 5da4fb1 tests): 20k-1M sorts 28-66x faster
+   than the bitonic network, bit-identical to CPU; rows <= 64 stay bitonic,
+   top_k with such rows too (12258a9).
 3. **Delete softmax/scan rewriters** unless Phase 1.1 shows a real win. Any
    FFI kernel that survives compiles its PSO once (FFI instantiate stage)
    rather than rebuilding and hashing MSL text per execution.
@@ -215,8 +221,8 @@ GPU"); the problem is that nothing checks it. We do not plan an
    in `lower_tensors`/`vectorize_loads_stores`) and fails on any change or new
    call site. Include the `AddLoweringPasses` prefix copied into
    `msl_emitter.h:24`.
-   *Status:* done, d588710 + 3a0bcd7 (30 sites, plus a list of every
-   OneAPI branch in XLA).
+   *Status:* done, d588710 + 3a0bcd7 (30 sites, 31 golden entries, plus a
+   list of every OneAPI branch in XLA).
 2. **Post-conditions in MetalCompiler**: after the base post-layout pipeline,
    assert every dot became `__cublas$lt$matmul` and no unspecialized TopK
    remains.
@@ -278,8 +284,28 @@ GPU"); the problem is that nothing checks it. We do not plan an
    *Status:* done except CI: opt-in priority, 3c3e3e7 (CPU stays the
    default); user README, f4acb09; wheel with the dylib inside and a version
    warning at import, 2d777cf; fresh-clone install checked (73 s from the
-   shared disk cache), a911feb. Coexistence: `JAX_PLATFORMS` (the platform names
-   differ since 36cc906). macOS CI and a remote cache deferred.
+   shared disk cache), a911feb. Coexistence: the platform names differ since
+   36cc906 and `JAX_PLATFORMS` selects which backends JAX creates, but both
+   plugins are still loaded (their `initialize()` runs); untested, the README
+   advises separate virtual environments. macOS CI and a remote cache
+   deferred.
+
+## Decisions (dfm, 2026-09-27)
+
+- The JAX platform is "openmetal" ("the open is key"), 36cc906; the
+  XLA-internal names stay "METAL".
+- Opt-in: CPU stays JAX's default backend (3c3e3e7).
+- JAX's compilation-cache settings are left to the user: the plugin never
+  sets `jax_compilation_cache_dir` or the size/time thresholds (bbb3c65);
+  the README says how to turn the cache on.
+- Land the minimum viable product before numerical side quests; known
+  accuracy gaps are listed in `docs/accuracy.md`, not chased.
+- Quarantine strikes are not filtered by plugin build: the build changes
+  on every rebuild and would unquarantine an unchanged buggy kernel (the
+  kernel key, MSL hash + name, already tracks real changes). The build is
+  recorded for diagnostics only.
+- A/Bs of sub-millisecond programs interleave the arms and report
+  p10/median/p90 (GPU performance states make single medians bimodal).
 
 ## Decided against
 
@@ -334,6 +360,8 @@ Open decisions for dfm:
 - **Per-boot quarantine**: strikes count per boot, so an unchanged buggy
   kernel gets two more resets after each reboot. The other choice is
   counting across boots until `gpu_health.py --clear`.
+- **Quarantine build filter** (0.3): keep counting strikes across plugin
+  builds (see "Decisions"), or key them by build as the item said?
 - **System memory guard strictness**: it counts only free + inactive +
   speculative + purgeable pages, minus a 512 MB reserve. On an 8 GB Mac with
   a browser open, that refused nanoGPT's 1.17 GiB step allocation with
@@ -357,3 +385,19 @@ Errors and memory:
   (unchecked).
 - The real memory-pressure notification (`sudo memory_pressure -S -l warn`)
   has only been exercised through the handler hook.
+
+Deferred / unverified:
+
+- Push to GitHub (after this batch, by the coordinator).
+- MLX and jax-mps comparison numbers not re-run on an idle, freshly booted
+  machine (1.2).
+- Patches 0002 and 0003 not sent upstream (4.3).
+- The wheel is untested on any other machine and not stripped (236 MB
+  dylib installed; `strip -x` would save ~90 MB, untested).
+- `install_dev.sh`'s venv creation was added after the fresh-clone check
+  and not re-run in a clone.
+- The out-of-memory retry path (drop the cache, wait for in-flight work,
+  retry) is untested.
+- The GPU-error path is exercised only by injected failures; coexistence
+  with jax-metal only argued from code; tolerances and performance are from
+  one M3 with macOS 26.2 (also in the README).

@@ -10,8 +10,9 @@ installed next to Apple's closed-source `jax-metal` (platform `"metal"`).
 Status: a working minimum. f32, f16 and bf16 programs run end to end,
 including training loops, linear algebra, sorting and host callbacks. JAX's
 `lax_test.py` passes 947 cases; the 62 known failures are complex types,
-int4 and dot precision algorithms. Tested on one machine (M3, 8 GB, macOS
-26.2).
+int4, dot precision algorithms, the `dce_sink` test handler and one
+convolution the kernel translator cannot handle. Tested on one machine (M3,
+8 GB, macOS 26.2); every tolerance and performance number comes from it.
 
 ## Requirements
 
@@ -70,20 +71,24 @@ dev = jax.devices("openmetal")[0]
 x = jax.device_put(x, dev)   # jitted functions run where their inputs are
 ```
 
-**Next to Apple's jax-metal.** Both register a JAX plugin. With
-`JAX_PLATFORMS` set, JAX initializes only the platforms listed, so
-`JAX_PLATFORMS=openmetal,cpu` ignores jax-metal (and `metal,cpu` ignores
-this plugin). jax-metal pins its own jax version, so separate virtual
-environments are simpler.
+**Next to Apple's jax-metal** (untested: the two have never been installed
+together here). Both register a JAX plugin under different platform names.
+With `JAX_PLATFORMS` set, JAX creates backends only for the platforms
+listed, so `JAX_PLATFORMS=openmetal,cpu` does not use jax-metal (and
+`metal,cpu` does not use this plugin), but JAX still loads every installed
+plugin. jax-metal pins its own jax version, so use separate virtual
+environments.
 
 ## What works
 
 - Elementwise math, reductions, broadcasting, gather and scatter, control
-  flow (`scan`, `while_loop`, `cond`), convolutions (correct but slow),
+  flow (`scan`, `while_loop`, `cond`), convolutions (correct but slow; one
+  of JAX's convolution test cases does not compile),
   random numbers, and autodiff through all of these, in f32, f16 and bf16
   (and integer and bool types).
-- Matrix multiplication: f32 on Metal Performance Shaders, f16/bf16 on
-  native kernels, with bias and activation epilogues fused.
+- Matrix multiplication: f32 on Metal Performance Shaders (a bias or
+  activation epilogue is one extra pass over the result), f16/bf16 on native
+  kernels with the epilogue fused.
 - Sorting (`sort`, `argsort`, `top_k`, ...): a GPU radix sort for large
   arrays, bit-identical to CPU.
 - Linear algebra (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`,
@@ -133,7 +138,8 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
 - **A GPU error ends GPU work for the process.** After the first failed GPU
   command (a fault or a watchdog timeout), every later GPU operation in that
   process fails with the original error plus "no further GPU work is
-  accepted in this process, restart it". Restart Python.
+  accepted in this process, restart it". Restart the Python process; the
+  machine does not need a reboot.
 - **Memory.** GPU memory is system RAM. The plugin keeps a process under
   half of RAM, and it refuses any allocation that would push the machine
   into swap, with RESOURCE_EXHAUSTED and the reason and numbers. When you
@@ -142,6 +148,31 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
   in host memory: the plugin snapshots the data before returning, so
   changing the array afterwards cannot change what the device gets. On an
   8 GB Mac that matters for multi-GB transfers.
+- **Training on an 8 GB Mac.** A nanoGPT-sized training step needs a
+  1.2 GB allocation, and with a browser open the system memory guard can
+  refuse it: RESOURCE_EXHAUSTED "... refused by the system memory guard: only
+  N bytes of system memory are free or reclaimable ...". That is the
+  machine, not the process ("refused: this process already holds ... of
+  its ... memory budget" is the process). Close other programs or use a
+  smaller batch.
+- **Small dense linear algebra is slow.** Above 32x32, linear algebra runs
+  in Accelerate on the host after a full GPU synchronization: for n up to a
+  few hundred that is ~10x slower than JAX on CPU (cholesky 128: ~0.3 ms vs
+  0.03 ms). Keep small factorizations on CPU if they dominate.
+- **Python callbacks are synchronous.** Each `pure_callback`, `io_callback`
+  or `jax.debug.*` call waits for all GPU work before it (a full
+  synchronization) and runs on an XLA execution thread while the GPU
+  stream is drained; callbacks in hot loops are slow.
+
+## Unverified assumptions
+
+- The GPU-error path (sticky error, no wrong values) is tested only with
+  injected failures; no real GPU fault or watchdog timeout was provoked.
+- Coexistence with jax-metal is argued from JAX's and the plugin's code,
+  never tried with both installed.
+- Tolerances and performance numbers come from one M3 with macOS 26.2.
+  Other Apple GPUs or macOS versions (a different Metal compiler and math
+  library) may need retuned tolerances.
 
 ## GPU safety
 

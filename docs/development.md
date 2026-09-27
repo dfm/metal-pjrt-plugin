@@ -86,7 +86,9 @@ rest anywhere). Numerics are compared with a float64 CPU reference in ulps
 of the output dtype (`tests/metal_testing.py`), with tolerances about twice
 the measured error; `METAL_TEST_REPORT_ULPS=1 ... pytest -s` prints the
 measured errors (and CPU float32's, for comparison). No test timeouts:
-killing a process with GPU work in flight can wedge the driver, so slow
+killing a process with GPU work in flight can wedge the driver (for the
+same reason child processes go through `metal_testing.run_python` and
+`scripts/device_lock.py` waits for its command, never killing it), so slow
 tests get a faulthandler stack dump and GPU hangs end through the runtime's
 bounded waits.
 
