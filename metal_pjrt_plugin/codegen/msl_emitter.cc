@@ -257,6 +257,33 @@ inline T xla_expm1(T x) {
   if (isinf(u)) return T(u);
   return T(um1 * xf / log(u));
 }
+// Metal's float exp/sin/cos are biased by ~0.3 ulp for small |x|, which a
+// long recursion accumulates (docs/accuracy.md). Taylor polynomials there
+// (truncation < 1e-9 relative for |x| < 0.125); Metal's elsewhere.
+inline float xla_exp(float x) {
+  if (!(fabs(x) < 0.125f)) return exp(x);
+  float p = fma(x, fma(x, fma(x, fma(x, fma(x, 1.0f / 720, 1.0f / 120),
+                                     1.0f / 24), 1.0f / 6), 0.5f), 1.0f);
+  return fma(x, p, 1.0f);
+}
+inline float xla_sin(float x) {
+  if (!(fabs(x) < 0.125f)) return sin(x);
+  if (fabs(x) < 1e-4f) return x;  // sin(x) rounds to x; keeps sin(-0) = -0
+  float x2 = x * x;
+  return fma(x * x2, fma(x2, fma(x2, -1.0f / 5040, 1.0f / 120), -1.0f / 6),
+             x);
+}
+inline float xla_cos(float x) {
+  if (!(fabs(x) < 0.125f)) return cos(x);
+  float x2 = x * x;
+  return fma(x2, fma(x2, fma(x2, -1.0f / 720, 1.0f / 24), -0.5f), 1.0f);
+}
+template <typename T>
+inline T xla_exp(T x) { return exp(x); }
+template <typename T>
+inline T xla_sin(T x) { return sin(x); }
+template <typename T>
+inline T xla_cos(T x) { return cos(x); }
 // erfc for a >= 0 (Numerical Recipes erfcc; fractional error < 1.2e-7).
 inline float xla_erfc_pos(float a) {
   float t = 1.0f / (1.0f + 0.5f * a);
@@ -507,12 +534,12 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"math.atan", "atan"},        {"math.atanh", "atanh"},
       {"math.atan2", "atan2"},      {"math.cbrt", "xla_cbrt"},
       {"math.ceil", "ceil"},        {"math.copysign", "copysign"},
-      {"math.cos", "cos"},          {"math.cosh", "cosh"},
-      {"math.sin", "sin"},          {"math.sinh", "sinh"},
+      {"math.cos", "xla_cos"},         {"math.cosh", "cosh"},
+      {"math.sin", "xla_sin"},         {"math.sinh", "sinh"},
       {"math.tan", "tan"},          {"math.tanh", "tanh"},
       {"math.ctlz", "clz"},         {"math.cttz", "ctz"},
       {"math.ctpop", "popcount"},   {"math.erf", "xla_erf"},
-      {"math.erfc", "xla_erfc"},    {"math.exp", "exp"},
+      {"math.erfc", "xla_erfc"},    {"math.exp", "xla_exp"},
       {"math.exp2", "exp2"},        {"math.expm1", "xla_expm1"},
       {"math.floor", "floor"},      {"math.fma", "fma"},
       {"math.ipowi", "xla_ipowi"},  {"math.fpowi", "xla_fpowi"},
@@ -526,10 +553,10 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"arith.remf", "fmod"},
       {"llvm.intr.fma", "fma"},     {"llvm.intr.fmuladd", "fma"},
       {"llvm.intr.fabs", "fabs"},   {"llvm.intr.sqrt", "sqrt"},
-      {"llvm.intr.exp", "exp"},     {"llvm.intr.exp2", "exp2"},
+      {"llvm.intr.exp", "xla_exp"},    {"llvm.intr.exp2", "exp2"},
       {"llvm.intr.log", "log"},     {"llvm.intr.log2", "log2"},
-      {"llvm.intr.log10", "log10"}, {"llvm.intr.sin", "sin"},
-      {"llvm.intr.cos", "cos"},     {"llvm.intr.tan", "tan"},
+      {"llvm.intr.log10", "log10"}, {"llvm.intr.sin", "xla_sin"},
+      {"llvm.intr.cos", "xla_cos"},    {"llvm.intr.tan", "tan"},
       {"llvm.intr.floor", "floor"}, {"llvm.intr.ceil", "ceil"},
       {"llvm.intr.trunc", "trunc"}, {"llvm.intr.rint", "rint"},
       {"llvm.intr.nearbyint", "rint"}, {"llvm.intr.roundeven", "rint"},

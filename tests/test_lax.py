@@ -249,3 +249,25 @@ NORMWISE = {
 def test_lax(name, fn):
     _current[0] = name
     fn()
+
+
+# exp / sin / cos of small arguments use the prelude's Taylor polynomials
+# (xla_exp etc., docs/accuracy.md): unbiased and <= ~0.55 ulp there, and
+# zeros / subnormals keep their value and sign.
+@pytest.mark.parametrize("op", ["exp", "sin", "cos"])
+def test_small_arguments(op):
+    rng = np.random.default_rng(0)
+    x = np.exp(rng.uniform(np.log(1e-4), np.log(0.125), 1 << 16))
+    x = (x * rng.choice([-1.0, 1.0], x.size)).astype(np.float32)
+    x[:4] = [0.1249, -0.1249, 1e-4, -1e-4]
+    special = np.array([0.0, -0.0, 1e-40, -1e-40, 1e-30, -1e-30], np.float32)
+    fn = getattr(jnp, op)
+    got = metal_testing.run_on(metal_testing.metal(), fn, np.concatenate([special, x]))
+    want = getattr(np, op)(np.concatenate([special, x]).astype(np.float64))
+    n = special.size
+    np.testing.assert_array_equal(got[:n], want[:n].astype(np.float32))
+    np.testing.assert_array_equal(np.signbit(got[:n]), np.signbit(want[:n]))
+    ulp = np.spacing(np.abs(want[n:]).astype(np.float32)).astype(np.float64)
+    err = (got[n:].astype(np.float64) - want[n:]) / ulp
+    assert np.abs(err).max() <= 0.6
+    assert abs(err.mean()) < 0.02  # Metal's own: -0.3 (exp), +0.2 (cos)

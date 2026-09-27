@@ -16,7 +16,8 @@ import jax.numpy as jnp
 import numpy as np
 
 N = 1 << 18
-DECADES = [(1e-4, 1e-3), (1e-3, 1e-2), (1e-2, 1e-1), (1e-1, 1.0), (1.0, 10.0)]
+DECADES = [(1e-4, 1e-3), (1e-3, 1e-2), (1e-2, 0.125), (0.125, 1.0), (1.0, 10.0)]
+SPECIAL = np.array([0.0, -0.0, 1e-40, -1e-40, 1e-30, -1e-30], np.float32)
 FUNCS = {  # name: (jax fn, numpy f64 reference, sign of the argument)
     "exp-": (jnp.exp, np.exp, -1),
     "exp+": (jnp.exp, np.exp, +1),
@@ -52,6 +53,14 @@ def main(names):
                             f"{np.abs(e).max():4.2f}")
             print(f"{name:7s} [{lo:g}, {hi:g}){'':{15 - len(f'[{lo:g}, {hi:g})')}} "
                   + "   ".join(cols), flush=True)
+        # Zeros and subnormals: value and sign must match numpy exactly.
+        got = np.asarray(jax.jit(f, device=devs[0][1])(sign * SPECIAL))
+        with np.errstate(all="ignore"):
+            want = ref(sign * SPECIAL).astype(np.float32)
+        bad = ((got != want) | (np.signbit(got) != np.signbit(want))) & ~(
+            np.isnan(got) & np.isnan(want))
+        print(f"{name:7s} +-0 / subnormals: "
+              + ("OK" if not bad.any() else f"MISMATCH at {SPECIAL[bad]}"))
 
 
 if __name__ == "__main__":
