@@ -1,6 +1,7 @@
-"""Numerics of the Metal FFI kernels (metal$softmax, metal$scan) against a
-float64 CPU reference (integer cases: CPU in the same precision), and a
-check that the rewriters fired.
+"""Numerics of the metal$scan FFI kernel against a float64 CPU reference
+(integer cases: CPU in the same precision), and a check that the rewriter
+fired. Also softmax / log_softmax in every precision; those run as XLA's
+fusions (the metal$softmax rewriter was removed, docs/performance.md).
 """
 import numpy as np
 import jax
@@ -30,18 +31,16 @@ for dtype in (jnp.float32, jnp.float16, jnp.bfloat16):
                   (2, 4097), (128, 1), (4, 16385)]:
         x = host(rng.standard_normal(shape) * 4, dtype)
         nm = f"{jnp.dtype(dtype).name} {shape}"
-        # n == 1 is simplified away by XLA; n > 16384 is not rewritten.
-        fire = 1 < shape[-1] <= 16384
         add(f"softmax {nm}", lambda x: jax.nn.softmax(x, axis=-1), x,
-            "metal$softmax", "softmax", fire)
+            None, "softmax")
         add(f"log_softmax {nm}", lambda x: jax.nn.log_softmax(x, axis=-1), x,
-            "metal$softmax", "log_softmax", fire)
+            None, "log_softmax")
 x = rng.standard_normal((16, 256)).astype(np.float32)
 x[0, 3] = -np.inf
 x[1, :] = -np.inf
 x[2, 5] = np.nan
 add("softmax with -inf/nan rows", lambda x: jax.nn.softmax(x, -1), x,
-    "metal$softmax", "softmax")
+    None, "softmax")
 
 for dtype in (jnp.float32, jnp.float16, jnp.bfloat16, jnp.int32):
     for shape in [(4096, 64), (8, 1000), (3, 4097), (5, 3, 130), (100000,),
@@ -84,9 +83,9 @@ add("cummax with nan", lambda x: jax.lax.cummax(x, axis=1), xn, "metal$scan",
 # elementwise error is exp amplifying the rounding of x - max (inputs up to
 # |x| ~ 16 here); CPU float32 does the same.
 ULPS = {
-    ("softmax", "float32"): 62, ("softmax", "float16"): 10,
+    ("softmax", "float32"): 62, ("softmax", "float16"): 19,
     ("softmax", "bfloat16"): 1, ("log_softmax", "float32"): 2.1,
-    ("log_softmax", "float16"): 1.1, ("log_softmax", "bfloat16"): 1,
+    ("log_softmax", "float16"): 2, ("log_softmax", "bfloat16"): 1,
     ("cumsum", "float32"): 4.5, ("cumsum", "float16"): 2.3,
     ("cumsum", "bfloat16"): 1.6, ("cumprod", "float32"): 43,
     ("cumprod", "float16"): 1.1, ("cumprod", "bfloat16"): 1,
@@ -98,8 +97,9 @@ NORMWISE = {"log_softmax", "cumsum"}
 def test_fused_kernel(name):
     fn, x, target, expect_rewrite, op = CASES[name]
     f = jax.jit(fn)
-    hlo = f.lower(jax.device_put(x, metal())).compile().as_text()
-    assert (target in hlo) == expect_rewrite, f"rewritten={target in hlo}"
+    if target is not None:
+        hlo = f.lower(jax.device_put(x, metal())).compile().as_text()
+        assert (target in hlo) == expect_rewrite, f"rewritten={target in hlo}"
     got = np.asarray(f(jax.device_put(x, metal())))
     if np.issubdtype(x.dtype, np.integer):
         want = run_on(cpu(), fn, x)  # x64 would promote and change wrapping

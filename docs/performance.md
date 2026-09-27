@@ -35,6 +35,8 @@ cost), `bench/run_all.sh` to produce `bench/results/table.md`. Machine: M3,
    max/sum, row re-read from cache). GPU time for softmax 8192x1024 f32:
    1.45 ms -> 0.75 ms. Wall-clock numbers for both still need a rerun on an
    idle GPU (the 2026-09-24 runs were disturbed by other GPU jobs timing out).
+   (2026-09-27: the softmax rewriter was removed after an end-to-end A/B;
+   see "Metal-only rewrites: end-to-end A/B" below.)
 6. **GEMM parity with MLX on f32** via MPS; bf16 is slower because MPS has
    no bf16 and we stage through f32 conversions.
 
@@ -450,3 +452,43 @@ Caveat: JAX only writes entries whose compile took longer than
 `jax_persistent_cache_min_compile_time_secs` (default 1 s). Both programs
 above compile in under a second on Metal, so with the defaults they are
 not cached; the plugin does not change that threshold.
+
+## Metal-only rewrites: end-to-end A/B (2026-09-27)
+
+`METAL_PJRT_DISABLE_REWRITES=softmax,scan` vs default, same build, arms
+interleaved, 3 rounds, medians in ms (min..max of the 3 round medians).
+Which FFI target fires is read from the compiled HLO.
+
+| case | rewrites on | off | off/on | fires |
+|---|---|---|---|---|
+| cumsum 4096x4096 | 1.77-1.78 | 3.82-4.20 | 2.15 | scan |
+| cumprod 4096x4096 | 1.77-1.80 | 3.79-3.80 | 2.13 | scan |
+| cumsum bf16 4096x4096 | 1.05-1.06 | 3.43 | 3.24 | scan |
+| cumsum fwd+bwd 4096x4096 | 4.67-4.69 | 6.68-6.71 | 1.43 | scan |
+| cumsum / cumprod 65536x64 (short rows) | 0.69-0.88 | 1.13-1.36 | 1.5-1.6 | scan |
+| cumsum / cumprod 256x16384 | 0.69-0.90 | 1.22-1.43 | 1.75-1.94 | scan |
+| cumsum 8x262144, 1x1M, axis 0 | = | = | 1.00 | - |
+| logcumsumexp (all shapes) | = | = | 1.00 (1x1M 1.18) | - |
+| softmax / log_softmax 65536x64 | 0.66-0.70 | 1.04-1.07 | 1.5 | softmax |
+| softmax / log_softmax 8192x1024 | 1.05-1.06 | 1.74-1.91 | 1.7 | softmax |
+| softmax / log_softmax 1024x16384 | 1.78-1.80 | 3.15-3.35 | 1.8 | softmax |
+| softmax fwd+bwd 8192x1024 | 2.08-2.10 | 2.07-2.10 | 1.00 | - |
+| attention fwd 8x8x512x64 | 5.40-5.48 | 5.36-5.40 | 0.99 | softmax |
+| attention fwd+bwd | 11.9-12.1 | 12.1-12.3 | 1.01 | - |
+| nanoGPT fwd (loss) | 59.8-60.3 | 59.5-60.4 | 1.00 | softmax (6) |
+| nanoGPT train step | 182.4-186.6 | 181.5-184.1 | 0.99 | none |
+| tinygp quasisep / parallel 20000 value+grad | 1638 / 6.1 | 1639 / 6.1 | 1.00 | none |
+| rest of bench/jax_bench.py, dispatch_bound.py | | | 0.95-1.09, noise | - |
+
+The softmax matcher needs every intermediate (max, exp, sum) to have no
+outside users, so it never fires under autodiff: the nanoGPT train step
+(111 custom calls, all GEMMs) and every fwd+bwd case keep XLA's fusions.
+Where it fires inside a real program (attention and nanoGPT forward) the
+gain is zero; it only wins on a standalone softmax. Accuracy (ulps against
+f64, max over tests/test_fused_kernels.py shapes, on / off / CPU f32):
+f32 softmax 30.6 / 30.6 / 30.3, log_softmax 1.04 / 1.03 / 1.04; f16
+softmax 5.0 / 9.5 / 9.5; bf16 equal. Decision: **softmax rewriter deleted**
+(roadmap 2.3), with its FFI handler and tests. The scan rewriter wins 1.4-3.2x
+on every minor-dim cumsum/cumprod it matches, fwd and bwd, and is at least
+as accurate (f16 cumsum 1.15 vs 2.08 ulps, bf16 0.78 vs 1.51, f32 equal):
+**kept**.

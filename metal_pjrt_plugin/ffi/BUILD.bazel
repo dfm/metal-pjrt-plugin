@@ -3,7 +3,7 @@ load("//metal_pjrt_plugin:device_test.bzl", "DEVICE_TEST_TAGS")
 package(default_visibility = ["//visibility:public"])
 
 # XLA FFI support for the Metal platform: helpers plus the handlers the Metal
-# compiler's rewriters target (metal$softmax, metal$scan) and the Python
+# compiler's scan rewriter targets (metal$scan) and the Python
 # callback handler. Handlers register statically, so this is alwayslink.
 cc_library(
     name = "metal_ffi",
@@ -11,7 +11,6 @@ cc_library(
         "metal_ffi.cc",
         "python_callback_ffi.cc",
         "scan_ffi.cc",
-        "softmax_ffi.cc",
     ],
     hdrs = ["metal_ffi.h"],
     deps = [

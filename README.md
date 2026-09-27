@@ -31,7 +31,7 @@ differs from the MLX-based approaches.
 - `metal_pjrt_plugin/linalg/`: Cholesky, triangular solve and LAPACK-backed
   decompositions as FFI custom calls (Accelerate, or GPU kernels for small
   matrices).
-- `metal_pjrt_plugin/ffi/`: FFI helpers and the softmax, scan and Python
+- `metal_pjrt_plugin/ffi/`: FFI helpers and the scan and Python
   callback handlers.
 - `metal_pjrt_plugin/pjrt/`: the plugin dylib target.
 - `metal_pjrt_plugin/xla_tripwire/`: snapshots of the XLA code the plugin

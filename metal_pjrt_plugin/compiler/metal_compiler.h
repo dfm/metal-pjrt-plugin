@@ -59,8 +59,7 @@ class MetalCompiler : public GpuCompiler {
       const se::SemanticVersion& toolkit_version,
       CompilationStats* compilation_stats) override;
 
-  // Runs MetalSoftmaxRewriter (layouts are normalized by now and fusion has
-  // not run yet), then the stock post-layout pipeline, then
+  // Runs the stock post-layout pipeline, then
   // MetalDotOperandUpcaster on the dots GemmRewriter left, then
   // CheckPostGemmRewriter (hlo_checks.h).
   absl::Status OptimizeHloPostLayoutAssignment(

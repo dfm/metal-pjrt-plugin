@@ -28,7 +28,6 @@
 #include "metal_pjrt_plugin/compiler/passes/dot_upcast.h"
 #include "metal_pjrt_plugin/compiler/passes/hlo_checks.h"
 #include "metal_pjrt_plugin/compiler/passes/scan_rewriter.h"
-#include "metal_pjrt_plugin/compiler/passes/softmax_rewriter.h"
 #include "metal_pjrt_plugin/compiler/passes/sort_expander.h"
 // --- begin linalg (Accelerate LAPACK) ---
 #include "metal_pjrt_plugin/linalg/linalg_rewriter.h"
@@ -94,8 +93,8 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
   return metal_pjrt::rt::SerializeConstants(blobs);
 }
 
-// METAL_PJRT_DISABLE_REWRITES=softmax,scan turns off the FFI-kernel rewriters
-// (for A/B comparisons and bisecting).
+// METAL_PJRT_DISABLE_REWRITES=scan,lapack (or all) turns off the metal$scan
+// and LAPACK rewriters (for A/B comparisons and bisecting).
 bool RewriteEnabled(absl::string_view name) {
   // Compile-time setting: listed in PluginVersion (metal_executor.cc).
   const char* env = std::getenv("METAL_PJRT_DISABLE_REWRITES");
@@ -168,12 +167,6 @@ absl::Status MetalCompiler::OptimizeHloPostLayoutAssignment(
     const CompileOptions& options, const GpuTopology& gpu_topology,
     const GpuAliasInfo* alias_info, tsl::thread::ThreadPool* thread_pool,
     CompilationStats* compilation_stats, mlir::MLIRContext* mlir_context) {
-  if (RewriteEnabled("softmax")) {
-    HloPassPipeline pipeline("metal-post-layout", compilation_stats);
-    pipeline.AddPass<MetalSoftmaxRewriter>();
-    pipeline.AddPass<HloDCE>();
-    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
-  }
   TF_RETURN_IF_ERROR(GpuCompiler::OptimizeHloPostLayoutAssignment(
       hlo_module, stream_exec, options, gpu_topology, alias_info, thread_pool,
       compilation_stats, mlir_context));

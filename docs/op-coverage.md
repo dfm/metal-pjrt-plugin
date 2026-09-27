@@ -31,7 +31,7 @@ emitter's default case ("Unsupported instruction opcode").
 | elementwise, broadcast, reshape, transpose, slice, concat, iota, pad, reverse, map, clamp, select, convert, bitcast-convert, reduce-precision, compare | loop / transpose / concat MLIR emitters | OK | verified; f64 and complex excluded |
 | reduce | reduction MLIR emitter | OK | verified incl. 1M and column reductions |
 | reduce-window, cumulative ops | elemental MLIR (+ scan rewriters); cumsum/cumprod/cummax/cummin over the minor dim -> `MetalScanRewriter` -> `metal$scan` | OK | verified incl. reverse, f32/f16/bf16/s32 (`tests/test_fused_kernels.py`) |
-| softmax / log-softmax over the minor dim | `MetalSoftmaxRewriter` -> `metal$softmax` (one kernel) | OK | verified f32/f16/bf16, n <= 16384 |
+| softmax / log-softmax over the minor dim | XLA's reduction + loop fusions (the `metal$softmax` rewriter was removed: no end-to-end win) | OK | verified f32/f16/bf16 (`tests/test_fused_kernels.py`) |
 | gather, dynamic-slice | elemental MLIR | OK | verified |
 | dynamic-update-slice | in-place DUS emitter or loop | OK | verified |
 | scatter | scatter MLIR emitter | OK | verified for f32; uses atomics, Metal has 32-bit atomics only: a 64-bit combining scatter without `unique_indices` is refused at compile time (`CheckPostGemmRewriter`); overwrite and `unique_indices` s64 scatters run |
@@ -61,7 +61,7 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$softmax`, `metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `tests/test_ffi.py` calls `metal$softmax` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt_plugin/ffi` (`metal$scan`, the Python callback handler) and `metal_pjrt_plugin/linalg`; `tests/test_ffi.py` calls `metal$scan` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 

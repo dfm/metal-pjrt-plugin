@@ -90,7 +90,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `CompileTargetBinary(module_config, llvm::Module*, device_description,
   relocatable, debug_module, shard)`.
 - `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`:
-  `MetalSoftmaxRewriter`, the base pipeline (GemmRewriter), then
+  the base pipeline (GemmRewriter), then
   `MetalDotOperandUpcaster` on the dots left for the loop emitter and
   `CheckPostGemmRewriter` (`compiler/passes/hlo_checks.h`): no narrow-operand
   kDot, no TopK custom call, every `__cublas$lt$matmul` has types and an
@@ -167,11 +167,12 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   cache keyed by (device, MSL source, function).
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
-- Handlers: `metal$softmax`, `metal$scan` (targets of MetalSoftmaxRewriter /
-  MetalScanRewriter; `tests/test_ffi.py` also calls `metal$softmax`
-  through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
-  (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin. `METAL_PJRT_DISABLE_REWRITES=softmax,scan|all`
-  turns the rewriters off.
+- Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_ffi.py`
+  also calls it through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
+  (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin.
+  `METAL_PJRT_DISABLE_REWRITES=scan,lapack|all` turns the rewriters off.
+  (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
+  end-to-end A/B, docs/performance.md.)
 - Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
@@ -222,7 +223,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   name and then loads the GPU AOT result, so with no ABI version the cache
   key's platform version is the only guard against a foreign build, which
   is what it is for. Executables round-trip: fusions, GEMM, sort,
-  scan/while, `metal$scan`/`metal$softmax`/LAPACK FFI calls and
+  scan/while, `metal$scan`/LAPACK FFI calls and
   constant-heavy programs deserialize in a fresh process and give
   bitwise-identical results (MSL rides in the GPU executable's asm/binary,
   the constants container in the constants module's binary).
