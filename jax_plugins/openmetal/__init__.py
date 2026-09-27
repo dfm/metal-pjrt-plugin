@@ -104,6 +104,13 @@ def initialize():
         "preallocate": False,
         "memory_fraction": 1.0,
         "visible_devices": [0],
+        # Unified memory: H2D/D2H copy straight between the numpy array and
+        # the MTLBuffer. Staging through XLA's pinned-host BFC pool would add
+        # a memcpy and a pool that never shrinks. (XLA already skipped
+        # staging because the executor reports every foreign pointer as host
+        # memory, which IsHostMemoryPinned takes as pinned; this makes it
+        # explicit.)
+        "should_stage_host_to_device_transfers": False,
     }
     xb.register_plugin(PLATFORM, priority=500, library_path=str(path), options=options)
     try:

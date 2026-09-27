@@ -261,3 +261,18 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`
   directories an older plugin created, and `~/.cache/jax_metal/compilation_cache`
   from before the "openmetal" rename, are orphaned and can be deleted.
+
+## Host transfers (2026-09-27, roadmap 3.2 step 0)
+
+- The client option `should_stage_host_to_device_transfers` is False. It was
+  already moot: `ShouldStageHostToDeviceTransfers` also requires
+  `!IsHostMemoryPinned(ptr)`, and the default `IsHostMemoryPinned` asks
+  `GetPointerMemorySpace`, which reports every pointer outside our buffers as
+  `kHost`, so numpy memory counted as pinned and nothing was staged
+  (measured: the host pool never allocated; 100 MB device_put 9.4 vs 8.7 ms,
+  staging option on vs off).
+- JAX 0.11.2 hands numpy arrays to `BufferFromHostBuffer` with semantics that
+  let the H2D copy run after `device_put` returns (the array is kept alive);
+  mutating it right after `device_put` shows up on the device here, and on
+  the CPU backend too for large arrays (aliased). Only `pinned_host` memory
+  kinds still use XLA's host BFC pool (never shrinks).
