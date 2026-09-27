@@ -382,7 +382,9 @@ SemanticVersion PluginVersion() {
     std::string settings;
     for (const char* name : {
              "METAL_PJRT_DISABLE_REWRITES",  // compiler/metal_compiler.cc
-             "METAL_PJRT_DISABLE_LAPACK",    // linalg/linalg_rewriter.cc
+             // linalg/linalg_rewriter.cc (linalg_lowerings.py reads it too,
+             // but what it lowers is in the HLO, i.e. already in the key).
+             "METAL_PJRT_DISABLE_LAPACK",
          }) {
       // Unset and empty mean the same to every reader.
       const char* v = std::getenv(name);

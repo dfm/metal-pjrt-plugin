@@ -7,32 +7,41 @@ to those handlers, mirroring JAX's own CPU lowerings (``lapack_*_ffi``): the
 matrix operands and results request column-major layouts (XLA inserts the
 transposes on the GPU), so the handlers see LAPACK's native layout.
 
-  lu_p                  -> metal$lapack_getrf (lu, 0-based pivots, permutation)
-  geqrf_p               -> metal$lapack_geqrf
-  householder_product_p -> metal$lapack_orgqr
-  eigh_p                -> metal$lapack_syevd
-  svd_p                 -> metal$lapack_gesdd / metal$lapack_gesdd_novec
+Who owns which primitive (float32; other dtypes take the fallback):
+
+  primitive            owner    custom call               fallback
+  cholesky             C++ [1]  metal$cholesky            CholeskyExpander
+  triangular_solve     C++ [1]  metal$triangular_solve    TriangularSolveExpander
+  lu                   here     metal$lapack_getrf        _lu_python
+  geqrf                here     metal$lapack_geqrf        Qr -> QrExpander
+  householder_product  here     metal$lapack_orgqr        [2] -> QrExpander
+  eigh                 here     metal$lapack_syevd        _eigh_tpu_lowering
+  svd                  here     metal$lapack_gesdd[_novec]  _svd_tpu_lowering_rule
+
+  [1] MetalLinalgRewriter (metal_pjrt_plugin/linalg/linalg_rewriter.cc)
+  [2] the ProductOfElementaryHouseholderReflectors custom call
 
 cholesky_p and triangular_solve_p need nothing here: their generic lowerings
 emit the HLO ``cholesky`` / ``triangular_solve`` ops, which the compiler's
-MetalLinalgRewriter turns into metal$cholesky / metal$triangular_solve.
+MetalLinalgRewriter turns into the custom calls at the start of
+RunHloPasses. getrf returns lu, 0-based pivots and the permutation.
 
-Only float32 goes through LAPACK; other dtypes and unsupported options
-(eigh/svd subsets, Jacobi/polar/QDWH algorithms) fall back to the previous
-platform-independent lowerings. ``METAL_PJRT_DISABLE_LAPACK=1`` disables all of
-this (and the C++ rewriter), restoring XLA's expanders for A/B comparisons.
+Unsupported options (eigh/svd subsets, Jacobi/polar/QDWH algorithms, m < n
+householder products, dynamic shapes) take the fallback too.
+``METAL_PJRT_DISABLE_LAPACK=1`` is the one switch for both owners: every rule
+here checks it per lowering, and the C++ rewriter per compile, restoring the
+fallbacks for A/B comparisons. (The persistent compilation cache key
+fingerprints its value at client creation, so set it before starting JAX
+when that cache is on.)
 """
 
 from __future__ import annotations
 
-import logging
 import os
 
 import numpy as np
 
 from jax_plugins.openmetal import PLATFORM  # "openmetal"
-
-logger = logging.getLogger(__name__)
 
 
 def lapack_disabled() -> bool:
@@ -52,10 +61,6 @@ def _static(avals) -> bool:
 def register() -> None:
   """Register the LAPACK lowerings for platform "openmetal" (after lowerings.py's
   own registrations, which these override for float32)."""
-  if lapack_disabled():
-    logger.info("metal: METAL_PJRT_DISABLE_LAPACK set; not using LAPACK")
-    return
-
   from jax._src.interpreters import mlir
   from jax._src.lax import linalg as ll
   from jax._src.tpu.linalg import eigh as tpu_eigh
@@ -64,7 +69,8 @@ def register() -> None:
   ffi = ll._linalg_ffi_lowering
 
   def ok(ctx):
-    return (all(_is_f32(a) for a in ctx.avals_in if a.dtype.kind == "f")
+    return (not lapack_disabled()
+            and all(_is_f32(a) for a in ctx.avals_in if a.dtype.kind == "f")
             and all(a.dtype.kind in "fi" for a in ctx.avals_in)
             and _static((*ctx.avals_in, *ctx.avals_out)))
 

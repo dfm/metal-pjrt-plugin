@@ -25,11 +25,14 @@ Registered for platform "openmetal":
   goes through ``emit_python_callback``, which jax_plugins/openmetal/callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
 
+Float32 cholesky, triangular_solve, lu, geqrf/householder_product (qr), eigh
+and svd go through Accelerate LAPACK instead (the C++ MetalLinalgRewriter and
+jax_plugins/openmetal/linalg_lowerings.py, registered last; its docstring has
+the ownership table). The generic rules and the rules above are their
+fallbacks for other dtypes, unsupported options and METAL_PJRT_DISABLE_LAPACK.
+
 Primitives that already lower via generic rules and need nothing here:
-cholesky (CholeskyExpander), triangular_solve, lu (``_lu_python``),
-lu_pivots_to_permutation, geqrf/householder_product/qr (XLA ``Qr`` /
-``ProductOfElementaryHouseholderReflectors`` custom calls -> QrExpander),
-svd, tridiagonal_solve, threefry2x32, rng_bit_generator, approx_top_k
+lu_pivots_to_permutation, tridiagonal_solve, threefry2x32, rng_bit_generator, approx_top_k
 (generic fallback), cholesky_update, symmetric_product.
 
 Deliberately NOT registered (no platform-independent implementation exists

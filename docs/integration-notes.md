@@ -185,7 +185,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_ffi.py`
   also calls it through `jax.ffi.ffi_call`). `metal$test_scale` is test-only
   (`//metal_pjrt_plugin/ffi:ffi_test`), not linked into the plugin.
-  `METAL_PJRT_DISABLE_REWRITES=scan,lapack|all` turns the rewriters off.
+  `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.
   (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
   end-to-end A/B, docs/performance.md.)
 - Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
@@ -196,8 +196,10 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   column-major operands via layout constraints). Each handler calls
   `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
   the shared-storage buffers (zero copy), synchronously on the thunk thread.
-  f32 only. `METAL_PJRT_DISABLE_LAPACK=1` (or `METAL_PJRT_DISABLE_REWRITES=
-  lapack` for the HLO pass alone) falls back to XLA's expanders.
+  f32 only. `METAL_PJRT_DISABLE_LAPACK=1` is the one switch for both
+  (checked per compile by the pass and per lowering by the Python rules) and
+  falls back to XLA's expanders / JAX's generic lowerings. Ownership table:
+  the `linalg_lowerings.py` docstring.
 
 ## PJRT client
 

@@ -93,8 +93,10 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
   return metal_pjrt::rt::SerializeConstants(blobs);
 }
 
-// METAL_PJRT_DISABLE_REWRITES=scan,lapack (or all) turns off the metal$scan
-// and LAPACK rewriters (for A/B comparisons and bisecting).
+// METAL_PJRT_DISABLE_REWRITES=scan (or all) turns off the metal$scan
+// rewriter (for A/B comparisons and bisecting). LAPACK has its own switch,
+// METAL_PJRT_DISABLE_LAPACK (LapackDisabled()), shared with the Python
+// lowerings.
 bool RewriteEnabled(absl::string_view name) {
   // Compile-time setting: listed in PluginVersion (metal_executor.cc).
   const char* env = std::getenv("METAL_PJRT_DISABLE_REWRITES");
@@ -148,7 +150,7 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
   // --- begin linalg (Accelerate LAPACK) ---
   // kCholesky / kTriangularSolve -> metal$cholesky / metal$triangular_solve,
   // before CholeskyExpander / TriangularSolveExpander see them.
-  if (!LapackDisabled() && RewriteEnabled("lapack")) {
+  if (!LapackDisabled()) {
     HloPassPipeline pipeline("metal-linalg");
     pipeline.AddPass<MetalLinalgRewriter>();
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());

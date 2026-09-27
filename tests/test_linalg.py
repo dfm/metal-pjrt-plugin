@@ -12,6 +12,8 @@ sorted spectra) rather than raw factors, which are only unique up to signs /
 phases. Complex values cannot currently live in metal buffers, so FFT checks
 reduce to real outputs (abs / real / imag) inside the jitted function.
 """
+import re
+
 import numpy as np
 import jax
 import jax.numpy as jnp
@@ -207,3 +209,32 @@ ULPS = {
 def test_linalg(name):
   fn, *args = CHECKS[name]
   check(fn, *args, ulps=ULPS.get(name, 0), normwise=True, name=name)
+
+
+def test_disable_lapack(monkeypatch):
+  # METAL_PJRT_DISABLE_LAPACK is the one switch for both owners (the C++
+  # rewriter per compile, linalg_lowerings.py per lowering): set, no metal$*
+  # LAPACK custom call survives; unset, every one is back.
+  def f(a, b):
+    l = jnp.linalg.cholesky(a)
+    x = jax.scipy.linalg.solve_triangular(l, b, lower=True)
+    lu = jax.scipy.linalg.lu_factor(a)[0]
+    q, r = jnp.linalg.qr(a)
+    w = jnp.linalg.eigh(a)[0]
+    u, s, vt = jnp.linalg.svd(a)
+    return x, lu, q, r, w, u, s, vt, jnp.linalg.svd(a, compute_uv=False)
+
+  a, b = spd(8), mat(8, 2)
+  targets = {"metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
+             "metal$lapack_geqrf", "metal$lapack_orgqr", "metal$lapack_syevd",
+             "metal$lapack_gesdd", "metal$lapack_gesdd_novec"}
+
+  def called():
+    jax.clear_caches()  # lowering and compilation caches ignore the variable
+    text = jax.jit(f).lower(a, b).compile().as_text()
+    return set(re.findall(r'custom_call_target="(metal\$[a-z_]+)"', text))
+
+  monkeypatch.setenv("METAL_PJRT_DISABLE_LAPACK", "1")
+  assert called() == set()
+  monkeypatch.delenv("METAL_PJRT_DISABLE_LAPACK")
+  assert called() == targets
