@@ -9,6 +9,7 @@
 #include <fstream>
 #include <filesystem>
 #include <cstdlib>
+#include <ctime>
 #include <string>
 #include <thread>
 #include <chrono>
@@ -285,6 +286,39 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
   unsetenv("METAL_PJRT_STATE_DIR");
   std::filesystem::remove_all(dir);
+}
+
+TEST_F(MetalRuntimeTest, ResetLogMigratesOnceFromJaxMetalDir) {
+  // Default state directory under a private HOME: ~/.cache/openmetal starts
+  // with a copy of the pre-rename ~/.cache/jax_metal reset log, once.
+  char tmpl[] = "/tmp/metal_rt_home_XXXXXX";
+  ASSERT_NE(mkdtemp(tmpl), nullptr);
+  const std::string home = tmpl;
+  const char* real_home = std::getenv("HOME");
+  const std::string saved_home = real_home != nullptr ? real_home : "";
+  setenv("HOME", home.c_str(), 1);
+  unsetenv("METAL_PJRT_STATE_DIR");
+  const std::string old_log = home + "/.cache/jax_metal/gpu_resets.jsonl";
+  const std::string new_log = home + "/.cache/openmetal/gpu_resets.jsonl";
+  std::filesystem::create_directories(home + "/.cache/jax_metal");
+  {
+    std::ofstream out(old_log);
+    out << "{\"time\":" << std::time(nullptr)
+        << ",\"kernels\":[{\"key\":\"k1:f\"}]}\n";
+  }
+  absl::StatusOr<std::unique_ptr<Device>> d1 = Device::Create(0);
+  ASSERT_THAT(d1, IsOk());
+  EXPECT_EQ((*d1)->state_dir(), home + "/.cache/openmetal");
+  EXPECT_EQ((*d1)->resets_since_boot(), 1);
+  EXPECT_TRUE(std::filesystem::exists(new_log));
+  EXPECT_TRUE(std::filesystem::exists(old_log));  // never touched
+  // Cleared (gpu_health.py --clear truncates): not copied again.
+  std::ofstream(new_log, std::ios::trunc).close();
+  absl::StatusOr<std::unique_ptr<Device>> d2 = Device::Create(0);
+  ASSERT_THAT(d2, IsOk());
+  EXPECT_EQ((*d2)->resets_since_boot(), 0);
+  setenv("HOME", saved_home.c_str(), 1);
+  std::filesystem::remove_all(home);
 }
 
 // Waits are encoded lazily: a stream that only waits (for another stream,

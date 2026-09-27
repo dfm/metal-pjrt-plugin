@@ -26,7 +26,7 @@ cc_library(
 )
 
 # The exported GetPjrtApi(): XLA's GPU C API shim (patched to report the
-# "metal" platform on macOS) minus its PJRT_AbiVersion extension, so that
+# "openmetal" platform on macOS) minus its PJRT_AbiVersion extension, so that
 # jaxlib can serialize executables (persistent compilation cache).
 cc_library(
     name = "metal_pjrt_api",
@@ -42,12 +42,12 @@ cc_library(
 
 # The PJRT plugin shared library.
 cc_binary(
-    name = "pjrt_c_api_metal_plugin.dylib",
+    name = "pjrt_c_api_openmetal_plugin.dylib",
     linkopts = [
         "-Wl,-exported_symbol,_GetPjrtApi",
-        # Host callbacks: jax_plugins/metal/callbacks.py installs its trampoline.
+        # Host callbacks: jax_plugins/openmetal/callbacks.py installs its trampoline.
         "-Wl,-exported_symbol,_metal_pjrt_register_python_callback_trampoline",
-        "-Wl,-install_name,@rpath/pjrt_c_api_metal_plugin.dylib",
+        "-Wl,-install_name,@rpath/pjrt_c_api_openmetal_plugin.dylib",
         "-Wl,-undefined,error",
     ],
     linkshared = True,

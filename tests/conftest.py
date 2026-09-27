@@ -11,7 +11,7 @@ metal for references (tests/metal_testing.py).
 """
 import os
 
-os.environ.setdefault("JAX_PLATFORMS", "metal,cpu")
+os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
 os.environ.setdefault("JAX_ENABLE_X64", "0")
 os.environ.setdefault("JAX_ENABLE_COMPILATION_CACHE", "false")
 
@@ -26,12 +26,12 @@ def pytest_collection_modifyitems(config, items):
     items.sort(key=lambda item: "test_gpu_errors.py" not in item.nodeid)
     if not any(item.get_closest_marker("metal") for item in items):
         return
-    if not os.environ.get("JAX_METAL_DEVICE_LOCK_HELD"):
+    if not os.environ.get("JAX_OPENMETAL_DEVICE_LOCK_HELD"):
         raise pytest.UsageError(
             "tests marked metal need the device lock: scripts/device_lock.py "
             "-- .venv/bin/python -m pytest ... (or deselect them: -m 'not metal')")
     import jax
     backend = jax.default_backend()
     print(f"\njax backend: {backend} {jax.devices()}", flush=True)
-    if backend != "metal":
-        raise pytest.UsageError(f"default backend is {backend!r}, not 'metal'")
+    if backend != "openmetal":
+        raise pytest.UsageError(f"default backend is {backend!r}, not 'openmetal'")

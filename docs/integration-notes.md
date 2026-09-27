@@ -15,16 +15,26 @@ golden list. Both have an `--update` mode.
 - StreamExecutor platform: `PLATFORM_DEFINE_ID(kMetalPlatformId, METAL)`;
   `Platform::Name()` is "METAL", canonical name "metal"
   (`xla/service/platform_util.cc` lowercases unknown names).
-- PJRT platform: name "metal", id `tsl::Fingerprint64("metal")`.
+- PJRT platform (the JAX platform): name "openmetal" (`MetalName()`), id
+  `tsl::Fingerprint64("openmetal")`. Not "metal": that is Apple's
+  closed-source jax-metal plugin, and both may be installed together.
+  The StreamExecutor, FFI and XLA-internal names stay "METAL"/"metal": they
+  live in registries private to our dylib (it exports only `GetPjrtApi` and
+  the callback trampoline), so they cannot collide with another plugin.
+  JAX looks lowerings up by `backend.platform`, i.e. `MetalName()`, so
+  `register_plugin`'s name and every `PLATFORM` in `jax_plugins/openmetal`
+  must be exactly "openmetal".
 - Things keyed on identity that need registration from our code:
   `Compiler::RegisterCompilerFactory(kMetalPlatformId, ...)`,
   `TransferManager` for `kMetalPlatformId`,
-  `PjRtRegisterDefaultCompiler("metal", StreamExecutorGpuCompiler(MetalId, kMetalPlatformId))`,
+  `PjRtRegisterDefaultCompiler(MetalName(), StreamExecutorGpuCompiler(MetalId, kMetalPlatformId))`,
   `StreamExecutorPlatformIdMapping::Global().AddMapping(kMetalPlatformId, MetalId)`,
-  `XLA_COLLECTIVES_REGISTER("metal", "stub", 1, GpuCollectivesStub)`.
+  `XLA_COLLECTIVES_REGISTER(MetalName() and "METAL", "stub", 1, GpuCollectivesStub)`
+  (the client resolves collectives by the PJRT name, collective thunks by the
+  SE name).
 - Things keyed on identity that need XLA patches (kept in `third_party/xla/patches/`):
   1. `xla/pjrt/gpu/se_gpu_pjrt_client.cc:1874-1880` picks the PJRT platform
-     name by macro; add `TENSORFLOW_USE_METAL` -> "metal".
+     name by macro; add `TENSORFLOW_USE_METAL` -> `MetalName()`.
   2. `xla/pjrt/pjrt_compiler.h:493` `IsGpuId` must include the metal id.
   3. `xla/service/gpu/gpu_executable.cc:534-551` platform-id switch must
      accept `kMetalPlatformId`.
@@ -182,7 +192,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
   row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,
-  gesdd_novec}` (targets of `jax_plugins/metal/linalg_lowerings.py`,
+  gesdd_novec}` (targets of `jax_plugins/openmetal/linalg_lowerings.py`,
   column-major operands via layout constraints). Each handler calls
   `rt::Stream::Synchronize()` and then runs Accelerate LAPACK/BLAS directly on
   the shared-storage buffers (zero copy), synchronously on the thunk thread.
@@ -194,14 +204,16 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - `GetStreamExecutorGpuClient` builds `LocalDeviceState`s, allocators
   (`kPlatform` is the simplest that works; `kBFC` needs the two
   `CreateMemoryAllocator` kinds), and calls `GpuCollectives::Resolve(name)`
-  which CHECK-fails without a registration (hence the stub under "metal").
+  which CHECK-fails without a registration (hence the stub under `MetalName()`).
 - `//xla/service:gpu_plugin` is empty on macOS (all deps behind
   `if_gpu_is_configured`), so our plugin target lists `gpu_compiler`,
   `gpu_executable`, the transfer manager and thunk runtime deps explicitly.
 - Plugin dylib: copy the CPU plugin's macOS linkopts
   (`-Wl,-exported_symbol,_GetPjrtApi`, `-install_name @rpath/...`).
-- Client must always pass `platform_name="metal"`; the topology path defaults
-  to "gpu" which canonicalizes to "cuda".
+- The client option `platform_name` selects the StreamExecutor platform
+  (`PlatformUtil::GetPlatform`), so the plugin passes "METAL", not the PJRT
+  name; unset, it is "gpu", which patch 0001 canonicalizes to "metal" on
+  macOS (the topology path relies on that).
 - Platform version: `GpuPlatformVersionFromDevices`
   (`se_gpu_pjrt_client.cc:262-277`) reports `"oneapi " +
   runtime_version.ToString()`. JAX hashes it into its compilation cache key,
@@ -210,7 +222,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   METAL_PJRT_DISABLE_LAPACK)}`: a rebuilt plugin or a different compile-time
   setting gets a different key.
 - Persistent compilation cache. Two things kept JAX 0.11.2 from using it
-  for "metal", both fixed without an XLA patch:
+  for "openmetal", both fixed without an XLA patch:
   (1) serialization failed with "Unsupported platform ID for
   XlaExecutableAbiVersion": XLA's GPU C API shim adds a `PJRT_AbiVersion`
   extension, so `PjRtCApiExecutable::GetAbiVersion` reports the OneAPI ABI,
@@ -233,16 +245,17 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   bitwise-identical results (MSL rides in the GPU executable's asm/binary,
   the constants container in the constants module's binary).
   (2) `compilation_cache.is_cache_used` accepts only the platforms in a
-  local list (tpu/gpu/cpu/neuron). `jax_plugins/metal` wraps it and, for
-  metal backends only, calls the original with a proxy whose `platform` is
+  local list (tpu/gpu/cpu/neuron). `jax_plugins/openmetal` wraps it and, for
+  openmetal backends only, calls the original with a proxy whose `platform` is
   "gpu" (all else forwarded), so upstream's one-shot bookkeeping still
   runs. `tests/test_compilation_cache.py` asserts the list is still there.
   The plugin sets `jax_compilation_cache_dir` to
-  `~/.cache/jax_metal/compilation_cache` unless one is configured
+  `~/.cache/openmetal/compilation_cache` unless one is configured
   (`JAX_COMPILATION_CACHE_DIR`, `jax.config`). The setting is process-wide:
   installing the plugin turns the persistent cache on for every backend in
   the process, CPU compiles included. JAX's own thresholds apply
   (only compiles over `jax_persistent_cache_min_compile_time_secs`, 1 s by
   default, are written). Executables with metal host callbacks bypass it
   (`docs/callbacks.md`). The per-setting `~/.cache/jax_metal/variants/`
-  directories an older plugin created are orphaned and can be deleted.
+  directories an older plugin created, and `~/.cache/jax_metal/compilation_cache`
+  from before the "openmetal" rename, are orphaned and can be deleted.

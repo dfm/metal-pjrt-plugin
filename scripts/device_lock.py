@@ -6,11 +6,36 @@ time on an 8 GB unified-memory machine: concurrent runs over-commit memory
 and, under thrashing, GPU command buffers hit the watchdog. Usage:
 
   scripts/device_lock.py -- <command> [args...]
+
+The lock is ~/.cache/openmetal/device.lock (JAX_OPENMETAL_DEVICE_LOCK
+overrides). Transition from before the platform was renamed "openmetal":
+the lock also takes the old ~/.cache/jax_metal/device.lock first (when that
+directory exists), so this script and an older checkout's exclude each other.
 """
 import fcntl, os, pathlib, subprocess, sys, time
 
-LOCK = pathlib.Path(os.environ.get("JAX_METAL_DEVICE_LOCK",
-                                   pathlib.Path.home() / ".cache" / "jax_metal" / "device.lock"))
+LOCK = pathlib.Path(os.environ.get("JAX_OPENMETAL_DEVICE_LOCK",
+                                   pathlib.Path.home() / ".cache" / "openmetal" / "device.lock"))
+OLD_LOCK = pathlib.Path.home() / ".cache" / "jax_metal" / "device.lock"
+
+
+def acquire(path, argv):
+    # Open without truncating: the file names the current holder, and only
+    # the process that holds the lock may rewrite it.
+    f = open(path, "a+")
+    t0 = time.time()
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); break
+        except BlockingIOError:
+            if time.time() - t0 < 1:
+                f.seek(0)
+                holder = f.read().strip() or "unknown"
+                print(f"[device_lock] waiting for {path} (held by: {holder})", file=sys.stderr, flush=True)
+            time.sleep(2)
+    f.seek(0); f.truncate()
+    f.write(f"{os.getpid()} {' '.join(argv)}\n"); f.flush()
+    return f  # held until this process exits
 
 
 def main(argv):
@@ -19,24 +44,15 @@ def main(argv):
     if not argv:
         print(__doc__); return 2
     LOCK.parent.mkdir(parents=True, exist_ok=True)
-    # Open without truncating: the file names the current holder, and only
-    # the process that holds the lock may rewrite it.
-    with open(LOCK, "a+") as f:
-        t0 = time.time()
-        while True:
-            try:
-                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); break
-            except BlockingIOError:
-                if time.time() - t0 < 1:
-                    f.seek(0)
-                    holder = f.read().strip() or "unknown"
-                    print(f"[device_lock] waiting for {LOCK} (held by: {holder})", file=sys.stderr, flush=True)
-                time.sleep(2)
-        f.seek(0); f.truncate()
-        f.write(f"{os.getpid()} {' '.join(argv)}\n"); f.flush()
-        # Tells tests/conftest.py the lock is held.
-        env = dict(os.environ, JAX_METAL_DEVICE_LOCK_HELD=str(os.getpid()))
-        return subprocess.call(argv, env=env)
+    held = []
+    # Always the old lock first, then the new one: a fixed order, so two
+    # instances of this script cannot deadlock.
+    if OLD_LOCK.parent.is_dir() and OLD_LOCK.resolve() != LOCK.resolve():
+        held.append(acquire(OLD_LOCK, argv))
+    held.append(acquire(LOCK, argv))
+    # Tells tests/conftest.py the lock is held.
+    env = dict(os.environ, JAX_OPENMETAL_DEVICE_LOCK_HELD=str(os.getpid()))
+    return subprocess.call(argv, env=env)
 
 
 if __name__ == "__main__":

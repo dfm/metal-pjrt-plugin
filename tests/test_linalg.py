@@ -3,7 +3,7 @@
 
 Float32 cholesky / triangular_solve go through Accelerate LAPACK (HLO
 rewriter), lu / qr / eigh / svd through the LAPACK JAX lowerings
-(jax_plugins/metal/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
+(jax_plugins/openmetal/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
 XLA's expanders / the pure-JAX paths for A/B comparisons. Timings:
 bench/linalg_bench.py.
 

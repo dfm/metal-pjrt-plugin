@@ -2,8 +2,9 @@
 """Report GPU watchdog resets recorded by the Metal runtime and quarantined
 kernels; refuse (exit 1) with --strict when the GPU was reset since boot.
 
-The runtime appends one JSON line per reset to ~/.cache/jax_metal/gpu_resets.jsonl
-(METAL_PJRT_STATE_DIR overrides the directory) with the time, the plugin build
+The runtime appends one JSON line per reset to ~/.cache/openmetal/gpu_resets.jsonl
+(METAL_PJRT_STATE_DIR overrides the directory; a missing log starts as a copy
+of the pre-rename ~/.cache/jax_metal/gpu_resets.jsonl) with the time, the plugin build
 (LC_UUID of the dylib; diagnostics only) and the kernels that were in the
 command buffer that timed out (built-in fill/copy kernels are listed but never
 blamed). Kernels seen in two or more resets since boot are quarantined: the
@@ -16,11 +17,13 @@ benchmark timings are meaningless; bench/run_all.sh runs this with --strict.
   scripts/gpu_health.py --strict   # exit 1 if any reset since boot
   scripts/gpu_health.py --clear    # forget resets and lift quarantines
 """
-import collections, json, os, pathlib, subprocess, sys, time
+import collections, json, os, pathlib, shutil, subprocess, sys, time
 
-STATE_DIR = pathlib.Path(os.environ.get("METAL_PJRT_STATE_DIR",
-                                        pathlib.Path.home() / ".cache" / "jax_metal"))
+STATE_DIR = pathlib.Path(os.environ.get("METAL_PJRT_STATE_DIR") or
+                         pathlib.Path.home() / ".cache" / "openmetal")
 LOG = STATE_DIR / "gpu_resets.jsonl"
+# The same one-time migration as the runtime (Device::LoadResetLog).
+OLD_LOG = pathlib.Path.home() / ".cache" / "jax_metal" / "gpu_resets.jsonl"
 STRIKES = int(os.environ.get("METAL_PJRT_QUARANTINE_STRIKES", "2"))
 
 
@@ -31,6 +34,12 @@ def boot_time():
         if tok.isdigit():
             return int(tok)
     return 0
+
+
+def migrate():
+    if not os.environ.get("METAL_PJRT_STATE_DIR") and not LOG.exists() and OLD_LOG.exists():
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(OLD_LOG, LOG)
 
 
 def load():
@@ -49,9 +58,12 @@ def load():
 
 
 def main(argv):
+    migrate()
     if "--clear" in argv:
+        # Truncate rather than delete, so that the migration does not bring
+        # the old log back.
         if LOG.exists():
-            LOG.unlink()
+            LOG.write_text("")
         print(f"cleared {LOG}")
         return 0
     events = load()

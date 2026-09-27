@@ -263,7 +263,8 @@ class Device {
   // CreateKernel until a reboot or until the log is cleared
   // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
   // new key; a fix elsewhere (runtime, launch dimensions) needs --clear.
-  // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/jax_metal;
+  // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/openmetal (whose
+  // reset log starts as a copy of ~/.cache/jax_metal's, if any);
   // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
   void RecordReset(absl::string_view cause,
                    absl::Span<const std::shared_ptr<const KernelIdentity>>

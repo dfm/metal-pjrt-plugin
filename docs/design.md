@@ -29,7 +29,7 @@ Metal support is therefore:
 - `MetalCompiler : GpuCompiler` with Triton, cuDNN passes, autotuning and
   collectives disabled.
 - A `TENSORFLOW_USE_METAL`-style build of the existing shim.
-- `jax_plugins/metal` cloned from `jax_plugins/cuda`.
+- `jax_plugins/openmetal` cloned from `jax_plugins/cuda`.
 
 Intel's extension for OpenXLA did exactly this for SYCL out of tree.
 
@@ -89,7 +89,7 @@ float64 (Metal has none; reject, consider double-float emulation later).
    elementwise-plus-reduce program end to end.
 4. Dot through BLAS backed by MPS (and steel kernels for f16/bf16). Conv
    still runs as XLA-emitted kernels; no DNN library path yet.
-5. Python package, JAX test suite under `JAX_PLATFORMS=metal`, benchmarks vs
+5. Python package, JAX test suite under `JAX_PLATFORMS=openmetal`, benchmarks vs
    jax-mps, MetalHLO and native MLX (ResNet18/CIFAR, nanoGPT).
 
 ## Risks

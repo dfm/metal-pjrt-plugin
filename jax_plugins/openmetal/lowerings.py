@@ -1,5 +1,5 @@
 """MLIR lowering rules for primitives whose upstream rules are registered only
-for named platforms (cpu/cuda/rocm/tpu), so that they also lower on "metal".
+for named platforms (cpu/cuda/rocm/tpu), so that they also lower on "openmetal".
 
 Policy: reuse JAX's own platform-independent implementations wherever one
 exists, i.e. do what the TPU platform does (TPU is JAX's reference "no vendor
@@ -8,7 +8,7 @@ HLO; nothing requires C++ support from the plugin beyond the XLA expander
 passes the GPU compiler pipeline already runs (CholeskyExpander, QrExpander,
 EighExpander, TriangularSolveExpander).
 
-Registered for platform "metal":
+Registered for platform "openmetal":
 
 * ``eigh``: ``jax._src.tpu.linalg.eigh._eigh_tpu_lowering``. n <= 256 emits
   the XLA ``Eigh`` custom call (Jacobi; rewritten by EighExpander), larger
@@ -22,7 +22,7 @@ Registered for platform "metal":
   and the usual "functionalize with checkify" error otherwise (the runtime
   error path needs host callbacks).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
-  goes through ``emit_python_callback``, which jax_plugins/metal/callbacks.py
+  goes through ``emit_python_callback``, which jax_plugins/openmetal/callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
 
 Primitives that already lower via generic rules and need nothing here:
@@ -44,9 +44,9 @@ import logging
 
 import numpy as np
 
-logger = logging.getLogger(__name__)
+from jax_plugins.openmetal import PLATFORM  # "openmetal"
 
-PLATFORM = "metal"
+logger = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------
@@ -146,7 +146,7 @@ _registered = False
 
 
 def register() -> None:
-  """Register the metal lowerings. Must run after the "metal" plugin has been
+  """Register the lowerings. Must run after the "openmetal" plugin has been
   registered with xla_bridge (register_lowering rejects unknown platforms)."""
   global _registered
   if _registered:
@@ -157,7 +157,7 @@ def register() -> None:
     try:
       fn()
     except Exception as e:  # noqa: BLE001 - never break plugin init
-      logger.warning("metal: could not register lowering for %s: %s", what, e)
+      logger.warning("openmetal: could not register lowering for %s: %s", what, e)
 
   def _eigh():
     from jax._src.lax import linalg as lax_linalg
@@ -190,5 +190,5 @@ def register() -> None:
   reg("fft", _fft)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
-  from jax_plugins.metal import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
+  from jax_plugins.openmetal import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
   _registered = True

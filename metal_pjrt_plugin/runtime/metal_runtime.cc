@@ -201,7 +201,7 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     // RESOURCE_EXHAUSTED errors instead of swapping.
     // Half of RAM: freed pool chunks stay resident (BFC only releases regions
     // when growth is refused), and a GPU stalling on swapped-out pages is what
-    // trips the watchdog. Override with JAX_METAL_MEMORY_FRACTION (of this).
+    // trips the watchdog. Override with JAX_OPENMETAL_MEMORY_FRACTION (of this).
     uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
     dev->memory_budget_ = budget;
@@ -290,7 +290,20 @@ void Device::LoadResetLog() {
     state_dir_ = dir;
   } else {
     const char* home = std::getenv("HOME");
-    state_dir_ = absl::StrCat(home != nullptr ? home : ".", "/.cache/jax_metal");
+    std::string base = absl::StrCat(home != nullptr ? home : ".", "/.cache");
+    state_dir_ = absl::StrCat(base, "/openmetal");
+    // One-time migration from the directory used before the platform was
+    // renamed "openmetal": copy its reset log (the quarantine is derived from
+    // it) if there is none here yet. The old directory is left alone.
+    std::string old_log = ResetLogPath(absl::StrCat(base, "/jax_metal"));
+    std::error_code ec;
+    if (!std::filesystem::exists(ResetLogPath(state_dir_), ec) &&
+        std::filesystem::exists(old_log, ec)) {
+      std::filesystem::create_directories(state_dir_, ec);
+      std::filesystem::copy_file(old_log, ResetLogPath(state_dir_),
+                                 std::filesystem::copy_options::skip_existing,
+                                 ec);
+    }
   }
   if (const char* v = std::getenv("METAL_PJRT_QUARANTINE_STRIKES")) {
     int n = 0;

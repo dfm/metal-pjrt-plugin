@@ -11,8 +11,8 @@ from metal_testing import check
 pytestmark = pytest.mark.metal
 
 
-def test_backend_is_metal():
-    assert jax.default_backend() == "metal", jax.default_backend()
+def test_backend_is_openmetal():
+    assert jax.default_backend() == "openmetal", jax.default_backend()
 
 
 def test_transfer():

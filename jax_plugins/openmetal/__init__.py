@@ -1,7 +1,8 @@
 """JAX plugin registration for the Metal PJRT plugin.
 
 Modeled on jax_plugins/cuda/__init__.py: registers the PJRT plugin dylib
-(linked next to this file by scripts/install_dev.sh) under platform "metal",
+(linked next to this file by scripts/install_dev.sh) under platform
+"openmetal" (not "metal", which is Apple's jax-metal plugin),
 then opts it into the persistent compilation cache and installs the
 lowerings and host callbacks the plugin needs.
 """
@@ -12,7 +13,12 @@ import pathlib
 
 logger = logging.getLogger(__name__)
 
-_PLUGIN_BASENAME = "pjrt_c_api_metal_plugin.dylib"
+# The JAX platform name. It must equal MetalName() in
+# third_party/xla/patches/0001-metal-pjrt-identity.patch (the PJRT client's
+# platform_name, i.e. backend.platform, which JAX looks lowerings up by) and
+# the PLATFORM of lowerings.py, linalg_lowerings.py and callbacks.py.
+PLATFORM = "openmetal"
+_PLUGIN_BASENAME = "pjrt_c_api_openmetal_plugin.dylib"
 
 
 def _get_library_path() -> pathlib.Path | None:
@@ -23,7 +29,7 @@ def _get_library_path() -> pathlib.Path | None:
 
 
 class _AsGpuBackend:
-    """Forwards to a metal backend but reports platform "gpu"."""
+    """Forwards to an openmetal backend but reports platform "gpu"."""
 
     platform = "gpu"
 
@@ -35,7 +41,7 @@ class _AsGpuBackend:
 
 
 def _install_is_cache_used_wrapper():
-    """Let JAX's persistent compilation cache serve the metal platform.
+    """Let JAX's persistent compilation cache serve the openmetal platform.
 
     jax._src.compilation_cache.is_cache_used only accepts the platforms in a
     local list (tpu/gpu/cpu/neuron; tests/test_compilation_cache.py trips if
@@ -52,7 +58,7 @@ def _install_is_cache_used_wrapper():
         return
 
     def is_cache_used(backend):
-        if getattr(backend, "platform", None) == "metal":
+        if getattr(backend, "platform", None) == PLATFORM:
             backend = _AsGpuBackend(backend)
         return upstream(backend)
 
@@ -63,13 +69,13 @@ def _install_is_cache_used_wrapper():
 def _enable_persistent_cache():
     """Opt in, and unless a cache directory is configured
     (jax_compilation_cache_dir / JAX_COMPILATION_CACHE_DIR) use
-    ~/.cache/jax_metal/compilation_cache. jax_enable_compilation_cache=False
+    ~/.cache/openmetal/compilation_cache. jax_enable_compilation_cache=False
     turns it off."""
     import jax
 
     _install_is_cache_used_wrapper()
     if jax.config.jax_compilation_cache_dir is None:
-        cache = pathlib.Path.home() / ".cache" / "jax_metal" / "compilation_cache"
+        cache = pathlib.Path.home() / ".cache" / "openmetal" / "compilation_cache"
         jax.config.update("jax_compilation_cache_dir", str(cache))
 
 
@@ -78,7 +84,7 @@ def initialize():
 
     path = _get_library_path()
     if path is None:
-        logger.warning("metal PJRT plugin library not found; skipping registration")
+        logger.warning("openmetal PJRT plugin library not found; skipping registration")
         return
     # The plugin is XLA's GPU PJRT client; these are its client-creation
     # options. The BFC pool matters even with unified memory: a fresh
@@ -88,24 +94,26 @@ def initialize():
     # derives from free system memory at startup minus a reserve (unified
     # memory is shared with every other process on the machine); the
     # allocation-time guard in the runtime handles later pressure.
+    # "platform_name" selects the StreamExecutor platform ("METAL"), not the
+    # JAX/PJRT one (PLATFORM, from MetalName() in the XLA patch).
     options = {
-        "platform_name": "metal",
-        "allocator": os.environ.get("JAX_METAL_ALLOCATOR", "bfc"),
+        "platform_name": "METAL",
+        "allocator": os.environ.get("JAX_OPENMETAL_ALLOCATOR", "bfc"),
         "preallocate": False,
-        "memory_fraction": float(os.environ.get("JAX_METAL_MEMORY_FRACTION", "1.0")),
+        "memory_fraction": float(os.environ.get("JAX_OPENMETAL_MEMORY_FRACTION", "1.0")),
         "visible_devices": [0],
     }
-    xb.register_plugin("metal", priority=500, library_path=str(path), options=options)
+    xb.register_plugin(PLATFORM, priority=500, library_path=str(path), options=options)
     try:
         _enable_persistent_cache()
     except Exception as e:  # noqa: BLE001 - never break plugin init
-        logger.warning("metal: persistent compilation cache unavailable: %s", e)
+        logger.warning("openmetal: persistent compilation cache unavailable: %s", e)
     # Lowering rules for primitives upstream only lowers on named platforms.
-    from jax_plugins.metal import lowerings
+    from jax_plugins.openmetal import lowerings
     lowerings.register()
     # Host callbacks (pure_callback, io_callback, jax.debug.*).
     try:
-        from jax_plugins.metal import callbacks
+        from jax_plugins.openmetal import callbacks
         callbacks.install(path)
     except Exception as e:  # noqa: BLE001 - never break plugin init
-        logger.warning("metal: host callbacks unavailable: %s", e)
+        logger.warning("openmetal: host callbacks unavailable: %s", e)

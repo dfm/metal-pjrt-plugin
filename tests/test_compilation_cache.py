@@ -1,4 +1,4 @@
-"""Persistent compilation cache opt-in (jax_plugins/metal/__init__.py).
+"""Persistent compilation cache opt-in (jax_plugins/openmetal/__init__.py).
 
 No GPU needed: .venv/bin/python -m pytest tests/test_compilation_cache.py
 """
@@ -7,12 +7,12 @@ import inspect
 
 from jax._src import compilation_cache
 
-import jax_plugins.metal as metal
+import jax_plugins.openmetal as openmetal
 
 
 def test_is_cache_used_still_has_local_platform_list():
-    # Tripwire for JAX upgrades: the opt-in presents metal backends as "gpu"
-    # to this check. If upstream changes it (e.g. adds "metal" or moves the
+    # Tripwire for JAX upgrades: the opt-in presents openmetal backends as "gpu"
+    # to this check. If upstream changes it (e.g. adds "openmetal" or moves the
     # list), revisit _enable_persistent_cache.
     src = inspect.getsource(compilation_cache)
     assert 'supported_platforms = ["tpu", "gpu", "cpu", "neuron"]' in src
@@ -26,7 +26,7 @@ class _FakeBackend:
         self.platform_version = "v"
 
 
-def test_wrapper_presents_metal_as_gpu_and_leaves_cpu_alone(monkeypatch):
+def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     seen = []
 
     def upstream(backend):
@@ -34,7 +34,7 @@ def test_wrapper_presents_metal_as_gpu_and_leaves_cpu_alone(monkeypatch):
         return backend.platform in ["tpu", "gpu", "cpu", "neuron"]
 
     monkeypatch.setattr(compilation_cache, "is_cache_used", upstream)
-    metal._install_is_cache_used_wrapper()
+    openmetal._install_is_cache_used_wrapper()
     wrapped = compilation_cache.is_cache_used
     assert wrapped is not upstream
 
@@ -42,7 +42,7 @@ def test_wrapper_presents_metal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     assert wrapped(cpu) is True
     assert seen[-1] is cpu  # CPU backend is passed through untouched
 
-    mtl = _FakeBackend("metal")
+    mtl = _FakeBackend("openmetal")
     assert wrapped(mtl) is True
     proxy = seen[-1]
     assert proxy.platform == "gpu"
@@ -50,5 +50,5 @@ def test_wrapper_presents_metal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     assert not hasattr(proxy, "supports_executable_serialization")
 
     # Installing twice does not stack wrappers.
-    metal._install_is_cache_used_wrapper()
+    openmetal._install_is_cache_used_wrapper()
     assert compilation_cache.is_cache_used is wrapped

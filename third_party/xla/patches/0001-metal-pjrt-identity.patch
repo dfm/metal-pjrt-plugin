@@ -142,7 +142,7 @@ diff -ruN a/xla/pjrt/pjrt_compiler.h b/xla/pjrt/pjrt_compiler.h
  inline PjRtPlatformId SyclId() { return OneapiId(); }
 +
 +// Apple Metal (metal-pjrt-plugin).
-+inline const char* MetalName() { return "metal"; }
++inline const char* MetalName() { return "openmetal"; }
 +inline PjRtPlatformId MetalId() {
 +  static const PjRtPlatformId kMetalId = tsl::Fingerprint64(MetalName());
 +  return kMetalId;

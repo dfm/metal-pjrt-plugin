@@ -1,7 +1,8 @@
 #!/bin/bash
 # Regenerates third_party/xla/patches/0001-metal-pjrt-identity.patch against a
 # pristine XLA tree (argument 1). The edits teach XLA's GPU PJRT client, C API
-# shim and platform utilities about a "metal" platform on macOS.
+# shim and platform utilities about the Metal platform on macOS (PJRT/JAX
+# platform name "openmetal", StreamExecutor platform "METAL").
 set -euo pipefail
 XLA=${1:?path to pristine xla tree}
 OUT=$(cd "$(dirname "$0")" && pwd)/patches/0001-metal-pjrt-identity.patch
@@ -23,7 +24,7 @@ done
 B=$WORK/b
 
 # 1. PJRT identity helpers and IsGpuId.
-perl -0pi -e 's|(inline PjRtPlatformId SyclId\(\) \{ return OneapiId\(\); \}\n)|$1\n// Apple Metal (metal-pjrt-plugin).\ninline const char* MetalName() { return "metal"; }\ninline PjRtPlatformId MetalId() {\n  static const PjRtPlatformId kMetalId = tsl::Fingerprint64(MetalName());\n  return kMetalId;\n}\n|' $B/xla/pjrt/pjrt_compiler.h
+perl -0pi -e 's|(inline PjRtPlatformId SyclId\(\) \{ return OneapiId\(\); \}\n)|$1\n// Apple Metal (metal-pjrt-plugin).\ninline const char* MetalName() { return "openmetal"; }\ninline PjRtPlatformId MetalId() {\n  static const PjRtPlatformId kMetalId = tsl::Fingerprint64(MetalName());\n  return kMetalId;\n}\n|' $B/xla/pjrt/pjrt_compiler.h
 perl -0pi -e 's|(platform_id == xla::SyclId\(\));|$1 \|\|\n         platform_id == xla::MetalId();|' $B/xla/pjrt/pjrt_compiler.h
 
 # 2. GPU client: platform name selection and GPU-runtime include guards.

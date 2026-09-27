@@ -1,7 +1,7 @@
 """pytest plugin used by scripts/run_jax_tests.sh for JAX's own test files.
 
 - Before any test runs, prints the backend and refuses to run unless it is
-  metal, so pass/fail counts can never silently come from CPU.
+  openmetal, so pass/fail counts can never silently come from CPU.
 - Compares failures against scripts/jax_known_failures/<file>.txt (test ids
   without the file part, '#' comments). New failures make the run fail;
   known failures don't; known failures that now pass are reported so the
@@ -27,8 +27,8 @@ def pytest_sessionstart(session):
     import jax
     backend = jax.default_backend()
     print(f"\njax backend: {backend} {jax.devices()}", flush=True)
-    if backend != "metal":
-        raise pytest.UsageError(f"default backend is {backend!r}, not 'metal'")
+    if backend != "openmetal":
+        raise pytest.UsageError(f"default backend is {backend!r}, not 'openmetal'")
 
 
 def pytest_runtest_logreport(report):
@@ -86,7 +86,7 @@ def pytest_terminal_summary(terminalreporter):
     if not _report:
         return
     tr = terminalreporter
-    tr.section("metal: known-failures manifest")
+    tr.section("openmetal: known-failures manifest")
     if "skipped" in _report:
         for m in _report["skipped"]:
             tr.write_line(f"NOT COMPARED: {m} (test ids differ)", yellow=True)

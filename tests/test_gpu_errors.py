@@ -38,7 +38,7 @@ step("fresh g(f(x))", lambda: g(f(x)), want + 1)
 
 @pytest.mark.parametrize("n", range(9))
 def test_injected_command_buffer_failure(n):
-    env = dict(os.environ, JAX_PLATFORMS="metal",
+    env = dict(os.environ, JAX_PLATFORMS="openmetal",
                METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
     # No timeout: never kill a process with GPU work in flight. The runtime's
     # own waits are bounded.

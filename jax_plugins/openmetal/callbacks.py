@@ -1,4 +1,4 @@
-"""Host (Python) callbacks on the "metal" platform.
+"""Host (Python) callbacks on the "openmetal" platform.
 
 Makes ``jax.pure_callback``, ``jax.experimental.io_callback``,
 ``jax.debug.callback`` and ``jax.debug.print`` work under ``jit`` on metal.
@@ -9,7 +9,7 @@ the executable's host callbacks (``FfiLoadedHostCallbacks`` FFI user data) to
 the cpu/cuda/rocm/oneapi platform ids. So metal uses its own path:
 
 * Lowering: ``emit_python_callback`` is wrapped so that, for a module lowered
-  only for "metal", the callback is registered in a process-global table
+  only for "openmetal", the callback is registered in a process-global table
   under a fresh ``callback_id`` and a typed-FFI custom call
   ``xla_ffi_python_metal_callback`` (``has_side_effect`` as upstream, ordered
   effects threading a ``!stablehlo.token`` operand/result exactly like the
@@ -54,9 +54,10 @@ import weakref
 
 import numpy as np
 
+from jax_plugins.openmetal import PLATFORM  # "openmetal"
+
 logger = logging.getLogger(__name__)
 
-PLATFORM = "metal"
 TARGET = "xla_ffi_python_metal_callback"
 
 

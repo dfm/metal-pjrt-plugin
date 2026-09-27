@@ -1,6 +1,6 @@
 // "xla_ffi_python_metal_callback": host (Python) callbacks on the Metal
 // platform, used by jax.pure_callback, io_callback, jax.debug.callback and
-// jax.debug.print (lowering in jax_plugins/metal/callbacks.py).
+// jax.debug.print (lowering in jax_plugins/openmetal/callbacks.py).
 //
 // Upstream JAX routes callbacks through FfiLoadedHostCallbacks user data that
 // jaxlib only attaches for the cpu/cuda/rocm/oneapi platform ids, so it never
@@ -64,7 +64,7 @@ absl::Status PythonCallback(stream_executor::Stream* stream,
   if (trampoline == nullptr) {
     return absl::FailedPreconditionError(
         "xla_ffi_python_metal_callback: no Python trampoline registered "
-        "(jax_plugins.metal did not initialize host callbacks)");
+        "(jax_plugins.openmetal did not initialize host callbacks)");
   }
   absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();

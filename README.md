@@ -2,7 +2,9 @@
 
 A PJRT plugin that runs JAX on Apple Silicon GPUs by treating Metal as a
 fourth XLA:GPU platform, alongside CUDA, ROCm and SYCL, rather than by
-re-interpreting StableHLO op by op.
+re-interpreting StableHLO op by op. Its JAX platform is `"openmetal"`, so it
+can be installed next to Apple's closed-source `jax-metal`, whose platform
+is `"metal"`.
 
 Status: works end to end on an M3 for f32/f16/bf16 programs (JAX's
 `lax_test.py`: 947 pass, 62 known failures in complex types, int4 and dot
@@ -37,7 +39,7 @@ differs from the MLX-based approaches.
 - `metal_pjrt_plugin/xla_tripwire/`: snapshots of the XLA code the plugin
   relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
   in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
-- `jax_plugins/metal/`: Python registration package modeled on
+- `jax_plugins/openmetal/`: Python registration package (dist `jax-openmetal`) modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
 - `tests/`: pytest suite (see below); `scripts/jax_known_failures/`: the
   expected failures of JAX's own tests.
@@ -49,7 +51,7 @@ differs from the MLX-based approaches.
 
 ```
 brew install bazelisk
-scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/metal, pip install -e .
+scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/openmetal, pip install -e .
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
@@ -57,6 +59,28 @@ scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ de
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu, jax-mps, MLX
 ```
+
+## Using
+
+`scripts/install_dev.sh` installs the `jax-openmetal` package (editable) into
+`.venv`; JAX discovers it through the `jax_plugins` entry point and registers
+the platform `"openmetal"` (the dylib is
+`jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib`, a link into
+`bazel-bin`). With `JAX_PLATFORMS` unset it is the default backend:
+
+```
+.venv/bin/python -c 'import jax; print(jax.default_backend(), jax.devices("openmetal"))'
+JAX_PLATFORMS=openmetal,cpu .venv/bin/python my_script.py   # openmetal plus CPU, nothing else
+```
+
+Environment: `JAX_OPENMETAL_ALLOCATOR` (`bfc`), `JAX_OPENMETAL_MEMORY_FRACTION`,
+`JAX_OPENMETAL_DEVICE_LOCK` (lock path for `scripts/device_lock.py`); the
+runtime's knobs are `METAL_PJRT_*` (`docs/performance.md`). State (GPU reset
+log, device lock, default persistent compilation cache, JAX test checkout)
+lives in `~/.cache/openmetal/` (`METAL_PJRT_STATE_DIR` moves the reset log).
+Before the rename it was `~/.cache/jax_metal/`: the runtime copies the reset
+log from there once, and `scripts/device_lock.py` also takes the old lock, so
+older checkouts still exclude this one; the old directory is never deleted.
 
 Run one GPU-heavy job at a time (the scripts take a device lock); see
 `docs/performance.md` for the memory policy and why.

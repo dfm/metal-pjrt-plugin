@@ -1,4 +1,4 @@
-# Known failures of JAX's tests/lax_test.py on metal, as run by
+# Known failures of JAX's tests/lax_test.py on openmetal, as run by
 # scripts/run_jax_tests.sh. One test id per line (without the file), '#'
 # comments. Baseline: 947 pass, 62 fail, 63 skipped.
 #

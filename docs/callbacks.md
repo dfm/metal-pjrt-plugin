@@ -9,17 +9,17 @@ message. Tests: `tests/test_callbacks.py` (compares against cpu),
 `tests/test_lax.py` (three callback cases), and tinygp's quasiseparable
 solver (`jax.debug.callback(_check_sorted, ...)`) in `tests/test_tinygp.py`.
 checkify's runtime-error path still uses the TPU rule (`debug_check` is a
-no-op; see `jax_plugins/metal/lowerings.py`).
+no-op; see `jax_plugins/openmetal/lowerings.py`).
 
 ## How the metal path works
 
 jaxlib forwards an executable's host callbacks to the FFI handler only for the
 cpu/cuda/rocm/oneapi platform ids (details below), and `emit_python_callback`
-rejects "metal", so the plugin uses a self-managed table ("option A" below):
+rejects "openmetal", so the plugin uses a self-managed table ("option A" below):
 
-* **Lowering** (`jax_plugins/metal/callbacks.py`, installed by
-  `jax_plugins.metal.initialize`): `jax._src.callback.emit_python_callback`
-  is wrapped; for modules lowered only for "metal" it wraps the callable with
+* **Lowering** (`jax_plugins/openmetal/callbacks.py`, installed by
+  `jax_plugins.openmetal.initialize`): `jax._src.callback.emit_python_callback`
+  is wrapped; for modules lowered only for "openmetal" it wraps the callable with
   upstream's output shape/dtype checks, registers it in a process-global
   table under a fresh 64-bit `callback_id` (random per-process salt in the
   high bits), and emits a typed-FFI (api_version 4) custom call
@@ -86,7 +86,7 @@ executables with callbacks are recompiled in every process.
    and inserted into the `xla::ExecuteContext`'s FFI user data -- **only if
    `platform_id` is `CpuId()`, `CudaId()`, `RocmId()` or `OneapiId()`**. For a
    C-API plugin the IFRT client's `platform_id` is
-   `Fingerprint64(PJRT_Client_PlatformName)`, i.e. `Fingerprint64("metal")`
+   `Fingerprint64(PJRT_Client_PlatformName)`, i.e. `Fingerprint64("openmetal")`
    for us, so today **the user data is never attached**. When it is attached,
    `PjRtCApiLoadedExecutable::Execute` forwards it through
    `PJRT_ExecuteContext_Create` + `PJRT_FFI_Extension::user_data_add`
@@ -156,7 +156,7 @@ dylib and Python reaches it through an exported C function and a ctypes
 trampoline, so no nanobind extension or `register_custom_call_handler` is
 needed; the persistent cache is bypassed rather than salted.)
 
-* **C++ (new nanobind extension shipped in `jax_plugins/metal`, e.g.
+* **C++ (new nanobind extension shipped in `jax_plugins/openmetal`, e.g.
   `metal_plugin_extension.so`)**:
   * a process-global, mutex-protected table `uint64 id -> PyObject*`
     with `register(callable) -> id` / `unregister(id)`;
@@ -189,7 +189,7 @@ needed; the persistent cache is bypassed rather than salted.)
     thread executing the thunk; JAX sets `ExecutionMode::kSynchronous` only
     for CPU, so reentrancy into JAX from the callback (e.g. calling a jitted
     function on metal) could deadlock and must be tested.
-* **Python glue (`jax_plugins/metal`)**:
+* **Python glue (`jax_plugins/openmetal`)**:
   * in `initialize()`, after `register_plugin`, register the custom-call
     handler for `"METAL"` and the handler bundle (same code as the cuda
     plugin above);
@@ -207,7 +207,7 @@ needed; the persistent cache is bypassed rather than salted.)
     The upstream `pure_callback`/`io_callback` rules call
     `callback.emit_python_callback` by module-global name, so either the
     rules are copied or `callback.emit_python_callback` is monkeypatched to
-    dispatch `platform == "metal"` to our version (simpler, but patches JAX
+    dispatch `platform == "openmetal"` to our version (simpler, but patches JAX
     internals).
   * Caching caveat: since the callback is *not* added to
     `module_context.host_callbacks`, JAX will use the persistent
@@ -229,7 +229,7 @@ needed; the persistent cache is bypassed rather than salted.)
   `PjRtLoadedExecutable::Execute` (or better, gate on "client exposes the
   PJRT FFI extension"), so `FfiLoadedHostCallbacks` is forwarded through
   `PJRT_FFI_UserData_Add` to our plugin.
-* jax: add `"metal"` to the allowlist in `emit_python_callback` and map it
+* jax: add `"openmetal"` to the allowlist in `emit_python_callback` and map it
   to `device = "gpu"` target names (or allow a plugin to declare its
   callback target), and register the `debug_*` rules for it.
 * plugin: ship `xla_ffi_python_gpu_callback` (+ partitioned / buffer

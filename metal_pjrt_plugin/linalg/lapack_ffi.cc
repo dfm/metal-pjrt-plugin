@@ -21,7 +21,7 @@
 //       TriangularSolveOptions::Transpose enum; ADJOINT == TRANSPOSE for
 //       real types).
 //
-// * Targets of the JAX lowerings in jax_plugins/metal/linalg_lowerings.py.
+// * Targets of the JAX lowerings in jax_plugins/openmetal/linalg_lowerings.py.
 //   These mirror jaxlib's lapack_*_ffi calls: the lowering requests
 //   column-major layouts for the matrix operands/results (XLA inserts the
 //   transposes), so the handlers see LAPACK's native layout. Batch dimensions

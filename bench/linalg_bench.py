@@ -1,6 +1,6 @@
 """Median wall times (ms) of linear algebra on metal and CPU.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=metal,cpu .venv/bin/python bench/linalg_bench.py [n ...]
+  scripts/device_lock.py -- env JAX_PLATFORMS=openmetal,cpu .venv/bin/python bench/linalg_bench.py [n ...]
 
 Sizes default to 256, 1000, 3000; eigh / svd are only timed for n <= 1000.
 """

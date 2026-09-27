@@ -217,7 +217,7 @@ about ten times slower per dispatch until a reboot. Nothing stopped the next
 run from doing it again. Now:
 
 - The runtime appends every watchdog reset it observes to
-  `~/.cache/jax_metal/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR` overrides)
+  `~/.cache/openmetal/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR` overrides)
   with the kernels that were in the command buffer that timed out. A buffer
   that only waited on another stream (as happens when the producer stream's
   batch is slow on a degraded GPU) contributes no suspects.
@@ -428,7 +428,7 @@ dependent computations raise (`INTERNAL: Metal command buffer failed ...
 
 ## Persistent compilation cache (2026-09-26, night)
 
-JAX's persistent compilation cache now works for "metal" (how:
+JAX's persistent compilation cache now works for "openmetal" (how:
 `docs/integration-notes.md`, PJRT client). First call in a fresh process
 (jit + compile or cache load + one run, `block_until_ready`), healthy GPU,
 Metal system shader cache warm; cache written with
@@ -500,7 +500,7 @@ as accurate (f16 cumsum 1.15 vs 2.08 ulps, bf16 0.78 vs 1.51, f32 equal):
   metal-gpu cpu jax-mps mlx`); `bench/report.py` takes the median over
   rounds. Every row records the commit (`git describe --dirty`), JAX / MLX
   versions, the plugin's platform version and the `METAL_PJRT_*`,
-  `JAX_METAL_*`, `XLA_FLAGS`, `JAX_PLATFORMS` knobs; the table header lists
+  `JAX_OPENMETAL_*`, `XLA_FLAGS`, `JAX_PLATFORMS` knobs; the table header lists
   them. MLX and jax-mps were not re-run (that needs a freshly booted idle
   machine); their columns in `bench/results/table.md` are the older runs
   and are marked as having no metadata.

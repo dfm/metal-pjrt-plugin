@@ -1,5 +1,5 @@
 """JAX benchmark workloads. Run under any backend:
-  JAX_PLATFORMS=metal python bench/jax_bench.py
+  JAX_PLATFORMS=openmetal python bench/jax_bench.py
 Cases are chosen to separate memory-bound fusion, reductions, GEMM, linear
 algebra, and a small end-to-end transformer training step. Rows carry the
 commit, versions and knobs (common.run_info), TFLOPS where the flop count is
@@ -23,7 +23,7 @@ def run(name, fn, *args, flops=None, **kw):
     try:
         jfn = jax.jit(fn)
         ms, best = timeit(lambda: jfn(*args), sync=sync, **kw)
-        gpu = gpu_ms(lambda: jfn(*args), sync=sync) if jax.default_backend() == "metal" else None
+        gpu = gpu_ms(lambda: jfn(*args), sync=sync) if jax.default_backend() == "openmetal" else None
         emit(BACKEND, name, ms, best, gpu=gpu, flops=flops)
     except Exception as e:  # noqa
         emit(BACKEND, name, float("nan"), float("nan"), {"error": f"{type(e).__name__}: {str(e).splitlines()[0][:120]}"})
