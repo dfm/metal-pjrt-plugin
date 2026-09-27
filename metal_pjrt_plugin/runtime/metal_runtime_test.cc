@@ -541,6 +541,70 @@ TEST_F(MetalRuntimeTest, EventSignalsFollowTheFenceSignal) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// The budget refuses allocations beyond live + cached, evicting cached
+// buffers first; freed buffers are recycled by size, released after
+// Device::kCacheIdleRelease unused, and not cached under memory pressure.
+TEST_F(MetalRuntimeTest, MemoryBudgetAndCache) {
+  const uint64_t mb = 1 << 20;
+  const double fraction = 64.0 * mb / dev_->memory_budget();
+  setenv("JAX_OPENMETAL_MEMORY_FRACTION", std::to_string(fraction).c_str(), 1);
+  absl::StatusOr<std::unique_ptr<Device>> made = Device::Create(0);
+  unsetenv("JAX_OPENMETAL_MEMORY_FRACTION");
+  ASSERT_THAT(made, IsOk());
+  Device& d = **made;
+  EXPECT_NEAR(static_cast<double>(d.memory_budget()), 64.0 * mb, mb);
+
+  absl::StatusOr<Allocation> a = d.Allocate(40 * mb);
+  ASSERT_THAT(a, IsOk());
+  EXPECT_THAT(d.Allocate(40 * mb),
+              StatusIs(absl::StatusCode::kResourceExhausted,
+                       HasSubstr("memory budget")));
+  const uint64_t gen = d.allocation_generation();
+  ASSERT_THAT(d.Deallocate(a->ptr), IsOk());
+  EXPECT_EQ(d.memory_stats().cached_bytes, 40 * mb);
+  // A hit: the same buffer, and no release.
+  absl::StatusOr<Allocation> b = d.Allocate(40 * mb - 100);
+  ASSERT_THAT(b, IsOk());
+  EXPECT_EQ(b->ptr, a->ptr);
+  EXPECT_EQ(d.memory_stats().cache_hits, 1u);
+  ASSERT_THAT(d.Deallocate(b->ptr), IsOk());
+  EXPECT_EQ(d.allocation_generation(), gen);
+  // A miss that only fits once the cached 40 MB is evicted.
+  absl::StatusOr<Allocation> c = d.Allocate(48 * mb);
+  ASSERT_THAT(c, IsOk());
+  Device::MemoryStats m = d.memory_stats();
+  EXPECT_EQ(m.live_bytes, 48 * mb);
+  EXPECT_EQ(m.cached_bytes, 0u);
+  EXPECT_GT(d.allocation_generation(), gen);
+  ASSERT_THAT(d.Deallocate(c->ptr), IsOk());
+
+  // The idle timer releases what nobody reused.
+  EXPECT_EQ(d.memory_stats().cached_bytes, 48 * mb);
+  std::this_thread::sleep_for(Device::kCacheIdleRelease +
+                              std::chrono::milliseconds(1500));
+  EXPECT_EQ(d.memory_stats().cached_bytes, 0u);
+
+  // Under pressure: the cache is dropped and frees release immediately.
+  absl::StatusOr<Allocation> e = d.Allocate(mb);
+  absl::StatusOr<Allocation> f = d.Allocate(mb);
+  ASSERT_THAT(e, IsOk());
+  ASSERT_THAT(f, IsOk());
+  ASSERT_THAT(d.Deallocate(e->ptr), IsOk());
+  EXPECT_EQ(d.memory_stats().cached_bytes, mb);
+  d.OnMemoryPressure(1);
+  EXPECT_EQ(d.memory_stats().cached_bytes, 0u);
+  ASSERT_THAT(d.Deallocate(f->ptr), IsOk());
+  m = d.memory_stats();
+  EXPECT_EQ(m.cached_bytes, 0u);
+  EXPECT_EQ(m.live_bytes, 0u);
+  EXPECT_EQ(m.pressure, 1);
+  d.OnMemoryPressure(0);
+  absl::StatusOr<Allocation> g = d.Allocate(mb);
+  ASSERT_THAT(g, IsOk());
+  ASSERT_THAT(d.Deallocate(g->ptr), IsOk());
+  EXPECT_EQ(d.memory_stats().cached_bytes, mb);
+}
+
 // A failed command buffer's error is sticky for the device: its events,
 // work that depends on it (also on other streams), unrelated streams, new
 // launches and host tasks all get it, and nothing recovers.

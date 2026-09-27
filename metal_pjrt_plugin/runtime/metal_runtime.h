@@ -44,6 +44,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <list>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -205,9 +206,9 @@ class Device {
 
   const DeviceInfo& info() const { return info_; }
 
-  // Memory the allocator pool may grow to in this process. Computed at
-  // creation from what the system actually had free (minus a reserve for the
-  // OS and other processes), capped by the GPU's recommended working set.
+  // Memory this process may hold (live + cached): half of physical RAM,
+  // capped by the GPU's recommended working set, times
+  // JAX_OPENMETAL_MEMORY_FRACTION (default 1).
   uint64_t memory_budget() const { return memory_budget_; }
 
   // The first GPU (or unhandled host-task) failure; sticky for the
@@ -220,15 +221,44 @@ class Device {
 
   // Memory. Allocations are shared-storage MTL::Buffers; freeing an address
   // that was not returned by Allocate is an error.
+  //
+  // Freed buffers are cached by size and handed out again immediately (as
+  // XLA's BFC pool does: reuse is ordered by the compute stream), because a
+  // fresh MTL::Buffer costs ~60 us/MB of page faults on first touch. A miss
+  // allocates a new buffer if live + cached + size stays within
+  // memory_budget() (evicting least recently freed buffers to make room) and
+  // the system memory guard passes (dropping the whole cache and retrying
+  // once); otherwise RESOURCE_EXHAUSTED. Cached buffers are released when
+  // unused for kCacheIdleRelease, and all at once on a system memory-pressure
+  // warning (after which frees release until the level is normal again), so
+  // an idle process gives its memory back. Releasing a buffer that in-flight
+  // work still uses is safe: command buffers retain what they bind.
   absl::StatusOr<Allocation> Allocate(uint64_t size);
   absl::Status Deallocate(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
+  // Live bytes (allocated, not freed; buffer lengths).
   uint64_t allocated_bytes() const;
-  // Bumped by every Deallocate; lets streams cache Resolve results.
+  // Bumped whenever a buffer is really released (not when one is recycled
+  // through the cache); lets streams cache Resolve results.
   uint64_t allocation_generation() const {
     return allocation_generation_.load(std::memory_order_acquire);
   }
+  static constexpr std::chrono::seconds kCacheIdleRelease{2};
+  struct MemoryStats {
+    uint64_t live_bytes = 0;
+    uint64_t cached_bytes = 0;
+    uint64_t budget_bytes = 0;
+    uint64_t cache_hits = 0;
+    uint64_t cache_misses = 0;
+    int pressure = 0;  // 0 normal, 1 warning, 2 critical
+  };
+  MemoryStats memory_stats() const;
+  // What the DISPATCH_SOURCE_TYPE_MEMORYPRESSURE handler calls (level as
+  // above); tests call it through metal_pjrt_memory_pressure().
+  void OnMemoryPressure(int level);
+  // Releases cached buffers freed at least `min_idle` ago (all with 0).
+  void TrimCache(std::chrono::steady_clock::duration min_idle);
 
   // Compile Metal Shading Language source into a library, cached by content.
   // The library is owned by the device's cache.
@@ -287,11 +317,37 @@ class Device {
   DeviceInfo info_;
 
   mutable std::mutex mu_;
-  // Keyed by start address; value is the buffer and its size.
+  // Keyed by start address; value is the buffer and its length.
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
   uint64_t allocated_bytes_ = 0;
   std::atomic<uint64_t> allocation_generation_{0};
   uint64_t memory_budget_ = 0;
+  // The free-buffer cache (see Allocate), guarded by mu_: least recently
+  // freed first, and indexed by length.
+  struct CachedBuffer {
+    MTL::Buffer* buffer;
+    uint64_t size;
+    std::chrono::steady_clock::time_point freed;
+  };
+  std::list<CachedBuffer> cache_;
+  std::multimap<uint64_t, std::list<CachedBuffer>::iterator> cache_by_size_;
+  uint64_t cached_bytes_ = 0;
+  uint64_t cache_hits_ = 0;
+  uint64_t cache_misses_ = 0;
+  int pressure_ = 0;
+  // Removes `it` from the cache and appends its buffer to `out`.
+  void EvictLocked(std::list<CachedBuffer>::iterator it,
+                   std::vector<MTL::Buffer*>* out);
+  // Releases buffers taken out of the cache (outside mu_).
+  void ReleaseBuffers(const std::vector<MTL::Buffer*>& buffers);
+  // libdispatch sources on memory_queue_: the memory-pressure source and a
+  // timer running TrimCache(kCacheIdleRelease), resumed only while the cache
+  // is not empty (trim_armed_, guarded by mu_).
+  void* memory_queue_ = nullptr;     // dispatch_queue_t
+  void* pressure_source_ = nullptr;  // dispatch_source_t
+  void* trim_timer_ = nullptr;       // dispatch_source_t
+  bool trim_armed_ = false;
+  void StartMemorySources();
   absl::Status error_ = absl::OkStatus();
   std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
   std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;

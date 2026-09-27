@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
 #include <mach-o/loader.h>
@@ -133,6 +134,21 @@ absl::Status CommandBufferError(MTL::CommandBuffer* cb, int ordinal,
       ordinal, fence_value, NSErrorToString(cb->error())));
 }
 
+constexpr uint64_t kPageBytes = 16384;
+
+// Buffer lengths are rounded so that similar requests share cached buffers:
+// powers of two up to a page (at least 256 bytes), whole pages above.
+uint64_t BufferLength(uint64_t size) {
+  if (size > kPageBytes) return (size + kPageBytes - 1) / kPageBytes * kPageBytes;
+  uint64_t n = 256;
+  while (n < size) n *= 2;
+  return n;
+}
+
+// Every live Device, for the C hooks at the end of this file.
+std::mutex g_devices_mu;
+std::vector<Device*> g_devices;
+
 // Memory state, logged with a command buffer failure (a GPU stalling on
 // swapped-out pages is what trips the watchdog).
 void LogMemoryState(Device* device) {
@@ -143,8 +159,11 @@ void LogMemoryState(Device* device) {
                 reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS) {
     rss = info.resident_size;
   }
-  LOG(ERROR) << "  memory: pool " << (device->allocated_bytes() >> 20)
-             << " MB of budget " << (device->memory_budget() >> 20)
+  const Device::MemoryStats m = device->memory_stats();
+  LOG(ERROR) << "  memory: live " << (m.live_bytes >> 20) << " MB + cached "
+             << (m.cached_bytes >> 20) << " MB of budget "
+             << (m.budget_bytes >> 20) << " MB (pressure level " << m.pressure
+             << ")"
              << " MB, process RSS " << (rss >> 20)
              << " MB, reclaimable system memory "
              << (ReclaimableMemoryBytes() >> 20) << " MB";
@@ -219,24 +238,67 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   info.supports_metal4 = info.gpu_family >= 9;
   info.simd_width = 32;
   {
-    // The pool may grow to 3/4 of physical RAM (XLA's own default for
-    // dedicated GPUs), capped by the GPU's recommended working set. This is a
-    // ceiling, not a reservation: regions are only mapped when used, and the
-    // allocation-time guard below refuses growth that would leave the system
+    // A ceiling, not a reservation: buffers are only mapped when used, and
+    // the allocation-time guard refuses growth that would leave the system
     // without free memory, so a busy machine degrades to clean
-    // RESOURCE_EXHAUSTED errors instead of swapping.
-    // Half of RAM: freed pool chunks stay resident (BFC only releases regions
-    // when growth is refused), and a GPU stalling on swapped-out pages is what
-    // trips the watchdog. Override with JAX_OPENMETAL_MEMORY_FRACTION (of this).
+    // RESOURCE_EXHAUSTED errors instead of swapping (a GPU stalling on
+    // swapped-out pages is what trips the watchdog).
     uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
+    if (const char* v = std::getenv("JAX_OPENMETAL_MEMORY_FRACTION")) {
+      const double f = std::atof(v);
+      if (f > 0) {
+        budget = std::min(static_cast<uint64_t>(budget * f),
+                          static_cast<uint64_t>(info.recommended_working_set));
+      }
+    }
     dev->memory_budget_ = budget;
     LOG(INFO) << "Metal device " << ordinal << " (" << info.name
               << "): memory budget " << (budget >> 20) << " MB, "
               << (ReclaimableMemoryBytes() >> 20) << " MB reclaimable now";
   }  // All Apple GPUs; confirmed per-pipeline on creation.
   dev->LoadResetLog();
+  dev->StartMemorySources();
+  {
+    std::lock_guard<std::mutex> lock(g_devices_mu);
+    g_devices.push_back(dev.get());
+  }
   return dev;
+}
+
+void Device::StartMemorySources() {
+  dispatch_queue_t q =
+      dispatch_queue_create("metal_pjrt.memory", DISPATCH_QUEUE_SERIAL);
+  dispatch_source_t pressure = dispatch_source_create(
+      DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0,
+      DISPATCH_MEMORYPRESSURE_NORMAL | DISPATCH_MEMORYPRESSURE_WARN |
+          DISPATCH_MEMORYPRESSURE_CRITICAL,
+      q);
+  dispatch_set_context(pressure, this);
+  dispatch_source_set_event_handler_f(pressure, [](void* ctx) {
+    Device* d = static_cast<Device*>(ctx);
+    const uintptr_t m = dispatch_source_get_data(
+        static_cast<dispatch_source_t>(d->pressure_source_));
+    d->OnMemoryPressure((m & DISPATCH_MEMORYPRESSURE_CRITICAL) ? 2
+                        : (m & DISPATCH_MEMORYPRESSURE_WARN)   ? 1
+                                                               : 0);
+  });
+  dispatch_source_t timer =
+      dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, q);
+  const int64_t period =
+      std::chrono::nanoseconds(kCacheIdleRelease).count() / 2;
+  dispatch_source_set_timer(timer, dispatch_time(DISPATCH_TIME_NOW, period),
+                            period, period / 2);
+  dispatch_set_context(timer, this);
+  dispatch_source_set_event_handler_f(timer, [](void* ctx) {
+    static_cast<Device*>(ctx)->TrimCache(kCacheIdleRelease);
+  });
+  memory_queue_ = q;
+  pressure_source_ = pressure;
+  trim_timer_ = timer;
+  dispatch_activate(pressure);
+  dispatch_activate(timer);
+  dispatch_suspend(timer);  // resumed while the cache is not empty
 }
 
 namespace {
@@ -429,6 +491,24 @@ void Device::RecordReset(
 }
 
 Device::~Device() {
+  {
+    std::lock_guard<std::mutex> lock(g_devices_mu);
+    g_devices.erase(std::find(g_devices.begin(), g_devices.end(), this));
+  }
+  if (memory_queue_ != nullptr) {
+    auto timer = static_cast<dispatch_source_t>(trim_timer_);
+    auto pressure = static_cast<dispatch_source_t>(pressure_source_);
+    if (!trim_armed_) dispatch_resume(timer);  // suspended sources can't go
+    dispatch_source_cancel(timer);
+    dispatch_source_cancel(pressure);
+    // Wait out a handler that is already running.
+    auto q = static_cast<dispatch_queue_t>(memory_queue_);
+    dispatch_sync_f(q, nullptr, [](void*) {});
+    dispatch_release(timer);
+    dispatch_release(pressure);
+    dispatch_release(q);
+  }
+  for (CachedBuffer& c : cache_) c.buffer->release();
   if (!allocations_.empty()) {
     LOG(ERROR) << "Metal device " << ordinal_ << " destroyed with "
                << allocations_.size() << " live allocation(s) totalling "
@@ -442,52 +522,99 @@ Device::~Device() {
 
 absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
   const uint64_t requested = size;
-  if (size == 0) size = 1;
   if (size > info_.max_buffer_length) {
     return absl::ResourceExhaustedError(absl::StrFormat(
         "Metal allocation of %d bytes exceeds the device's maxBufferLength of "
         "%d bytes (device %d, %s)",
         requested, info_.max_buffer_length, ordinal_, info_.name));
   }
-  // Refuse allocations that would push the system into swap (that is how the
-  // machine got wedged once).
-  uint64_t reclaimable = 0;
-  if (!FitsInSystemMemory(size, &reclaimable)) {
-    return absl::ResourceExhaustedError(absl::StrFormat(
-        "Metal allocation of %d bytes refused: only %d bytes of system "
-        "memory are reclaimable and %d bytes are reserved for the OS "
-        "(device %d, %d bytes already allocated by this process, budget %d "
-        "bytes). Reduce the working set or close other memory-heavy "
-        "processes.",
-        requested, reclaimable, kSystemMemoryReserve, ordinal_,
-        allocated_bytes(), memory_budget_));
+  uint64_t length = BufferLength(size);
+  if (length > info_.max_buffer_length) length = std::max<uint64_t>(size, 1);
+  MTL::Buffer* buf = nullptr;
+  std::vector<MTL::Buffer*> evicted;
+  bool over_budget = false;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = cache_by_size_.lower_bound(length);
+    if (it != cache_by_size_.end() &&
+        it->first < std::min(2 * length, length + 2 * kPageBytes)) {
+      auto node = it->second;
+      buf = node->buffer;
+      length = node->size;
+      cached_bytes_ -= length;
+      cache_by_size_.erase(it);
+      cache_.erase(node);
+      ++cache_hits_;
+    } else {
+      ++cache_misses_;
+      while (!cache_.empty() &&
+             allocated_bytes_ + cached_bytes_ + length > memory_budget_) {
+        EvictLocked(cache_.begin(), &evicted);
+      }
+      over_budget = allocated_bytes_ + length > memory_budget_;
+    }
+    // Reserved now so that concurrent misses cannot both pass the budget.
+    if (!over_budget) allocated_bytes_ += length;
   }
-  // Default (tracked) hazard mode: Metal orders dispatches touching the same
-  // buffer for us. Untracked mode with manual barriers is a later optimization.
-  MTL::Buffer* buf = device_->newBuffer(size, MTL::ResourceStorageModeShared);
-  if (buf == nullptr) {
+  ReleaseBuffers(evicted);
+  auto unreserve = [&] {
+    std::lock_guard<std::mutex> lock(mu_);
+    allocated_bytes_ -= length;
+  };
+  if (over_budget) {
     return absl::ResourceExhaustedError(absl::StrFormat(
-        "Metal newBuffer failed for %d bytes on device %d (%s): %d bytes "
-        "already allocated, recommended working set %d bytes, maxBufferLength "
-        "%d bytes",
-        requested, ordinal_, info_.name, allocated_bytes(),
-        info_.recommended_working_set, info_.max_buffer_length));
+        "Metal allocation of %d bytes refused: this process already holds %d "
+        "bytes of its %d-byte memory budget (device %d; half of RAM, capped "
+        "by the GPU's recommended working set, times "
+        "JAX_OPENMETAL_MEMORY_FRACTION). Reduce the working set.",
+        requested, allocated_bytes(), memory_budget_, ordinal_));
+  }
+  if (buf == nullptr) {
+    // Refuse allocations that would push the system into swap (that is how
+    // the machine got wedged once). Our own cache goes first.
+    uint64_t reclaimable = 0;
+    if (!FitsInSystemMemory(length, &reclaimable)) {
+      TrimCache(std::chrono::steady_clock::duration::zero());
+      if (!FitsInSystemMemory(length, &reclaimable)) {
+        unreserve();
+        return absl::ResourceExhaustedError(absl::StrFormat(
+            "Metal allocation of %d bytes refused: only %d bytes of system "
+            "memory are reclaimable and %d bytes are reserved for the OS "
+            "(device %d, %d bytes already allocated by this process, budget "
+            "%d bytes). Reduce the working set or close other memory-heavy "
+            "processes.",
+            requested, reclaimable, kSystemMemoryReserve, ordinal_,
+            allocated_bytes(), memory_budget_));
+      }
+    }
+    // Default (tracked) hazard mode: Metal orders dispatches touching the
+    // same buffer for us. Untracked mode with manual barriers is a later
+    // optimization.
+    buf = device_->newBuffer(length, MTL::ResourceStorageModeShared);
+    if (buf == nullptr) {
+      unreserve();
+      return absl::ResourceExhaustedError(absl::StrFormat(
+          "Metal newBuffer failed for %d bytes on device %d (%s): %d bytes "
+          "already allocated, recommended working set %d bytes, "
+          "maxBufferLength %d bytes",
+          requested, ordinal_, info_.name, allocated_bytes(),
+          info_.recommended_working_set, info_.max_buffer_length));
+    }
   }
   void* ptr = buf->contents();
-  // METAL_PJRT_POISON_ALLOCATIONS=1 fills fresh device memory with 0xFF (NaN
-  // for floats, huge for ints) so reads of uninitialized memory are visible
-  // and deterministic instead of depending on what a recycled buffer held.
+  // METAL_PJRT_POISON_ALLOCATIONS=1 fills every allocation (fresh or
+  // recycled) with 0xFF (NaN for floats, huge for ints) so reads of
+  // uninitialized memory are visible and deterministic.
   static const bool poison = [] {
     const char* v = std::getenv("METAL_PJRT_POISON_ALLOCATIONS");
     return v != nullptr && v[0] != '\0' && v[0] != '0';
   }();
-  if (poison) std::memset(ptr, 0xFF, size);
+  if (poison) std::memset(ptr, 0xFF, length);
   {
     std::lock_guard<std::mutex> lock(mu_);
-    allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, size};
-    allocated_bytes_ += size;
+    allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, length};
   }
-  return Allocation{ptr, size};
+  return Allocation{ptr, requested};
 }
 
 absl::Status Device::Deallocate(void* ptr) {
@@ -502,12 +629,86 @@ absl::Status Device::Deallocate(void* ptr) {
           ptr, ordinal_));
     }
     buf = it->second.first;
-    allocated_bytes_ -= it->second.second;
+    const uint64_t length = it->second.second;
+    allocated_bytes_ -= length;
     allocations_.erase(it);
-    allocation_generation_.fetch_add(1, std::memory_order_acq_rel);
+    if (pressure_ == 0) {
+      cache_.push_back({buf, length, std::chrono::steady_clock::now()});
+      cache_by_size_.emplace(length, std::prev(cache_.end()));
+      cached_bytes_ += length;
+      if (!trim_armed_ && trim_timer_ != nullptr) {
+        dispatch_resume(static_cast<dispatch_source_t>(trim_timer_));
+        trim_armed_ = true;
+      }
+      return absl::OkStatus();
+    }
   }
-  buf->release();
+  ReleaseBuffers({buf});
   return absl::OkStatus();
+}
+
+void Device::EvictLocked(std::list<CachedBuffer>::iterator it,
+                         std::vector<MTL::Buffer*>* out) {
+  auto [lo, hi] = cache_by_size_.equal_range(it->size);
+  for (auto m = lo; m != hi; ++m) {
+    if (m->second == it) {
+      cache_by_size_.erase(m);
+      break;
+    }
+  }
+  cached_bytes_ -= it->size;
+  out->push_back(it->buffer);
+  cache_.erase(it);
+}
+
+void Device::ReleaseBuffers(const std::vector<MTL::Buffer*>& buffers) {
+  if (buffers.empty()) return;
+  allocation_generation_.fetch_add(1, std::memory_order_acq_rel);
+  for (MTL::Buffer* b : buffers) b->release();
+}
+
+void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
+  std::vector<MTL::Buffer*> evicted;
+  uint64_t bytes = 0;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    const auto now = std::chrono::steady_clock::now();
+    while (!cache_.empty() && now - cache_.front().freed >= min_idle) {
+      bytes += cache_.front().size;
+      EvictLocked(cache_.begin(), &evicted);
+    }
+    if (cache_.empty() && trim_armed_) {
+      dispatch_suspend(static_cast<dispatch_source_t>(trim_timer_));
+      trim_armed_ = false;
+    }
+  }
+  ReleaseBuffers(evicted);
+  if (!evicted.empty()) {
+    VLOG(1) << "Metal device " << ordinal_ << ": released " << evicted.size()
+            << " cached buffer(s), " << (bytes >> 20) << " MB";
+  }
+}
+
+void Device::OnMemoryPressure(int level) {
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    pressure_ = level;
+  }
+  VLOG(1) << "Metal device " << ordinal_ << ": memory pressure level "
+          << level;
+  if (level > 0) TrimCache(std::chrono::steady_clock::duration::zero());
+}
+
+Device::MemoryStats Device::memory_stats() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  MemoryStats m;
+  m.live_bytes = allocated_bytes_;
+  m.cached_bytes = cached_bytes_;
+  m.budget_bytes = memory_budget_;
+  m.cache_hits = cache_hits_;
+  m.cache_misses = cache_misses_;
+  m.pressure = pressure_;
+  return m;
 }
 
 absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
@@ -1624,3 +1825,38 @@ absl::Status Stream::WaitForStream(Stream* other) {
 
 }  // namespace rt
 }  // namespace metal_pjrt
+
+// Test and diagnostic hooks, exported from the plugin dylib (see
+// pjrt/BUILD.bazel) for ctypes.
+extern "C" {
+
+// Runs every device's memory-pressure handler as the dispatch source would
+// (0 normal, 1 warning, 2 critical).
+__attribute__((visibility("default"))) void metal_pjrt_memory_pressure(
+    int level) {
+  using namespace metal_pjrt::rt;
+  std::lock_guard<std::mutex> lock(g_devices_mu);
+  for (Device* d : g_devices) d->OnMemoryPressure(level);
+}
+
+// Writes {live, cached, budget, cache hits, cache misses, pressure level} of
+// device `ordinal` to out[0..5]; returns 0, or -1 if there is no such device.
+__attribute__((visibility("default"))) int metal_pjrt_memory_stats(
+    int ordinal, uint64_t* out) {
+  using namespace metal_pjrt::rt;
+  std::lock_guard<std::mutex> lock(g_devices_mu);
+  for (Device* d : g_devices) {
+    if (d->ordinal() != ordinal) continue;
+    const Device::MemoryStats m = d->memory_stats();
+    out[0] = m.live_bytes;
+    out[1] = m.cached_bytes;
+    out[2] = m.budget_bytes;
+    out[3] = m.cache_hits;
+    out[4] = m.cache_misses;
+    out[5] = static_cast<uint64_t>(m.pressure);
+    return 0;
+  }
+  return -1;
+}
+
+}  // extern "C"

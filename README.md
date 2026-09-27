@@ -73,7 +73,11 @@ the platform `"openmetal"` (the dylib is
 JAX_PLATFORMS=openmetal,cpu .venv/bin/python my_script.py   # openmetal plus CPU, nothing else
 ```
 
-Environment: `JAX_OPENMETAL_ALLOCATOR` (`bfc`), `JAX_OPENMETAL_MEMORY_FRACTION`,
+Environment: `JAX_OPENMETAL_ALLOCATOR` (`platform`: the runtime's caching
+allocator, which returns memory ~2 s after it is freed or on system memory
+pressure; `bfc`: XLA's pool, which keeps it), `JAX_OPENMETAL_MEMORY_FRACTION`
+(scales the memory budget, half of RAM; beyond it allocations fail with
+RESOURCE_EXHAUSTED),
 `JAX_OPENMETAL_DEVICE_LOCK` (lock path for `scripts/device_lock.py`); the
 runtime's knobs are `METAL_PJRT_*` (`docs/performance.md`). State (GPU reset
 log, device lock, default persistent compilation cache, JAX test checkout)

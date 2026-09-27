@@ -94,6 +94,7 @@ cc_test(
         ":metal_executor",
         ":metal_platform",
         ":metal_platform_id",
+        "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_googletest//:gtest",

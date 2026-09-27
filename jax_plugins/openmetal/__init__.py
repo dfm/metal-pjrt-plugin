@@ -87,20 +87,22 @@ def initialize():
         logger.warning("openmetal PJRT plugin library not found; skipping registration")
         return
     # The plugin is XLA's GPU PJRT client; these are its client-creation
-    # options. The BFC pool matters even with unified memory: a fresh
-    # MTLBuffer costs ~60 us/MB of page faults on first touch, so per-call
-    # allocation of outputs dominated memory-bound kernels. The pool grows on
-    # demand (no preallocation) up to the process's budget, which the plugin
-    # derives from free system memory at startup minus a reserve (unified
-    # memory is shared with every other process on the machine); the
-    # allocation-time guard in the runtime handles later pressure.
+    # options. "platform" is XLA's pass-through allocator: every buffer comes
+    # from the runtime's Device::Allocate, which caches freed buffers by size
+    # (a fresh MTLBuffer costs ~60 us/MB of page faults on first touch),
+    # releases them after ~2 s unused or on a system memory-pressure warning,
+    # and refuses (RESOURCE_EXHAUSTED) beyond the process budget or when the
+    # system is short of memory. JAX_OPENMETAL_ALLOCATOR=bfc selects XLA's BFC
+    # pool instead, which never returns memory to the system. The budget
+    # (JAX_OPENMETAL_MEMORY_FRACTION scales it) is applied by the runtime, so
+    # memory_fraction stays 1.
     # "platform_name" selects the StreamExecutor platform ("METAL"), not the
     # JAX/PJRT one (PLATFORM, from MetalName() in the XLA patch).
     options = {
         "platform_name": "METAL",
-        "allocator": os.environ.get("JAX_OPENMETAL_ALLOCATOR", "bfc"),
+        "allocator": os.environ.get("JAX_OPENMETAL_ALLOCATOR", "platform"),
         "preallocate": False,
-        "memory_fraction": float(os.environ.get("JAX_OPENMETAL_MEMORY_FRACTION", "1.0")),
+        "memory_fraction": 1.0,
         "visible_devices": [0],
     }
     xb.register_plugin(PLATFORM, priority=500, library_path=str(path), options=options)

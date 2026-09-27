@@ -1,7 +1,9 @@
 // Exercises the Metal platform through the StreamExecutor interfaces XLA
 // uses: platform lookup, allocation, MSL kernel loading via the in-memory
 // binary spec, launch with packed device-pointer args, memcpy and events.
+#include <chrono>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <string>
@@ -10,6 +12,8 @@
 #include <gtest/gtest.h>
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt_plugin/stream_executor/metal_executor.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
 #include "metal_pjrt_plugin/stream_executor/metal_stream.h"
@@ -136,6 +140,56 @@ TEST(MetalExecutorTest, AllocationFailureReturnsNull) {
   EXPECT_TRUE(mem.is_null());
   EXPECT_EQ(executor->HostMemoryAllocate(uint64_t{1} << 62).status().code(),
             absl::StatusCode::kResourceExhausted);
+}
+
+// Allocation churn as XLA produces it (the same sizes every step): after
+// the first round every allocation is a cache hit on the same buffer, no
+// buffer is released (the resolve generation stays), and the accounting
+// balances; a trim then releases everything.
+TEST(MetalExecutorTest, AllocationChurnRecyclesBuffers) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+  metal_pjrt::rt::Device* device =
+      static_cast<MetalExecutor*>(executor)->device();
+  using Stats = metal_pjrt::rt::Device::MemoryStats;
+  device->TrimCache(std::chrono::seconds(0));
+  const Stats before = device->memory_stats();
+  const std::vector<uint64_t> sizes = {1,       300,           4096,
+                                       16385,   1 << 20,       (1 << 20) + 5,
+                                       8 << 20, (8 << 20) + 1, 3};
+  constexpr int kRounds = 50;
+  std::vector<void*> first;
+  uint64_t gen = 0;
+  for (int round = 0; round < kRounds; ++round) {
+    std::vector<DeviceAddressBase> mems;
+    for (uint64_t size : sizes) {
+      DeviceAddressBase m = executor->Allocate(size, 0);
+      ASSERT_FALSE(m.is_null());
+      std::memset(m.opaque(), round, size);
+      mems.push_back(m);
+    }
+    std::vector<void*> ptrs;
+    for (const DeviceAddressBase& m : mems) ptrs.push_back(m.opaque());
+    if (round == 0) {
+      first = ptrs;
+      gen = device->allocation_generation();
+    } else {
+      EXPECT_EQ(ptrs, first) << "round " << round;
+    }
+    for (DeviceAddressBase& m : mems) executor->Deallocate(&m);
+  }
+  const Stats after = device->memory_stats();
+  EXPECT_EQ(after.cache_misses - before.cache_misses, sizes.size());
+  EXPECT_EQ(after.cache_hits - before.cache_hits,
+            (kRounds - 1) * sizes.size());
+  EXPECT_EQ(after.live_bytes, before.live_bytes);
+  EXPECT_GE(after.cached_bytes - before.cached_bytes, 18u << 20);
+  EXPECT_EQ(device->allocation_generation(), gen);
+  device->TrimCache(std::chrono::seconds(0));
+  EXPECT_EQ(device->memory_stats().cached_bytes, 0u);
+  EXPECT_GT(device->allocation_generation(), gen);
 }
 
 // Host callback errors and a GPU failure. The failure is sticky for the

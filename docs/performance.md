@@ -88,8 +88,9 @@ work then left them stuck inside the driver.
 Policy now:
 
 - **Budget as a ceiling, guard as the protection.** The pool may grow to
-  min(recommended working set, 3/4 of physical RAM); regions are only mapped
-  when used. (A first version derived the budget from free memory at startup;
+  min(recommended working set, 3/4 of physical RAM; since then 1/2); regions
+  are only mapped when used (since 2026-09-27 the runtime enforces it, see
+  "Memory policy" below). (A first version derived the budget from free memory at startup;
   on a machine busy with builds that came out at 1.5 GB and starved ordinary
   workloads, so the static budget is generous and the dynamic guard below
   does the real work.)
@@ -637,3 +638,63 @@ is added before the single rounding (normwise ulps, pass -> fused): bias
 0.74 -> 0.50 (f16), 0.52 -> 0.49 (bf16); bias+gelu 0.70 -> 0.49 / 0.71 ->
 0.48; test_steel_gemm "+bias relu" 0.61-0.93 -> 0.34-0.50 (CPU float32
 0.61-0.93).
+
+## Memory policy: a caching platform allocator (2026-09-27, roadmap 3.3)
+
+The default allocator is now XLA's pass-through `platform` allocator over
+`rt::Device::Allocate`, which caches freed buffers by size;
+`JAX_OPENMETAL_ALLOCATOR=bfc` keeps XLA's BFC pool for A/B. Policy:
+
+- Lengths are rounded (powers of two up to a 16 KB page, whole pages above);
+  a request reuses a cached buffer of at most min(2x, +2 pages) its length,
+  as MLX does. Reuse is immediate, ordered by the compute stream as with BFC
+  (XLA treats both as stream-ordered allocators); releasing a buffer that
+  in-flight work still uses is safe because command buffers retain what they
+  bind.
+- Live + cached stays within the budget (half of RAM, capped by the GPU's
+  recommended working set, times `JAX_OPENMETAL_MEMORY_FRACTION`, now applied
+  by the runtime for both allocators): a miss evicts least recently freed
+  buffers first, then fails with RESOURCE_EXHAUSTED. The 512 MB system guard
+  still applies to every new buffer; when it refuses, the whole cache is
+  dropped and the guard asked again.
+- Cached buffers unused for 2 s are released by a libdispatch timer (armed
+  only while the cache is not empty), and all of them on a
+  `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning, after which frees release
+  directly until the level is normal again. `metal_pjrt_memory_stats` and
+  `metal_pjrt_memory_pressure` (exported for ctypes, tests/test_memory.py)
+  read the counters and run the pressure handler. A real notification:
+  `sudo memory_pressure -S -l warn`.
+
+Measured on the 8 GB M3 (idle machine, `bazel shutdown` first), each arm a
+fresh process, interleaved over 3 rounds; time is the median of 10 steps,
+footprint is `phys_footprint` (what Activity Monitor shows), "idle" 3.5 s
+after the last array was deleted:
+
+| workload | allocator | step ms | peak MB | after compute MB | idle MB |
+|---|---|---|---|---|---|
+| nanoGPT train step | bfc | 183.6-184.8 | 2058-2899 | 2058-2899 | 2004-2137 |
+| | platform, no cache | 217-245 | 2231-2328 | 666-670 | 572-576 |
+| | platform + cache | 182.6-186.8 | 1891-1908 | 1891-1908 | 523-530 |
+| tinygp vg (quasisep-par 200k + dense 3000) | bfc | 198.3-214.6 | 967-1317 | 967-1317 | 918-1267 |
+| | platform, no cache | 210.9-212.1 | 1197-1207 | 432-442 | 432-442 |
+| | platform + cache | 199.7-201.5 | 878-886 | 878-886 | 392-407 |
+
+BFC never gave anything back (patch 0004 only did when growth was refused),
+so a finished nanoGPT run held ~2-2.9 GB, about a quarter to a third of this
+machine's RAM. With the cache, the steady state is BFC's (1123 of 1295
+nanoGPT allocations were cache hits) and the memory goes back within ~3 s.
+The idle ~0.5 GB is the process itself (XLA, compiled programs, Python);
+fresh processes start at ~150 MB. Dispatch-bound programs (latency.py,
+dispatch_bound.py, 6 interleaved rounds, median of per-round medians in us,
+bfc / cache): jit(x*2+1) 188 / 188, two-kernel 170 / 172, chain16 273 / 276,
+chain64 414 / 414, chain256 1349 / 1364, scan 8480 / 8610 (bimodal in both).
+The bench suite (5 interleaved rounds) is unchanged within its spread
+(nanoGPT train step 180.3 / 178.3 ms, fwd 58.3 / 58.0; largest moves are
+sub-ms bimodal rows: qr 128 0.70 / 1.00 with ranges 0.64-1.32 / 0.68-1.27).
+
+The plain platform allocator was also leaking: every MPS GEMM autoreleased
+MPSMatrix objects (retaining their buffers) into a pool that XLA's threads
+never drain (fixed in 9545c5b; nanoGPT reached 5.5 GB and then
+RESOURCE_EXHAUSTED before). A loop over the other Metal paths (blit copy,
+LAPACK, small-n GPU cholesky, steel, scan, sort, host callbacks, small H2D;
+200 calls each with caching off) shows no growth.
