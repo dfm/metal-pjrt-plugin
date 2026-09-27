@@ -68,8 +68,8 @@ elsewhere; `sin` returns x for |x| < 1e-4, which keeps `sin(-0) = -0`.
 | cos | 1e-4 .. 0.125 | +0.20 .. +0.28 / 0.5-0.7 / 2.3 | +0.00 / 0.2-0.25 / 0.50 | same as after |
 | exp(-x) / sin / cos | 0.125 .. 1 | +0.11 / -0.10 / -0.01 (max 1.4 / 2.6 / 2.2) | unchanged (Metal's) | ~0 (max 0.8 / 0.6 / 0.5) |
 
-Zeros and subnormals keep value and sign (`math_bias.py` checks them; Metal's
-`log` flushes subnormal inputs, `log(1e-40) = -inf`, unchanged).
+Zeros and subnormals keep value and sign (`math_bias.py` checks them; for
+`log` see the next section).
 
 tinygp's transition-matrix arguments are all below 0.125 for n >= 20000
 (max 0.06) and 70-86% of them for n = 1000. Normwise ulps before -> after
@@ -94,6 +94,34 @@ both; gelu/tanh MLP 2048x1024x4096 12.9-13.0 both; softmax 8192x1024 1.04-1.06
 vs 0.99-1.06; nanoGPT train step 181.8-185.3 vs 180.9-186.1. Taking the
 polynomial is faster than Metal's `exp`/`sin`/`cos`, and the branch costs
 nothing measurable outside the range.
+
+## log of subnormal inputs (2026-09-27)
+
+Metal's float32 arithmetic flushes subnormals, even with fast math off:
+`x * 1e10` is 0 for x = 1e-40, and its `log` / `log2` / `log10` saw them as
+0: `log(1e-40) = -inf` (true -92.10) and `log(-1e-40) = -inf` (true NaN).
+(Loads, stores and bit moves keep subnormals, and so does `log1p`, which
+returns x when 1 + x == 1.) The prelude's `xla_log` / `xla_log2` /
+`xla_log10` (float overloads; half and bf16 compute in float and are
+unaffected by f16 subnormals) test the bits: a subnormal is m * 2^-149 with
+the integer m = its bits, so `log(x) = log(float(m)) - 149 ln 2`; a negative
+subnormal's int(bits) is negative, so the result is NaN. `jnp.log2` and
+`jnp.log10` are `log` times a constant in JAX, so all three go through
+`xla_log`; the other two are mapped for XLA-emitted `math.log2/log10`.
+
+`bench/math_bias.py` (row [1.4e-45, FLT_MIN), mean signed / mean abs / max
+ulps): log -0.16 / 0.29 / 0.83, log2 +0.01 / 0.26 / 1.25, log10 -0.38 / 0.44 /
+1.43. XLA CPU flushes subnormals too and returns -inf for all of these.
+Normal inputs are unchanged, including the +-0.5 ulp bias of Metal's `log`
+(table above). (`log2(1e-30)` is 2 ulps off, which the zeros/subnormals check
+flags: `log2` is Metal's `log` times 1/ln 2 and its max error is ~2.6 ulps.)
+
+Written with selects, not a branch. Cost, 3 interleaved rounds, p10 / median
+/ p90 ms: an ALU-bound chain of 16 logs per element over 4M, 0.75-0.77 /
+0.79-0.81 / 0.82 -> 0.92 / 0.95 / 0.96-1.24 (+19%); a branch on the input
+was 1.16-1.24 median, a branch on a -inf result 1.20-1.23. Memory-bound
+log over 16M (1.77-1.92 both), log_softmax 8192x1024 (1.73 both) and the
+nanoGPT train step (180.1-182.4 vs 181.2-183.0) are unchanged.
 
 ## softmax in f16 after the metal$softmax removal (2026-09-27)
 

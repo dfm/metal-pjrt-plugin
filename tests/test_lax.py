@@ -271,3 +271,25 @@ def test_small_arguments(op):
     err = (got[n:].astype(np.float64) - want[n:]) / ulp
     assert np.abs(err).max() <= 0.6
     assert abs(err.mean()) < 0.02  # Metal's own: -0.3 (exp), +0.2 (cos)
+
+
+# Metal flushes subnormal float arithmetic, so its log saw log(1e-40) = -inf;
+# the prelude's xla_log / log2 / log10 scale subnormals first
+# (docs/accuracy.md). (XLA CPU flushes them too: -inf there.)
+@pytest.mark.parametrize("op", ["log", "log2", "log10"])
+def test_log_subnormal(op):
+    rng = np.random.default_rng(0)
+    x = np.exp(rng.uniform(np.log(1.4e-45), np.log(1.1754942e-38), 1 << 14))
+    x = x.astype(np.float32)
+    x = x[x > 0]
+    special = np.array([0.0, -0.0, -1e-40, 1.1754944e-38, 1.0], np.float32)
+    fn = getattr(jnp, op)
+    got = metal_testing.run_on(metal_testing.metal(), fn, np.concatenate([special, x]))
+    with np.errstate(all="ignore"):
+        want = getattr(np, op)(np.concatenate([special, x]).astype(np.float64))
+    n = special.size
+    np.testing.assert_array_equal(got[:3], [-np.inf, -np.inf, np.nan])
+    ulp = np.spacing(np.abs(want[3:]).astype(np.float32)).astype(np.float64)
+    err = (got[3:].astype(np.float64) - want[3:]) / ulp
+    assert np.abs(err).max() <= 2.0, np.abs(err).max()
+    assert np.all(np.isfinite(got[n:]))  # not the flushed -inf

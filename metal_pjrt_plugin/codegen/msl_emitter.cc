@@ -278,6 +278,35 @@ inline float xla_cos(float x) {
   float x2 = x * x;
   return fma(x2, fma(x2, fma(x2, -1.0f / 720, 1.0f / 24), -0.5f), 1.0f);
 }
+// Metal's float arithmetic flushes subnormals, so its log/log2/log10 treat
+// them as 0 (log(1e-40) = -inf, not -92.1). A subnormal is m * 2^-149 with
+// the integer m = its bits, so log(x) = log(m) - 149 ln 2; a negative one
+// has a negative int(bits), so log gives NaN. Selects: a branch (either on
+// the input or on a -inf result) cost twice as much in an ALU-bound loop.
+inline bool xla_subnormal(float x) {
+  return (as_type<uint>(x) & 0x7fffffffu) - 1u < 0x7fffffu;
+}
+inline float xla_log(float x) {
+  bool s = xla_subnormal(x);
+  float y = log(s ? float(as_type<int>(x)) : x);
+  return s ? y - 103.278930f : y;  // 149 ln 2
+}
+inline float xla_log2(float x) {
+  bool s = xla_subnormal(x);
+  float y = log2(s ? float(as_type<int>(x)) : x);
+  return s ? y - 149.0f : y;
+}
+inline float xla_log10(float x) {
+  bool s = xla_subnormal(x);
+  float y = log10(s ? float(as_type<int>(x)) : x);
+  return s ? y - 44.8534694f : y;  // 149 log10(2)
+}
+template <typename T>
+inline T xla_log(T x) { return log(x); }
+template <typename T>
+inline T xla_log2(T x) { return log2(x); }
+template <typename T>
+inline T xla_log10(T x) { return log10(x); }
 template <typename T>
 inline T xla_exp(T x) { return exp(x); }
 template <typename T>
@@ -545,8 +574,8 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"math.ipowi", "xla_ipowi"},  {"math.fpowi", "xla_fpowi"},
       {"math.isfinite", "isfinite"}, {"math.isinf", "isinf"},
       {"math.isnan", "isnan"},      {"math.isnormal", "isnormal"},
-      {"math.log", "log"},          {"math.log10", "log10"},
-      {"math.log1p", "xla_log1p"},  {"math.log2", "log2"},
+      {"math.log", "xla_log"},      {"math.log10", "xla_log10"},
+      {"math.log1p", "xla_log1p"},  {"math.log2", "xla_log2"},
       {"math.powf", "xla_powf"},    {"math.rsqrt", "rsqrt"},
       {"math.sqrt", "sqrt"},        {"math.roundeven", "rint"},
       {"math.round", "round"},      {"math.trunc", "trunc"},
@@ -554,8 +583,8 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"llvm.intr.fma", "fma"},     {"llvm.intr.fmuladd", "fma"},
       {"llvm.intr.fabs", "fabs"},   {"llvm.intr.sqrt", "sqrt"},
       {"llvm.intr.exp", "xla_exp"},    {"llvm.intr.exp2", "exp2"},
-      {"llvm.intr.log", "log"},     {"llvm.intr.log2", "log2"},
-      {"llvm.intr.log10", "log10"}, {"llvm.intr.sin", "xla_sin"},
+      {"llvm.intr.log", "xla_log"},  {"llvm.intr.log2", "xla_log2"},
+      {"llvm.intr.log10", "xla_log10"}, {"llvm.intr.sin", "xla_sin"},
       {"llvm.intr.cos", "xla_cos"},    {"llvm.intr.tan", "tan"},
       {"llvm.intr.floor", "floor"}, {"llvm.intr.ceil", "ceil"},
       {"llvm.intr.trunc", "trunc"}, {"llvm.intr.rint", "rint"},
