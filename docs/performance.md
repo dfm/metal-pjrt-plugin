@@ -692,6 +692,17 @@ The bench suite (5 interleaved rounds) is unchanged within its spread
 (nanoGPT train step 180.3 / 178.3 ms, fwd 58.3 / 58.0; largest moves are
 sub-ms bimodal rows: qr 128 0.70 / 1.00 with ranges 0.64-1.32 / 0.68-1.27).
 
+Re-measured at the end of the batch (after 9b57467: cached buffers are
+released only once every command buffer and host task that existed at the
+free has finished; 44a1105: device_put copies its source): nanoGPT
+178.7-180.0 ms (bfc 179.6-181.7), peak 1893-1897 MB (bfc 2508-2896), idle
+515-519 MB (bfc 2454-2843); tinygp 188.6-192.6 ms (bfc 190.5-195.0), idle
+391-399 MB (bfc 920-1223). Nothing stayed pinned by pending work: cached
+was 0 MB at idle in every run. Under a 512 MB budget
+(JAX_OPENMETAL_MEMORY_FRACTION) a loop of 64 MB outputs held 7, then got
+RESOURCE_EXHAUSTED ("Out of memory while trying to allocate 64.00MiB";
+the runtime's reason is logged), and the process kept working.
+
 The plain platform allocator was also leaking: every MPS GEMM autoreleased
 MPSMatrix objects (retaining their buffers) into a pool that XLA's threads
 never drain (fixed in 9545c5b; nanoGPT reached 5.5 GB and then
