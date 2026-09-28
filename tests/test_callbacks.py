@@ -173,7 +173,9 @@ def callback_exception_surfaces():
     try:
         np.asarray(f(jax.device_put(x8, metal())))
     except Exception as e:  # noqa: BLE001
-        assert "boom from host" in str(e), e
+        # The user's exception, not a plugin failure (INTERNAL).
+        assert "host callback raised: ValueError: boom from host" in str(e), e
+        assert "INTERNAL" not in str(e), e
     else:
         raise AssertionError("no exception")
     # The device is still usable afterwards.
@@ -200,6 +202,25 @@ def many_calls_same_executable():
 @pytest.mark.parametrize("fn", CASES, ids=[f.__name__ for f in CASES])
 def test_callback(fn):
     fn()
+
+
+def test_unsupported_dtype_is_named():
+    from metal_pjrt_plugin import callbacks
+    with pytest.raises(TypeError, match="do not support dtype int4 on platform mtl"):
+        callbacks._view(callbacks._Buffer(dtype=21))
+
+
+def test_unknown_callback_id_says_how_to_fix():
+    # An executable from another process's persistent cache names a
+    # callback id this process never registered.
+    import ctypes
+    from metal_pjrt_plugin import callbacks
+    err = ctypes.create_string_buffer(4096)
+    assert callbacks._trampoline(0x1234, 0, None, 0, None,
+                                 ctypes.addressof(err), len(err)) == 1
+    msg = err.value.decode()
+    assert "unknown host callback id 0x1234" in msg, msg
+    assert "Clear the cache directory" in msg, msg
 
 
 def test_public_emit_python_callback_is_patched():

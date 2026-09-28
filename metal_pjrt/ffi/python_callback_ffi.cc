@@ -63,8 +63,9 @@ absl::Status PythonCallback(stream_executor::Stream* stream,
   MetalPjrtPythonCallbackTrampoline trampoline = g_trampoline.load();
   if (trampoline == nullptr) {
     return absl::FailedPreconditionError(
-        "xla_ffi_python_metal_callback: no Python trampoline registered "
-        "(metal_pjrt_plugin did not initialize host callbacks)");
+        "Metal: host callbacks are unavailable: metal_pjrt_plugin did not "
+        "install them (see the \"host callbacks unavailable\" warning logged "
+        "when JAX initialized the plugin)");
   }
   absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();
@@ -103,8 +104,8 @@ absl::Status PythonCallback(stream_executor::Stream* stream,
                       error.data(), static_cast<int64_t>(error.size()));
   if (rc != 0) {
     error.resize(error.find('\0'));
-    return absl::InternalError(
-        absl::StrCat("Metal host callback failed: ", error));
+    // The user's code failed, not the plugin: not INTERNAL.
+    return absl::UnknownError(absl::StrCat("host callback raised: ", error));
   }
   return absl::OkStatus();
 }

@@ -88,6 +88,12 @@ def _dtype_table():
 
 
 _DTYPES: dict[int, np.dtype] = {}
+# XLA PrimitiveType numbers (xla_data.proto) of the types callbacks refuse,
+# for the error message.
+_UNSUPPORTED = {13: "tuple", 14: "opaque", 17: "token", 21: "int4",
+                22: "uint4", 26: "int2", 27: "uint2", 30: "int1", 31: "uint1",
+                32: "float4_e2m1fn", 34: "buffer", 35: "float6_e3m2fn",
+                36: "float6_e2m3fn"}
 
 # callback_id -> weakref to the wrapped callable.
 _table: dict[int, weakref.ref] = {}
@@ -109,8 +115,9 @@ def _register(fn) -> int:
 def _view(buf: _Buffer):
   dtype = _DTYPES.get(buf.dtype)
   if dtype is None:
-    raise TypeError(f"unsupported element type (XLA PrimitiveType {buf.dtype}) "
-                    "for a metal host callback")
+    name = _UNSUPPORTED.get(buf.dtype, f"XLA PrimitiveType {buf.dtype}")
+    raise TypeError(f"metal-pjrt-plugin: host callbacks do not support dtype "
+                    f"{name} on platform mtl")
   shape = tuple(buf.dims[i] for i in range(buf.rank))
   n = int(np.prod(shape, dtype=np.int64))
   if n == 0 or not buf.data:
@@ -132,9 +139,12 @@ def _trampoline(cb_id, nargs, args, nrets, rets, err_ptr, err_cap):
     fn = ref() if ref is not None else None
     if fn is None:
       raise RuntimeError(
-          f"unknown metal host callback id {cb_id:#x}: the callable is gone. "
-          "This happens if an executable containing a callback was loaded "
-          "from a persistent compilation cache written by another process.")
+          f"metal-pjrt-plugin: unknown host callback id {cb_id:#x}: the "
+          "callable is gone. This happens if an executable containing a "
+          "callback was loaded from a persistent compilation cache written "
+          "by another process (or an older plugin version). Clear the cache "
+          "directory (jax_compilation_cache_dir), or disable the cache for "
+          "functions with callbacks.")
     # Copy: the buffers are reused by XLA once the callback returns.
     in_vals = [np.array(_view(args[i])) for i in range(nargs)]
     outs = fn(*in_vals)
