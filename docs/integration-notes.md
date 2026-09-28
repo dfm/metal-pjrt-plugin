@@ -294,12 +294,26 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   let XLA read them after `device_put` returns (the H2D is dispatched on a
   worker thread), so refilling the array right after `device_put` (a data
   loader) changed what the device got; this predates the staging change.
-  `metal_pjrt_api.cc` now wraps `PJRT_Client_BufferFromHostBuffer`: dense
-  data is copied into a malloc'd buffer before returning (as CUDA does for
-  pageable memory) and freed on `done_with_host_buffer`; strided and
-  sub-byte inputs take XLA's synchronous `kImmutableOnlyDuringCall` path.
-  Cost (5 interleaved rounds, medians): device_put 100 MB 2.56 -> 5.14 ms,
-  1 MB 84 -> 104 us, 8 floats 72 -> 73 us; D2H unchanged.
+  `metal_pjrt_api.cc` wraps `PJRT_Client_BufferFromHostBuffer`. jaxlib
+  passes `kImmutableZeroCopy` with explicit byte strides even for a
+  C-contiguous array; strides equal to the row-major ones count as dense.
+  Dense data below 16 MB is copied into a malloc'd buffer before returning
+  (as CUDA does for pageable memory) and freed on `done_with_host_buffer`.
+  From 16 MB up the caller's pointer goes to XLA as
+  `kImmutableUntilTransferCompletes` and the wrapper awaits
+  `done_with_host_buffer` (without the GIL: jaxlib releases it around the
+  call) before returning; the event is still handed back. Strided and
+  sub-byte inputs take XLA's synchronous `kImmutableOnlyDuringCall` path,
+  which linearizes into a full-size host staging buffer. Until the stride
+  fix every numpy array took that path (the malloc branch was dead code),
+  which is where the old 2x host memory came from.
+  Measured vs that (6 interleaved rounds, p10/median/p90): 1 MB 100/105/116
+  vs 91/106/114 us; 16 MB 807/825/896 vs 401/421/478 us; 100 MB
+  4964/5057/5482 vs 2466/2492/2625 us; 512 MB 25.8/65.9/272.8 vs
+  12.8/12.9/14.0 ms; peak phys_footprint of a 512 MB put +1041 vs +512 MB.
+  With ~100 ms of GPU work queued, a 32 MB put returns after 1.9 vs 103 ms
+  (the H2D stream waits for XLA's allocation event on the compute stream);
+  the array is ready at 103 ms either way.
 - `Stream::MemcpyHostToDevice/DeviceToHost` `memcpy` on the calling thread
   when the stream is idle (no open command buffer, deferred waits all
   satisfied, fence caught up); otherwise they enqueue a host task.

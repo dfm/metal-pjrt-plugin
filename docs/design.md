@@ -33,7 +33,7 @@ Metal support is therefore:
 - XLA's GPU C API shim built for Metal (patch 0001 names the platform),
   behind the plugin's own small `GetPjrtApi` (`pjrt/metal_pjrt_api.cc`),
   which drops the ABI-version extension so JAX's persistent cache works and
-  copies `device_put`'s host data before returning.
+  is done with `device_put`'s host data before returning.
 - `jax_plugins/openmetal` modeled on `jax_plugins/cuda`.
 
 Intel's extension for OpenXLA did exactly this for SYCL out of tree. The
@@ -205,11 +205,15 @@ sizes.
 
 **Transfers.** Host-to-device and device-to-host copies are a `memcpy` on
 the calling thread when the stream is idle, and a host task otherwise; there
-is no staging. `device_put` of dense host data snapshots it into a malloc'd
-buffer before returning (as CUDA does for pageable memory), because JAX
-lets XLA read the source after `device_put` returns, and a data loader that
-refilled its array changed what the device got. Strided and sub-byte inputs
-take XLA's synchronous path.
+is no staging. JAX lets XLA read the source after `device_put` returns, and
+a data loader that refilled its array changed what the device got. So
+`device_put` of dense host data below 16 MB snapshots it into a malloc'd
+buffer before returning (as CUDA does for pageable memory); from 16 MB up
+it hands XLA the caller's data and waits until XLA is done with it, which
+avoids the second host copy (512 MB: peak footprint +512 MB instead of
++1041 MB) at the cost of blocking the caller behind already queued GPU work
+(the copy waits for XLA's allocation event on the compute stream). Strided
+and sub-byte inputs take XLA's synchronous path, which stages a copy.
 
 **Reset log and quarantine.** A watchdog reset hits every process, and after
 several the driver leaves the GPU ~10x slower per dispatch until a reboot.
