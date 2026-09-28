@@ -1,0 +1,189 @@
+// Compiles every embedded MSL source (kernels/*.metal) and creates a pipeline
+// for every kernel the plugin can ask for, through rt::Device::GetKernel as
+// the plugin does, so that a kernel that stops compiling fails this test
+// rather than a user's first call. Needs a Metal device.
+#include <Foundation/Foundation.hpp>
+#include <Metal/Metal.hpp>
+
+#include <memory>
+#include <set>
+#include <string>
+#include <vector>
+
+#include <gtest/gtest.h>
+#include "absl/status/status_matchers.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
+#include "absl/types/span.h"
+#include "metal_pjrt/blas/mps_gemm.h"
+#include "metal_pjrt/blas/steel_gemm.h"
+#include "metal_pjrt/kernels/cub_sort.metal.h"
+#include "metal_pjrt/kernels/mps_staging.metal.h"
+#include "metal_pjrt/kernels/msl_prelude.metal.h"
+#include "metal_pjrt/kernels/runtime_builtins.metal.h"
+#include "metal_pjrt/kernels/scan.metal.h"
+#include "metal_pjrt/kernels/small_linalg.metal.h"
+#include "metal_pjrt/kernels/steel_gemm.metal.h"
+#include "metal_pjrt/runtime/metal_runtime.h"
+
+namespace metal_pjrt {
+namespace kernels {
+namespace {
+
+using ::absl_testing::IsOk;
+using rt::FunctionConstant;
+
+class KernelsTest : public ::testing::Test {
+ protected:
+  void SetUp() override {
+    absl::StatusOr<std::unique_ptr<rt::Device>> dev = rt::Device::Create(0);
+    ASSERT_THAT(dev, IsOk());
+    dev_ = *std::move(dev);
+  }
+
+  // The kernel functions in `source` (compiled directly, as GetKernel does:
+  // fast math off). Empty, with a test failure, if it does not compile.
+  std::vector<std::string> FunctionNames(const char* source) {
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    std::vector<std::string> names;
+    MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
+    opts->setFastMathEnabled(false);
+    NS::Error* err = nullptr;
+    MTL::Library* lib = dev_->mtl()->newLibrary(
+        NS::String::string(source, NS::UTF8StringEncoding), opts, &err);
+    opts->release();
+    if (lib == nullptr) {
+      ADD_FAILURE() << "does not compile: "
+                    << (err ? err->localizedDescription()->utf8String() : "");
+    } else {
+      NS::Array* fns = lib->functionNames();
+      for (NS::UInteger i = 0; i < fns->count(); ++i) {
+        names.push_back(fns->object<NS::String>(i)->utf8String());
+      }
+      lib->release();
+    }
+    pool->release();
+    return names;
+  }
+
+  void ExpectKernel(const char* source, const std::string& name,
+                    absl::Span<const FunctionConstant> constants = {}) {
+    absl::StatusOr<const rt::Kernel*> k =
+        dev_->GetKernel(source, name, constants);
+    EXPECT_THAT(k, IsOk()) << name;
+  }
+
+  std::unique_ptr<rt::Device> dev_;
+};
+
+// Sources that only define helpers (the emitter's prelude) or get their
+// instantiation appended by the host (steel) still compile on their own.
+TEST_F(KernelsTest, EverySourceCompiles) {
+  for (const char* source :
+       {kCubSortMsl, kMpsStagingMsl, kMslPrelude, kRuntimeBuiltinsMsl,
+        kScanMsl, kSmallLinalgMsl, kSteelGemmMsl}) {
+    FunctionNames(source);
+  }
+}
+
+TEST_F(KernelsTest, RuntimeBuiltins) {
+  using B = rt::Device::Builtin;
+  for (B b : {B::kFill32, B::kFill8, B::kCopy16, B::kCopy8}) {
+    EXPECT_THAT(dev_->BuiltinKernel(b), IsOk());
+  }
+  EXPECT_EQ(FunctionNames(kRuntimeBuiltinsMsl).size(), 4);
+}
+
+TEST_F(KernelsTest, SmallLinalgAndMpsStaging) {
+  const std::vector<std::string> small = FunctionNames(kSmallLinalgMsl);
+  EXPECT_EQ(std::set<std::string>(small.begin(), small.end()),
+            (std::set<std::string>{"small_cholesky", "small_getrf",
+                                   "small_trsm"}));
+  for (const std::string& name : small) ExpectKernel(kSmallLinalgMsl, name);
+  ExpectKernel(kMpsStagingMsl, "copy_f32");
+}
+
+// scan_<op>_<type>: 4 ops x (f32, f16, bf16, s32).
+TEST_F(KernelsTest, Scan) {
+  const std::vector<std::string> names = FunctionNames(kScanMsl);
+  EXPECT_EQ(names.size(), 16);
+  for (const char* op : {"add", "mul", "max", "min"}) {
+    for (const char* t : {"float", "half", "bfloat", "int"}) {
+      ExpectKernel(kScanMsl, absl::StrCat("scan_", op, "_", t));
+    }
+  }
+}
+
+// Every instantiation under every KIND / HAS_VALUES the handler passes; the
+// kernels must run exactly 256 threads in 32-wide SIMD groups.
+TEST_F(KernelsTest, CubSort) {
+  const std::vector<std::string> names = FunctionNames(kCubSortMsl);
+  // sort_small and sort_scatter per key x value width, sort_hist per key
+  // width, one sort_scan.
+  EXPECT_EQ(names.size(), 16 + 16 + 4 + 1);
+  for (const std::string& name : names) {
+    std::vector<std::vector<FunctionConstant>> variants;
+    if (name == "sort_scan") {
+      variants.push_back({});
+    } else {
+      for (int kind : {0, 1, 2}) {
+        for (bool has_values : {false, true}) {
+          variants.push_back({FunctionConstant::Int(0, kind),
+                              FunctionConstant::Bool(1, has_values)});
+        }
+      }
+    }
+    for (const auto& constants : variants) {
+      absl::StatusOr<const rt::Kernel*> k =
+          dev_->GetKernel(kCubSortMsl, name, constants);
+      ASSERT_THAT(k, IsOk()) << name;
+      EXPECT_EQ((*k)->max_total_threads_per_threadgroup(), 256u) << name;
+      EXPECT_EQ((*k)->thread_execution_width(), 32u) << name;
+    }
+  }
+}
+
+// Every steel variant RunSteelGemm can pick (ChooseSteelTile's tiles for
+// every supported type pair and transpose), each with the switches all off
+// and all on under every activation.
+TEST_F(KernelsTest, SteelGemm) {
+  using blas::MpsDType;
+  const std::pair<MpsDType, MpsDType> types[] = {
+      {MpsDType::kF32, MpsDType::kF32},   {MpsDType::kF16, MpsDType::kF16},
+      {MpsDType::kF16, MpsDType::kF32},   {MpsDType::kBF16, MpsDType::kBF16},
+      {MpsDType::kBF16, MpsDType::kF32}};
+  std::set<std::string> seen;
+  for (auto [in, out] : types) {
+    for (bool ta : {false, true}) {
+      for (bool tb : {false, true}) {
+        for (int64_t size : {64, 4096}) {  // few tiles, many tiles
+          blas::GemmParams p;
+          p.m = p.n = p.k = size;
+          p.batch_count = 1;
+          p.a.dtype = p.b.dtype = in;
+          p.c.dtype = out;
+          p.a.transpose = ta;
+          p.b.transpose = tb;
+          const blas::SteelTile tile = blas::ChooseSteelTile(p);
+          const blas::SteelKernelSource source =
+              blas::SteelGemmKernel(in, out, tile, ta, tb);
+          if (!seen.insert(source.function).second) continue;
+          blas::SteelEpilogue off;
+          ExpectKernel(source.msl.c_str(), source.function,
+                       blas::SteelGemmConstants(false, false, false, off));
+          int dummy;
+          for (int act : {1, 2, 3}) {
+            blas::SteelEpilogue on{act, &dummy, &dummy};
+            ExpectKernel(source.msl.c_str(), source.function,
+                         blas::SteelGemmConstants(true, true, true, on));
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(seen.size(), 5 * 4 * 2);
+}
+
+}  // namespace
+}  // namespace kernels
+}  // namespace metal_pjrt

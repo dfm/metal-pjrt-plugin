@@ -1,3 +1,4 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
 load(":embed_msl.bzl", "embed_msl")
 
 package(default_visibility = ["//visibility:public"])
@@ -47,4 +48,31 @@ embed_msl(
     name = "steel_gemm",
     src = "steel_gemm.metal",
     symbol = "kSteelGemmMsl",
+)
+
+# Compiles every source and creates a pipeline for every kernel the plugin
+# can ask for. Needs a Metal device.
+cc_test(
+    name = "kernels_test",
+    srcs = ["kernels_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":cub_sort",
+        ":mps_staging",
+        ":msl_prelude",
+        ":runtime_builtins",
+        ":scan",
+        ":small_linalg",
+        ":steel_gemm",
+        "//metal_pjrt/blas:mps_gemm",
+        "//metal_pjrt/blas:steel_gemm",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+        "@com_google_googletest//:gtest_main",
+        "@metal_cpp",
+    ],
 )
