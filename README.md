@@ -145,10 +145,11 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
   into swap, with RESOURCE_EXHAUSTED and the reason and numbers. When you
   hit that, close memory-hungry programs (or run `bazel shutdown` right after
   a build). Changing a NumPy array after `jax.device_put` cannot change what
-  the device gets: below 16 MB the plugin snapshots the array before
-  returning (twice its size in host memory, briefly); from 16 MB up,
-  `device_put` instead waits until the array has been copied, which, when
-  the GPU is busy, means waiting for the work already queued.
+  the device gets. Up to 256 MB (less when free memory is short: an eighth
+  of what is reclaimable) the plugin snapshots the array before returning,
+  which briefly needs twice its size in host memory. Larger arrays are not
+  snapshotted: `device_put` waits until the array has been copied, which,
+  when the GPU is busy, means waiting for the work already queued.
 - **Training on an 8 GB Mac.** A nanoGPT-sized training step needs a
   1.2 GB allocation, and with a browser open the system memory guard can
   refuse it: RESOURCE_EXHAUSTED "... refused by the system memory guard: only

@@ -505,8 +505,8 @@ class Stream {
   // satisfied, every committed buffer and host task finished); otherwise in
   // a host callback once prior work completes, with later stream work
   // waiting for it (so `src` must stay unchanged until the stream gets
-  // there, as XLA guarantees; device_put's numpy data is copied earlier, in
-  // pjrt/metal_pjrt_api.cc).
+  // there, as XLA guarantees; pjrt/metal_pjrt_api.cc snapshots device_put's
+  // numpy data, or waits for the copy of a large array).
   absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
 

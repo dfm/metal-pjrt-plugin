@@ -114,6 +114,7 @@ read at run time.
 | `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/openmetal`) |
 | `METAL_PJRT_QUARANTINE_STRIKES` | runtime, `gpu_health.py` | resets since boot that quarantine a kernel (default 2; 0 disables) |
 | `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | runtime | memory the system guard keeps free (default 512; for tests) |
+| `METAL_PJRT_SNAPSHOT_MAX_MB` | `pjrt/metal_pjrt_api.cc` | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap (default 256; for tests) |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | runtime | `n` fails the n-th committed command buffer (tests of the error path) |
 | `METAL_TEST_REPORT_ULPS` | `tests/metal_testing.py` | print every measured error (with `pytest -s`) |
 | `JAX_OPENMETAL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |

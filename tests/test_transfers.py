@@ -3,16 +3,20 @@
 source/destination numpy arrays' lifetimes.
 
 JAX lets the H2D copy run after device_put returns, so the plugin copies
-a source below 16 MB into a host temporary before returning, and waits for
-the copy of a larger one: a caller refilling its numpy buffer right after
-device_put (the usual data-loader pattern) must not change the device value.
+the source into a host temporary before returning or, above min(256 MB,
+reclaimable memory / 8), waits for the copy: a caller refilling its numpy
+buffer right after device_put (the usual data-loader pattern) must not
+change the device value.
 """
 import gc
+import os
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+
+from metal_testing import run_python
 
 pytestmark = pytest.mark.metal
 
@@ -34,10 +38,7 @@ def test_round_trip_views(view, mb):
     np.testing.assert_array_equal(np.asarray(jax.device_put(v)), v)
 
 
-@pytest.mark.parametrize("mb", [1, 32])  # below / above the 16 MB snapshot limit
-@pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
-@pytest.mark.parametrize("may_alias", [None, False])
-def test_source_mutated_right_after_device_put(busy, may_alias, mb):
+def mutate_right_after_device_put(busy, may_alias, mb):
     slow = jax.jit(lambda a: jax.lax.fori_loop(0, 16, lambda i, a: (a @ a) * 1e-3, a))
     a = jnp.ones((2048, 2048))
     slow(a).block_until_ready()
@@ -52,6 +53,26 @@ def test_source_mutated_right_after_device_put(busy, may_alias, mb):
         del pending
     for i, x in enumerate(xs):
         assert np.all(np.asarray(x) == i), (i, np.unique(np.asarray(x))[:4])
+
+
+# Snapshot path: below min(256 MB, reclaimable system memory / 8).
+@pytest.mark.parametrize("mb", [1, 32])
+@pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
+@pytest.mark.parametrize("may_alias", [None, False])
+def test_source_mutated_right_after_device_put(busy, may_alias, mb):
+    mutate_right_after_device_put(busy, may_alias, mb)
+
+
+def test_source_mutated_right_after_large_device_put():
+    # The waiting path, at 32 MB with the snapshot cap forced down to 16 MB.
+    code = (f"import sys; sys.path.insert(0, {os.path.dirname(__file__)!r})\n"
+            "import test_transfers as t\n"
+            "for busy in (False, True):\n"
+            "    for may_alias in (None, False):\n"
+            "        t.mutate_right_after_device_put(busy, may_alias, 32)\n")
+    out = run_python(code, dict(os.environ, JAX_PLATFORMS="openmetal",
+                                METAL_PJRT_SNAPSHOT_MAX_MB="16"))
+    assert out.returncode == 0, out.stderr[-3000:]
 
 
 def test_source_mutated_after_transfer():

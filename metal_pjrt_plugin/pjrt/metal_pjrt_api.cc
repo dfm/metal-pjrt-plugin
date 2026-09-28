@@ -13,6 +13,7 @@
 // ("oneapi 1.<build>.<settings>", MetalExecutor::PluginVersion) is what keeps
 // executables from another build or other compile-time settings out.
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -24,6 +25,7 @@
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt_plugin/runtime/system_memory.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
 #include "xla/pjrt/c/pjrt_c_api_gpu_internal.h"
 #include "xla/pjrt/c/pjrt_c_api_helpers.h"
@@ -38,20 +40,35 @@ const PJRT_Api* g_gpu = nullptr;  // XLA's shim
 // jaxlib passes numpy arrays with semantics that let the H2D copy read them
 // after the call returns (XLA dispatches it on a worker thread), so a
 // caller refilling its array right after device_put (a data loader) changed
-// what the device got. Below kSnapshotLimit, copy dense host data here
-// instead, as CUDA does for pageable memory, and free the copy when XLA is
-// done with it. At or above it, a copy would double the host footprint, so
-// hand XLA the caller's data and wait until XLA is done with it (the copy
-// ran, or failed on a device error) before returning. The wait needs no
-// Python: jaxlib calls this without the GIL, and the copy runs on XLA's
-// worker threads and the runtime's host-to-device stream. It does wait for
-// GPU work already queued (the copy waits for XLA's allocation event on the
-// compute stream). jaxlib passes explicit strides even for C-contiguous
-// arrays; without IsDense accepting them every array took the staged
-// synchronous path, which is what doubled the footprint. Other layouts
-// (strided, sub-byte types) take XLA's synchronous path
-// (kImmutableOnlyDuringCall), which linearizes into a host staging copy.
-constexpr uint64_t kSnapshotLimit = uint64_t{16} << 20;
+// what the device got. So dense host data is copied here, as CUDA does for
+// pageable memory, and the copy freed when XLA is done with it: the call
+// does not block, and a training loop's next batch overlaps the current
+// step. That doubles the host footprint while the copy waits, so from
+// SnapshotLimit() up (256 MB, or less when memory is short) the caller's
+// data goes to XLA instead and this waits until XLA is done with it (the
+// copy ran, or failed on a device error). That wait includes GPU work
+// already queued (the copy waits for XLA's allocation event on the compute
+// stream). It needs no Python: jaxlib calls this without the GIL, and the
+// copy runs on XLA's worker threads and the runtime's host-to-device
+// stream. jaxlib passes explicit strides even for C-contiguous arrays;
+// without IsDense accepting them every array took the staged synchronous
+// path, which is what doubled the footprint. Other layouts (strided,
+// sub-byte types) take XLA's synchronous path (kImmutableOnlyDuringCall),
+// which linearizes into a host staging copy.
+constexpr uint64_t kSnapshotMaxBytes = uint64_t{256} << 20;
+// At most this fraction of reclaimable system memory goes to one snapshot.
+constexpr uint64_t kSnapshotReclaimableDivisor = 8;
+
+uint64_t SnapshotLimit() {
+  // METAL_PJRT_SNAPSHOT_MAX_MB replaces the 256 MB cap (for tests).
+  static const uint64_t max_bytes = [] {
+    const char* v = std::getenv("METAL_PJRT_SNAPSHOT_MAX_MB");
+    return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 10) << 20
+                                        : kSnapshotMaxBytes;
+  }();
+  return std::min(max_bytes, metal_pjrt::rt::ReclaimableMemoryBytes() /
+                                 kSnapshotReclaimableDivisor);
+}
 
 // Row-major and unpadded: no strides, or the strides jaxlib passes for a
 // C-contiguous numpy array (those of size-1 dimensions do not matter).
@@ -84,7 +101,7 @@ PJRT_Error* BufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args* args) {
   }
   uint64_t size = xla::primitive_util::ByteWidth(type);
   for (size_t i = 0; i < args->num_dims; ++i) size *= args->dims[i];
-  if (size >= kSnapshotLimit) {
+  if (size >= SnapshotLimit()) {
     args->host_buffer_semantics =
         PJRT_HostBufferSemantics_kImmutableUntilTransferCompletes;
     PJRT_Error* error = g_gpu->PJRT_Client_BufferFromHostBuffer(args);

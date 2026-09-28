@@ -207,13 +207,14 @@ sizes.
 the calling thread when the stream is idle, and a host task otherwise; there
 is no staging. JAX lets XLA read the source after `device_put` returns, and
 a data loader that refilled its array changed what the device got. So
-`device_put` of dense host data below 16 MB snapshots it into a malloc'd
-buffer before returning (as CUDA does for pageable memory); from 16 MB up
-it hands XLA the caller's data and waits until XLA is done with it, which
-avoids the second host copy (512 MB: peak footprint +512 MB instead of
-+1041 MB) at the cost of blocking the caller behind already queued GPU work
-(the copy waits for XLA's allocation event on the compute stream). Strided
-and sub-byte inputs take XLA's synchronous path, which stages a copy.
+`device_put` of dense host data snapshots it into a malloc'd buffer before
+returning (as CUDA does for pageable memory), which does not block. From
+min(256 MB, reclaimable memory / 8) up it hands XLA the caller's data
+instead and waits until XLA is done with it: no second host copy (512 MB:
+peak footprint +512 MB instead of +1041 MB), but the caller waits behind
+already queued GPU work (the copy waits for XLA's allocation event on the
+compute stream). Strided and sub-byte inputs take XLA's synchronous path,
+which stages a copy.
 
 **Reset log and quarantine.** A watchdog reset hits every process, and after
 several the driver leaves the GPU ~10x slower per dispatch until a reboot.

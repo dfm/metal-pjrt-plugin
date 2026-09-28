@@ -297,9 +297,10 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `metal_pjrt_api.cc` wraps `PJRT_Client_BufferFromHostBuffer`. jaxlib
   passes `kImmutableZeroCopy` with explicit byte strides even for a
   C-contiguous array; strides equal to the row-major ones count as dense.
-  Dense data below 16 MB is copied into a malloc'd buffer before returning
-  (as CUDA does for pageable memory) and freed on `done_with_host_buffer`.
-  From 16 MB up the caller's pointer goes to XLA as
+  Dense data is copied into a malloc'd buffer before returning (as CUDA
+  does for pageable memory) and freed on `done_with_host_buffer`. From
+  min(256 MB, reclaimable / 8) up (`METAL_PJRT_SNAPSHOT_MAX_MB` replaces
+  the 256 MB, for tests) the caller's pointer goes to XLA as
   `kImmutableUntilTransferCompletes` and the wrapper awaits
   `done_with_host_buffer` (without the GIL: jaxlib releases it around the
   call) before returning; the event is still handed back. Strided and
@@ -307,13 +308,17 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   which linearizes into a full-size host staging buffer. Until the stride
   fix every numpy array took that path (the malloc branch was dead code),
   which is where the old 2x host memory came from.
-  Measured vs that (6 interleaved rounds, p10/median/p90): 1 MB 100/105/116
-  vs 91/106/114 us; 16 MB 807/825/896 vs 401/421/478 us; 100 MB
-  4964/5057/5482 vs 2466/2492/2625 us; 512 MB 25.8/65.9/272.8 vs
-  12.8/12.9/14.0 ms; peak phys_footprint of a 512 MB put +1041 vs +512 MB.
-  With ~100 ms of GPU work queued, a 32 MB put returns after 1.9 vs 103 ms
-  (the H2D stream waits for XLA's allocation event on the compute stream);
-  the array is ready at 103 ms either way.
+  A first version waited from 16 MB up; with ~100 ms of GPU work queued a
+  32 MB put then returned after 101 ms instead of 1.8 ms (the H2D stream
+  waits for XLA's allocation event on the compute stream), hence the
+  adaptive threshold. Measured, staged path / waiting from 16 MB / now (6
+  interleaved rounds, p10/median/p90): 1 MB 106/110/118, 104/110/120,
+  106/111/119 us; 16 MB 812/825/895, 405/423/475, 811/828/881 us; 100 MB
+  4974/5058/5277, 2481/2556/2746, 4994/5114/5501 us; 512 MB
+  25.7/27.8/129.6, 12.9/13.3/26.0, 12.9/13.3/17.0 ms. Peak phys_footprint
+  of a 512 MB put +1041 / +512 / +512 MB. Behind ~100 ms of queued GPU
+  work, a put returns (median) at 32 MB after 1.8 / 101 / 1.9 ms and at
+  512 MB after 153 / 132 / 134 ms.
 - `Stream::MemcpyHostToDevice/DeviceToHost` `memcpy` on the calling thread
   when the stream is idle (no open command buffer, deferred waits all
   satisfied, fence caught up); otherwise they enqueue a host task.
