@@ -706,6 +706,48 @@ TEST_F(MetalRuntimeTest, GpuErrorIsStickyForTheDevice) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// A failure that shows up while HostCallback's commit holds for an earlier
+// host task (the device error, seen by the hold's wait) must not lose the
+// new task: without on_error it still runs (XLA relies on it to free memory).
+TEST_F(MetalRuntimeTest, HostTaskEnqueuedWhenTheHoldSeesAFailure) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::unique_ptr<Stream> s2 = NewStream();
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  std::atomic<bool> release{false};
+  ASSERT_THAT(s->HostCallback([&release]() {
+    for (int i = 0; i < 200 && !release.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return absl::OkStatus();
+  }), IsOk());
+  // GPU work behind the task: the next commit holds for the task.
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  std::thread fail([&]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    s2->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
+    EXPECT_THAT(Axpy(s2.get(), x, x, n, 1.0f, n / 256), IsOk());
+    EXPECT_FALSE(s2->Synchronize().ok());
+  });
+  // Holds for the first task, which runs until released: the hold's wait
+  // (200 ms slices) sees the failure first.
+  bool ran = false;
+  EXPECT_THAT(s->HostCallback([&ran]() {
+    ran = true;
+    return absl::OkStatus();
+  }), IsOk());
+  release = true;
+  fail.join();
+  EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kInternal,
+                                         HasSubstr("injected fault")));
+  EXPECT_TRUE(ran);
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // Work encoded before another stream's failure is never committed: the open
 // command buffer is dropped (its fence and events force-signaled), and no
 // more work goes into it.

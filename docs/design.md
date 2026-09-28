@@ -133,8 +133,9 @@ runtime tests assert it stays 0.
 page fault, out of memory, anything) or failed host task without an error
 callback sets the device's error, as a CUDA context error does. From then on
 every wait, poll, host task and launch returns it, a host callback's
-`error_cb` gets it (which is how XLA fails result buffers), and nothing more
-is committed. The message says to restart the process. Nothing hangs: a
+`error_cb` gets it (which is how XLA fails result buffers), a host callback
+without one still runs (XLA's free memory or finish transfers), and nothing
+more is committed. The message says to restart the process. Nothing hangs: a
 failed buffer's completion handler records the error and force-signals the
 buffer's fence and events, host waits give up once the device has failed,
 and no error path CHECKs or aborts. Only resets (timeout, access revoked,

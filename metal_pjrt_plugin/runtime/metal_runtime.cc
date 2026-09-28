@@ -1756,8 +1756,15 @@ absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
   // 1. Commit everything so far; it ends with a fence signal (value v). Waits
   //    still deferred on this stream become waits of the host task itself.
   //    After a failure the task is still enqueued: it runs or hands the
-  //    error to on_error (see the header).
-  ABSL_RETURN_IF_ERROR(Commit());
+  //    error to on_error (see the header). That includes a failure seen
+  //    while this commit held for an earlier host task: commit again (which
+  //    drops the buffer) rather than lose the task. Only the self-wait
+  //    refusal (no failure) is returned.
+  absl::Status committed = Commit();
+  if (!committed.ok()) {
+    if (device_->error().ok()) return committed;
+    ABSL_RETURN_IF_ERROR(Commit());
+  }
   uint64_t done_value = ++fence_value_;
   uint64_t after_prior = last_committed_fence_value_;
   HostTask task{after_prior, std::move(fn), std::move(on_error), done_value,

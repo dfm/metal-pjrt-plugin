@@ -508,9 +508,10 @@ class Stream {
   //
   // After a failure (the device's sticky error), a task with `on_error` does
   // not run and `on_error` gets the error; one without it still runs (XLA's
-  // plain callbacks free memory or complete transfers). If `fn` itself
-  // fails, its error goes to `on_error` when given (handled there), else it
-  // becomes the device's sticky error.
+  // plain callbacks free memory or complete transfers). Either way it is
+  // enqueued and HostCallback returns OK, also when the failure shows up
+  // while enqueueing it. If `fn` itself fails, its error goes to `on_error`
+  // when given (handled there), else it becomes the device's sticky error.
   absl::Status HostCallback(
       std::function<absl::Status()> fn,
       std::function<void(absl::Status)> on_error = nullptr);
