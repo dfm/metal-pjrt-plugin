@@ -1,5 +1,8 @@
 # Design: Metal as a fourth XLA:GPU platform
 
+For contributors changing the compiler or the runtime: how the plugin is
+put together and the policies the runtime follows. Users want the README.
+
 ## The production GPU plugin, and what changes for Metal
 
 The JAX CUDA backend is four layers, and only the bottom two are CUDA-specific:
@@ -70,7 +73,7 @@ Details and the exact contract are in `docs/integration-notes.md`.
 Runtime shader compilation works with command-line tools only (verified:
 192 ms for a trivial kernel). No cache of our own is needed across processes:
 Metal's system shader cache keys on the source, so the same MSL compiles in
-~1.3 ms in a later process (186 ms first; measured 2026-09-26). Within a
+~1.3 ms in a later process (186 ms the first time). Within a
 process every kernel (emitted, FFI, steel, MPS staging, built-ins) comes
 from one cache in `rt::Device` (`GetKernel`), keyed by the MSL source, the
 function name and any function constants. XLA compilation
@@ -231,7 +234,8 @@ the plugin build (diagnostics only). A kernel seen in two resets since boot
 (`METAL_PJRT_QUARANTINE_STRIKES`, 0 disables) is refused by
 `Device::GetKernel` (at load time, and on later cache hits) with
 FAILED_PRECONDITION, so a compiler bug costs at most two resets, not one per
-run; a reboot or `scripts/gpu_health.py --clear` lifts it. Strikes are not
+run; a reboot or deleting the reset log lifts it (`scripts/gpu_health.py
+--clear` does that in a source checkout; the wheel does not ship it). Strikes are not
 keyed by build (it changes on every rebuild); a changed kernel source gets
 a new key anyway. The first reset of a non-terminating kernel is
 unavoidable: Metal has no per-kernel timeout.

@@ -4,8 +4,8 @@ Status: **supported** under `jit` on a single mtl device:
 `jax.pure_callback` (including `vmap_method=...` and custom_jvp wrappers),
 `jax.experimental.io_callback` (ordered and unordered), `jax.debug.callback`
 and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
-exception in the callback surfaces as a `JaxRuntimeError` carrying its
-message. Tests: `tests/test_callbacks.py` (against CPU) and three cases in
+exception in the callback surfaces as a `JaxRuntimeError` (UNKNOWN) with
+"host callback raised: " and its message. Tests: `tests/test_callbacks.py` (against CPU) and three cases in
 `tests/test_lax.py`. checkify's runtime-error path uses the TPU rule
 (`debug_check` is a no-op; `metal_pjrt_plugin/_lowerings.py`).
 
@@ -45,8 +45,9 @@ its own table.
   GPU work is done, then a C trampoline with (pointer, PrimitiveType, dims)
   for the non-token operands and results. Buffers are shared-storage
   `MTLBuffer`s whose device pointers are host addresses, so there are no
-  device-host copies. A nonzero return plus message becomes an
-  `InternalError`.
+  device-host copies. A nonzero return plus message becomes an UNKNOWN
+  status, "host callback raised: <message>" (the user's exception, not an
+  internal error).
 - **Trampoline**: the dylib exports
   `metal_pjrt_register_python_callback_trampoline(fn)`; Python opens the
   already-loaded dylib with `ctypes.CDLL` and installs a `CFUNCTYPE`
@@ -58,12 +59,19 @@ its own table.
   `compiler.compile_or_get_cached` is wrapped to compile executables with an
   mtl callback without the cache (tested in `tests/test_callbacks.py`
   with the cache on). A stale executable loaded anyway
-  fails with "unknown metal host callback id" instead of calling the wrong
-  function.
+  fails with "metal-pjrt-plugin: unknown host callback id ...: the callable
+  is gone", which says to clear the cache directory, instead of calling the
+  wrong function.
 
 ## Limitations
 
-- One device only; sub-byte and complex dtypes are refused.
+- One device only. Sub-byte dtypes are refused ("host callbacks do not
+  support dtype int4 on platform mtl"); complex operands never get there,
+  since complex arrays fail in the MSL emitter first.
+- Only modules lowered for mtl alone get the mtl callback. A module lowered
+  for several platforms (e.g. `jax.export` with `platforms=("mtl", "cpu")`)
+  takes upstream's lowering, which refuses that for every platform
+  ("multi-platform lowering for python_callback").
 - Each callback costs a full stream synchronization and runs on the XLA
   execution thread while the stream is drained, so callbacks in hot loops
   are slow. Dispatching new mtl work from inside a callback and

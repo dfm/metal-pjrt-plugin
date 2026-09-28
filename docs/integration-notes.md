@@ -1,5 +1,8 @@
 # Integration notes (XLA @ 91888df6, jaxlib 0.11.2)
 
+For anyone moving the XLA pin (`third_party/PINS.md`) or touching the
+seams between the plugin and XLA or JAX.
+
 Source-verified facts that drive the implementation. Paths are relative to the
 XLA tree (`external/xla+` in the Bazel output base).
 
@@ -22,7 +25,8 @@ golden list. Both have an `--update` mode.
   live in registries private to our dylib (it exports only `GetPjrtApi`,
   the callback trampoline and two testing hooks, `metal_pjrt_memory_stats`
   and `metal_pjrt_memory_pressure`, used by `tests/test_memory.py` via
-  ctypes; they are not an API), so they cannot collide with another plugin.
+  ctypes; the hooks are unstable, test-only and not an API), so they cannot
+  collide with another plugin.
   JAX looks lowerings up by `backend.platform`, i.e. `MetalName()`, so
   `register_plugin`'s name and every `PLATFORM` in `metal_pjrt_plugin`
   must be exactly "mtl".
@@ -34,14 +38,21 @@ golden list. Both have an `--update` mode.
   `XLA_COLLECTIVES_REGISTER(MetalName() and "METAL", "stub", 1, GpuCollectivesStub)`
   (the client resolves collectives by the PJRT name, collective thunks by the
   SE name).
-- Things keyed on identity that need XLA patches (kept in `third_party/xla/patches/`):
+- Things keyed on identity that need changes to XLA. Items 1-3 are patch
+  `0001-metal-pjrt-identity.patch` in `third_party/xla/patches/` (which
+  also names the platform in the GPU C API shim, returns instead of
+  CHECK-failing in `gpu_module_globals.cc`, and
+  canonicalizes "gpu" to "metal" in `platform_util.cc`), item 4 is a stub in
+  our tree, item 5 is patch 0002. Patch 0003 is unrelated: a macOS build
+  fix in `record_ffi.cc` (`size_t` vs `uint64_t`).
   1. `xla/pjrt/gpu/se_gpu_pjrt_client.cc:1874-1880` picks the PJRT platform
      name by macro; add `TENSORFLOW_USE_METAL` -> `MetalName()`.
   2. `xla/pjrt/pjrt_compiler.h:493` `IsGpuId` must include the metal id.
   3. `xla/service/gpu/gpu_executable.cc:534-551` platform-id switch must
      accept `kMetalPlatformId`.
   4. `xla/service/gpu/BUILD` `ptx_custom_kernel_emitter` has no branch when no
-     GPU is configured: provide a stub `EmitPtxCustomKernelThunk`.
+     GPU is configured: `metal_pjrt/compiler/ptx_custom_kernel_emitter_stub.cc`
+     provides a stub `EmitPtxCustomKernelThunk` (no patch).
   5. `xla/service/gpu/gpu_compiler.{h,cc}`: `CompileToBackendResult` (private,
      non-virtual) stack-allocates a `CubinCustomKernelCompiler` (`final`) and
      passes it to `CompileModuleToLlvmIr` -> `IrEmitterContext`. Patch 0002
@@ -51,7 +62,7 @@ golden list. Both have an `--update` mode.
      can return a `MetalKernelCompiler` (see Codegen).
 - Compute capability: `GpuComputeCapability` is a closed variant of
   Cuda/Rocm/OneAPI (`xla/stream_executor/device_description.h:98-178`).
-  Default-constructed reads as CUDA 0.0. v1 reports **OneAPI** so that the
+  Default-constructed reads as CUDA 0.0. The plugin reports **OneAPI** so that the
   SPIR-V/Intel branches are taken (scalar-only transpose, explicit NaN
   propagation, command buffers off, atomics via the SPIRV path; the
   executable ABI-version extension is dropped instead, see "PJRT client"). No Apple alternative is planned: the tripwire test
@@ -102,7 +113,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - Ctor: `GpuCompiler(kMetalPlatformId, "spirv64-unknown-unknown", "")` so the
   emitters take the SPIR branches (`target_util.cc`, `fusion_emitter.cc`).
 - Pure virtuals: `GetLLVMCommandLineOptions`, `AddPaddingForGpublasGemms`
-  (no-op), `OptimizeHloConvolutionCanonicalization` (no-op in v1: no conv),
+  (no-op), `OptimizeHloConvolutionCanonicalization` (no-op: convolutions
+  stay loop-emitted),
   `CompileTargetBinary(module_config, llvm::Module*, device_description,
   relocatable, debug_module, shard)`.
 - `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`:

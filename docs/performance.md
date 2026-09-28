@@ -23,12 +23,15 @@ in `docs/design.md`, "Runtime".
   reset since boot (`scripts/gpu_health.py --strict`;
   `BENCH_ALLOW_DEGRADED=1` overrides): a GPU that has been reset several
   times stays ~10x slower per dispatch until a reboot.
+- The arms keep their names from before the platform rename: `metal` runs
+  `jax_bench.py` with `JAX_PLATFORMS=mtl`, `metal-gpu` the same with the
+  trace below, `cpu` with `JAX_PLATFORMS=cpu`.
 - GPU time: the `metal-gpu` arm is a second pass with `METAL_PJRT_TRACE=1`,
   which logs every command buffer's GPU start/end time; the trace adds
   ~0.1-0.3 ms to sub-millisecond wall times, hence a separate pass. TFLOPS
   are computed at the best wall time.
 - Run `bazel shutdown` first (or set `BENCH_BAZEL_SHUTDOWN=1`; `run_all.sh`
-  no longer does it by default, as it would kill another session's build).
+  does not do it by default, as it would stop a build running elsewhere).
   The Bazel server's memory makes the system memory guard refuse large
   allocations (see "Runtime" in `docs/design.md`).
 - A/Bs of sub-millisecond programs interleave the arms and report p10 /
@@ -42,9 +45,10 @@ in `docs/design.md`, "Runtime".
 
 ## Headline numbers
 
-`bench/results/table.md` has the full table (3 interleaved rounds at
-64488ff, before the platform rename; MLX's column is an older run without
-metadata). Medians, ms:
+Historical: this table and `bench/results/table.md` (the full table) are
+from one run (3 interleaved rounds at 64488ff, before the platform rename
+and later runtime work; MLX's column is an older run without metadata).
+They are not regenerated; the bullets below are more recent. Medians, ms:
 
 | case | mtl | CPU | MLX |
 |---|---|---|---|
@@ -61,23 +65,28 @@ metadata). Medians, ms:
 | cholesky 128 | 0.86 | 0.03 | - |
 | cholesky 2048 | 6.8 | 8.6 | - |
 
-Later runs agree: the nanoGPT train step measured 180-185 ms at 23bc8fd
-(one outlier at 200 ms), the forward 58-59 ms. Other current numbers:
+Later runs agree: the nanoGPT train step measured 180-185 ms (one outlier
+at 200 ms), the forward 58-59 ms. Other current numbers:
 
 - Fixed cost of a tiny program (`jit(x*2+1)` on 1024 floats, dispatch to
   result): ~170-210 us median. A long chain of tiny kernels costs ~2-4 us
   of GPU time per dispatch; a 2000-step scan with tiny state ~8.5 ms.
 - Sort (`jnp.sort` f32, radix): 20k 0.31 ms, 1M 2.6 ms, 16M 41 ms; 28-66x
-  faster than the bitonic network it replaced (e93e731). Rows of <= 64
+  faster than the bitonic network it replaced. Rows of <= 64
   stay on the bitonic network.
 - tinygp value+grad, parallel solver: n = 20000 7 ms, n = 200000 50 ms
-  (CPU 77 and 703 ms at the time of the loop work, fd27d3c).
+  (CPU 77 and 703 ms when measured).
 - Memory: a finished nanoGPT run idles at ~0.52 GB footprint (the process
   itself; the cache is released after ~2 s), peak ~1.9 GB.
 - Small dense linear algebra above 32x32 runs in host LAPACK after a full
-  stream synchronization: cholesky 128 costs ~0.3-0.9 ms against 0.03 ms on
-  CPU, two dependent GPU round trips (~130 us each) around the LAPACK call.
-  From n ~ 2048 it matches CPU.
+  stream synchronization: cholesky 128 costs ~0.3 ms median (313 us, p90
+  680 us, in the later host-task A/B below; the historical table's 0.86 ms
+  is the older run) against 0.03 ms on CPU, two dependent GPU round trips
+  (~130 us each) around the LAPACK call. From n ~ 2048 it matches CPU.
+- Persistent compilation cache (README, "Compilation cache"): with it on,
+  the first call of the nanoGPT training step in `bench/jax_bench.py` in a
+  new process takes ~0.42 s from the cache instead of ~0.75 s (MLP train
+  step: 41 ms instead of ~66 ms).
 
 Where the time goes, in brief: memory-bound kernels run at memory bandwidth
 (the emitted `x*2` kernel reaches the same ~81 GB/s as hand-written MSL);
@@ -93,7 +102,7 @@ commit messages.
 
 - Indirect command buffers (cc0c5e2): replay costs 1.2-1.4 us of GPU time
   per dependent dispatch against 0.8 us for direct encoding.
-- XLA command buffers as software replay (ab0dfcc, removed bdb9c4c): nanoGPT
+- XLA command buffers as software replay (ab0dfcc): nanoGPT
   184 vs 196 ms, but loops 5-30% slower (scan 8.1 vs 6.2 ms); the 30-40 us
   per-launch cost it targeted was a 1 ms Synchronize sleep and a
   command-buffer submission storm, both fixed in the runtime.
@@ -101,12 +110,11 @@ commit messages.
   but it never fires under autodiff (0 of 111 custom calls in the nanoGPT
   train step) and gained nothing where it fired. Standalone softmax
   8192x1024 went 1.24 -> 1.91 ms (MLX 0.97).
-- f32 GEMMs with an epilogue on steel (7704d02, reverted 29869ef): steel f32
+- f32 GEMMs with an epilogue on steel (7704d02, reverted): steel f32
   is 2-15% slower than MPS from batch*m*n*k ~ 1.7e10, 0-7% faster on mid
   shapes; nanoGPT unchanged. f32 stays MPS + a second pass (bitwise
   identical output).
-- XLA's BFC allocator (adopted 6f98ea9, replaced 1f81e01, option removed
-  b0019d2): the runtime's size-class cache matches its step time (nanoGPT
+- XLA's BFC allocator (6f98ea9, later replaced and removed): the runtime's size-class cache matches its step time (nanoGPT
   178.7-180.0 vs 179.6-181.7 ms) and returns memory (idle 0.5 vs 2.5-2.8 GB).
   The plain platform allocator with no cache: 217-245 ms (first-touch page
   faults, ~60 us per MB).
@@ -121,14 +129,14 @@ commit messages.
   expanded to the bitonic network before SortRewriter sees them.
 - Host staging of H2D transfers (e133b93): 100 MB `device_put` 9.4 vs
   8.7 ms, and it never triggered anyway (numpy memory counts as pinned).
-- `const` on read-only kernel arguments (roadmap 5.4, not committed):
+- `const` on read-only kernel arguments (not committed):
   nanoGPT 178.9-179.7 vs 178.3-179.5 ms.
-- An on-disk kernel cache / `MTLBinaryArchive` (roadmap 5.2): Metal's
+- An on-disk kernel cache / `MTLBinaryArchive`: Metal's
   system shader cache already compiles repeated MSL in ~1.3 ms (186 ms the
   first time), and JAX's persistent compilation cache skips it entirely.
 - Per-encoder blame via `EncoderExecutionStatus` (d90c267): free (96-107 vs
   97-111 us per round trip), but a command buffer is mostly one compute
   encoder, so it cannot narrow a watchdog reset to a kernel.
 - A configurable early-commit interval (`METAL_PJRT_EARLY_COMMIT_US`,
-  removed f7ec606): 0 and 1e6 leave chain64's bimodality as it is (above);
+  f7ec606 removed it): 0 and 1e6 leave chain64's bimodality as it is (above);
   the 500 us constant stays.

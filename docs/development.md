@@ -7,7 +7,8 @@ the plugin.
 ## Layout
 
 - `MODULE.bazel`, `.bazelrc`: Bazel 8 / bzlmod setup mirroring jax-ml/jax at
-  `jax-v0.11.2`, pinned to the same XLA commit jaxlib 0.11.2 was built from.
+  `jax-v0.11.2`, pinned to the same XLA commit jaxlib 0.11.2 was built from
+  (`third_party/PINS.md` lists the pins and how to move them).
 - `third_party/`: root-module patches (abseil, protobuf, grpc) copied from
   JAX, and the plugin's XLA patches (`third_party/xla/patches`).
 - `metal_pjrt/runtime/`: XLA-free C++ layer over Metal (metal-cpp):
@@ -56,7 +57,7 @@ scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt/...                                    # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt:device_tests # C++ device tests, one at a time
-scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
+scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests (a path in JAX's checkout, below), serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
 scripts/build_wheel.sh                                         # dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
@@ -80,10 +81,11 @@ either version differs (`_JAX_VERSION`, checked against `pyproject.toml` by
 venv and running `tests/test_smoke.py`, `test_sort.py` and
 `test_callbacks.py` from outside the checkout.
 
-A fresh clone builds with `scripts/install_dev.sh` alone (checked at
-2d777cf: 73 s from the shared disk cache; ~2 hours without it). Before
-deleting a scratch clone, run `bazel clean --expunge` in it: its output base
-is separate (~8 GB).
+A fresh clone builds with `scripts/install_dev.sh` alone (73 s from the
+shared disk cache; ~2 hours without it). Run `bazel shutdown` after a
+build: the Bazel server's memory can make the plugin's memory guard refuse
+allocations. Before deleting a scratch clone, run `bazel clean --expunge`
+in it: its output base is separate (~8.5 GB).
 
 `scripts/install_dev.sh` installs the `metal-pjrt-plugin` dist (editable,
 with the `test` extra) into `.venv`, with
@@ -121,10 +123,13 @@ holds memory the allocation guard then refuses to hand out.
 
 ## Environment variables
 
-Every variable the plugin, tests and scripts read. "Compile-time" ones
-change the compiled program and are part of the persistent-cache key
-(`PluginVersion` in `stream_executor/metal_executor.cc`); the others are
-read at run time.
+Every variable the plugin, tests and scripts read. Scope: "compile" ones
+change the compiled program, are read once per process and are part of
+the persistent-cache key (`PluginVersion` in
+`stream_executor/metal_executor.cc`); "run" ones are read by the runtime;
+"script" ones only by the scripts, tests or benchmarks. Audience: "user"
+knobs are for anyone running the plugin, "dev" for working on it, "test"
+for tests of the plugin itself, "internal" are set by the scripts.
 
 Booleans are off when unset, empty, `0`, `false`, `no` or `off` (any case)
 and on for anything else, in C++ (`EnvFlag`, `metal_pjrt/runtime/env.h`),
@@ -132,24 +137,36 @@ Python (`metal_pjrt_plugin._env_flag`) and the bench script alike. A number
 that does not parse (or a size in MB too large to count in bytes) is
 ignored with a warning and the default kept.
 
-| variable | read by | effect |
-|---|---|---|
-| `JAX_PLATFORMS` | JAX | `mtl,cpu` selects the plugin (it is not JAX's default backend) |
-| `JAX_MTL_MEMORY_FRACTION` | runtime, at device creation | scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set |
-| `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time, read once | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all`; other names are ignored with a warning |
-| `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time, read once | boolean; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
-| `METAL_PJRT_TRACE` | runtime | boolean; on logs one line per committed command buffer (op count, GPU time) |
-| `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/metal-pjrt`) |
-| `METAL_PJRT_QUARANTINE_STRIKES` | runtime, `gpu_health.py` | resets since boot that quarantine a kernel (default 2; 0 disables) |
-| `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | runtime | memory the system guard keeps free (default 512; for tests) |
-| `METAL_PJRT_SNAPSHOT_MAX_MB` | `pjrt/metal_pjrt_api.cc` | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap (default 256; for tests) |
-| `METAL_PJRT_FAIL_COMMAND_BUFFER` | runtime | `n` fails the n-th committed command buffer (tests of the error path) |
-| `METAL_TEST_REPORT_ULPS` | `tests/metal_testing.py` | boolean; print every measured error (with `pytest -s`) |
-| `JAX_MTL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |
-| `JAX_TESTS_DIR` | `scripts/run_jax_tests.sh` | JAX checkout with the tests (default `~/.cache/metal-pjrt/jax-tests`) |
-| `JAX_NUM_GENERATED_CASES`, `PYTEST_TIMEOUT` | `scripts/run_jax_tests.sh` | JAX's generated cases per test (default 3); seconds before a slow test's stack dump (default 180; the test is not stopped) |
-| `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | `bench/run_all.sh` | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot, `bazel shutdown` first (off by default) |
-| `BENCH_OUT`, `BENCH_LABEL` | `bench/*.py` | set by `run_all.sh`: the JSONL file and the backend label of the rows |
+| variable | scope | audience | values and default | read in |
+|---|---|---|---|---|
+| `JAX_MTL_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
+| `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all`; other names are ignored with a warning | compiler |
+| `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
+| `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
+| `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
+| `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel, default 2; 0 disables | runtime, `scripts/gpu_health.py` |
+| `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | run | test | memory the system guard keeps free, default 512 | runtime |
+| `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
+| `METAL_PJRT_FAIL_COMMAND_BUFFER` | run | test | `n` fails the n-th committed command buffer, default 0 (never) | runtime |
+| `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
+| `JAX_TESTS_DIR` | script | dev | JAX checkout with the tests, default `~/.cache/metal-pjrt/jax-tests` | `scripts/run_jax_tests.sh` |
+| `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | script | dev | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot (boolean), `bazel shutdown` first (boolean, off) | `bench/run_all.sh` |
+| `JAX_MTL_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |
+| `BENCH_OUT`, `BENCH_LABEL` | script | internal | set by `bench/run_all.sh`: the JSONL file and the backend label of the rows | `bench/*.py` |
+
+Other tools' variables the scripts set or check:
+
+- `JAX_PLATFORMS` (JAX): `mtl,cpu` selects the plugin (it is not JAX's
+  default backend). `tests/conftest.py` and `scripts/run_jax_tests.sh`
+  set it.
+- `JAX_NUM_GENERATED_CASES` (JAX's tests): generated cases per test in
+  `scripts/run_jax_tests.sh`, default 3 (the known-failures list assumes
+  3).
+- `PYTEST_TIMEOUT` (`scripts/run_jax_tests.sh`): seconds before a slow
+  test's stack dump, default 180; the test is not stopped.
+- `XLA_FLAGS` (XLA): `tests/conftest.py` refuses to run with it set, as it
+  does with any `METAL_PJRT_*` or `JAX_MTL_*` setting other than
+  `METAL_PJRT_STATE_DIR`, `METAL_PJRT_TRACE` and `JAX_MTL_DEVICE_LOCK_HELD`.
 
 ## State
 

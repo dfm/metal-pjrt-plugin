@@ -1,4 +1,4 @@
-> Note: these results predate the rename of the JAX platform to "mtl"
+> Historical: these results predate the rename of the JAX platform to "mtl"
 > (36cc906); `JAX_PLATFORMS: "metal"` below is what that run used. The
 > table is not regenerated for the rename.
 

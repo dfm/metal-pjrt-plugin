@@ -1,5 +1,10 @@
 # Accuracy notes
 
+For users: most functions agree with CPU float32 to a few ulps, a few
+(`lgamma`, `digamma`, `betainc`, `reduce_prod`) need wide tolerances, and
+Metal's `exp`, `sin`, `cos` and `log` carry a small bias; the known gaps are
+listed below.
+
 How accuracy is measured: `tests/metal_testing.py` (f64 CPU reference, ulps
 of the output dtype, `METAL_TEST_REPORT_ULPS=1` prints every comparison with
 the CPU float32 error next to it). Tolerances are about twice the measured
@@ -14,13 +19,18 @@ Open, not being fixed right now:
   (1.7e5-2.0e5 ulps normwise against the float64 sequential solver; CPU
   float32 gives NaN there); cause unknown. The tests no longer run tinygp
   (`bench/tinygp_bench.py` still times it).
-- exp / sin / cos keep Metal's bias on [0.125, 1): mean +0.11 ulps for
-  exp(-x), -0.10 for sin, -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0, max
-  0.8 / 0.6 / 0.5).
+- exp / sin / cos keep Metal's bias for |x| >= 0.125 (the prelude's
+  polynomials cover only smaller arguments): on [0.125, 1) mean +0.11 ulps
+  for exp(-x), -0.10 for sin, -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0,
+  max 0.8 / 0.6 / 0.5); exp on 1 .. 10 +0.37 (table below).
 - tanh, sinh / cosh and the prelude's `xla_expm1` / `erf` still use Metal's
   biased `exp`.
-- Metal's `log` is biased by about +-0.5 ulps (+ below 1, - above), max
-  ~2.5 ulps (~2.6 for `log2`, which is `log` times 1/ln 2).
+- Metal's `log` is biased everywhere, by about +-0.5 ulps (+ below 1, -
+  above), max ~2.5 ulps (~2.6 for `log2`, which is `log` times 1/ln 2).
+- The widest test tolerances (`tests/test_lax.py`, measured error doubled):
+  `lgamma` 580 and `digamma` 1600 ulps (CPU float32 536 / 770: the inputs
+  straddle digamma's root, where the error is relative to a tiny result),
+  `reduce_prod` 93, `betainc` 38.
 - Subnormal outputs flush to zero, as with CUDA's ftz (`exp(-100)`,
   `1e-10 * 1e-30`); XLA:CPU flushes them too.
 
@@ -86,7 +96,7 @@ Repro:
   on an ALU-bound chain of 16 logs (a branch was worse), no change on
   memory-bound kernels or real programs. XLA:CPU returns -inf here.
 
-### Policy (open for dfm to confirm)
+### Policy (open question)
 
 Fix clearly wrong values on valid inputs when the fix is cheap. The
 subnormal `log` fix makes mtl closer to numpy / IEEE than JAX's CPU

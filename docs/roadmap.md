@@ -1,9 +1,9 @@
 # Roadmap
 
-Status as of 2026-09-27. The 2026-09-26 design review's phased plan, with a
-status line per item and commit hashes, is kept verbatim in
-`docs/archive/roadmap-2026-09-27.md`; the measurements are in
-`docs/performance.md` and `docs/archive/performance-log-2026-09.md`.
+The design review's phased plan, with a status line per item and commit
+hashes, is kept verbatim in `docs/archive/roadmap-2026-09-27.md`; the
+measurements are in `docs/performance.md` and
+`docs/archive/performance-log-2026-09.md`.
 
 Guiding rules: mirror what XLA does on CUDA; measure before building;
 delete what does not earn its keep; no new upstream patches unless
@@ -40,17 +40,18 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 ## Decided against
 
-- **Our own PJRT client** (review 3.4, 3b209b5): it would remove only ~15
+- **Our own PJRT client** (3b209b5): it would remove only ~15
   of patch 0001's ~200 lines; there is no `StreamExecutorGpuClient` class
   to subclass at this pin; zero-copy host import would need a ~400-line
   client fork. The small `GetPjrtApi` wrapper stays.
-- **Host LAPACK as a stream host task** (3.1, 59ec97d, built and measured):
+- **Host LAPACK as a stream host task** (59ec97d, built and measured):
   not faster (cholesky 128 median 313 -> 299 us, same p90; 100 unblocked
   `cho_solve` +12%). Each call still pays two dependent GPU round trips
   and the hold rule keeps the dispatch thread waiting.
 - **Async Python callbacks**: stay synchronous. A callback on the stream's
   host-task worker could make a commit wait for a task that needs the GIL,
-  and 3.1 showed the host-task path buys nothing here.
+  and the host-LAPACK experiment above showed the host-task path buys
+  nothing here.
 - **The softmax rewriter** (fcbf5ce): 1.5-1.8x on standalone softmax, but
   it never fires under autodiff and gave nothing where it fired. Cost:
   standalone softmax 8192x1024 1.24 -> 1.91 ms (MLX 0.97).
@@ -73,7 +74,7 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 ## Next
 
-Open decisions for dfm:
+Open decisions for the maintainer:
 
 - **The 6-9 us no-wait variant**: drop `waitUntilCompleted` in
   `CheckInFlight` and save 6-9 us per synchronizing round trip. Sound only
@@ -82,16 +83,15 @@ Open decisions for dfm:
 - **int8 GEMM**: s8 x s8 -> s32 is refused today. Options: a size-capped
   elemental fallback (watchdog risk above the cap), or an int8 steel GEMM.
   int8 through the f32 GEMM is exact only for K < ~1040.
-- **Accuracy policy**: match numpy/IEEE on valid inputs, or XLA:CPU? This
-  decides subnormal handling (`log(subnormal)` is fixed, 70bf680; subnormal
-  outputs still flush).
+- **Accuracy policy**: match numpy/IEEE on valid inputs, or XLA:CPU?
+  `docs/accuracy.md`, "Policy", has the question and the cases it decides.
 - **Per-boot quarantine**: strikes count per boot, so an unchanged buggy
   kernel gets two more resets after each reboot. The other choice is
   counting across boots until `gpu_health.py --clear`.
 - **System memory guard strictness**: it counts only free + inactive +
   speculative + purgeable pages, minus a 512 MB reserve. On an 8 GB Mac
   with a browser open it refused nanoGPT's 1.17 GiB step allocation with
-  1.36 GB free (6807b10). Keep it strict (swapping is what wedged the GPU),
+  1.36 GB free. Keep it strict (swapping is what wedged the GPU),
   or also count compressible memory?
 - **Softmax**: keep the rewriter deleted, or revert fcbf5ce for
   standalone/inference softmax (1.91 -> 1.24 ms).
@@ -117,10 +117,10 @@ CUDA too). The plugin refuses such GEMMs at compile time
 
 ## Deferred / unverified
 
-- The GPU-error path is exercised only by injected failures; no real fault
-  or watchdog timeout has been provoked. Whether every work ticket ends
-  after a sticky error is untested (if not, cached buffers stay until the
-  process exits).
+- The README's "Unverified" item lists what was never tried (a real GPU
+  fault or watchdog timeout, jax-metal side by side, other Macs). Beyond
+  that: whether every work ticket ends after a sticky error is untested
+  (if not, cached buffers stay until the process exits).
 - The out-of-memory retry (drop the cache, wait for in-flight work, retry)
   and the real memory-pressure notification (`sudo memory_pressure -S -l
   warn`) are untested; the pressure handler runs through a test hook.
@@ -128,8 +128,6 @@ CUDA too). The plugin refuses such GEMMs at compile time
 - Patches 0002 and 0003 not sent upstream.
 - The wheel is untested elsewhere and not stripped (236 MB dylib; `strip
   -x` would save ~90 MB). No macOS CI or remote cache.
-- Coexistence with jax-metal is argued from code only; tolerances and
-  performance come from one M3 with macOS 26.2 (also in the README).
 
 ## Deferred / ideas
 

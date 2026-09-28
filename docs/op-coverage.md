@@ -1,5 +1,13 @@
 # XLA op coverage audit (XLA @ 91888df6)
 
+For users: the README's support table is the short version. JAX's own
+`lax_test.py` passes 947 cases on mtl; its 62 known failures
+(`scripts/jax_known_failures/lax_test.txt`, run with
+`JAX_NUM_GENERATED_CASES=3` and x64 off) are complex values, int4, dot
+precision algorithms, JAX's `dce_sink` test handler (an FFI handler not
+registered for Metal) and one convolution the kernel translator cannot
+handle.
+
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
 works. "Verified" means observed in `tests/test_lax.py` (against a float64
 CPU reference, with tolerances in ulps; int4 is an expected failure). File
@@ -39,17 +47,19 @@ emitter's default case ("Unsupported instruction opcode").
 | select-and-scatter | expander to scatter + reduce-window | OK | verified (maxpool grad) |
 | stochastic-convert, logistic, batch-norm | HLO expanders | OK | expanders run in the shared pipeline |
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
-| dot, f16/bf16/f32 | BlasLt thunk over MPS (f32) / steel (f16/bf16) | OK | verified incl. batched. f16/bf16 GEMMs past steel's 32-bit index limits (a row of more than 8388607 elements, a dimension or batch count over INT32_MAX) are refused at compile time. Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal: matmul s8 x s8 -> s32 is not supported"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
+| dot, f16/bf16/f32 | BlasLt thunk over MPS (f32) / steel (f16/bf16) | OK | verified incl. batched. For every type, a GEMM whose batch, row or column group has more than INT32_MAX elements is refused at compile time (XLA's matmul config counts them in 32 bits; `CheckGemmGroupsFitInt32`). f16/bf16 GEMMs past steel's 32-bit index limits (a row of more than 8388607 elements, a dimension or batch count over INT32_MAX) are refused at compile time too. GEMMs mixing types (e.g. f16 x f16 -> bf16) are refused ("both operands must be f32, f16 or bf16 of one type, the result that type or f32"). Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal: matmul s8 x s8 -> s32 is not supported"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | applied in steel's store (bias, relu / tanh-gelu / silu, aux; f16/bf16); f32: MPS GEMM + one MSL epilogue kernel; verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
-| ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
+| ragged-dot, scaled-dot | rewriters to dense dots | OK / untested for fp8 | fp8 GEMMs are untested; `CheckBlasLtTypes` refuses any GEMM that is not f32, f16 or bf16 |
+| dot precision algorithms `TF32_*`, `F16_F16_F16`, `BF16_BF16_BF16` | XLA's algorithm check | NO | XLA: "Unsupported algorithm on the current device(s)"; the `BF16_BF16_F32` family runs (`test_small_dot_bf16_algorithm`) |
 | sort, argsort, top_k, searchsorted, unique | Simple comparators on more than 16384 elements: XLA's SortRewriter -> `xla.gpu.ext.cub_sort_{keys,pairs}` FFI, an MSL LSD radix sort (`metal_pjrt/ffi/cub_sort_ffi.cc`). Everything else, and rows of <= 64 (pre-expanded in `RunHloPasses`; top_k with such rows is decomposed to a sort there first, since XLA would otherwise make it a sort only after that point): `MetalSortExpander` (`metal_pjrt/compiler/passes`), a bitonic network (straight-line up to 64 per row, else a while loop of gather + elementwise compare-and-swap); TopK decomposes back to sort on OneAPI | OK | bit-identical to CPU incl. 16M elements, batched, +-0/NaN and stability (`tests/test_sort.py`, `ffi:cub_sort_test`); `METAL_PJRT_DISABLE_REWRITES=cubsort` sends every sort to the bitonic network |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
 | triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
 | lu / geqrf / householder_product / eigh / svd | JAX lowerings in `metal_pjrt_plugin/_linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
-| fft | `metal_pjrt_plugin/_lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | verified (fft, rfft2); a native FFT is still missing |
+| fft | `metal_pjrt_plugin/_lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | partly, O(n^2) per axis | the lowering returns `lax.complex(re, im)`, so it works only when the result is made real in the same jit (verified: abs, .real/.imag, irfft, rfft2). A complex result or intermediate in device memory, and grad through an FFT, fail in the emitter (strict xfails in `tests/test_linalg.py`); a native FFT is still missing |
+| eig, schur, hessenberg, tridiagonal, geqp3 | no lowering registered for mtl (none is platform-independent in JAX; TPU lacks them too) | NO | JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl" |
 | cuDNN conv / norm / attention | DNN thunks | not produced | conv rewriter is a no-op |
 | Triton fusions | Triton | not produced | gated to CUDA/ROCm |
 | custom fusions (CUTLASS), PTX custom kernels | custom kernel thunks | NO | not produced |
@@ -75,18 +85,22 @@ needs 64-bit atomics, which Metal does not have: scatter-add.5
 (jit(f)/scatter-add) at f.py:7". f64 data movement that needs a GPU kernel
 (transpose, broadcast, concatenate, gather, pad, reverse, select, iota) is
 refused the same way; contiguous slices, reshapes and dynamic slices and
-updates are copies and run. Other f64 kernels (e.g. a strided slice) still
-fail in the MSL emitter (no f64 loads). The check runs late on
+updates are copies and run. Other f64 kernels (a strided or column slice) still
+fail in the MSL emitter ("MSL emitter: unsupported f64 type (Metal has no
+double precision) in op 'llvm.load' ..."). The check runs late on
 purpose: an f32 -> f64 -> f32 chain is simplified away and runs. Complex is
 not checked: complex values inside a fusion lower fine (`abs(fft(x))` runs);
-only complex kernel buffers fail, in the emitter
-("unsupported non-trivial unrealized_conversion_cast"). bf16 and f8 conversions
+only complex kernel buffers fail, in the emitter ("MSL emitter: unsupported
+non-trivial unrealized_conversion_cast in op
+'builtin.unrealized_conversion_cast' at loc("loop_complex_fusion")"). bf16 and f8 conversions
 are expanded to integer math by XLA and round exactly (0 ulps against CPU).
 The mismatch seen earlier came from the test converting back to f32 inside
 the same jit: XLA's GPU pipeline removes f32 -> bf16/f16 -> f32 pairs
 (`SimplifyFPConversions` under `xla_allow_excess_precision`, on by default,
 as on CUDA), so the value never rounds. Sub-byte integers (s4/u4) are
-rejected by the emitter.
+rejected by the emitter ("MSL emitter: unsupported sub-byte / odd-width
+integer type in op 'arith.trunci' ..."). `docs/troubleshooting.md` lists
+these messages for users.
 
 A 16-bit -> f32 dot (`preferred_element_type`) small enough that XLA keeps it
 as a kDot (e.g. 4x3 @ 3x6) used to round every product to the input type:
