@@ -59,12 +59,6 @@ absl::StatusOr<MetalContext> GetMetalContext(stream_executor::Stream* stream);
 // instantiate stage, which runs without a stream.
 absl::StatusOr<rt::Device*> DefaultMetalDevice();
 
-// Compiles `msl_source` (once per device and source) and returns the kernel
-// `function` from it. The returned pointer lives as long as the process.
-absl::StatusOr<const rt::Kernel*> GetOrCreateKernel(
-    rt::Device* device, const std::string& msl_source,
-    const std::string& function);
-
 // MSL scalar type name for an XLA element type ("float", "half", "bfloat",
 // "int"), or an error for unsupported types.
 absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type);
@@ -109,7 +103,7 @@ absl::Status LaunchMsl(stream_executor::Stream* stream,
   absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();
   absl::StatusOr<const rt::Kernel*> kernel =
-      GetOrCreateKernel(ctx->device, msl_source, function);
+      ctx->device->GetKernel(msl_source, function);
   if (!kernel.ok()) return kernel.status();
   return LaunchKernel(ctx->stream, **kernel, buffers, params, threadgroups,
                       threads, threadgroup_memory_bytes);

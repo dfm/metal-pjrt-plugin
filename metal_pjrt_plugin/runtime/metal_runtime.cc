@@ -22,6 +22,7 @@
 #include <functional>
 #include <thread>
 
+#include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
@@ -419,6 +420,7 @@ void Device::LoadResetLog() {
       pos = end;
     }
   }
+  may_quarantine_ = !strikes_.empty();
   if (resets_since_boot_ > 0) {
     LOG(WARNING) << "The GPU was reset " << resets_since_boot_
                  << " time(s) since boot (" << ResetLogPath(state_dir_)
@@ -460,6 +462,7 @@ void Device::RecordReset(
         ++it->second;
       }
     }
+    may_quarantine_ = !strikes_.empty();
   }
   for (size_t i = 0; i < unique.size(); ++i) {
     absl::StrAppendFormat(&line, "%s{\"key\":\"%s\",\"name\":\"%s\"}",
@@ -533,8 +536,10 @@ Device::~Device() {
                << allocations_.size() << " live allocation(s) totalling "
                << allocated_bytes_ << " bytes; releasing them";
   }
-  for (auto& kv : pso_cache_) kv.second->release();
-  for (auto& kv : library_cache_) kv.second->release();
+  for (auto& [source, entry] : kernel_cache_) {
+    for (auto& [key, kernel] : entry->kernels) kernel->pso()->release();
+    entry->library->release();
+  }
   for (auto& kv : allocations_) kv.second.first->release();
   if (device_) device_->release();
 }
@@ -880,98 +885,134 @@ uint64_t Device::allocated_bytes() const {
   return allocated_bytes_;
 }
 
-absl::StatusOr<MTL::Library*> Device::CompileLibrary(
-    const std::string& msl_source) {
-  std::string key = HashString(msl_source);
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = library_cache_.find(key);
-    if (it != library_cache_.end()) return it->second;
-  }
-  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-  NS::Error* err = nullptr;
-  MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
-  opts->setFastMathEnabled(false);
-  MTL::Library* lib = device_->newLibrary(Str(msl_source), opts, &err);
-  opts->release();
-  absl::StatusOr<MTL::Library*> result;
-  if (lib == nullptr) {
-    // The error lives in the autorelease pool; format it before draining.
-    result = absl::InternalError(absl::StrFormat(
-        "Metal shader compilation failed (%d bytes of MSL, key %s): %s",
-        msl_source.size(), key, NSErrorToString(err)));
-  } else {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto [it, inserted] = library_cache_.emplace(key, lib);
-    if (!inserted) {
-      lib->release();  // lost a race; use the cached one
-    }
-    library_keys_[it->second] = key;
-    result = it->second;
-  }
-  pool->release();
-  return result;
+absl::StatusOr<const Kernel*> Device::GetKernel(
+    absl::string_view msl_source, absl::string_view function,
+    absl::Span<const FunctionConstant> constants) {
+  return GetKernelImpl(msl_source, function, constants, /*builtin=*/false);
 }
 
-absl::StatusOr<std::unique_ptr<Kernel>> Device::CreateKernel(
-    MTL::Library* library, const std::string& function, bool builtin) {
-  if (library == nullptr) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("CreateKernel(", function, "): null library"));
+absl::Status Device::CheckQuarantine(const KernelIdentity& id) {
+  if (id.builtin || quarantine_strikes_ == 0 ||
+      !may_quarantine_.load(std::memory_order_acquire)) {
+    return absl::OkStatus();
   }
-  std::string key =
-      absl::StrCat(reinterpret_cast<uintptr_t>(library), ":", function);
-  MTL::ComputePipelineState* pso = nullptr;
-  auto identity = std::make_shared<KernelIdentity>();
-  identity->name = function;
-  identity->builtin = builtin;
+  std::lock_guard<std::mutex> lock(mu_);
+  auto strikes = strikes_.find(id.key);
+  if (strikes == strikes_.end() || strikes->second < quarantine_strikes_) {
+    return absl::OkStatus();
+  }
+  return absl::FailedPreconditionError(absl::StrFormat(
+      "kernel %s is quarantined: it was in the command buffer that timed "
+      "out in %d GPU watchdog resets since boot (see "
+      "%s/gpu_resets.jsonl). Fix the kernel (a changed kernel gets a new "
+      "key); after a fix outside the kernel source, clear the log with "
+      "scripts/gpu_health.py --clear. A reboot also lifts it; "
+      "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
+      id.name, strikes->second, state_dir_));
+}
+
+absl::StatusOr<const Kernel*> Device::GetKernelImpl(
+    absl::string_view msl_source, absl::string_view function,
+    absl::Span<const FunctionConstant> constants, bool builtin) {
+  // Kernels of one source by function name, plus the constants if any.
+  std::string kernel_key(function);
+  for (const FunctionConstant& c : constants) {
+    absl::StrAppend(&kernel_key, "|", c.index,
+                    c.type == FunctionConstant::Type::kBool ? "b" : "i",
+                    c.value);
+  }
+  CachedLibrary* entry = nullptr;
+  const Kernel* cached = nullptr;
   {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto lk = library_keys_.find(library);
-    identity->key = absl::StrCat(
-        lk == library_keys_.end() ? "unknown" : lk->second, ":", function);
-    auto strikes = strikes_.find(identity->key);
-    if (!builtin && quarantine_strikes_ > 0 && strikes != strikes_.end() &&
-        strikes->second >= quarantine_strikes_) {
-      return absl::FailedPreconditionError(absl::StrFormat(
-          "kernel %s is quarantined: it was in the command buffer that timed "
-          "out in %d GPU watchdog resets since boot (see "
-          "%s/gpu_resets.jsonl). Fix the kernel (a changed kernel gets a new "
-          "key); after a fix outside the kernel source, clear the log with "
-          "scripts/gpu_health.py --clear. A reboot also lifts it; "
-          "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
-          function, strikes->second, state_dir_));
+    std::lock_guard<std::mutex> lock(kernel_mu_);
+    auto lib = kernel_cache_.find(msl_source);
+    if (lib != kernel_cache_.end()) {
+      entry = lib->second.get();
+      auto k = entry->kernels.find(kernel_key);
+      if (k != entry->kernels.end()) cached = k->second.get();
     }
-    auto it = pso_cache_.find(key);
-    if (it != pso_cache_.end()) pso = it->second;
   }
-  if (pso == nullptr) {
-    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    MTL::Function* fn = library->newFunction(Str(function));
-    if (fn == nullptr) {
-      pool->release();
-      return absl::InvalidArgumentError(absl::StrCat(
-          "Metal function '", function, "' not found in library"));
-    }
+  if (cached != nullptr) {
+    ABSL_RETURN_IF_ERROR(CheckQuarantine(*cached->identity()));
+    return cached;
+  }
+  const std::string source(msl_source);
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+  absl::Cleanup drain = [pool] { pool->release(); };
+  if (entry == nullptr) {
+    const std::string hash = HashString(source);
     NS::Error* err = nullptr;
-    pso = device_->newComputePipelineState(fn, &err);
-    fn->release();
-    if (pso == nullptr) {
-      std::string msg = NSErrorToString(err);
-      pool->release();
-      return absl::InternalError(absl::StrCat(
-          "Metal compute pipeline creation failed for '", function, "': ",
-          msg));
+    MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
+    opts->setFastMathEnabled(false);
+    MTL::Library* lib = device_->newLibrary(Str(source), opts, &err);
+    opts->release();
+    if (lib == nullptr) {
+      // The error lives in the autorelease pool; format it before draining.
+      return absl::InternalError(absl::StrFormat(
+          "Metal shader compilation failed (%d bytes of MSL, key %s): %s",
+          source.size(), hash, NSErrorToString(err)));
     }
-    pool->release();
-    std::lock_guard<std::mutex> lock(mu_);
-    auto [it, inserted] = pso_cache_.emplace(key, pso);
-    if (!inserted) {
-      pso->release();
-      pso = it->second;
+    std::lock_guard<std::mutex> lock(kernel_mu_);
+    auto [it, inserted] = kernel_cache_.try_emplace(source, nullptr);
+    if (inserted) {
+      it->second = std::make_unique<CachedLibrary>();
+      it->second->library = lib;
+      it->second->hash = hash;
+    } else {
+      lib->release();  // lost a race; use the cached one
+    }
+    entry = it->second.get();
+  }
+  // The entry and its library stay until ~Device; only its map needs the
+  // lock.
+  auto identity = std::make_shared<KernelIdentity>();
+  identity->name = std::string(function);
+  identity->key = absl::StrCat(entry->hash, ":", kernel_key);
+  identity->builtin = builtin;
+  ABSL_RETURN_IF_ERROR(CheckQuarantine(*identity));
+
+  MTL::FunctionConstantValues* values = nullptr;
+  if (!constants.empty()) {
+    values = MTL::FunctionConstantValues::alloc()->init();
+    for (const FunctionConstant& c : constants) {
+      const bool b = c.value != 0;
+      if (c.type == FunctionConstant::Type::kBool) {
+        values->setConstantValue(&b, MTL::DataTypeBool, c.index);
+      } else {
+        values->setConstantValue(&c.value, MTL::DataTypeInt, c.index);
+      }
     }
   }
-  return std::make_unique<Kernel>(pso, std::move(identity));
+  NS::Error* err = nullptr;
+  MTL::Function* fn =
+      values == nullptr
+          ? entry->library->newFunction(Str(identity->name))
+          : entry->library->newFunction(Str(identity->name), values, &err);
+  if (values != nullptr) values->release();
+  if (fn == nullptr) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "Metal function '", function, "' not found in library",
+        err != nullptr ? absl::StrCat(": ", NSErrorToString(err)) : ""));
+  }
+  MTL::ComputePipelineState* pso = device_->newComputePipelineState(fn, &err);
+  fn->release();
+  if (pso == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "Metal compute pipeline creation failed for '", function, "': ",
+        NSErrorToString(err)));
+  }
+  const std::string name(function);
+  auto kernel = std::make_unique<Kernel>(
+      pso, std::move(identity), UsesArgumentBuffer(source, name),
+      DeclaredMaxThreadsPerThreadgroup(source, name));
+  std::lock_guard<std::mutex> lock(kernel_mu_);
+  auto [it, inserted] = entry->kernels.try_emplace(kernel_key, nullptr);
+  if (inserted) {
+    it->second = std::move(kernel);
+  } else {
+    pso->release();  // lost a race; use the cached one
+  }
+  return it->second.get();
 }
 
 namespace {
@@ -1012,15 +1053,15 @@ constexpr const char* kBuiltinNames[] = {"xla_metal_fill32", "xla_metal_fill8",
 }  // namespace
 
 absl::StatusOr<const Kernel*> Device::BuiltinKernel(Builtin kind) {
+  // Launched by nearly every copy and fill: skip the cache's source lookup.
   std::lock_guard<std::mutex> lock(builtin_mu_);
-  std::unique_ptr<Kernel>& slot = builtin_kernels_[static_cast<int>(kind)];
+  const Kernel*& slot = builtin_kernels_[static_cast<int>(kind)];
   if (slot == nullptr) {
-    ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, CompileLibrary(kBuiltinMsl));
     ABSL_ASSIGN_OR_RETURN(
-        slot, CreateKernel(lib, kBuiltinNames[static_cast<int>(kind)],
-                           /*builtin=*/true));
+        slot, GetKernelImpl(kBuiltinMsl, kBuiltinNames[static_cast<int>(kind)],
+                            {}, /*builtin=*/true));
   }
-  return slot.get();
+  return slot;
 }
 
 absl::StatusOr<std::unique_ptr<Stream>> Device::CreateStream() {

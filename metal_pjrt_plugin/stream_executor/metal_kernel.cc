@@ -25,9 +25,9 @@ namespace metal {
 
 namespace rt = metal_pjrt::rt;
 
-MetalKernel::MetalKernel(MetalExecutor* executor,
-                         std::unique_ptr<rt::Kernel> kernel, unsigned arity)
-    : executor_(executor), kernel_(std::move(kernel)), arity_(arity) {}
+MetalKernel::MetalKernel(MetalExecutor* executor, const rt::Kernel* kernel,
+                         unsigned arity)
+    : executor_(executor), kernel_(kernel), arity_(arity) {}
 
 MetalKernel::~MetalKernel() { executor_->UnloadKernel(this); }
 

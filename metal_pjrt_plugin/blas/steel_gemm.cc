@@ -7,10 +7,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <memory>
-#include <mutex>
 #include <string>
-#include <unordered_map>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -91,29 +88,6 @@ std::string VariantSource(MpsDType in, MpsDType out, const SteelTile& t,
       "constant constexpr bool EPI_BIAS = ", b(epi.bias != nullptr), ";\n",
       "constant constexpr bool EPI_AUX = ", b(epi.aux != nullptr), ";\n",
       "constant constexpr int EPI_ACT = ", epi.act, ";\n", kSteelGemmMslBody);
-}
-
-absl::StatusOr<std::shared_ptr<rt::Kernel>> GetKernel(
-    rt::Device* device, const std::string& source) {
-  static std::mutex mu;
-  static auto* cache =
-      new std::unordered_map<std::string, std::shared_ptr<rt::Kernel>>();
-  // Key on the variant prefix (everything before the shared body) + device.
-  const std::string key =
-      absl::StrCat(reinterpret_cast<uintptr_t>(device), "|",
-                   source.substr(0, source.size() -
-                                        (sizeof(kSteelGemmMslBody) - 1)));
-  {
-    std::lock_guard<std::mutex> lock(mu);
-    auto it = cache->find(key);
-    if (it != cache->end()) return it->second;
-  }
-  ABSL_ASSIGN_OR_RETURN(MTL::Library * lib, device->CompileLibrary(source));
-  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> k,
-                        device->CreateKernel(lib, kSteelGemmKernelName));
-  std::shared_ptr<rt::Kernel> shared(std::move(k));
-  std::lock_guard<std::mutex> lock(mu);
-  return cache->emplace(key, shared).first->second;
 }
 
 const void* DevicePtr(const MpsOperand& x) {
@@ -213,10 +187,11 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
   const bool mn_aligned = p.m % t.bm == 0 && p.n % t.bn == 0;
   const bool k_aligned = p.k % t.bk == 0;
   ABSL_ASSIGN_OR_RETURN(
-      std::shared_ptr<rt::Kernel> kernel,
-      GetKernel(device, VariantSource(p.a.dtype, p.c.dtype, t, p.a.transpose,
+      const rt::Kernel* kernel,
+      device->GetKernel(VariantSource(p.a.dtype, p.c.dtype, t, p.a.transpose,
                                       p.b.transpose, mn_aligned, k_aligned,
-                                      use_c, *epi)));
+                                      use_c, *epi),
+                        kSteelGemmKernelName));
 
   const int tn = static_cast<int>((p.n + t.bn - 1) / t.bn);
   const int tm = static_cast<int>((p.m + t.bm - 1) / t.bm);

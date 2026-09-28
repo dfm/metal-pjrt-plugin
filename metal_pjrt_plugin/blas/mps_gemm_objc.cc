@@ -8,7 +8,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <mutex>
 #include <sstream>
 #include <string>
 
@@ -17,6 +16,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "metal_pjrt_plugin/runtime/system_memory.h"
 
 #if !__has_feature(objc_arc)
@@ -156,38 +156,6 @@ kernel void copy_f32(device const uint* in [[buffer(0)]],
 }
 )MSL";
 
-absl::StatusOr<id<MTLComputePipelineState>> GetStagingPipeline(
-    id<MTLDevice> device) {
-  static std::mutex mu;
-  static NSMutableDictionary* cache = nil;  // registryID -> PSO
-  std::lock_guard<std::mutex> lock(mu);
-  if (cache == nil) cache = [NSMutableDictionary dictionary];
-  NSNumber* key = @(device.registryID);
-  id<MTLComputePipelineState> hit = cache[key];
-  if (hit == nil) {
-    NSError* err = nil;
-    id<MTLLibrary> lib =
-        [device newLibraryWithSource:@(kStagingMsl) options:nil error:&err];
-    if (lib == nil) {
-      return absl::InternalError(absl::StrCat(
-          "RunMpsGemm: compiling the staging kernel failed: ",
-          NSErrorToString(err)));
-    }
-    id<MTLFunction> fn = [lib newFunctionWithName:@"copy_f32"];
-    if (fn == nil) {
-      return absl::InternalError("RunMpsGemm: staging kernel not found");
-    }
-    hit = [device newComputePipelineStateWithFunction:fn error:&err];
-    if (hit == nil) {
-      return absl::InternalError(absl::StrCat(
-          "RunMpsGemm: creating the staging pipeline failed: ",
-          NSErrorToString(err)));
-    }
-    cache[key] = hit;
-  }
-  return hit;
-}
-
 // Copies the matrices of an operand between `in` and `out`, which share
 // ld/bs (all quantities in elements).
 absl::Status EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState> pso,
@@ -309,10 +277,10 @@ absl::Status EncodeMpsGemm(id<MTLDevice> device, id<MTLCommandBuffer> cmd,
   return absl::OkStatus();
 }
 
-absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
+absl::Status RunMpsGemmImpl(rt::Device* rt_device, void* mtl_command_buffer,
                             const GemmParams& p) {
-  if (mtl_command_buffer == nullptr) {
-    return Invalid("null command buffer", p);
+  if (rt_device == nullptr || mtl_command_buffer == nullptr) {
+    return Invalid("null device or command buffer", p);
   }
   ABSL_RETURN_IF_ERROR(CheckParams(p));
   if (p.m == 0 || p.n == 0 || p.batch_count == 0) return absl::OkStatus();
@@ -323,9 +291,8 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
 
   id<MTLCommandBuffer> cmd =
       (__bridge id<MTLCommandBuffer>)mtl_command_buffer;
-  id<MTLDevice> device = mtl_device != nullptr
-                             ? (__bridge id<MTLDevice>)mtl_device
-                             : cmd.device;
+  id<MTLDevice> device =
+      (__bridge id<MTLDevice>)static_cast<void*>(rt_device->mtl());
   if (!MPSSupportsMTLDevice(device)) {
     return absl::UnimplementedError(Describe(
         absl::StrCat("MPS does not support device ", device.name.UTF8String),
@@ -361,7 +328,10 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
       return absl::OkStatus();
     }
     if (pipe == nil) {
-      ABSL_ASSIGN_OR_RETURN(pipe, GetStagingPipeline(device));
+      ABSL_ASSIGN_OR_RETURN(const rt::Kernel* k,
+                            rt_device->GetKernel(kStagingMsl, "copy_f32"));
+      pipe = (__bridge id<MTLComputePipelineState>)static_cast<void*>(
+          k->pso());
     }
     const int64_t tmp_bytes = required * es;
     // Staging buffers come straight from the device, not the pool; they
@@ -421,14 +391,14 @@ absl::Status RunMpsGemmImpl(void* mtl_device, void* mtl_command_buffer,
 
 }  // namespace
 
-absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
+absl::Status RunMpsGemm(rt::Device* device, void* mtl_command_buffer,
                         const GemmParams& p) {
   // The descriptors, MPSMatrix objects and keep_alive array are autoreleased,
   // and XLA's execute threads never drain a pool: without this one they, and
   // the MTLBuffers the MPSMatrix objects retain, leaked for the life of the
   // thread (208 MB per call of a 100 MB matmul with the platform allocator).
   @autoreleasepool {
-    return RunMpsGemmImpl(mtl_device, mtl_command_buffer, p);
+    return RunMpsGemmImpl(device, mtl_command_buffer, p);
   }
 }
 

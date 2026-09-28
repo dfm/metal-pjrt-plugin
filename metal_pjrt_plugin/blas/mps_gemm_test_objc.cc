@@ -195,7 +195,7 @@ void RunCase(Device* dev, Stream* stream, const Case& c) {
   p.c = operand(C, false);
 
   ASSERT_THAT(stream->EncodeExternal(
-                  [&](void* cmd) { return RunMpsGemm(nullptr, cmd, p); },
+                  [&](void* cmd) { return RunMpsGemm(dev, cmd, p); },
                   GemmWork(p)),
               IsOk());
   ASSERT_THAT(stream->Synchronize(), IsOk());
@@ -307,7 +307,7 @@ TEST_F(MpsGemmTest, OrderingAndRollover) {
       st = stream->Memset32(cbuf.ptr, 0x3f800000u, n * n * 4);  // 1.0f
       for (int i = 0; i < 10 && st.ok(); ++i)
         st = stream->EncodeExternal(
-            [&](void* cmd) { return RunMpsGemm(nullptr, cmd, p); },
+            [&](void* cmd) { return RunMpsGemm(dev_.get(), cmd, p); },
             GemmWork(p));
       expect = 1024.f;
     }
@@ -332,7 +332,7 @@ TEST_F(MpsGemmTest, ErrorCodes) {
   p.a = p.b = p.c = {r->buffer, 0, 4, 0, MpsDType::kF32, false};
   auto run = [&](const GemmParams& q) {
     return stream_->EncodeExternal(
-        [&](void* cmd) { return RunMpsGemm(nullptr, cmd, q); }, GemmWork(q));
+        [&](void* cmd) { return RunMpsGemm(dev_.get(), cmd, q); }, GemmWork(q));
   };
   GemmParams bad = p;
   bad.m = -1;
@@ -346,7 +346,7 @@ TEST_F(MpsGemmTest, ErrorCodes) {
   bad = p;
   bad.a.dtype = bad.b.dtype = bad.c.dtype = MpsDType::kBF16;  // steel's
   EXPECT_THAT(run(bad), StatusIs(absl::StatusCode::kUnimplemented));
-  EXPECT_THAT(RunMpsGemm(nullptr, nullptr, p),
+  EXPECT_THAT(RunMpsGemm(dev_.get(), nullptr, p),
               StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(run(p), IsOk());
   EXPECT_THAT(stream_->Synchronize(), IsOk());

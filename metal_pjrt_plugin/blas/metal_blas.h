@@ -57,13 +57,12 @@ class MetalBlasLt : public gpu::BlasLt {
     MatmulPlan(metal_pjrt::rt::Device* device,
                metal_pjrt::blas::GemmParams params, bool swap_operands,
                EpilogueSpec epilogue = {},
-               std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel =
-                   nullptr)
+               const metal_pjrt::rt::Kernel* epilogue_kernel = nullptr)
         : device_(device),
           params_(params),
           swap_operands_(swap_operands),
           epilogue_(epilogue),
-          epilogue_kernel_(std::move(epilogue_kernel)) {}
+          epilogue_kernel_(epilogue_kernel) {}
 
     absl::Status ExecuteOnStream(
         Stream* stream, const gpu::BlasLt::MemoryArgs& args,
@@ -78,7 +77,7 @@ class MetalBlasLt : public gpu::BlasLt {
     metal_pjrt::blas::GemmParams params_;
     bool swap_operands_;
     EpilogueSpec epilogue_;
-    std::shared_ptr<metal_pjrt::rt::Kernel> epilogue_kernel_;
+    const metal_pjrt::rt::Kernel* epilogue_kernel_;  // owned by the device
 
     absl::StatusOr<std::pair<const void*, void*>> EpilogueBuffers(
         const gpu::BlasLt::MemoryArgs& args) const;

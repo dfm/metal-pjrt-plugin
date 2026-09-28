@@ -270,20 +270,14 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
   absl::Span<const uint8_t> bytes = spec.cuda_cubin_in_memory()->cubin_bytes;
   std::string msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
-  absl::StatusOr<MTL::Library*> library = device_->CompileLibrary(msl);
-  if (!library.ok()) {
-    return absl::Status(library.status().code(),
+  absl::StatusOr<const rt::Kernel*> rt_kernel =
+      device_->GetKernel(msl, spec.kernel_name());
+  if (!rt_kernel.ok()) {
+    return absl::Status(rt_kernel.status().code(),
                         absl::StrCat("loading kernel ", spec.kernel_name(),
-                                     ": ", library.status().message()));
+                                     ": ", rt_kernel.status().message()));
   }
-  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> rt_kernel,
-                        device_->CreateKernel(*library, spec.kernel_name()));
-  rt_kernel->set_uses_argument_buffer(rt::UsesArgumentBuffer(msl, spec.kernel_name()));
-  rt_kernel->set_declared_max_threads(
-      rt::DeclaredMaxThreadsPerThreadgroup(msl, spec.kernel_name()));
-
-  auto kernel = std::make_unique<MetalKernel>(this, std::move(rt_kernel),
-                                              spec.arity());
+  auto kernel = std::make_unique<MetalKernel>(this, *rt_kernel, spec.arity());
   kernel->set_name(spec.kernel_name());
   if (std::holds_alternative<KernelLoaderSpec::KernelArgsPackingFunc>(
           spec.kernel_args_packing())) {

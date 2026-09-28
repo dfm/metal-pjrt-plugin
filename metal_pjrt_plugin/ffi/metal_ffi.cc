@@ -1,11 +1,7 @@
 #include "metal_pjrt_plugin/ffi/metal_ffi.h"
 
-#include <memory>
-#include <mutex>
 #include <string>
-#include <tuple>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -56,46 +52,6 @@ absl::StatusOr<rt::Device*> DefaultMetalDevice() {
     return absl::InternalError("Metal FFI: executor 0 has no runtime device");
   }
   return device;
-}
-
-namespace {
-
-struct KernelCache {
-  std::mutex mu;
-  // Key: (device, MSL source, function). Entries are never evicted, so
-  // returned pointers stay valid.
-  absl::flat_hash_map<std::tuple<const rt::Device*, std::string, std::string>,
-                      std::unique_ptr<rt::Kernel>>
-      map;
-};
-
-KernelCache& Cache() {
-  static KernelCache* cache = new KernelCache();
-  return *cache;
-}
-
-}  // namespace
-
-absl::StatusOr<const rt::Kernel*> GetOrCreateKernel(
-    rt::Device* device, const std::string& msl_source,
-    const std::string& function) {
-  KernelCache& cache = Cache();
-  auto key = std::make_tuple(static_cast<const rt::Device*>(device),
-                             msl_source, function);
-  {
-    std::lock_guard<std::mutex> lock(cache.mu);
-    auto it = cache.map.find(key);
-    if (it != cache.map.end()) return it->second.get();
-  }
-  absl::StatusOr<MTL::Library*> library = device->CompileLibrary(msl_source);
-  if (!library.ok()) return library.status();
-  absl::StatusOr<std::unique_ptr<rt::Kernel>> kernel =
-      device->CreateKernel(*library, function);
-  if (!kernel.ok()) return kernel.status();
-  std::lock_guard<std::mutex> lock(cache.mu);
-  auto [it, inserted] = cache.map.try_emplace(std::move(key), nullptr);
-  if (inserted) it->second = std::move(*kernel);
-  return it->second.get();
 }
 
 absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type) {

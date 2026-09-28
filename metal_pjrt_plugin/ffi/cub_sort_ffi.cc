@@ -32,12 +32,9 @@
 #include <algorithm>
 #include <cstdint>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <tuple>
 #include <vector>
 
-#include "absl/container/flat_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -362,11 +359,6 @@ struct Plan {
   bool small = true;
   // Scratch layout (large path).
   uint64_t alt_values_offset = 0, hist_offset = 0, scratch_bytes = 0;
-
-  std::string VariantKey() const {
-    return absl::StrCat(key.msl_type, key.bits, "_", key.kind, "_",
-                        has_values ? value_type : "none");
-  }
 };
 
 absl::StatusOr<Plan> MakePlan(const xffi::AnyBuffer& keys_in,
@@ -432,18 +424,8 @@ struct SortKernels {
   const rt::Kernel* scatter = nullptr;
 };
 
-// Compiled once per (device, key/value variant); never evicted.
+// From the device's kernel cache (compiled on first use).
 absl::StatusOr<SortKernels> GetKernels(rt::Device* device, const Plan& plan) {
-  static std::mutex* mu = new std::mutex();
-  static auto* cache = new absl::flat_hash_map<
-      std::pair<const rt::Device*, std::string>, SortKernels>();
-  auto key = std::make_pair(static_cast<const rt::Device*>(device),
-                            plan.VariantKey());
-  {
-    std::lock_guard<std::mutex> lock(*mu);
-    auto it = cache->find(key);
-    if (it != cache->end()) return it->second;
-  }
   std::string msl = absl::StrReplaceAll(
       kSortMsl, {{"@KBITS@", absl::StrCat(plan.key.bits)},
                  {"@KIND@", absl::StrCat(plan.key.kind)},
@@ -456,8 +438,7 @@ absl::StatusOr<SortKernels> GetKernels(rt::Device* device, const Plan& plan) {
         std::make_pair(&k.hist, "sort_hist"),
         std::make_pair(&k.scan, "sort_scan"),
         std::make_pair(&k.scatter, "sort_scatter")}) {
-    absl::StatusOr<const rt::Kernel*> kernel =
-        GetOrCreateKernel(device, msl, name);
+    absl::StatusOr<const rt::Kernel*> kernel = device->GetKernel(msl, name);
     if (!kernel.ok()) return kernel.status();
     // The kernels assume exactly kThreads threads in 32-wide SIMD groups.
     if ((*kernel)->max_total_threads_per_threadgroup() < kThreads ||
@@ -468,8 +449,6 @@ absl::StatusOr<SortKernels> GetKernels(rt::Device* device, const Plan& plan) {
     }
     *out = *kernel;
   }
-  std::lock_guard<std::mutex> lock(*mu);
-  cache->try_emplace(key, k);
   return k;
 }
 

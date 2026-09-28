@@ -25,8 +25,9 @@ class MetalExecutor;
 // memory.
 class MetalKernel : public Kernel {
  public:
-  MetalKernel(MetalExecutor* executor,
-              std::unique_ptr<metal_pjrt::rt::Kernel> kernel, unsigned arity);
+  // `kernel` is owned by the runtime device's kernel cache.
+  MetalKernel(MetalExecutor* executor, const metal_pjrt::rt::Kernel* kernel,
+              unsigned arity);
   ~MetalKernel() override;
 
   unsigned Arity() const override { return arity_; }
@@ -50,7 +51,7 @@ class MetalKernel : public Kernel {
                       Stream* stream, const KernelArgs& args) override;
 
   MetalExecutor* executor_;
-  std::unique_ptr<metal_pjrt::rt::Kernel> kernel_;
+  const metal_pjrt::rt::Kernel* kernel_;
   unsigned arity_;
 };
 

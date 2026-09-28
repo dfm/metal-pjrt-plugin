@@ -51,12 +51,9 @@ class MetalRuntimeTest : public ::testing::Test {
     absl::StatusOr<std::unique_ptr<Device>> dev = Device::Create(0);
     ASSERT_THAT(dev, IsOk());
     dev_ = *std::move(dev);
-    absl::StatusOr<MTL::Library*> lib = dev_->CompileLibrary(kMsl);
-    ASSERT_THAT(lib, IsOk());
-    lib_ = *lib;
-    absl::StatusOr<std::unique_ptr<Kernel>> k = dev_->CreateKernel(lib_, "axpy");
+    absl::StatusOr<const Kernel*> k = dev_->GetKernel(kMsl, "axpy");
     ASSERT_THAT(k, IsOk());
-    kernel_ = *std::move(k);
+    kernel_ = *k;
   }
 
   void* Alloc(uint64_t size) {
@@ -80,8 +77,7 @@ class MetalRuntimeTest : public ::testing::Test {
   }
 
   std::unique_ptr<Device> dev_;
-  MTL::Library* lib_ = nullptr;
-  std::unique_ptr<Kernel> kernel_;
+  const Kernel* kernel_ = nullptr;
 };
 
 TEST_F(MetalRuntimeTest, DeviceInfo) {
@@ -91,10 +87,48 @@ TEST_F(MetalRuntimeTest, DeviceInfo) {
   EXPECT_EQ(kernel_->thread_execution_width(), 32u);
 }
 
-TEST_F(MetalRuntimeTest, LibraryCache) {
-  absl::StatusOr<MTL::Library*> again = dev_->CompileLibrary(kMsl);
+TEST_F(MetalRuntimeTest, KernelCache) {
+  absl::StatusOr<const Kernel*> again = dev_->GetKernel(kMsl, "axpy");
   ASSERT_THAT(again, IsOk());
-  EXPECT_EQ(*again, lib_);
+  EXPECT_EQ(*again, kernel_);
+  EXPECT_FALSE(kernel_->uses_argument_buffer());
+}
+
+// Function constants select a variant at pipeline creation: one kernel per
+// (source, function, constants), each with its own identity key.
+TEST_F(MetalRuntimeTest, FunctionConstants) {
+  const std::string msl =
+      "#include <metal_stdlib>\nusing namespace metal;\n"
+      "constant bool kNegate [[function_constant(0)]];\n"
+      "constant int kAdd [[function_constant(1)]];\n"
+      "kernel void variant(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) {\n"
+      "  int v = int(i) + kAdd;\n"
+      "  y[i] = kNegate ? -v : v;\n}\n";
+  const FunctionConstant a[] = {FunctionConstant::Bool(0, false),
+                                FunctionConstant::Int(1, 10)};
+  const FunctionConstant b[] = {FunctionConstant::Bool(0, true),
+                                FunctionConstant::Int(1, 10)};
+  absl::StatusOr<const Kernel*> ka = dev_->GetKernel(msl, "variant", a);
+  absl::StatusOr<const Kernel*> kb = dev_->GetKernel(msl, "variant", b);
+  ASSERT_THAT(ka, IsOk());
+  ASSERT_THAT(kb, IsOk());
+  EXPECT_NE(*ka, *kb);
+  EXPECT_NE((*ka)->key(), (*kb)->key());
+  EXPECT_THAT(dev_->GetKernel(msl, "variant", a), IsOk());
+  EXPECT_EQ(*dev_->GetKernel(msl, "variant", a), *ka);
+
+  std::unique_ptr<Stream> s = NewStream();
+  auto* y = static_cast<int32_t*>(Alloc(8 * sizeof(int32_t)));
+  for (const Kernel* k : {*ka, *kb}) {
+    ASSERT_THAT(s->Launch(*k, Dim3{1, 1, 1}, Dim3{8, 1, 1},
+                          {KernelArg::Buffer(y)}),
+                IsOk());
+    ASSERT_THAT(s->Synchronize(), IsOk());
+    const int sign = k == *ka ? 1 : -1;
+    for (int i = 0; i < 8; ++i) ASSERT_EQ(y[i], sign * (i + 10)) << i;
+  }
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
 TEST_F(MetalRuntimeTest, LaunchCopyAndEvents) {
@@ -190,9 +224,7 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   ASSERT_THAT(d1, IsOk());
   EXPECT_EQ((*d1)->state_dir(), dir);
   EXPECT_EQ((*d1)->resets_since_boot(), 0);
-  absl::StatusOr<MTL::Library*> lib1 = (*d1)->CompileLibrary(kMsl);
-  ASSERT_THAT(lib1, IsOk());
-  absl::StatusOr<std::unique_ptr<Kernel>> k1 = (*d1)->CreateKernel(*lib1, "axpy");
+  absl::StatusOr<const Kernel*> k1 = (*d1)->GetKernel(kMsl, "axpy");
   ASSERT_THAT(k1, IsOk());
   EXPECT_THAT((*k1)->key(), HasSubstr(":axpy"));
 
@@ -213,9 +245,7 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   absl::StatusOr<std::unique_ptr<Device>> d2 = Device::Create(0);
   ASSERT_THAT(d2, IsOk());
   EXPECT_EQ((*d2)->resets_since_boot(), 2);
-  absl::StatusOr<MTL::Library*> lib2 = (*d2)->CompileLibrary(kMsl);
-  ASSERT_THAT(lib2, IsOk());
-  EXPECT_THAT((*d2)->CreateKernel(*lib2, "axpy"),
+  EXPECT_THAT((*d2)->GetKernel(kMsl, "axpy"),
               StatusIs(absl::StatusCode::kFailedPrecondition,
                        HasSubstr("quarantined")));
 
@@ -262,27 +292,21 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   absl::StatusOr<std::unique_ptr<Device>> d4 = Device::Create(0);
   ASSERT_THAT(d4, IsOk());
   EXPECT_EQ((*d4)->resets_since_boot(), 1);
-  absl::StatusOr<MTL::Library*> lib4 = (*d4)->CompileLibrary(kMsl);
-  ASSERT_THAT(lib4, IsOk());
-  EXPECT_THAT((*d4)->CreateKernel(*lib4, "axpy"), IsOk());
+  EXPECT_THAT((*d4)->GetKernel(kMsl, "axpy"), IsOk());
   {
     std::ofstream out(dir + "/gpu_resets.jsonl", std::ios::app);
     out << other_build(records[1]) << "\n";
   }
   absl::StatusOr<std::unique_ptr<Device>> d5 = Device::Create(0);
   ASSERT_THAT(d5, IsOk());
-  absl::StatusOr<MTL::Library*> lib5 = (*d5)->CompileLibrary(kMsl);
-  ASSERT_THAT(lib5, IsOk());
-  EXPECT_THAT((*d5)->CreateKernel(*lib5, "axpy"),
+  EXPECT_THAT((*d5)->GetKernel(kMsl, "axpy"),
               StatusIs(absl::StatusCode::kFailedPrecondition));
 
   // Disabled by threshold 0.
   setenv("METAL_PJRT_QUARANTINE_STRIKES", "0", 1);
   absl::StatusOr<std::unique_ptr<Device>> d3 = Device::Create(0);
   ASSERT_THAT(d3, IsOk());
-  absl::StatusOr<MTL::Library*> lib3 = (*d3)->CompileLibrary(kMsl);
-  ASSERT_THAT(lib3, IsOk());
-  EXPECT_THAT((*d3)->CreateKernel(*lib3, "axpy"), IsOk());
+  EXPECT_THAT((*d3)->GetKernel(kMsl, "axpy"), IsOk());
   unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
   unsetenv("METAL_PJRT_STATE_DIR");
   std::filesystem::remove_all(dir);
@@ -880,9 +904,9 @@ TEST_F(MetalRuntimeTest, ErrorCodes) {
               StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(dev_->Resolve(&host),
               StatusIs(absl::StatusCode::kInvalidArgument));
-  EXPECT_THAT(dev_->CompileLibrary("kernel void broken("),
+  EXPECT_THAT(dev_->GetKernel("kernel void broken(", "broken"),
               StatusIs(absl::StatusCode::kInternal, HasSubstr("domain=")));
-  EXPECT_THAT(dev_->CreateKernel(lib_, "no_such_function"),
+  EXPECT_THAT(dev_->GetKernel(kMsl, "no_such_function"),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("no_such_function")));
 
@@ -923,12 +947,9 @@ TEST_F(MetalRuntimeTest, ArgumentBufferLaunch) {
          "])[i] = acc;\n}\n";
   EXPECT_TRUE(UsesArgumentBuffer(msl, "sum_many"));
   EXPECT_FALSE(UsesArgumentBuffer(kMsl, "axpy"));
-  absl::StatusOr<MTL::Library*> lib = dev_->CompileLibrary(msl);
-  ASSERT_THAT(lib, IsOk());
-  absl::StatusOr<std::unique_ptr<Kernel>> k =
-      dev_->CreateKernel(*lib, "sum_many");
+  absl::StatusOr<const Kernel*> k = dev_->GetKernel(msl, "sum_many");
   ASSERT_THAT(k, IsOk());
-  (*k)->set_uses_argument_buffer(true);
+  EXPECT_TRUE((*k)->uses_argument_buffer());
 
   // Half the inputs are separate allocations, the other half interior
   // pointers into one shared allocation (duplicate MTLBuffers).
@@ -978,14 +999,11 @@ TEST_F(MetalRuntimeTest, DeclaredMaxThreadsRefusesLargerThreadgroups) {
                     kArgumentBufferMarker + "\nkernel void k(",
                 "k"),
             32u);
-  absl::StatusOr<MTL::Library*> lib = dev_->CompileLibrary(msl);
-  ASSERT_THAT(lib, IsOk());
-  absl::StatusOr<std::unique_ptr<Kernel>> k = dev_->CreateKernel(*lib, "capped");
+  absl::StatusOr<const Kernel*> k = dev_->GetKernel(msl, "capped");
   ASSERT_THAT(k, IsOk());
   RecordProperty("pso_max_threads_with_attribute_64",
                  static_cast<int>((*k)->max_total_threads_per_threadgroup()));
   // Even if the pipeline reported more, the declared value is the limit.
-  (*k)->set_declared_max_threads(64);
   EXPECT_LE((*k)->max_total_threads_per_threadgroup(), 64u);
 
   std::unique_ptr<Stream> s = NewStream();

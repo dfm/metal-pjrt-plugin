@@ -171,7 +171,7 @@ absl::StatusOr<std::unique_ptr<ScanState>> Instantiate(
   absl::StatusOr<rt::Device*> device = DefaultMetalDevice();
   if (!device.ok()) return device.status();
   absl::StatusOr<const rt::Kernel*> kernel =
-      GetOrCreateKernel(*device, state->msl, "scan");
+      (*device)->GetKernel(state->msl, "scan");
   if (!kernel.ok()) return kernel.status();
   state->device = *device;
   state->kernel = *kernel;
@@ -187,7 +187,7 @@ absl::Status Scan(stream_executor::Stream* stream, xffi::AnyBuffer x,
   const rt::Kernel* kernel = state->kernel;
   if (ctx->device != state->device) {
     absl::StatusOr<const rt::Kernel*> k =
-        GetOrCreateKernel(ctx->device, state->msl, "scan");
+        ctx->device->GetKernel(state->msl, "scan");
     if (!k.ok()) return k.status();
     kernel = *k;
   }

@@ -92,7 +92,7 @@ absl::Status Encode(rt::Device* device, Stream* stream,
   }
   return rs->EncodeExternal(
       [&](void* cmd) {
-        return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
+        return mps::RunMpsGemm(device, cmd, params);
       },
       mps::GemmWork(params));
 }
@@ -258,13 +258,10 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
 
   // MPS (f32): a second kernel over the row-major view of D: the bias index
   // is the column, aux shares D's layout.
-  ABSL_ASSIGN_OR_RETURN(MTL::Library * lib,
-                        device_->CompileLibrary(EpilogueSource(v.epi)));
-  ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> kernel,
-                        device_->CreateKernel(lib, kEpilogueKernelName));
-  return std::make_unique<MatmulPlan>(
-      device_, p, v.swap, v.epi,
-      std::shared_ptr<rt::Kernel>(std::move(kernel)));
+  ABSL_ASSIGN_OR_RETURN(
+      const rt::Kernel* kernel,
+      device_->GetKernel(EpilogueSource(v.epi), kEpilogueKernelName));
+  return std::make_unique<MatmulPlan>(device_, p, v.swap, v.epi, kernel);
 }
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(

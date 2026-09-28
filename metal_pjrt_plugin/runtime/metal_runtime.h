@@ -3,7 +3,7 @@
 // XLA's abstractions.
 //
 // Model:
-//   Device   one MTL::Device + allocator bookkeeping + library/pipeline caches
+//   Device   one MTL::Device + allocator bookkeeping + the kernel cache
 //   Stream   one MTL::CommandQueue; work is encoded into an open command buffer
 //            that is committed at sync points or when an op budget is reached
 //   Event    a value on an MTL::SharedEvent (timeline semaphore)
@@ -55,6 +55,7 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -164,11 +165,16 @@ std::string ImageUuid();
 // (pjrt/metal_pjrt_api.cc).
 std::string LastAllocationRefusal(uint64_t* size);
 
+// A compute pipeline, owned by the Device's kernel cache (Device::GetKernel).
 class Kernel {
  public:
   Kernel(MTL::ComputePipelineState* pso,
-         std::shared_ptr<const KernelIdentity> identity)
-      : pso_(pso), identity_(std::move(identity)) {}
+         std::shared_ptr<const KernelIdentity> identity,
+         bool uses_argument_buffer, uint32_t declared_max_threads)
+      : pso_(pso),
+        identity_(std::move(identity)),
+        uses_argument_buffer_(uses_argument_buffer),
+        declared_max_threads_(declared_max_threads) {}
   Kernel(const Kernel&) = delete;
   Kernel& operator=(const Kernel&) = delete;
 
@@ -178,23 +184,37 @@ class Kernel {
   const std::shared_ptr<const KernelIdentity>& identity() const {
     return identity_;
   }
-  // See kArgumentBufferMarker. Launch then packs all (buffer) arguments into
-  // one setBytes payload of GPU addresses and marks the buffers resident.
+  // See kArgumentBufferMarker (UsesArgumentBuffer on the source). Launch
+  // then packs all (buffer) arguments into one setBytes payload of GPU
+  // addresses and marks the buffers resident.
   bool uses_argument_buffer() const { return uses_argument_buffer_; }
-  void set_uses_argument_buffer(bool v) { uses_argument_buffer_ = v; }
-  // The source's declared [[max_total_threads_per_threadgroup]] (0: none).
-  // Release Metal does not check dispatches against it (a larger threadgroup
-  // is undefined behaviour on the GPU), so max_total_threads_per_threadgroup
-  // includes it and launches above it are refused before encoding.
-  void set_declared_max_threads(uint32_t n) { declared_max_threads_ = n; }
+  // Includes the source's declared [[max_total_threads_per_threadgroup]]
+  // (DeclaredMaxThreadsPerThreadgroup): release Metal does not check
+  // dispatches against it (a larger threadgroup is undefined behaviour on
+  // the GPU), so launches above it are refused before encoding.
   uint32_t max_total_threads_per_threadgroup() const;
   uint32_t thread_execution_width() const;
 
  private:
   MTL::ComputePipelineState* pso_;
   std::shared_ptr<const KernelIdentity> identity_;
-  bool uses_argument_buffer_ = false;
-  uint32_t declared_max_threads_ = 0;
+  bool uses_argument_buffer_;
+  uint32_t declared_max_threads_;  // 0: none declared
+};
+
+// The value of an MSL function constant (`constant T name
+// [[function_constant(index)]]`), fixed when the pipeline is created.
+struct FunctionConstant {
+  enum class Type { kBool, kInt };  // MSL bool, int
+  static FunctionConstant Bool(uint32_t index, bool v) {
+    return {index, Type::kBool, v ? 1 : 0};
+  }
+  static FunctionConstant Int(uint32_t index, int32_t v) {
+    return {index, Type::kInt, v};
+  }
+  uint32_t index = 0;
+  Type type = Type::kInt;
+  int32_t value = 0;
 };
 
 class Event;
@@ -278,13 +298,14 @@ class Device {
   uint64_t BeginWork();
   void EndWork(uint64_t ticket);
 
-  // Compile Metal Shading Language source into a library, cached by content.
-  // The library is owned by the device's cache.
-  absl::StatusOr<MTL::Library*> CompileLibrary(const std::string& msl_source);
-  // Create (or fetch cached) pipeline state for `function` in `library`.
-  absl::StatusOr<std::unique_ptr<Kernel>> CreateKernel(
-      MTL::Library* library, const std::string& function,
-      bool builtin = false);
+  // The kernel `function` of the Metal Shading Language source with
+  // `constants` bound. The one kernel cache: compiled (fast math off) on
+  // first use and kept, keyed by the full source, the function name and the
+  // constants, so the returned kernel lives as long as the device. A
+  // quarantined kernel (see RecordReset) is refused, also when cached.
+  absl::StatusOr<const Kernel*> GetKernel(
+      absl::string_view msl_source, absl::string_view function,
+      absl::Span<const FunctionConstant> constants = {});
 
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
@@ -306,7 +327,7 @@ class Device {
   // timed out (none when that buffer only waited on another stream; built-in
   // kernels are listed separately and never blamed). Kernels seen in
   // `quarantine_strikes()` or more resets since boot are refused by
-  // CreateKernel until a reboot or until the log is cleared
+  // GetKernel until a reboot or until the log is cleared
   // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
   // new key; a fix elsewhere (runtime, launch dimensions) needs --clear.
   // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/openmetal;
@@ -384,17 +405,33 @@ class Device {
   static constexpr std::chrono::seconds kHandlerWait{5};
   void StartMemorySources();
   absl::Status error_ = absl::OkStatus();
-  std::unordered_map<std::string, MTL::Library*> library_cache_;  // key: source hash
-  std::unordered_map<std::string, MTL::ComputePipelineState*> pso_cache_;
-  std::unordered_map<MTL::Library*, std::string> library_keys_;  // hash
+  // The kernel cache: per MSL source, its library, its identity hash and
+  // its kernels by function name + constants. Guarded by kernel_mu_, a leaf
+  // lock (compilation happens outside it).
+  struct CachedLibrary {
+    MTL::Library* library = nullptr;
+    std::string hash;  // HashString(source): the kernels' KernelIdentity key
+    absl::flat_hash_map<std::string, std::unique_ptr<Kernel>> kernels;
+  };
+  absl::StatusOr<const Kernel*> GetKernelImpl(
+      absl::string_view msl_source, absl::string_view function,
+      absl::Span<const FunctionConstant> constants, bool builtin);
+  // FailedPrecondition when `id` is quarantined. Takes mu_.
+  absl::Status CheckQuarantine(const KernelIdentity& id);
+  std::mutex kernel_mu_;
+  absl::flat_hash_map<std::string, std::unique_ptr<CachedLibrary>>
+      kernel_cache_;
   std::mutex builtin_mu_;
-  std::unique_ptr<Kernel> builtin_kernels_[4];
+  const Kernel* builtin_kernels_[4] = {};
   // Reset log state (see RecordReset); strikes_ is guarded by mu_.
   void LoadResetLog();
   std::string state_dir_;
   int quarantine_strikes_ = 2;
   int resets_since_boot_ = 0;
   std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
+  // Whether any kernel could be quarantined (strikes_ non-empty and the
+  // quarantine on), so cache hits skip mu_ otherwise.
+  std::atomic<bool> may_quarantine_{false};
   std::string build_;  // hex ImageUuid, recorded with each reset
   friend class Stream;
   friend class Event;

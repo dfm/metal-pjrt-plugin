@@ -12,6 +12,9 @@
 #include "absl/status/status.h"
 
 namespace metal_pjrt {
+namespace rt {
+class Device;
+}  // namespace rt
 namespace blas {
 
 enum class MpsDType { kF32, kF16, kBF16 };
@@ -46,16 +49,16 @@ struct GemmParams {
   MpsOperand a, b, c;
 };
 
-// Encodes the GEMM into `mtl_command_buffer` (id<MTLCommandBuffer>, not
-// committed, no encoder open). `mtl_device` may be null, in which case the
-// command buffer's device is used. Errors: InvalidArgumentError for invalid
+// Encodes the GEMM into `mtl_command_buffer` (id<MTLCommandBuffer> of
+// `device`, not committed, no encoder open); the staging kernel comes from
+// the device's kernel cache. Errors: InvalidArgumentError for invalid
 // shapes, strides, offsets or null buffers; UnimplementedError for unsupported
 // cases (k == 0, non-f32 dtypes, devices without MPS); InternalError when a
 // Metal/MPS object cannot be created; ResourceExhaustedError when a staging
 // buffer cannot be allocated. Staging work may already be encoded when an error
 // is returned; everything it references is kept alive, and no encoder is left
 // open (rt::Stream::EncodeExternal relies on it).
-absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
+absl::Status RunMpsGemm(rt::Device* device, void* mtl_command_buffer,
                         const GemmParams& params);
 
 std::string GemmParamsDebugString(const GemmParams& p);
