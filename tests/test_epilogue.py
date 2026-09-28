@@ -62,3 +62,18 @@ def test_epilogue(i, dtype):
     got = jax.tree.map(np.asarray, f(*on_metal))
     assert_close(got, f64_reference(fn, *args), ULPS[dtype], normwise=True,
                  name=f"{name} [{dtype}]")
+
+
+@pytest.mark.parametrize("dtype", ["float32", "float16"])
+def test_epilogue_batch_above_65535(dtype):
+    # The batch is the grid's z dimension, which Metal bounds by uint32 (the
+    # MPS epilogue used to refuse more than CUDA's 65535).
+    fn = lambda a, w, b: jax.nn.relu(jnp.einsum("bij,bjk->bik", a, w) + b)
+    rng = np.random.default_rng(0)
+    args = [rng.standard_normal(s).astype(DTYPES[dtype])
+            for s in ((70000, 8, 16), (70000, 16, 8), (8,))]
+    f = jax.jit(fn)
+    on_metal = [jax.device_put(a, metal()) for a in args]
+    assert "BIAS_RELU" in f.lower(*on_metal).compile().as_text()
+    assert_close(np.asarray(f(*on_metal)), f64_reference(fn, *args),
+                 ULPS[dtype], normwise=True, name=f"batch 70000 [{dtype}]")

@@ -315,8 +315,9 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
 
   // MPS (f32): a second kernel over the row-major view of D: the bias index
-  // is the column, aux shares D's layout.
-  if (m > UINT32_MAX || n > UINT32_MAX || batch > 65535) {
+  // is the column, aux shares D's layout. The batch is the grid's z, which
+  // Metal bounds by uint32 (not CUDA's 65535; steel's GEMM does the same).
+  if (m > UINT32_MAX || n > UINT32_MAX || batch > UINT32_MAX) {
     return absl::UnimplementedError(absl::StrCat(
         "Metal BlasLt: epilogue on a ", batch, "x", m, "x", n, " output"));
   }
