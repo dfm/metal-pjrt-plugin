@@ -1,14 +1,44 @@
-"""tinygp value+grad and predict timings (ms, mean of 5) on metal and CPU,
-for the configurations tests/test_tinygp.py checks.
+"""tinygp value+grad and predict timings (ms, mean of 5) on metal and CPU:
+the quasiseparable solver (parallel associative-scan and sequential) and
+the dense solver. Needs tinygp installed (it is not a test dependency).
 
   scripts/device_lock.py -- .venv/bin/python bench/tinygp_bench.py
 """
-import os, sys, time
+import os, time
 # openmetal is opt-in (not the default backend).
 os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "tests"))
 import jax
-from test_tinygp import P0, build, data  # noqa: E402
+import jax.numpy as jnp
+import numpy as np
+from tinygp import GaussianProcess, kernels
+from tinygp.kernels import quasisep
+from tinygp.solvers import QuasisepSolver
+
+PARAMS = ["log_scale", "log_sigma", "log_omega", "log_q", "log_sigma2",
+          "log_jitter", "mean"]
+P0 = np.array([1.0, 0.0, 0.5, 1.0, -0.5, -3.0, 0.0], np.float32)
+
+
+def build(kind, p, x, yerr):
+    p = dict(zip(PARAMS, p))
+    if kind.startswith("quasisep"):
+        k = quasisep.Matern32(scale=jnp.exp(p["log_scale"]), sigma=jnp.exp(p["log_sigma"])) + \
+            quasisep.SHO(omega=jnp.exp(p["log_omega"]), quality=jnp.exp(p["log_q"]), sigma=jnp.exp(p["log_sigma2"]))
+        return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * p["log_jitter"]), solver=QuasisepSolver, mean=p["mean"],
+                               assume_sorted=True,  # the sortedness check is a jax.debug.callback
+                               parallel=(kind == "quasisep-par"))  # associative-scan algorithms (tinygp main)
+    k = jnp.exp(2 * p["log_sigma"]) * kernels.Matern32(scale=jnp.exp(p["log_scale"])) + \
+        jnp.exp(2 * p["log_sigma2"]) * kernels.ExpSquared(scale=jnp.exp(p["log_omega"]))
+    return GaussianProcess(k, x, diag=yerr**2 + jnp.exp(2 * p["log_jitter"]), mean=p["mean"])
+
+
+def data(n):
+    rng = np.random.default_rng(0)
+    x = np.sort(rng.uniform(0, 100, n)).astype(np.float32)
+    yerr = (0.1 + 0.1 * rng.random(n)).astype(np.float32)
+    y = (np.sin(x / 3) + 0.3 * rng.standard_normal(n)).astype(np.float32)
+    xt = np.linspace(0, 100, 500, dtype=np.float32)
+    return x, y, yerr, xt
 
 
 def run(kind, n, dev):

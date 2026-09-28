@@ -4,14 +4,14 @@ fired, and metal$scan called directly through jax.ffi.ffi_call (handlers
 are registered statically in C++ under platform "METAL"; nothing is
 registered from Python). Also softmax / log_softmax in every precision;
 those run as XLA's fusions (the metal$softmax rewriter was removed,
-docs/performance.md).
+docs/performance.md). And lax.associative_scan with a gradient.
 """
 import numpy as np
 import jax
 import jax.numpy as jnp
 import pytest
 
-from metal_testing import assert_close, f64_reference, metal, run_on, cpu
+from metal_testing import assert_close, check, cpu, f64_reference, metal, run_on
 
 pytestmark = pytest.mark.metal
 
@@ -142,3 +142,23 @@ def test_ffi_call_composes_with_emitted_kernels():
     z = jax.jit(lambda x: scan(x * 2.0, "add", False) * 3.0)(X)
     assert_close(np.asarray(z), scan_ref(X * 2.0, "add", False) * 3.0,
                  ulps=4.5, normwise=True, name="cumsum*3")
+
+
+def _linear_recurrence_loss(a, b):
+    # x_t = a_t x_{t-1} + b_t by lax.associative_scan (the parallel-solver
+    # pattern of Kalman-style models), batched over rows.
+    def combine(left, right):
+        return right[0] * left[0], right[0] * left[1] + right[1]
+    _, x = jax.lax.associative_scan(combine, (a, b), axis=-1)
+    return jnp.mean(x ** 2)
+
+
+@pytest.mark.parametrize("n", [1000, 20000])
+def test_associative_scan_value_and_grad(n):
+    r = np.random.default_rng(n)
+    a = r.uniform(0.9, 0.999, (4, n)).astype(np.float32)
+    b = r.standard_normal((4, n)).astype(np.float32)
+    fn = jax.value_and_grad(_linear_recurrence_loss, argnums=(0, 1))
+    # Measured (M3, normwise, value / gradients): n=1000 4.5 ulps (CPU
+    # float32 4.1), n=20000 2.4 (CPU 2.5).
+    check(fn, a, b, ulps=10, normwise=True, name=f"associative_scan n={n}")

@@ -11,8 +11,9 @@ different Metal compiler and math library) may need retuned tolerances.
 Open, not being fixed right now:
 
 - tinygp's parallel (quasisep-par) solver mean at n = 200000 is ~1% off
-  (1.7e5-2.0e5 ulps normwise; CPU float32 gives NaN there); cause unknown.
-  `tests/test_tinygp.py` holds it as a strict xfail.
+  (1.7e5-2.0e5 ulps normwise against the float64 sequential solver; CPU
+  float32 gives NaN there); cause unknown. The tests no longer run tinygp
+  (`bench/tinygp_bench.py` still times it).
 - exp / sin / cos keep Metal's bias on [0.125, 1): mean +0.11 ulps for
   exp(-x), -0.10 for sin, -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0, max
   0.8 / 0.6 / 0.5).
@@ -55,8 +56,6 @@ contracted into an FMA.
 Repro:
 
     scripts/device_lock.py -- .venv/bin/python bench/math_bias.py exp- sin cos
-    scripts/device_lock.py -- env METAL_TEST_REPORT_ULPS=1 .venv/bin/python \
-      -m pytest tests/test_tinygp.py -s -k 20000
 
 ## Fixed in the MSL prelude
 

@@ -65,7 +65,7 @@ def test_radix_sort_matches_cpu(name, n):
 
 
 def test_tiny_rows_stay_bitonic():
-    # 1000 rows of 32 and tinygp's (rows, 4) int32 key/value sorts: more than
+    # 1000 rows of 32 and (rows, 4) int32 key/value sorts: more than
     # 16384 elements, but the bitonic network is faster than one threadgroup
     # per row (docs/performance.md).
     x = floats(32000).reshape(1000, 32)

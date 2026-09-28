@@ -5,9 +5,8 @@ Status: **supported** under `jit` on a single openmetal device:
 `jax.experimental.io_callback` (ordered and unordered), `jax.debug.callback`
 and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
 exception in the callback surfaces as a `JaxRuntimeError` carrying its
-message. Tests: `tests/test_callbacks.py` (against CPU), three cases in
-`tests/test_lax.py`, and tinygp's `jax.debug.callback(_check_sorted, ...)`
-in `tests/test_tinygp.py`. checkify's runtime-error path uses the TPU rule
+message. Tests: `tests/test_callbacks.py` (against CPU) and three cases in
+`tests/test_lax.py`. checkify's runtime-error path uses the TPU rule
 (`debug_check` is a no-op; `jax_plugins/openmetal/lowerings.py`).
 
 ## Why not the CUDA path
