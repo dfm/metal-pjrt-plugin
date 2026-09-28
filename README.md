@@ -1,22 +1,18 @@
-# metal-pjrt-plugin: a JAX PJRT plugin for Apple GPUs via Metal
+# metal-pjrt-plugin: run JAX on your Mac's GPU
 
-An open-source PJRT plugin that runs JAX on Apple Silicon GPUs. It treats
-Metal as a fourth XLA:GPU platform, next to CUDA, ROCm and SYCL: XLA's own
-GPU compiler fuses the program and its emitters generate the kernels, which
-the plugin translates to Metal Shading Language. It does not re-interpret
-StableHLO op by op.
+An open-source JAX plugin that runs JAX programs on Apple Silicon GPUs
+through Metal.
 
 Its JAX platform is `"mtl"` (`jax.devices("mtl")`,
 `JAX_PLATFORMS=mtl,cpu`), not `"metal"`: that name belongs to Apple's
 closed-source `jax-metal` plugin, and the two can be installed side by
 side. MTL is Metal's own prefix (`MTLDevice`, `MTLBuffer`).
 
-Status: a working minimum. f32, f16 and bf16 programs run end to end,
-including training loops, linear algebra, sorting and host callbacks. JAX's
-`lax_test.py` passes 947 cases; the 62 known failures are complex types,
-int4, dot precision algorithms, the `dce_sink` test handler and one
-convolution the kernel translator cannot handle. Tested on one machine (M3,
-8 GB, macOS 26.2); every tolerance and performance number comes from it.
+Status: a working minimum on one GPU. f32, f16 and bf16 programs run end to
+end, including training loops, sorting, host callbacks and linear algebra
+in f32; the [support table](#what-works) has the details. Tested on one
+machine (M3, 8 GB, macOS 26.2); every tolerance and performance number
+comes from it.
 
 ## Requirements
 
@@ -25,30 +21,64 @@ convolution the kernel translator cannot handle. Tested on one machine (M3,
   26.2; older versions are untested, and the wheel is tagged
   `macosx_26_0_arm64`.
 - Python 3.12 or later, with exactly `jax==0.11.2` and `jaxlib==0.11.2`. The
-  plugin is built against that jaxlib's XLA commit and uses private
-  `jax._src` APIs, so it warns when JAX discovers it on any other version
-  and may not work there.
-- To build from source: the Xcode command-line tools
-  (`xcode-select --install`; full Xcode is not needed), `bazelisk`
-  (`brew install bazelisk`), `uv`, and the time and disk for a first build of
-  XLA: about 2 hours on an 8 GB M3, ~10 GB of Bazel output plus a disk cache
-  that grows with rebuilds. Running the plugin needs no developer tools:
-  the Metal framework compiles its kernels at run time.
+  plugin is built against that jaxlib's XLA commit
+  ([`third_party/PINS.md`](third_party/PINS.md)) and uses private
+  `jax._src` APIs, so it warns at plugin discovery on any other version and
+  may not work there.
+- To build it (there is no PyPI release yet): the Xcode command-line tools
+  (`xcode-select --install`; full Xcode is not needed), Homebrew, `bazelisk`
+  (`brew install bazelisk`; it fetches the Bazel version in `.bazelversion`,
+  8.7.0), `uv` (`brew install uv`), and the time and disk for a first build
+  of XLA: about 2 hours on an 8 GB M3, ~8.5 GB of Bazel output plus a disk
+  cache (`~/.cache/metal-pjrt-plugin/`) that grows with rebuilds. The cache
+  is shared by every checkout, so a second clone builds in minutes.
+  Running the plugin needs no developer tools: the Metal framework compiles
+  its kernels at run time.
 
 ## Install
 
-From a wheel (the plugin library is inside it; `scripts/build_wheel.sh`
-builds one into `dist/`):
+From source, as an editable install into `.venv`:
 
 ```
-pip install jax==0.11.2 jaxlib==0.11.2 metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl
-```
-
-From source, as an editable install into `.venv` (see `docs/development.md`):
-
-```
-git clone <this repository> metal-pjrt-plugin && cd metal-pjrt-plugin
+git clone https://github.com/dfm/metal-pjrt-plugin.git
+cd metal-pjrt-plugin
 scripts/install_dev.sh     # creates .venv with uv, builds, installs (editable, with pytest)
+bazel shutdown             # frees the Bazel server's memory, or the plugin's memory guard may refuse allocations
+```
+
+To use the plugin in another environment, build a wheel from that
+checkout (`scripts/build_wheel.sh`, which needs `uv`) and install it; it
+pins `jax==0.11.2` and `jaxlib==0.11.2`:
+
+```
+scripts/build_wheel.sh     # dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, the plugin library inside
+pip install dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl
+```
+
+## Quick check
+
+```
+JAX_PLATFORMS=mtl,cpu .venv/bin/python -c "import jax; print(jax.devices())"
+```
+
+prints `[MtlDevice(id=0)]`, after JAX's warning "Platform 'mtl' is
+experimental and not all JAX functionality may be correctly supported!".
+Or in Python:
+
+```python
+import jax
+jax.config.update("jax_platforms", "mtl,cpu")  # before the first device or array use
+import jax.numpy as jnp
+
+x = jax.device_put(jnp.arange(4.0))
+y = jax.jit(lambda v: v * 2)(x)
+print(y, y.devices())  # [0. 2. 4. 6.] {MtlDevice(id=0)}
+```
+
+The smoke tests, from the checkout:
+
+```
+# device_lock.py runs one GPU job at a time (see "GPU safety")
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 ```
 
@@ -61,7 +91,7 @@ The plugin is opt-in: installing it does not change JAX's default backend
 JAX_PLATFORMS=mtl,cpu python my_script.py
 ```
 
-or in Python before JAX initializes its backends:
+or in Python, before the first use of a device or array:
 
 ```python
 import jax
@@ -75,40 +105,73 @@ dev = jax.devices("mtl")[0]
 x = jax.device_put(x, dev)   # jitted functions run where their inputs are
 ```
 
-**Next to Apple's jax-metal** (untested: the two have never been installed
-together here). Both register a JAX plugin under different platform names.
-With `JAX_PLATFORMS` set, JAX creates backends only for the platforms
-listed, so `JAX_PLATFORMS=mtl,cpu` does not use jax-metal (and
-`metal,cpu` does not use this plugin), but JAX still loads every installed
-plugin. jax-metal pins its own jax version, so use separate virtual
-environments.
+With `JAX_PLATFORMS` unset, JAX still initializes every installed backend,
+this one included (it prints the "experimental" warning), but if the Metal
+device cannot be set up it fails quietly and CPU programs carry on.
+`JAX_PLATFORMS=cpu` skips the plugin entirely.
+
+Next to Apple's jax-metal, use separate virtual environments: jax-metal
+pins its own jax version.
+
+## GPU safety
+
+A GPU kernel that runs too long trips macOS's GPU watchdog, which resets the
+GPU for every process; after several resets the GPU can stay slow until a
+reboot. To stay clear of it:
+
+- Run one GPU-heavy job at a time (`scripts/device_lock.py -- <cmd>`
+  serializes jobs), and keep problems well inside memory: swapping stalls
+  the GPU long enough to trip the watchdog.
+- Never kill a process (`kill -9`, closing its terminal) while it has GPU
+  work in flight; let it finish or fail, the plugin's waits are bounded.
+  Whether Ctrl-C is safe mid-computation is untested, so avoid that too.
+- Split very large single operations (a matmul over ~1e12 flops, a large
+  convolution): one kernel can outlast the watchdog.
+
+The plugin logs every reset in `~/.cache/metal-pjrt/gpu_resets.jsonl` and
+refuses a kernel involved in two resets since boot until a reboot or until
+that file is deleted (`scripts/gpu_health.py --clear` does it in a
+checkout). [`docs/design.md`](docs/design.md#runtime) has the details.
 
 ## What works
 
-- Elementwise math, reductions, broadcasting, gather and scatter, control
-  flow (`scan`, `while_loop`, `cond`), convolutions (correct but slow; one
-  of JAX's convolution test cases does not compile),
-  random numbers, and autodiff through all of these, in f32, f16 and bf16
-  (and integer and bool types).
-- Matrix multiplication: f32 on Metal Performance Shaders (a bias or
-  activation epilogue is one extra pass over the result), f16/bf16 on native
-  kernels with the epilogue fused.
-- Sorting (`sort`, `argsort`, `top_k`, ...): a GPU radix sort for large
-  arrays, bit-identical to CPU.
-- Linear algebra (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`,
-  `eigh`, `svd`) in f32 through Accelerate's LAPACK on the shared memory;
-  `fft` as a dense DFT (correct, O(n^2) per axis).
-- `pure_callback`, `io_callback`, `jax.debug.print` and
-  `jax.debug.callback`.
-- JAX's persistent compilation cache, when you turn it on (below).
+Every "yes" has a test in `tests/`; every "no" is a compile-time error or
+a test expected to fail, never a wrong answer. "No" errors either name the
+operation and its source line ("Metal: ...") or come from the kernel
+translator ("MSL emitter: unsupported ..."); see
+[`docs/troubleshooting.md`](docs/troubleshooting.md).
 
-`docs/op-coverage.md` has the full table.
+| Feature | Works | Notes |
+|---|---|---|
+| `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | `test_lax.py`, `test_smoke.py` |
+| Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | `test_lax.py`, `test_scan.py`. A scatter-add/min/max on 64-bit elements without `unique_indices=True` is refused (Metal has 32-bit atomics only) |
+| `jax.random` | yes | `test_lax.py` |
+| Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused (`test_steel_gemm.py`, `test_epilogue.py`) |
+| Matmul, integer GEMMs (int8 x int8 -> int32) and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops run (`test_lax.py`, "dot int32") |
+| Matmul, dot precision algorithms (`TF32_TF32_F32`, `F16_F16_F16`, `BF16_BF16_BF16`) | no | XLA refuses them ("Unsupported algorithm on the current device(s)"). The `BF16_BF16_F32` family works |
+| Matmul, fp8 | untested | fp8 conversions work (`test_lax.py`) |
+| Convolutions | yes, slow | XLA's loop emitter, no library kernel (`test_lax.py`). 3 of JAX's convolution test cases fail: two with complex values, one in the kernel translator |
+| Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`) |
+| Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the shared memory (`test_linalg.py`). f16/bf16 linear algebra is untested |
+| `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering on mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") |
+| FFT | partly | a dense DFT, O(n^2) per axis. Works when the result is made real inside the same `jit` (`abs`, `.real`, `irfft`; `test_linalg.py`). Returning a complex array, a complex intermediate between kernels, and `grad` through an FFT fail (expected failures in `test_linalg.py`) |
+| `pure_callback`, `io_callback`, `jax.debug.print`, `jax.debug.callback` | yes | synchronous (below); sub-byte dtypes such as int4 are refused, and complex operands fail as complex arrays do (`test_callbacks.py`) |
+| `checkify` | partly, untested | functionalized checks (`checkify.checkify`) use JAX's generic path; `debug=True` checks are dropped, as on TPU |
+| Several devices (`pmap`, sharding) | no | the plugin exposes one device |
+| f32, f16, bf16, integer and bool types | yes | `test_lax.py` |
+| float64 | no | Apple GPUs have no double type. Transfers of f64 arrays work, and inside `jit` so do copies (reshapes, contiguous slices); f64 arithmetic and other f64 data movement are refused at compile time (a strided f64 slice fails in the kernel translator instead). With `jax_enable_x64` on, keep f64 work on CPU |
+| complex64 | partly | values inside one fused kernel work (`abs(x + 1j * x)`, `test_lax.py`); complex arrays in device memory fail in the kernel translator |
+| int4 / uint4 | no | fail in the kernel translator (expected failure in `test_lax.py`) |
+| JAX's persistent compilation cache | yes, opt-in | below (`test_callbacks.py`, `test_compilation_cache.py`) |
+
+`docs/op-coverage.md` maps every XLA operation to the path it takes;
+`docs/callbacks.md` covers host callbacks.
 
 ## Compilation cache
 
-JAX's persistent compilation cache works for mtl but, as in JAX, is
-off until you give it a directory. The plugin never sets one: the setting
-is process-wide, so it would also cache your CPU compiles.
+JAX's persistent compilation cache works for mtl but, as in JAX, is off
+until you give it a directory; the plugin never sets one, since the
+setting is process-wide and would also cache your CPU compiles:
 
 ```
 export JAX_COMPILATION_CACHE_DIR=~/.cache/jax   # or jax.config.update("jax_compilation_cache_dir", ...)
@@ -116,98 +179,87 @@ export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
 ```
 
 The second line matters: JAX only caches compiles that took over 1 s, and
-most mtl compiles are faster. With both set, the first call of the
-nanoGPT training step in `bench/jax_bench.py` in a new process takes ~0.42 s
-from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
-
-## What is refused (with an error, never a wrong answer)
-
-- float64 arithmetic: Metal GPUs have no double type. With `jax_enable_x64`
-  on, keep f64 work on CPU. Moving f64 data is fine; arithmetic is refused at
-  compile time, naming the operation.
-- Complex numbers in device buffers. Complex values that stay inside one
-  fused kernel, such as `abs(fft(x))`, work.
-- Integer matrix multiplications that XLA turns into a GEMM (int8 x int8 ->
-  int32), refused at compile time.
-- 64-bit scatter-add/min/max without `unique_indices=True` (Metal has only
-  32-bit atomics), refused at compile time.
-- int4/uint4 types and fp8 GEMMs.
+most mtl compiles are faster ([`docs/performance.md`](docs/performance.md)
+has timings).
 
 ## Known limitations
 
-- **Accuracy.** Results agree with CPU float32 to a few ulps, with some
-  known gaps: Metal's `exp`, `sin` and `cos` are biased on [0.125, 1), as are
-  `tanh`, `expm1`, `erf` and `log`, and subnormal outputs flush to zero. See
-  `docs/accuracy.md`.
+- **Accuracy.** Most functions agree with CPU float32 to a few ulps; the
+  tests' tolerances go up to 38 ulps for `betainc`, 93 for `reduce_prod`,
+  580 for `lgamma` and 1600 for `digamma` (CPU float32 is also far off
+  for these two). Metal's `exp`, `sin` and `cos` are biased for |x| >= 0.125 (below
+  that the plugin uses its own polynomials), `log` is biased everywhere
+  (about +-0.5 ulp), `tanh`, `sinh`, `cosh`, `expm1` and `erf` inherit
+  `exp`'s bias, and subnormal outputs flush to zero.
+  [`docs/accuracy.md`](docs/accuracy.md) has the numbers.
 - **A GPU error ends GPU work for the process.** After the first failed GPU
   command (a fault or a watchdog timeout), every later GPU operation in that
-  process fails with "accepts no further GPU work in this process; restart
-  the Python process. Earlier GPU failure: ..." Restart it; the
-  machine does not need a reboot.
-- **Memory.** GPU memory is system RAM. The plugin keeps a process under
-  half of RAM, and it refuses any allocation that would push the machine
-  into swap, with RESOURCE_EXHAUSTED and the reason and numbers. When you
-  hit that, close memory-hungry programs (or run `bazel shutdown` right after
-  a build). Changing a NumPy array after `jax.device_put` cannot change what
-  the device gets. Up to 256 MB (less when free memory is short: an eighth
-  of what is reclaimable, but at least 16 MB) the plugin snapshots the array before returning,
-  which briefly needs twice its size in host memory. Larger arrays are not
-  snapshotted: `device_put` waits until the array has been copied, which,
-  when the GPU is busy, means waiting for the work already queued.
-- **Training on an 8 GB Mac.** A nanoGPT-sized training step needs a
-  1.2 GB allocation, and with a browser open the system memory guard can
-  refuse it: RESOURCE_EXHAUSTED "... refused by the system memory guard: only
-  N bytes of system memory are free or reclaimable ...". That is the
-  machine, not the process ("refused: this process already holds ... of
-  its ... memory budget" is the process). Close other programs or use a
-  smaller batch.
-- **Small dense linear algebra is slow.** Above 32x32, linear algebra runs
-  in Accelerate on the host after a full GPU synchronization: for n up to a
-  few hundred that is ~10x slower than JAX on CPU (cholesky 128: ~0.3 ms vs
-  0.03 ms). Keep small factorizations on CPU if they dominate.
+  process fails with "Metal device 0 accepts no further GPU work in this
+  process; restart the Python process. Earlier GPU failure: ...". Restart
+  Python; the machine does not need a reboot.
+- **Memory.** GPU memory is system RAM. A process may hold up to half of
+  RAM (capped by the GPU's recommended working set; `JAX_MTL_MEMORY_FRACTION`
+  scales it), and the plugin refuses any allocation that would push the
+  machine into swap. Both fail with RESOURCE_EXHAUSTED and the numbers:
+  "refused: this process already holds ... of its ... memory budget" is
+  this process; "refused by the system memory guard: only ... of system
+  memory is free or reclaimable" is the machine. On an 8 GB Mac a
+  nanoGPT-sized training step (a 1.2 GB allocation) can hit the guard with
+  a browser open: close other programs or use a smaller batch.
+  `device_put` copies the array or waits until it is copied, so changing
+  a NumPy array afterwards does not change what the device gets.
+- **Small dense linear algebra is slow.** Above 32x32 it runs in Accelerate
+  on the host after a full GPU synchronization: for n up to a few hundred
+  that is ~10x slower than JAX on CPU (cholesky 128: ~0.3 ms vs 0.03 ms).
+  Keep small factorizations on CPU if they dominate.
 - **Python callbacks are synchronous.** Each `pure_callback`, `io_callback`
-  or `jax.debug.*` call waits for all GPU work before it (a full
-  synchronization) and runs on an XLA execution thread while the GPU
-  stream is drained; callbacks in hot loops are slow.
+  or `jax.debug.*` call waits for all GPU work before it and runs on an XLA
+  execution thread while the GPU stream is drained; callbacks in hot loops
+  are slow.
+- **Unverified.** The GPU-error path is tested only with injected failures:
+  no real GPU fault or watchdog timeout was provoked, and the watchdog's
+  timeout was never measured. Coexistence with jax-metal is argued from
+  code, never tried. Tolerances and performance come from one M3 with
+  macOS 26.2; other Apple GPUs or macOS versions (a different Metal
+  compiler and math library) may need retuned tolerances.
 
-## Unverified assumptions
+## Troubleshooting
 
-- The GPU-error path (sticky error, no wrong values) is tested only with
-  injected failures; no real GPU fault or watchdog timeout was provoked.
-- Coexistence with jax-metal is argued from JAX's and the plugin's code,
-  never tried with both installed.
-- Tolerances and performance numbers come from one M3 with macOS 26.2.
-  Other Apple GPUs or macOS versions (a different Metal compiler and math
-  library) may need retuned tolerances.
-
-## GPU safety
-
-A kernel that runs too long trips macOS's GPU watchdog, which resets the GPU
-for every process, and after a few resets the GPU can stay slow until a
-reboot. The plugin splits work into small command buffers and logs every
-reset in `~/.cache/metal-pjrt/gpu_resets.jsonl`. A kernel involved in two
-resets since boot is refused until a reboot or
-`scripts/gpu_health.py --clear`. To stay clear of this:
-
-- Run one GPU-heavy job at a time. `scripts/device_lock.py -- <cmd>`
-  serializes jobs.
-- Never kill a process (`kill -9`, closing its terminal) while it has GPU
-  work in flight. Let it finish or fail; the plugin's waits are bounded.
-- Keep problems well inside memory. Swapping is what stalls a GPU long
-  enough to trip the watchdog.
-- Very large convolutions and single matmuls over ~1e12 flops can exceed
-  the GPU watchdog on smaller Macs; split them. The command-buffer budget
-  splits work only between kernels: one 16384^3 f32 matmul (~8.8e12 flops)
-  is a single 3-4 s kernel on an M3, and convolutions and other fused
-  kernels are budgeted only by their thread count.
+[`docs/troubleshooting.md`](docs/troubleshooting.md) maps the plugin's
+error messages and warnings to what to do.
 
 ## More
 
-`docs/design.md` (design, runtime policies, how this differs from MLX),
-`docs/integration-notes.md` (the source-verified contract with XLA),
-`docs/op-coverage.md`, `docs/accuracy.md`, `docs/callbacks.md`,
-`docs/performance.md` (current numbers, methodology, what was measured and
-dropped), `docs/roadmap.md` (decisions and what is next),
-`docs/development.md` (layout, building, tests, benchmarks, environment
-variables) and `docs/archive/` (the dated performance log and the review
-roadmap, kept as history).
+How it works: the plugin treats Metal as a fourth XLA:GPU platform, next to
+CUDA, ROCm and SYCL. XLA's own GPU compiler fuses the program and its
+emitters generate the kernels, which the plugin translates to Metal Shading
+Language; it does not re-interpret StableHLO op by op.
+
+- [`docs/design.md`](docs/design.md): design, runtime policies, how this
+  differs from MLX.
+- [`docs/op-coverage.md`](docs/op-coverage.md),
+  [`docs/accuracy.md`](docs/accuracy.md),
+  [`docs/callbacks.md`](docs/callbacks.md): what runs, how accurately,
+  and host callbacks.
+- [`docs/performance.md`](docs/performance.md): numbers, methodology, what
+  was measured and dropped.
+- [`docs/integration-notes.md`](docs/integration-notes.md): the
+  source-verified contract with XLA.
+- [`docs/roadmap.md`](docs/roadmap.md): decisions and what is next;
+  [`CHANGELOG.md`](CHANGELOG.md): renames and dated decisions.
+- [`docs/development.md`](docs/development.md): layout, building, tests,
+  benchmarks, environment variables; `docs/archive/` keeps the dated
+  performance log and the review roadmap as history.
+
+## Contributing
+
+Issues and pull requests are welcome.
+[`docs/development.md`](docs/development.md) covers building and testing;
+please run the GPU tests under `scripts/device_lock.py`.
+
+## License
+
+Apache-2.0 (`LICENSE`). The f16/bf16 matmul ("steel") kernels are ported
+from [MLX](https://github.com/ml-explore/mlx) (MIT; its notice is kept in
+`metal_pjrt/kernels/steel_gemm.metal`), and Apple's metal-cpp headers
+(Apache-2.0) are fetched at build time and compiled into the plugin.
