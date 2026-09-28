@@ -146,7 +146,7 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
   hit that, close memory-hungry programs (or run `bazel shutdown` right after
   a build). Changing a NumPy array after `jax.device_put` cannot change what
   the device gets. Up to 256 MB (less when free memory is short: an eighth
-  of what is reclaimable) the plugin snapshots the array before returning,
+  of what is reclaimable, but at least 16 MB) the plugin snapshots the array before returning,
   which briefly needs twice its size in host memory. Larger arrays are not
   snapshotted: `device_put` waits until the array has been copied, which,
   when the GPU is busy, means waiting for the work already queued.

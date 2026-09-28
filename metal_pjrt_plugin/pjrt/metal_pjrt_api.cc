@@ -13,7 +13,6 @@
 // ("oneapi 1.<build>.<settings>", MetalExecutor::PluginVersion) is what keeps
 // executables from another build or other compile-time settings out.
 
-#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -44,7 +43,7 @@ const PJRT_Api* g_gpu = nullptr;  // XLA's shim
 // pageable memory, and the copy freed when XLA is done with it: the call
 // does not block, and a training loop's next batch overlaps the current
 // step. That doubles the host footprint while the copy waits, so from
-// SnapshotLimit() up (256 MB, or less when memory is short) the caller's
+// 256 MB up (or 16 MB+ when memory is short, see Snapshot) the caller's
 // data goes to XLA instead and this waits until XLA is done with it (the
 // copy ran, or failed on a device error). That wait includes GPU work
 // already queued (the copy waits for XLA's allocation event on the compute
@@ -58,16 +57,20 @@ const PJRT_Api* g_gpu = nullptr;  // XLA's shim
 constexpr uint64_t kSnapshotMaxBytes = uint64_t{256} << 20;
 // At most this fraction of reclaimable system memory goes to one snapshot.
 constexpr uint64_t kSnapshotReclaimableDivisor = 8;
+// Below this a snapshot is always taken, without asking the system.
+constexpr uint64_t kSnapshotAlwaysBytes = uint64_t{16} << 20;
 
-uint64_t SnapshotLimit() {
+bool Snapshot(uint64_t size) {
   // METAL_PJRT_SNAPSHOT_MAX_MB replaces the 256 MB cap (for tests).
   static const uint64_t max_bytes = [] {
     const char* v = std::getenv("METAL_PJRT_SNAPSHOT_MAX_MB");
     return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 10) << 20
                                         : kSnapshotMaxBytes;
   }();
-  return std::min(max_bytes, metal_pjrt::rt::ReclaimableMemoryBytes() /
-                                 kSnapshotReclaimableDivisor);
+  if (size >= max_bytes) return false;
+  return size < kSnapshotAlwaysBytes ||
+         size < metal_pjrt::rt::ReclaimableMemoryBytes() /
+                    kSnapshotReclaimableDivisor;
 }
 
 // Row-major and unpadded: no strides, or the strides jaxlib passes for a
@@ -101,7 +104,7 @@ PJRT_Error* BufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args* args) {
   }
   uint64_t size = xla::primitive_util::ByteWidth(type);
   for (size_t i = 0; i < args->num_dims; ++i) size *= args->dims[i];
-  if (size >= SnapshotLimit()) {
+  if (!Snapshot(size)) {
     args->host_buffer_semantics =
         PJRT_HostBufferSemantics_kImmutableUntilTransferCompletes;
     PJRT_Error* error = g_gpu->PJRT_Client_BufferFromHostBuffer(args);

@@ -299,7 +299,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   C-contiguous array; strides equal to the row-major ones count as dense.
   Dense data is copied into a malloc'd buffer before returning (as CUDA
   does for pageable memory) and freed on `done_with_host_buffer`. From
-  min(256 MB, reclaimable / 8) up (`METAL_PJRT_SNAPSHOT_MAX_MB` replaces
+  min(256 MB, max(16 MB, reclaimable / 8)) up (the system is asked only
+  from 16 MB up; `METAL_PJRT_SNAPSHOT_MAX_MB` replaces
   the 256 MB, for tests) the caller's pointer goes to XLA as
   `kImmutableUntilTransferCompletes` and the wrapper awaits
   `done_with_host_buffer` (without the GIL: jaxlib releases it around the

@@ -18,15 +18,19 @@ uint64_t PhysicalMemoryBytes() {
 }
 
 uint64_t ReclaimableMemoryBytes() {
+  // mach_host_self() adds a send-right reference on every call; one kept
+  // for the process instead of one leaked per call (at 65534 references
+  // the name overflows and this query would start failing).
+  static const mach_port_t host = mach_host_self();
   vm_statistics64_data_t stats;
   mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
-  if (host_statistics64(mach_host_self(), HOST_VM_INFO64,
+  if (host_statistics64(host, HOST_VM_INFO64,
                         reinterpret_cast<host_info64_t>(&stats),
                         &count) != KERN_SUCCESS) {
     return 0;
   }
   vm_size_t page = 0;
-  host_page_size(mach_host_self(), &page);
+  host_page_size(host, &page);
   uint64_t pages = static_cast<uint64_t>(stats.free_count) +
                    stats.inactive_count + stats.speculative_count +
                    stats.purgeable_count;

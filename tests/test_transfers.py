@@ -3,11 +3,12 @@
 source/destination numpy arrays' lifetimes.
 
 JAX lets the H2D copy run after device_put returns, so the plugin copies
-the source into a host temporary before returning or, above min(256 MB,
-reclaimable memory / 8), waits for the copy: a caller refilling its numpy
-buffer right after device_put (the usual data-loader pattern) must not
-change the device value.
+the source into a host temporary before returning or, from min(256 MB,
+max(16 MB, reclaimable memory / 8)) up, waits for the copy: a caller
+refilling its numpy buffer right after device_put (the usual data-loader
+pattern) must not change the device value.
 """
+import ctypes
 import gc
 import os
 
@@ -55,7 +56,7 @@ def mutate_right_after_device_put(busy, may_alias, mb):
         assert np.all(np.asarray(x) == i), (i, np.unique(np.asarray(x))[:4])
 
 
-# Snapshot path: below min(256 MB, reclaimable system memory / 8).
+# Snapshot path: below min(256 MB, max(16 MB, reclaimable memory / 8)).
 @pytest.mark.parametrize("mb", [1, 32])
 @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
 @pytest.mark.parametrize("may_alias", [None, False])
@@ -104,3 +105,28 @@ def test_destination_freed_early():
         assert np.all(h == 1)
         del h
         x = f(x) - 1
+
+
+def _host_port_send_refs():
+    lib = ctypes.CDLL(None)
+    lib.mach_task_self.restype = lib.mach_host_self.restype = ctypes.c_uint32
+    task, host = lib.mach_task_self(), lib.mach_host_self()  # +1 ref itself
+    refs = ctypes.c_uint32()
+    assert lib.mach_port_get_refs(task, host, 0, ctypes.byref(refs)) == 0  # MACH_PORT_RIGHT_SEND
+    return refs.value - 1  # (the ref taken just now stays; the next call's -1 accounts for it)
+
+
+def test_device_puts_do_not_leak_host_port_refs():
+    # Each mach_host_self() adds a send-right reference; at 65534 the name
+    # overflows and the system memory query (hence the allocation guard)
+    # fails. 1 MB and 24 MB puts both query it (allocation guard; snapshot
+    # threshold), so they must release what they take.
+    a, b = np.ones(1 << 18, np.float32), np.ones(6 << 20, np.float32)
+    jax.device_put(a).block_until_ready()
+    before = _host_port_send_refs()
+    for _ in range(200):
+        jax.device_put(a).block_until_ready()
+    for _ in range(20):
+        jax.device_put(b).block_until_ready()
+    grew = _host_port_send_refs() - before - 1  # our own call's reference
+    assert grew <= 0, f"{grew} host port send refs leaked by 220 device_puts"

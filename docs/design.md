@@ -209,8 +209,8 @@ is no staging. JAX lets XLA read the source after `device_put` returns, and
 a data loader that refilled its array changed what the device got. So
 `device_put` of dense host data snapshots it into a malloc'd buffer before
 returning (as CUDA does for pageable memory), which does not block. From
-min(256 MB, reclaimable memory / 8) up it hands XLA the caller's data
-instead and waits until XLA is done with it: no second host copy (512 MB:
+min(256 MB, max(16 MB, reclaimable memory / 8)) up it hands XLA the
+caller's data instead and waits until XLA is done with it: no second host copy (512 MB:
 peak footprint +512 MB instead of +1041 MB), but the caller waits behind
 already queued GPU work (the copy waits for XLA's allocation event on the
 compute stream). Strided and sub-byte inputs take XLA's synchronous path,
