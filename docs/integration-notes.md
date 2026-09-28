@@ -184,8 +184,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `metal_pjrt::rt::Stream*` (so `PlatformStream<rt::Stream*>` also works) and
   `stream->parent()` is the `MetalExecutor` owning the `rt::Device`.
   `metal_pjrt::ffi::GetMetalContext` / `LaunchMsl` wrap this, with a kernel
-  cache keyed by (device, MSL source, function). `metal$scan` builds its MSL
-  and compiles its pipeline once per call site in an FFI instantiate handler
+  cache keyed by (device, MSL source, function). `metal$scan` gets its
+  pipeline once per call site in an FFI instantiate handler
   (state held by the thunk; no stream there, so it uses executor 0's device,
   `DefaultMetalDevice`) and only encodes the dispatch per execution
   (`LaunchKernel`). The state is not serializable, so a deserialized

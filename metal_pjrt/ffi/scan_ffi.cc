@@ -11,8 +11,9 @@
 // totals are scanned through threadgroup memory, and a running carry links
 // the chunks. f16/bf16 accumulate in f32; s32 add/mul wrap.
 //
-// The MSL is built and its pipeline compiled once per call site, at the FFI
-// instantiate stage (ScanState); execution only encodes the dispatch.
+// The kernel (kernels/scan.metal, one instantiation per type and op) is
+// looked up once per call site, at the FFI instantiate stage (ScanState);
+// execution only encodes the dispatch.
 #include <algorithm>
 #include <cstdint>
 #include <memory>
@@ -20,7 +21,6 @@
 
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_replace.h"
 #include "absl/strings/string_view.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
 #include "metal_pjrt/kernels/scan.metal.h"
@@ -39,42 +39,20 @@ struct Params {
   uint32_t reverse;
 };
 
-absl::StatusOr<std::string> BuildScanMsl(xla::PrimitiveType type,
+// The kernel of kernels/scan.metal for this element type and op.
+absl::StatusOr<std::string> ScanFunction(xla::PrimitiveType type,
                                          absl::string_view op) {
   absl::StatusOr<std::string> tname = MslTypeName(type);
   if (!tname.ok()) return tname.status();
-  const bool is_int = type == xla::S32;
-  std::string acc = is_int ? "int" : "float";
-  std::string body, identity;
-  if (op == "add") {
-    body = is_int ? "return as_type<int>(as_type<uint>(a) + as_type<uint>(b));"
-                  : "return a + b;";
-    identity = is_int ? "0" : "0.0f";
-  } else if (op == "mul") {
-    body = is_int ? "return as_type<int>(as_type<uint>(a) * as_type<uint>(b));"
-                  : "return a * b;";
-    identity = is_int ? "1" : "1.0f";
-  } else if (op == "max") {
-    // XLA semantics: NaN propagates.
-    body = is_int ? "return max(a, b);"
-                  : "return (isnan(a) || a > b) ? a : b;";
-    identity = is_int ? "(-2147483647 - 1)" : "-INFINITY";
-  } else if (op == "min") {
-    body = is_int ? "return min(a, b);"
-                  : "return (isnan(a) || a < b) ? a : b;";
-    identity = is_int ? "2147483647" : "INFINITY";
-  } else {
+  if (op != "add" && op != "mul" && op != "max" && op != "min") {
     return absl::InvalidArgumentError(
         absl::StrCat("metal$scan: unknown op ", op));
   }
-  return absl::StrReplaceAll(kernels::kScanMsl, {{"$T", *tname},
-                                                 {"$A", acc},
-                                                 {"$OP", body},
-                                                 {"$ID", identity}});
+  return absl::StrCat("scan_", op, "_", *tname);
 }
 
 struct ScanState {
-  std::string msl;
+  std::string function;
   // Compiled at instantiation for DefaultMetalDevice().
   rt::Device* device = nullptr;
   const rt::Kernel* kernel = nullptr;
@@ -96,14 +74,14 @@ absl::StatusOr<std::unique_ptr<ScanState>> Instantiate(
     xffi::AnyBuffer x, xffi::Result<xffi::AnyBuffer> y, absl::string_view op,
     bool reverse, int64_t row_length) {
   if (absl::Status s = CheckShapes(x, *y, row_length); !s.ok()) return s;
-  absl::StatusOr<std::string> msl = BuildScanMsl(x.element_type(), op);
-  if (!msl.ok()) return msl.status();
+  absl::StatusOr<std::string> function = ScanFunction(x.element_type(), op);
+  if (!function.ok()) return function.status();
   auto state = std::make_unique<ScanState>();
-  state->msl = *std::move(msl);
+  state->function = *std::move(function);
   absl::StatusOr<rt::Device*> device = DefaultMetalDevice();
   if (!device.ok()) return device.status();
   absl::StatusOr<const rt::Kernel*> kernel =
-      (*device)->GetKernel(state->msl, "scan");
+      (*device)->GetKernel(kernels::kScanMsl, state->function);
   if (!kernel.ok()) return kernel.status();
   state->device = *device;
   state->kernel = *kernel;
@@ -119,7 +97,7 @@ absl::Status Scan(stream_executor::Stream* stream, xffi::AnyBuffer x,
   const rt::Kernel* kernel = state->kernel;
   if (ctx->device != state->device) {
     absl::StatusOr<const rt::Kernel*> k =
-        ctx->device->GetKernel(state->msl, "scan");
+        ctx->device->GetKernel(kernels::kScanMsl, state->function);
     if (!k.ok()) return k.status();
     kernel = *k;
   }
