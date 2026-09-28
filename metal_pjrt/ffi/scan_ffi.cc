@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
 #include "metal_pjrt/kernels/scan.metal.h"
 #include "xla/backends/gpu/ffi.h"
@@ -107,7 +108,10 @@ absl::Status Scan(stream_executor::Stream* stream, xffi::AnyBuffer x,
   // The kernel's uint chunk loop (start += 4 * threads) wraps, and never
   // ends, for n near 2^32; MetalScanRewriter leaves such scans to XLA.
   if (rows > 0xffffffffu || n > (uint64_t{1} << 31)) {
-    return absl::UnimplementedError("metal$scan: too large");
+    return absl::UnimplementedError(absl::StrCat(
+        "Metal: scan of ", rows, " rows of ", n,
+        " elements is too large (at most 2^32 - 1 rows of 2^31 elements)",
+        metal_pjrt::kReportBug));
   }
   // 4 elements per thread per chunk; 256 threads measured as fast as 512
   // or 1024 on M3 for 4096-long rows, and keeps more threadgroups resident.

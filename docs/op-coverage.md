@@ -39,7 +39,7 @@ emitter's default case ("Unsupported instruction opcode").
 | select-and-scatter | expander to scatter + reduce-window | OK | verified (maxpool grad) |
 | stochastic-convert, logistic, batch-norm | HLO expanders | OK | expanders run in the shared pipeline |
 | convolution | FusionWrapper, loop emitter, naive `EmitDotLoop` | OK, slow | verified correct; no library path since conv canonicalization is a no-op |
-| dot, f16/bf16/f32 | BlasLt thunk over MPS (f32) / steel (f16/bf16) | OK | verified incl. batched. f16/bf16 GEMMs past steel's 32-bit index limits (a row of more than 8388607 elements, a dimension or batch count over INT32_MAX) are refused at compile time. Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal BlasLt: unsupported types S8 x S8 -> S32"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
+| dot, f16/bf16/f32 | BlasLt thunk over MPS (f32) / steel (f16/bf16) | OK | verified incl. batched. f16/bf16 GEMMs past steel's 32-bit index limits (a row of more than 8388607 elements, a dimension or batch count over INT32_MAX) are refused at compile time. Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal: matmul s8 x s8 -> s32 is not supported"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
 | dot, f64 / c64 / c128 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | applied in steel's store (bias, relu / tanh-gelu / silu, aux; f16/bf16); f32: MPS GEMM + one MSL epilogue kernel; verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / NO for fp8 | fp8 Lt paths unsupported |
@@ -72,8 +72,11 @@ f64 arithmetic and scatters that would need 64-bit atomics (a combiner on
 64-bit elements without `unique_indices`) with an error naming the JAX op
 and source line, e.g. "Metal: scatter with a combiner on 64-bit elements
 needs 64-bit atomics, which Metal does not have: scatter-add.5
-(jit(f)/scatter-add) at f.py:7". Data movement on f64 passes the check but
-still fails in the MSL emitter (no f64 loads). The check runs late on
+(jit(f)/scatter-add) at f.py:7". f64 data movement that needs a GPU kernel
+(transpose, broadcast, concatenate, gather, pad, reverse, select, iota) is
+refused the same way; contiguous slices, reshapes and dynamic slices and
+updates are copies and run. Other f64 kernels (e.g. a strided slice) still
+fail in the MSL emitter (no f64 loads). The check runs late on
 purpose: an f32 -> f64 -> f32 chain is simplified away and runs. Complex is
 not checked: complex values inside a fusion lower fine (`abs(fft(x))` runs);
 only complex kernel buffers fail, in the emitter

@@ -54,7 +54,7 @@ TEST_F(MetalHloChecksTest, SupportedGemms) {
 TEST_F(MetalHloChecksTest, UnsupportedGemmTypeNamesTheOp) {
   absl::Status s = Check(Gemm("s8", "s8", "s32", "DEFAULT"));
   EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
-  EXPECT_NE(s.message().find("S8 x S8 -> S32"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("s8 x s8 -> s32"), std::string::npos) << s;
   EXPECT_NE(s.message().find("jit(f)/dot_general"), std::string::npos) << s;
   EXPECT_NE(s.message().find("model.py:12"), std::string::npos) << s;
   EXPECT_FALSE(Check(Gemm("f16", "bf16", "f32", "DEFAULT")).ok());
@@ -116,12 +116,56 @@ TEST(ValidateMatmulTest, F32EpilogueGridLimit) {
   auto v = stream_executor::metal::ValidateMatmul(
       cfg, se_gpu::BlasLt::Epilogue::kReLU);
   EXPECT_EQ(v.status().code(), absl::StatusCode::kUnimplemented);
-  EXPECT_NE(v.status().message().find("epilogue on a 1x4294967296x16"),
+  EXPECT_NE(v.status().message().find("activation on a 1x4294967296x16"),
             std::string::npos)
       << v.status();
   EXPECT_TRUE(stream_executor::metal::ValidateMatmul(
                   cfg, se_gpu::BlasLt::Epilogue::kDefault)
                   .ok());
+}
+
+// f64 values moved by an emitted kernel are refused with the op named;
+// copies and no-ops on f64 pass.
+TEST_F(MetalHloChecksTest, F64DataMovement) {
+  constexpr char kTranspose[] = R"(
+HloModule m
+ENTRY e {
+  a = f64[4,3]{1,0} parameter(0)
+  ROOT t = f64[3,4]{1,0} transpose(a), dimensions={1,0}, metadata={op_name="jit(f)/transpose" source_file="model.py" source_line=3}
+})";
+  absl::Status s = Check(kTranspose);
+  EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(s.message().find("f64 transpose inside jit"), std::string::npos)
+      << s;
+  EXPECT_NE(s.message().find("jit(f)/transpose"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("model.py:3"), std::string::npos) << s;
+  // A transpose that only relabels (the layout makes it a bitcast).
+  EXPECT_TRUE(Check(R"(
+HloModule m
+ENTRY e {
+  a = f64[4,3]{1,0} parameter(0)
+  ROOT t = f64[3,4]{0,1} transpose(a), dimensions={1,0}
+})").ok());
+  EXPECT_TRUE(Check(R"(
+HloModule m
+ENTRY e {
+  a = f64[4,3]{1,0} parameter(0)
+  ROOT s = f64[2,3]{1,0} slice(a), slice={[1:3], [0:3]}
+})").ok());
+  EXPECT_FALSE(Check(R"(
+HloModule m
+ENTRY e {
+  a = f64[3]{0} parameter(0)
+  ROOT b = f64[5,3]{1,0} broadcast(a), dimensions={1}
+})").ok());
+  EXPECT_FALSE(Check(R"(
+HloModule m
+ENTRY e {
+  a = f64[3]{0} parameter(0)
+  b = f64[3]{0} parameter(1)
+  p = pred[3]{0} parameter(2)
+  ROOT s = f64[3]{0} select(p, a, b)
+})").ok());
 }
 
 TEST_F(MetalHloChecksTest, NarrowOperandDot) {
@@ -133,6 +177,8 @@ ENTRY e {
   ROOT d = f32[4,6]{1,0} dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
 })";
   EXPECT_EQ(Check(kDot).code(), absl::StatusCode::kInternal);
+  EXPECT_NE(Check(kDot).message().find("metal-pjrt-plugin bug"),
+            std::string::npos);
 
   // After MetalDotOperandUpcaster the dot is fine.
   auto module = ParseAndReturnVerifiedModule(kDot);
@@ -171,16 +217,14 @@ TEST_F(MetalHloChecksTest, LegalityF64) {
     EXPECT_TRUE(module.ok()) << module.status();
     return CheckPostGemmRewriter(**module);
   };
-  // Data movement on f64 is legal.
+  // Data movement on f64 that needs no kernel is legal (F64DataMovement
+  // has the rest).
   EXPECT_TRUE(legal(R"(
 HloModule m
 ENTRY e {
   x = f64[3,4] parameter(0)
-  t = f64[4,3] transpose(x), dimensions={1,0}
-  r = f64[12] reshape(t)
-  s = f64[5] slice(r), slice={[2:7]}
-  p = pred[5] parameter(1)
-  ROOT sel = f64[5] select(p, s, s)
+  r = f64[12] reshape(x)
+  ROOT s = f64[5] slice(r), slice={[2:7]}
 })").ok());
   absl::Status s = legal(R"(
 HloModule m

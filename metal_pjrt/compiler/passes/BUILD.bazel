@@ -5,6 +5,7 @@ cc_library(
     srcs = ["sort_expander.cc"],
     hdrs = ["sort_expander.h"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status",
@@ -107,6 +108,7 @@ cc_library(
     srcs = ["hlo_checks.cc"],
     hdrs = ["hlo_checks.h"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         ":dot_upcast",
         "//metal_pjrt/blas:blas_lt_support",
         "@com_google_absl//absl/algorithm:container",

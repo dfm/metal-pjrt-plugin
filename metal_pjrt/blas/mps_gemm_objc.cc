@@ -87,7 +87,8 @@ struct Stored {
 };
 
 std::string Describe(absl::string_view what, const GemmParams& p) {
-  return absl::StrCat("RunMpsGemm: ", what, ": ", GemmParamsDebugString(p));
+  return absl::StrCat("Metal: matmul (MPS): ", what, ": ",
+                      GemmParamsDebugString(p));
 }
 absl::Status Invalid(absl::string_view what, const GemmParams& p) {
   return absl::InvalidArgumentError(Describe(what, p));
@@ -151,7 +152,8 @@ absl::Status EncodeStaging(id<MTLCommandBuffer> cmd, id<MTLComputePipelineState>
   id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder];
   if (enc == nil) {
     return absl::InternalError(
-        "RunMpsGemm: computeCommandEncoder creation failed for staging");
+        "Metal: matmul (MPS): computeCommandEncoder creation failed for "
+        "staging");
   }
   [enc setComputePipelineState:pso];
   [enc setBuffer:in offset:0 atIndex:0];

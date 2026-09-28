@@ -36,10 +36,12 @@ cc_library(
     srcs = ["blas_lt_support.cc"],
     hdrs = ["blas_lt_support.h"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
+        "@xla//xla:shape_util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/stream_executor:blas",
         "@xla//xla/stream_executor/gpu:gpu_blas_lt",
@@ -52,6 +54,8 @@ cc_library(
     srcs = ["metal_blas.cc"],
     hdrs = ["metal_blas.h"],
     deps = [
+        "@xla//xla:shape_util",
+        "//metal_pjrt/compiler:report_bug",
         ":blas_lt_support",
         ":mps_gemm",
         ":steel_gemm",

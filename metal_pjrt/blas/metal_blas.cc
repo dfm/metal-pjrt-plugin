@@ -19,7 +19,9 @@
 #include "metal_pjrt/blas/blas_lt_support.h"
 #include "metal_pjrt/blas/mps_gemm.h"
 #include "metal_pjrt/blas/steel_gemm.h"  // steel GEMM dispatch
+#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
+#include "xla/primitive_util.h"
 #include "xla/stream_executor/blas.h"
 #include "xla/stream_executor/device_address.h"
 #include "xla/stream_executor/gpu/gpu_blas_lt.h"
@@ -49,8 +51,8 @@ absl::StatusOr<mps::MpsDType> FromPrimitiveType(xla::PrimitiveType t) {
       return mps::MpsDType::kBF16;
     default:
       return absl::UnimplementedError(absl::StrCat(
-          "Metal BLAS: unsupported element type ",
-          xla::PrimitiveType_Name(t)));
+          "Metal: matmul on ", xla::primitive_util::LowercasePrimitiveTypeName(t),
+          " is not supported (f32, f16 or bf16)"));
   }
 }
 
@@ -266,7 +268,7 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
     const gpu::GroupedGemmConfig& config, Epilogue epilogue) const {
-  return absl::UnimplementedError("Metal BlasLt: grouped GEMM");
+  return absl::UnimplementedError("Metal: grouped matmul is not supported");
 }
 
 absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
@@ -325,17 +327,17 @@ MetalBlasLt::MatmulPlan::EpilogueBuffers(
                           (p.m - 1) * static_cast<uint64_t>(p.c.ld) + p.n;
   if (args.d.size() < extent * elem) {
     return absl::InvalidArgumentError(absl::StrCat(
-        "Metal BlasLt epilogue: D has ", args.d.size(), " bytes, need ",
-        extent * elem));
+        "Metal: matmul epilogue: D has ", args.d.size(), " bytes, need ",
+        extent * elem, metal_pjrt::kReportBug));
   }
   const void* bias = args.d.opaque();
   if (epilogue_.bias) {
     if (args.bias.opaque() == nullptr ||
         args.bias.size() < static_cast<uint64_t>(p.n) * elem) {
       return absl::InvalidArgumentError(absl::StrCat(
-          "Metal BlasLt epilogue: bias buffer (", args.bias.size(),
+          "Metal: matmul epilogue: bias buffer (", args.bias.size(),
           " bytes) must hold ", p.n, " elements of ",
-          mps::MpsDTypeName(p.c.dtype)));
+          mps::MpsDTypeName(p.c.dtype), metal_pjrt::kReportBug));
     }
     bias = args.bias.opaque();
   }
@@ -343,8 +345,9 @@ MetalBlasLt::MatmulPlan::EpilogueBuffers(
   if (epilogue_.aux) {
     if (args.aux.opaque() == nullptr || args.aux.size() < extent * elem) {
       return absl::InvalidArgumentError(absl::StrCat(
-          "Metal BlasLt epilogue: aux buffer (", args.aux.size(),
-          " bytes) smaller than the output (", extent * elem, " bytes)"));
+          "Metal: matmul epilogue: aux buffer (", args.aux.size(),
+          " bytes) smaller than the output (", extent * elem, " bytes)",
+          metal_pjrt::kReportBug));
     }
     aux = args.aux.opaque();
   }
@@ -359,7 +362,8 @@ absl::Status MetalBlasLt::MatmulPlan::RunSteelWithEpilogue(
   rt::Stream* rs = RtStream(stream);
   if (rs == nullptr) {
     return absl::InvalidArgumentError(
-        "Metal BlasLt: stream has no Metal handle (not a Metal stream?)");
+        absl::StrCat("Metal: matmul: stream has no Metal handle",
+                     metal_pjrt::kReportBug));
   }
   mps::SteelEpilogue e;
   e.act = static_cast<int>(epilogue_.act);
@@ -380,7 +384,8 @@ absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(
   rt::Stream* rs = RtStream(stream);
   if (rs == nullptr) {
     return absl::InvalidArgumentError(
-        "Metal BlasLt: stream has no Metal handle (not a Metal stream?)");
+        absl::StrCat("Metal: matmul: stream has no Metal handle",
+                     metal_pjrt::kReportBug));
   }
   EpilogueParams ep{static_cast<uint32_t>(p.m), static_cast<uint32_t>(p.n),
                     static_cast<uint64_t>(p.c.ld), batch_stride};

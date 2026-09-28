@@ -10,6 +10,7 @@
 #include "absl/strings/str_cat.h"
 #include "metal_pjrt/blas/blas_lt_support.h"
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instruction.h"
@@ -75,9 +76,10 @@ absl::Status CheckGemmGroupsFitInt32(const HloInstruction& instr,
     for (int64_t group : {b, c, rest}) {
       if (group > std::numeric_limits<int32_t>::max()) {
         return absl::UnimplementedError(absl::StrCat(
-            "Metal: GEMM ", ShapeUtil::HumanString(shape),
+            "Metal: matmul operand ", ShapeUtil::HumanString(shape),
             " has a batch, row or column group of ", group,
-            " elements; XLA's GEMM config counts them in 32 bits"));
+            " elements; XLA's matmul config counts them in 32 bits. Split "
+            "the batch (lax.map, or chunks)"));
       }
     }
     return absl::OkStatus();
@@ -92,7 +94,7 @@ absl::Status CheckGemmGroupsFitInt32(const HloInstruction& instr,
 absl::Status CheckGemm(const HloInstruction& instr) {
   if (!IsCublasLtMatmul(instr)) {
     return absl::UnimplementedError(
-        absl::StrCat("Metal: no GEMM implementation for ",
+        absl::StrCat("Metal: no matmul implementation for ",
                      instr.custom_call_target(), " (", DescribeOp(instr), ")"));
   }
   TF_ASSIGN_OR_RETURN(auto config, instr.backend_config<GpuBackendConfig>());
@@ -160,6 +162,31 @@ bool TouchesType(const HloInstruction& instr,
   return false;
 }
 
+// Ops that move f64 values through an emitted kernel, which cannot load f64
+// (the MSL emitter would refuse it without naming the op). Contiguous
+// slices, dynamic slices and updates, reshapes and bitcasts are copies or
+// no-ops and work.
+bool MovesF64InAKernel(const HloInstruction& instr) {
+  switch (instr.opcode()) {
+    case HloOpcode::kTranspose:
+      if (ShapeUtil::TransposeIsBitcast(instr.operand(0)->shape(),
+                                        instr.shape(), instr.dimensions())) {
+        return false;
+      }
+      [[fallthrough]];
+    case HloOpcode::kBroadcast:
+    case HloOpcode::kConcatenate:
+    case HloOpcode::kGather:
+    case HloOpcode::kIota:
+    case HloOpcode::kPad:
+    case HloOpcode::kReverse:
+    case HloOpcode::kSelect:
+      return TouchesType(instr, {F64});
+    default:
+      return false;
+  }
+}
+
 // A scatter whose combiner does more than overwrite needs atomics on the
 // element type (read-modify-write when indices collide).
 bool NeedsWideAtomics(const HloInstruction& instr) {
@@ -200,6 +227,14 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             "double precision; use float32, or run it on the CPU backend): ",
             DescribeOp(*instr)));
       }
+      if (MovesF64InAKernel(*instr)) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: f64 ", HloOpcodeString(instr->opcode()),
+            " inside jit is not supported (Apple GPUs have no double "
+            "precision, so GPU kernels cannot load f64; only transfers of "
+            "f64 arrays work). Use float32, or run it on the CPU backend: ",
+            DescribeOp(*instr)));
+      }
       if (NeedsWideAtomics(*instr)) {
         return absl::UnimplementedError(absl::StrCat(
             "Metal: scatter with a combiner on 64-bit elements needs 64-bit "
@@ -210,7 +245,7 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
         return absl::InternalError(absl::StrCat(
             "Metal: dot with operands narrower than its result after "
             "MetalDotOperandUpcaster: ",
-            DescribeOp(*instr)));
+            DescribeOp(*instr), metal_pjrt::kReportBug));
       }
       if (instr->opcode() != HloOpcode::kCustomCall) continue;
       if (IsCublasGemm(*instr)) TF_RETURN_IF_ERROR(CheckGemm(*instr));

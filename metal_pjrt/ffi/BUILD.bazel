@@ -15,6 +15,7 @@ cc_library(
     ],
     hdrs = ["metal_ffi.h"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         "//metal_pjrt/kernels:cub_sort",
         "//metal_pjrt/kernels:scan",
         "//metal_pjrt/runtime:metal_runtime",

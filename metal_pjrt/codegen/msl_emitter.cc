@@ -25,6 +25,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
@@ -568,7 +569,8 @@ absl::Status ExpandArith(ModuleOp module) {
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
   mlir::arith::populateExpandMinMaxPatterns(patterns);
   if (mlir::failed(mlir::applyPatternsGreedily(module, std::move(patterns)))) {
-    return absl::InternalError("MSL emitter: arith expansion failed");
+    return absl::InternalError(
+        absl::StrCat("MSL emitter: arith expansion failed", kReportBug));
   }
   // Index is size_t in MSL, and ArithToEmitC emits divsi/remsi/shrsi on it
   // as unsigned C operators. They come from LowerAffine (mod/floordiv of
@@ -798,7 +800,8 @@ absl::Status PrepareFunctions(ModuleOp module, mlir::func::FuncOp& entry,
     auto new_attr = mlir::StringAttr::get(ctx, new_name);
     if (mlir::failed(mlir::SymbolTable::replaceAllSymbolUses(
             f.getSymNameAttr(), new_attr, module))) {
-      return absl::InternalError("MSL emitter: failed to rename function");
+      return absl::InternalError(absl::StrCat(
+          "MSL emitter: failed to rename function", kReportBug));
     }
     f.setSymName(new_name);
     f.removeArgAttrsAttr();
@@ -2096,7 +2099,8 @@ absl::Status TopologicalFunctionOrder(
   };
   auto entry = funcs.find(entry_name);
   if (entry == funcs.end()) {
-    return absl::InternalError("MSL emitter: entry function lost in conversion");
+    return absl::InternalError(absl::StrCat(
+        "MSL emitter: entry function lost in conversion", kReportBug));
   }
   return visit(entry->second);
 }
@@ -2282,15 +2286,17 @@ absl::StatusOr<MslKernel> EmitMslKernel(
   if (mlir::failed(mlir::applyPartialConversion(module, target,
                                                 std::move(patterns)))) {
     return absl::InternalError(
-        absl::StrCat("MSL emitter: conversion to EmitC failed:\n", diagnostics));
+        absl::StrCat("MSL emitter: conversion to EmitC failed", kReportBug,
+                     ":\n", diagnostics));
   }
   llvm::SmallVector<mlir::UnrealizedConversionCastOp> casts;
   module.walk([&](mlir::UnrealizedConversionCastOp c) { casts.push_back(c); });
   llvm::SmallVector<mlir::UnrealizedConversionCastOp> remaining;
   mlir::reconcileUnrealizedCasts(casts, &remaining);
   if (!remaining.empty()) {
-    return absl::InternalError(
-        "MSL emitter: unresolved type conversions after EmitC conversion");
+    return absl::InternalError(absl::StrCat(
+        "MSL emitter: unresolved type conversions after EmitC conversion",
+        kReportBug));
   }
   absl::Status leftover;
   module.walk([&](Operation* op) {
@@ -2325,14 +2331,16 @@ absl::StatusOr<MslKernel> EmitMslKernel(
   for (mlir::emitc::ClassOp c : classes) {
     if (mlir::failed(mlir::emitc::translateToCpp(c, os))) {
       return absl::InternalError(absl::StrCat(
-          "MSL emitter: printing struct failed:\n", diagnostics));
+          "MSL emitter: printing struct failed", kReportBug, ":\n",
+          diagnostics));
     }
     os << "\n";
   }
   for (mlir::emitc::FuncOp f : order) {
     if (mlir::failed(mlir::emitc::translateToCpp(f, os))) {
       return absl::InternalError(absl::StrCat(
-          "MSL emitter: printing function failed:\n", diagnostics));
+          "MSL emitter: printing function failed", kReportBug, ":\n",
+          diagnostics));
     }
     os << "\n";
   }

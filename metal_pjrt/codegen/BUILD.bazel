@@ -11,6 +11,7 @@ cc_library(
     srcs = ["msl_emitter.cc"],
     hdrs = ["msl_emitter.h"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         ":msl_kernel",
         "//metal_pjrt/kernels:msl_prelude",
         "@com_google_absl//absl/status",

@@ -24,6 +24,7 @@
 #include "metal_pjrt/codegen/metal_kernel_compiler.h"
 #include "metal_pjrt/codegen/msl_llvm_bridge.h"
 #include "metal_pjrt/compiler/compile_settings.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/runtime/constants_container.h"
 #include "metal_pjrt/stream_executor/metal_platform_id.h"
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
@@ -74,7 +75,7 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
       if (raw.size() > size) {
         return absl::InternalError(
             absl::StrCat("constant ", blob.name, " initializer larger than "
-                         "its allocation"));
+                         "its allocation", metal_pjrt::kReportBug));
       }
       std::copy(raw.begin(), raw.end(), blob.data.begin());
     } else if (auto* ci = llvm::dyn_cast<llvm::ConstantInt>(init)) {

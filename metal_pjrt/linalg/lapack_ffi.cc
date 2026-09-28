@@ -53,6 +53,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
 #include "metal_pjrt/kernels/small_linalg.metal.h"
 #include "xla/backends/gpu/ffi.h"
@@ -153,7 +154,8 @@ void CopyIfDistinct(void* dst, const void* src, size_t bytes) {
 
 absl::Status LapackError(const char* name, int info) {
   return absl::InternalError(
-      absl::StrCat(name, ": LAPACK reported illegal argument ", -info));
+      absl::StrCat(name, ": LAPACK reported illegal argument ", -info,
+                   metal_pjrt::kReportBug));
 }
 
 // The workspace size for a float `query` result (LAPACK's lwork = -1 call),

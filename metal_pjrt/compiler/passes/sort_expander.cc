@@ -14,6 +14,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "metal_pjrt/compiler/report_bug.h"
 #include "xla/comparison_util.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_computation.h"
@@ -145,7 +146,7 @@ absl::StatusOr<HloInstruction*> ApplyComparator(
         if (out->shape().element_type() != instr->shape().element_type()) {
           return absl::InternalError(absl::StrCat(
               "unexpected type-changing op in sort comparator: ",
-              instr->ToString()));
+              instr->ToString(), metal_pjrt::kReportBug));
         }
         break;
       default: {

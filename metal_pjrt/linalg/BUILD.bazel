@@ -8,6 +8,7 @@ cc_library(
     srcs = ["lapack_ffi.cc"],
     linkopts = ["-framework Accelerate"],
     deps = [
+        "//metal_pjrt/compiler:report_bug",
         "//metal_pjrt/ffi:metal_ffi",
         "//metal_pjrt/kernels:small_linalg",
         "@com_google_absl//absl/status",

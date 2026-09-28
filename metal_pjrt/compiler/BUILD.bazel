@@ -13,11 +13,18 @@ cc_library(
     ],
 )
 
+# The suffix of internal errors.
+cc_library(
+    name = "report_bug",
+    hdrs = ["report_bug.h"],
+)
+
 cc_library(
     name = "metal_compiler_impl",
     srcs = ["metal_compiler.cc"],
     hdrs = ["metal_compiler.h"],
     deps = [
+        ":report_bug",
         ":compile_settings",
         "//metal_pjrt/codegen:metal_kernel_compiler",
         "//metal_pjrt/codegen:msl_llvm_bridge",

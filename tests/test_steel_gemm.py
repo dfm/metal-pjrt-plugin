@@ -77,7 +77,7 @@ def test_unsupported_gemm_fails_at_compile_time():
     compiling, naming the JAX op and the source line."""
     x = jnp.ones((64, 48), jnp.int8)
     f = jax.jit(lambda a, b: jax.lax.dot(a, b, preferred_element_type=jnp.int32))
-    with pytest.raises(Exception, match=r"S8 x S8 -> S32 .*dot_general.* at .*test_steel_gemm.py:\d+"):
+    with pytest.raises(Exception, match=r"matmul s8 x s8 -> s32 is not supported.*dot_general.* at .*test_steel_gemm.py:\d+"):
         f.lower(x, x.T).compile()
 
 
@@ -90,7 +90,7 @@ def test_gemm_past_steel_limits_fails_at_compile_time(dt):
     f = jax.jit(lambda a, b: jnp.matmul(a, b, preferred_element_type=jnp.float32))
     a = jax.ShapeDtypeStruct((2, k), jnp.dtype(dt))
     b = jax.ShapeDtypeStruct((k, 2), jnp.dtype(dt))
-    with pytest.raises(Exception, match=r"steel kernels.*leading dimension.* exceeds 8388607 .*dot_general.* at .*test_steel_gemm.py:\d+"):
+    with pytest.raises(Exception, match=r"index in 32 bits.*leading dimension.* exceeds 8388607\. Split the matmul or use float32 .*dot_general.* at .*test_steel_gemm.py:\d+"):
         f.lower(a, b).compile()
     x = jnp.ones((64, 64), dt)
     np.testing.assert_array_equal(np.asarray(f(x, x)), 64.0)
