@@ -15,7 +15,10 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 @pytest.mark.parametrize("value, want", [
     (None, False), ("", False), ("0", False), ("false", False),
-    ("False", False), ("NO", False), (" off ", False),
+    ("False", False), ("NO", False), (" off ", False), ("\toff\n", False),
+    # ASCII whitespace only, as absl::StripAsciiWhitespace: a no-break
+    # space is part of the value.
+    ("\u00a0off", True),
     ("1", True), ("true", True), ("yes", True), ("ON", True), ("2", True)])
 def test_env_flag(monkeypatch, value, want):
     # One convention for every boolean, the same as EnvFlag in C++

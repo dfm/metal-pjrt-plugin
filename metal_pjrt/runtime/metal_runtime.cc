@@ -277,7 +277,8 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
       double f = 0;
       if (!absl::SimpleAtod(v, &f) || !(f > 0) || !std::isfinite(f)) {
         LOG(WARNING) << "Ignoring JAX_MTL_MEMORY_FRACTION=" << v
-                     << " (not a number > 0)";
+                     << " (not a number > 0); using 1, a budget of "
+                     << FormatBytes(budget);
       } else {
         budget = std::min(static_cast<uint64_t>(budget * f),
                           static_cast<uint64_t>(info.recommended_working_set));

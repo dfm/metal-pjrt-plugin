@@ -129,7 +129,8 @@ read at run time.
 Booleans are off when unset, empty, `0`, `false`, `no` or `off` (any case)
 and on for anything else, in C++ (`EnvFlag`, `metal_pjrt/runtime/env.h`),
 Python (`metal_pjrt_plugin._env_flag`) and the bench script alike. A number
-that does not parse is ignored with a warning and the default kept.
+that does not parse (or a size in MB too large to count in bytes) is
+ignored with a warning and the default kept.
 
 | variable | read by | effect |
 |---|---|---|

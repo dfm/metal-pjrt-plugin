@@ -28,4 +28,13 @@ uint64_t EnvUint(const char* name, uint64_t default_value) {
   return default_value;
 }
 
+uint64_t EnvMegabytes(const char* name, uint64_t default_mb) {
+  constexpr uint64_t kMaxMb = UINT64_MAX >> 20;
+  const uint64_t mb = EnvUint(name, default_mb);
+  if (mb <= kMaxMb) return mb << 20;
+  LOG(WARNING) << "Ignoring " << name << "=" << mb << " (more than " << kMaxMb
+               << " MB); using " << default_mb;
+  return default_mb << 20;
+}
+
 }  // namespace metal_pjrt

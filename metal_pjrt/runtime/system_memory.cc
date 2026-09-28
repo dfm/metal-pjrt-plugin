@@ -41,7 +41,7 @@ uint64_t ReclaimableMemoryBytes() {
 
 uint64_t SystemMemoryReserve() {
   static const uint64_t reserve = [] {
-    return EnvUint("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB", 512) << 20;
+    return EnvMegabytes("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB", 512);
   }();
   return reserve;
 }

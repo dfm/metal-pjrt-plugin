@@ -64,8 +64,8 @@ constexpr uint64_t kSnapshotAlwaysBytes = uint64_t{16} << 20;
 bool Snapshot(uint64_t size) {
   // METAL_PJRT_SNAPSHOT_MAX_MB replaces the 256 MB cap (for tests).
   static const uint64_t max_bytes =
-      metal_pjrt::EnvUint("METAL_PJRT_SNAPSHOT_MAX_MB", kSnapshotMaxBytes >> 20)
-      << 20;
+      metal_pjrt::EnvMegabytes("METAL_PJRT_SNAPSHOT_MAX_MB",
+                               kSnapshotMaxBytes >> 20);
   if (size >= max_bytes) return false;
   return size < kSnapshotAlwaysBytes ||
          size < metal_pjrt::rt::ReclaimableMemoryBytes() /

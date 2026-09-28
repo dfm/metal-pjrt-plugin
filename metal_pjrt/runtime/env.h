@@ -15,6 +15,11 @@ bool EnvFlag(const char* name);
 // a LOG(WARNING)) when it does not parse.
 uint64_t EnvUint(const char* name, uint64_t default_value);
 
+// A size in MB (EnvUint), returned in bytes. A value whose byte count does
+// not fit in 64 bits is ignored with a warning, like one that does not
+// parse, instead of wrapping around to a small size.
+uint64_t EnvMegabytes(const char* name, uint64_t default_mb);
+
 }  // namespace metal_pjrt
 
 #endif  // METAL_PJRT_RUNTIME_ENV_H_

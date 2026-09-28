@@ -18,7 +18,7 @@ if ! .venv/bin/python -c 'import sys; sys.path.insert(0, "scripts"); import devi
 fi
 # Booleans as everywhere (docs/development.md): unset, "", 0, false, no,
 # off (any case) are off.
-flag() { case "$(printf %s "${1:-}" | tr '[:upper:]' '[:lower:]')" in ""|0|false|no|off) return 1 ;; esac; }
+flag() { case "$(printf %s "${1:-}" | tr -d ' \t\n\v\f\r' | tr '[:upper:]' '[:lower:]')" in ""|0|false|no|off) return 1 ;; esac; }
 # Refuse to time a GPU that was reset since boot (it runs slow until reboot).
 if ! flag "${BENCH_ALLOW_DEGRADED:-}"; then
   scripts/gpu_health.py --strict || { echo "set BENCH_ALLOW_DEGRADED=1 to run anyway" >&2; exit 1; }

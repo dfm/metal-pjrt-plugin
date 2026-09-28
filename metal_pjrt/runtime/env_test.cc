@@ -40,5 +40,20 @@ TEST(EnvTest, Uint) {
   unsetenv(kVar);
 }
 
+TEST(EnvTest, Megabytes) {
+  unsetenv(kVar);
+  EXPECT_EQ(EnvMegabytes(kVar, 512), uint64_t{512} << 20);
+  setenv(kVar, "3", 1);
+  EXPECT_EQ(EnvMegabytes(kVar, 512), uint64_t{3} << 20);
+  setenv(kVar, "17592186044415", 1);  // UINT64_MAX >> 20: still fits
+  EXPECT_EQ(EnvMegabytes(kVar, 512), (UINT64_MAX >> 20) << 20);
+  // Would wrap around in bytes (17592186044416 << 20 == 0).
+  for (const char* huge : {"17592186044416", "18446744073709551615"}) {
+    setenv(kVar, huge, 1);
+    EXPECT_EQ(EnvMegabytes(kVar, 512), uint64_t{512} << 20) << huge;
+  }
+  unsetenv(kVar);
+}
+
 }  // namespace
 }  // namespace metal_pjrt

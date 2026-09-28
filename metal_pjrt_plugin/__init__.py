@@ -48,7 +48,8 @@ def _env_flag(name: str) -> bool:
     "off" (any case) are off, anything else on. The C++ twin is EnvFlag in
     metal_pjrt/runtime/env.h; both must agree (METAL_PJRT_DISABLE_LAPACK is
     read on both sides)."""
-    v = os.environ.get(name, "").strip().lower()
+    # ASCII whitespace only, as absl::StripAsciiWhitespace in EnvFlag.
+    v = os.environ.get(name, "").strip(" \t\n\v\f\r").lower()
     return v not in ("", "0", "false", "no", "off")
 
 

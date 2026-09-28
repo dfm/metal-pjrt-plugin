@@ -68,6 +68,9 @@ absl::StatusOr<EpilogueSpec> DecodeEpilogue(gpu::BlasLt::Epilogue e) {
       s.aux = true;
       break;
     default:
+      // Unreachable from a program: the cases above cover every
+      // BlasLt::Epilogue, and each GemmBackendConfig epilogue GemmRewriter
+      // sets maps to one (AsBlasLtEpilogue, matmul_utils.cc). Hence "bug".
       return absl::UnimplementedError(
           absl::StrCat("Metal: matmul with fused epilogue ",
                        static_cast<int>(e), " is not supported",

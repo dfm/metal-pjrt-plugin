@@ -140,7 +140,7 @@ print("OK")
     assert "OK" in out
 
 
-@pytest.mark.parametrize("fraction", ["abc", "0", "1.5"])
+@pytest.mark.parametrize("fraction", ["abc", "0", "0.5x", "1.5"])
 def test_bad_settings_warn_and_keep_defaults(fraction):
     # A value that does not parse is ignored with a warning (strtoull/atof
     # read a typo as 0, which silently turned the swap guard off); a
@@ -167,5 +167,6 @@ jnp.zeros(MB).block_until_ready()  # 4 MB: consults the system guard
         # on Apple GPUs).
         assert budget > half_ram, budget
     else:
-        assert f"Ignoring JAX_MTL_MEMORY_FRACTION={fraction}" in out.stderr
+        assert (f"Ignoring JAX_MTL_MEMORY_FRACTION={fraction} (not a number "
+                "> 0); using 1, a budget of ") in out.stderr, out.stderr[-3000:]
         assert 0 < budget <= half_ram, budget
