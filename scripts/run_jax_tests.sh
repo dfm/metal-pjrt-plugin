@@ -14,7 +14,7 @@
 # Usage: scripts/run_jax_tests.sh tests/lax_test.py [pytest args]
 set -uo pipefail
 cd "$(dirname "$0")/.."
-T=${JAX_TESTS_DIR:-$HOME/.cache/openmetal/jax-tests}
+T=${JAX_TESTS_DIR:-$HOME/.cache/metal-pjrt/jax-tests}
 FILE=${1:?test file relative to the jax repo, e.g. tests/lax_test.py}; shift
 scripts/gpu_health.py >&2  # warn about resets / quarantined kernels
 exec scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \

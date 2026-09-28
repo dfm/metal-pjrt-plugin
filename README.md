@@ -185,7 +185,7 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
 A kernel that runs too long trips macOS's GPU watchdog, which resets the GPU
 for every process, and after a few resets the GPU can stay slow until a
 reboot. The plugin splits work into small command buffers and logs every
-reset in `~/.cache/openmetal/gpu_resets.jsonl`. A kernel involved in two
+reset in `~/.cache/metal-pjrt/gpu_resets.jsonl`. A kernel involved in two
 resets since boot is refused until a reboot or
 `scripts/gpu_health.py --clear`. To stay clear of this:
 

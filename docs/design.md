@@ -224,7 +224,7 @@ which stages a copy.
 **Reset log and quarantine.** A watchdog reset hits every process, and after
 several the driver leaves the GPU ~10x slower per dispatch until a reboot.
 The runtime appends each reset it observes to
-`~/.cache/openmetal/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR`) with the
+`~/.cache/metal-pjrt/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR`) with the
 kernels in the buffer that timed out (none if it only waited on another
 stream; built-in fill/copy kernels are listed apart and never blamed) and
 the plugin build (diagnostics only). A kernel seen in two resets since boot

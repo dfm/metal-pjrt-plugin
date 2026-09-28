@@ -7,8 +7,8 @@ and, under thrashing, GPU command buffers hit the watchdog. Usage:
 
   scripts/device_lock.py -- <command> [args...]
 
-The lock is ~/.cache/openmetal/device.lock. Transition from before the
-platform was renamed "openmetal":
+The lock is ~/.cache/metal-pjrt/device.lock. Transition from before the
+platform was renamed (from "metal"):
 the lock also takes the old ~/.cache/jax_metal/device.lock first (creating
 it if needed, so an older checkout cannot take it unnoticed later), so this
 script and an older checkout's exclude each other.
@@ -27,7 +27,7 @@ this script dies first.
 """
 import fcntl, os, pathlib, signal, subprocess, sys, time
 
-LOCK = pathlib.Path.home() / ".cache" / "openmetal" / "device.lock"
+LOCK = pathlib.Path.home() / ".cache" / "metal-pjrt" / "device.lock"
 # Remove at the next pin bump, not before 2026-10-31 (git bisect to commits
 # before the rename takes only this lock).
 OLD_LOCK = pathlib.Path.home() / ".cache" / "jax_metal" / "device.lock"

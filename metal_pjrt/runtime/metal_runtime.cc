@@ -385,7 +385,7 @@ void Device::LoadResetLog() {
   } else {
     const char* home = std::getenv("HOME");
     std::string base = absl::StrCat(home != nullptr ? home : ".", "/.cache");
-    state_dir_ = absl::StrCat(base, "/openmetal");
+    state_dir_ = absl::StrCat(base, "/metal-pjrt");
   }
   if (const char* v = std::getenv("METAL_PJRT_QUARANTINE_STRIKES")) {
     int n = 0;

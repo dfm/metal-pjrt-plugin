@@ -15,8 +15,12 @@ listed below as decided against, next or deferred.
 
 ## Decisions (dfm, 2026-09-27)
 
-- The JAX platform is "openmetal" ("the open is key"), 36cc906; the
-  XLA-internal names stay "METAL".
+- Names: JAX platform "mtl" (`jax.devices("mtl")`, `JAX_PLATFORMS=mtl,cpu`,
+  env `JAX_MTL_*`), import package `metal_pjrt_plugin`, PyPI dist
+  `metal-pjrt-plugin`, C++ Bazel tree `metal_pjrt/`, state dir
+  `~/.cache/metal-pjrt`; the XLA-internal names stay "METAL". History:
+  "metal" collided with Apple's jax-metal, "openmetal" (36cc906) was
+  replaced before any release by these boring, descriptive names.
 - Opt-in: CPU stays JAX's default backend (3c3e3e7).
 - JAX's compilation-cache settings are left to the user: the plugin never
   sets `jax_compilation_cache_dir` or the thresholds (bbb3c65); the README

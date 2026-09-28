@@ -57,7 +57,7 @@ scripts/build_wheel.sh                                         # dist/metal_pjrt
 JAX's tests at the pinned version and the two packages they import, once:
 
 ```
-git clone --depth 1 --branch jax-v0.11.2 https://github.com/jax-ml/jax ~/.cache/openmetal/jax-tests
+git clone --depth 1 --branch jax-v0.11.2 https://github.com/jax-ml/jax ~/.cache/metal-pjrt/jax-tests
 uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/python -m pip install
 ```
 
@@ -124,14 +124,14 @@ read at run time.
 | `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time, read once | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all` |
 | `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time, read once | any value but `0`: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
 | `METAL_PJRT_TRACE` | runtime | `1` logs one line per committed command buffer (op count, GPU time) |
-| `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/openmetal`) |
+| `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/metal-pjrt`) |
 | `METAL_PJRT_QUARANTINE_STRIKES` | runtime, `gpu_health.py` | resets since boot that quarantine a kernel (default 2; 0 disables) |
 | `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | runtime | memory the system guard keeps free (default 512; for tests) |
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | `pjrt/metal_pjrt_api.cc` | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap (default 256; for tests) |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | runtime | `n` fails the n-th committed command buffer (tests of the error path) |
 | `METAL_TEST_REPORT_ULPS` | `tests/metal_testing.py` | print every measured error (with `pytest -s`) |
 | `JAX_MTL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |
-| `JAX_TESTS_DIR` | `scripts/run_jax_tests.sh` | JAX checkout with the tests (default `~/.cache/openmetal/jax-tests`) |
+| `JAX_TESTS_DIR` | `scripts/run_jax_tests.sh` | JAX checkout with the tests (default `~/.cache/metal-pjrt/jax-tests`) |
 | `JAX_NUM_GENERATED_CASES`, `PYTEST_TIMEOUT` | `scripts/run_jax_tests.sh` | JAX's generated cases per test (default 3); seconds before a slow test's stack dump (default 180; the test is not stopped) |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | `bench/run_all.sh` | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot, `bazel shutdown` first (off by default) |
 | `BENCH_OUT`, `BENCH_LABEL` | `bench/*.py` | set by `run_all.sh`: the JSONL file and the backend label of the rows |
@@ -139,7 +139,9 @@ read at run time.
 ## State
 
 State (GPU reset log, device lock, JAX test checkout) lives in
-`~/.cache/openmetal/`. Before the platform rename it was
-`~/.cache/jax_metal/`; `scripts/device_lock.py` also takes the old lock
-there (creating it) until the next pin bump, so a `git bisect` to
-pre-rename commits still excludes this checkout.
+`~/.cache/metal-pjrt/`. Before the platform renames it was
+`~/.cache/jax_metal/` (platform "metal"), then briefly `~/.cache/openmetal/`
+(platform "openmetal", never released). `scripts/device_lock.py` (every
+version since 34b8cd2) also takes the old `~/.cache/jax_metal` lock first
+(creating it), and keeps doing so until the next pin bump, so a
+`git bisect` to older commits still excludes this checkout.

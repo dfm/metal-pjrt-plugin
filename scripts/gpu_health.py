@@ -2,7 +2,7 @@
 """Report GPU watchdog resets recorded by the Metal runtime and quarantined
 kernels; refuse (exit 1) with --strict when the GPU was reset since boot.
 
-The runtime appends one JSON line per reset to ~/.cache/openmetal/gpu_resets.jsonl
+The runtime appends one JSON line per reset to ~/.cache/metal-pjrt/gpu_resets.jsonl
 (METAL_PJRT_STATE_DIR overrides the directory) with the time, the plugin build
 (LC_UUID of the dylib; diagnostics only) and the kernels that were in the
 command buffer that timed out (built-in fill/copy kernels are listed but never
@@ -19,7 +19,7 @@ benchmark timings are meaningless; bench/run_all.sh runs this with --strict.
 import collections, json, os, pathlib, subprocess, sys, time
 
 STATE_DIR = pathlib.Path(os.environ.get("METAL_PJRT_STATE_DIR") or
-                         pathlib.Path.home() / ".cache" / "openmetal")
+                         pathlib.Path.home() / ".cache" / "metal-pjrt")
 LOG = STATE_DIR / "gpu_resets.jsonl"
 STRIKES = int(os.environ.get("METAL_PJRT_QUARANTINE_STRIKES", "2"))
 
