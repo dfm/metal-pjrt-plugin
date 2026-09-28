@@ -153,10 +153,13 @@ ignored with a warning and the default kept.
 
 ## State
 
-State (GPU reset log, device lock, JAX test checkout) lives in
-`~/.cache/metal-pjrt/`. Before the platform renames it was
-`~/.cache/jax_metal/` (platform "metal"), then briefly `~/.cache/openmetal/`
-(platform "openmetal", never released). `scripts/device_lock.py` (every
-version since 34b8cd2) also takes the old `~/.cache/jax_metal` lock first
-(creating it), and keeps doing so until the next pin bump, so a
-`git bisect` to older commits still excludes this checkout.
+Two directories:
+
+- `~/.cache/metal-pjrt/`: the plugin's and scripts' state (GPU reset log,
+  device lock, JAX test checkout). `METAL_PJRT_STATE_DIR` moves the reset
+  log only; `scripts/device_lock.py` always uses
+  `~/.cache/metal-pjrt/device.lock`, since the GPU is one per machine. The
+  lock script also takes the pre-rename `~/.cache/jax_metal` lock until the
+  next pin bump (`CHANGELOG.md`).
+- `~/.cache/metal-pjrt-plugin/`: Bazel's disk and repository caches, shared
+  by every checkout (above).

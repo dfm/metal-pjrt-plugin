@@ -13,18 +13,19 @@ Where it stands: the minimum viable product is done (opt-in platform,
 wheel, fresh-clone install, user README), and so is every review item not
 listed below as decided against, next or deferred.
 
-## Decisions (dfm, 2026-09-27)
+## Decisions
+
+The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 - Names: JAX platform "mtl" (`jax.devices("mtl")`, `JAX_PLATFORMS=mtl,cpu`,
   env `JAX_MTL_*`), import package `metal_pjrt_plugin`, PyPI dist
   `metal-pjrt-plugin`, C++ Bazel tree `metal_pjrt/`, state dir
-  `~/.cache/metal-pjrt`; the XLA-internal names stay "METAL". History:
-  "metal" collided with Apple's jax-metal, "openmetal" (36cc906) was
-  replaced before any release by these boring, descriptive names.
-- Opt-in: CPU stays JAX's default backend (3c3e3e7).
+  `~/.cache/metal-pjrt`; the XLA-internal names stay "METAL". "metal"
+  collided with Apple's jax-metal (history in `CHANGELOG.md`).
+- Opt-in: CPU stays JAX's default backend.
 - JAX's compilation-cache settings are left to the user: the plugin never
-  sets `jax_compilation_cache_dir` or the thresholds (bbb3c65); the README
-  says how to turn the cache on.
+  sets `jax_compilation_cache_dir` or the thresholds; the README says how
+  to turn the cache on.
 - Land the minimum viable product before numerical side quests; known
   accuracy gaps are listed in `docs/accuracy.md`, not chased.
 - Quarantine strikes are not keyed by plugin build: the build changes on
@@ -33,10 +34,9 @@ listed below as decided against, next or deferred.
   recorded for diagnostics only.
 - A/Bs of sub-millisecond programs interleave the arms and report
   p10/median/p90 (GPU performance states make single medians bimodal).
-- The size-class cache is the only device allocator; the BFC option is
-  gone (b0019d2). f16/bf16 GEMMs run only on steel, with its out-of-range
-  shapes refused at compile time (cc33e52). MLX is the one benchmark
-  reference; the jax-mps arm is gone (23bc8fd).
+- The size-class cache is the only device allocator (no BFC option).
+  f16/bf16 GEMMs run only on steel, with its out-of-range shapes refused
+  at compile time. MLX is the one benchmark reference.
 
 ## Decided against
 

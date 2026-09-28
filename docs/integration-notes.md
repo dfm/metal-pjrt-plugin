@@ -206,8 +206,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   total elements > 16384 regardless of row length; `RunHloPasses` expands
   rows <= 64 of such sorts with `MetalSortExpander` first.
   `METAL_PJRT_DISABLE_REWRITES=cubsort` turns SortRewriter off.
-  (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
-  end-to-end A/B, docs/performance.md, "Measured and rejected".)
+  (A `metal$softmax` rewriter was removed after an end-to-end A/B,
+  docs/performance.md, "Measured and rejected".)
 - Dense linear algebra (`metal_pjrt/linalg/`): handlers
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
@@ -281,8 +281,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   mtl backends only, calls the original with a proxy whose `platform` is
   "gpu" (all else forwarded), so upstream's one-shot bookkeeping still
   runs. `tests/test_compilation_cache.py` asserts the list is still there.
-  The plugin never sets `jax_compilation_cache_dir` (dfm, 2026-09-27): the
-  setting is process-wide and `initialize()` runs for every installed
+  The plugin never sets `jax_compilation_cache_dir` (a maintainer
+  decision, `docs/roadmap.md`): the setting is process-wide and `initialize()` runs for every installed
   plugin whatever `JAX_PLATFORMS` says, so a default directory turned the
   cache on for CPU-only users too. Users configure it
   (`JAX_COMPILATION_CACHE_DIR`, `jax.config`; README, "Compilation cache");
