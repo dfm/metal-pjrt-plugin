@@ -90,19 +90,27 @@ def test_top_k_short_rows_stay_bitonic():
     assert any("cub_sort" in t for t in targets(lambda a: lax.top_k(a, 8), x))
 
 
-def test_disable_cubsort(monkeypatch):
-    # METAL_PJRT_DISABLE_REWRITES=cubsort: MetalSortExpander takes every sort.
-    x = floats(20000)
+DISABLE_CUBSORT_CHILD = r"""
+import numpy as np, jax, jax.numpy as jnp
+x = np.random.default_rng(0).standard_normal(20000).astype(np.float32)
+text = jax.jit(jnp.argsort).lower(x).compile().as_text()
+print("cub_sort" in text, bool((np.asarray(jax.jit(jnp.argsort)(x)) == np.argsort(x, kind="stable")).all()))
+"""
 
-    def called():
-        jax.clear_caches()
-        return {t for t in targets(jnp.argsort, x) if "cub_sort" in t}
 
-    monkeypatch.setenv("METAL_PJRT_DISABLE_REWRITES", "cubsort")
-    assert called() == set()
-    same_bits(run_on(metal(), jnp.argsort, x), run_on(cpu(), jnp.argsort, x))
-    monkeypatch.delenv("METAL_PJRT_DISABLE_REWRITES")
-    assert called() == {"xla.gpu.ext.cub_sort_pairs"}
+@pytest.mark.parametrize("value", [None, "cubsort"])
+def test_disable_cubsort(value):
+    # METAL_PJRT_DISABLE_REWRITES=cubsort (read once per process):
+    # MetalSortExpander takes every sort.
+    import os
+    from metal_testing import run_python
+    env = {k: v for k, v in os.environ.items()
+           if k != "METAL_PJRT_DISABLE_REWRITES"}
+    if value is not None:
+        env["METAL_PJRT_DISABLE_REWRITES"] = value
+    out = run_python(DISABLE_CUBSORT_CHILD, dict(env, JAX_PLATFORMS="openmetal"))
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert out.stdout.split() == [str(value is None), "True"]
 
 
 def _run_hlo_text(text, backend_name, *args):

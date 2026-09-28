@@ -33,7 +33,8 @@ class MetalLinalgRewriter : public HloModulePass {
 };
 
 // True when METAL_PJRT_DISABLE_LAPACK is set to a non-empty value other than
-// "0": linear algebra then goes through XLA's expanders (A/B comparisons).
+// "0" (read once, compiler/compile_settings.h): linear algebra then goes
+// through XLA's expanders (A/B comparisons).
 bool LapackDisabled();
 
 }  // namespace gpu

@@ -31,7 +31,7 @@ namespace gpu {
 // constants module, a serialized constants container.
 // Defaults the Metal backend needs regardless of what the client asked for:
 //  - xla_gpu_enable_cub_radix_sort=true unless METAL_PJRT_DISABLE_REWRITES
-//    lists "cubsort": SortRewriter turns simple sorts of more than 16384
+//    lists "cubsort" (compile_settings.h): SortRewriter turns simple sorts of more than 16384
 //    elements into xla.gpu.ext.cub_sort_* calls, handled by the MSL radix
 //    sort in metal_pjrt_plugin/ffi/cub_sort_ffi.cc.
 //  - xla_gpu_enable_command_buffer cleared: no command buffer support (the

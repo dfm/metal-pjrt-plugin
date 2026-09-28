@@ -26,6 +26,7 @@ cc_library(
     srcs = ["linalg_rewriter.cc"],
     hdrs = ["linalg_rewriter.h"],
     deps = [
+        "//metal_pjrt_plugin/compiler:compile_settings",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

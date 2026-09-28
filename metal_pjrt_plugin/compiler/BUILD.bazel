@@ -1,10 +1,20 @@
 package(default_visibility = ["//visibility:public"])
 
+# Compile-time settings, shared by the passes and the cache key
+# (stream_executor:metal_executor).
+cc_library(
+    name = "compile_settings",
+    srcs = ["compile_settings.cc"],
+    hdrs = ["compile_settings.h"],
+    deps = ["@com_google_absl//absl/strings"],
+)
+
 cc_library(
     name = "metal_compiler_impl",
     srcs = ["metal_compiler.cc"],
     hdrs = ["metal_compiler.h"],
     deps = [
+        ":compile_settings",
         "//metal_pjrt_plugin/codegen:metal_kernel_compiler",
         "//metal_pjrt_plugin/codegen:msl_llvm_bridge",
         "//metal_pjrt_plugin/compiler/passes:dot_upcast",

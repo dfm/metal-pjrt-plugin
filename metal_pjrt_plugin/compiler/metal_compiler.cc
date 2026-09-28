@@ -23,6 +23,7 @@
 #include "llvm/IR/Module.h"
 #include "metal_pjrt_plugin/codegen/metal_kernel_compiler.h"
 #include "metal_pjrt_plugin/codegen/msl_llvm_bridge.h"
+#include "metal_pjrt_plugin/compiler/compile_settings.h"
 #include "metal_pjrt_plugin/runtime/constants_container.h"
 #include "metal_pjrt_plugin/stream_executor/metal_platform_id.h"
 #include "metal_pjrt_plugin/compiler/passes/dot_upcast.h"
@@ -102,21 +103,15 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
 // rewriter, =cubsort XLA's SortRewriter (radix sort; MetalSortExpander then
 // takes every sort), for A/B comparisons and bisecting. LAPACK has its own
 // switch, METAL_PJRT_DISABLE_LAPACK (LapackDisabled()), shared with the
-// Python lowerings.
-bool RewriteEnabled(absl::string_view name) {
-  // Compile-time setting: listed in PluginVersion (metal_executor.cc).
-  const char* env = std::getenv("METAL_PJRT_DISABLE_REWRITES");
-  if (env == nullptr) return true;
-  for (absl::string_view s : absl::StrSplit(env, ',')) {
-    if (s == name || s == "all") return false;
-  }
-  return true;
+// Python lowerings. All are read once (compile_settings.h).
+const metal_pjrt::CompileSettings& Settings() {
+  return metal_pjrt::GetCompileSettings();
 }
 
 }  // namespace
 
 void ApplyMetalDefaults(DebugOptions& debug_options) {
-  debug_options.set_xla_gpu_enable_cub_radix_sort(RewriteEnabled("cubsort"));
+  debug_options.set_xla_gpu_enable_cub_radix_sort(Settings().cub_sort);
   debug_options.set_xla_gpu_enable_triton_gemm(false);
   // No command buffers: XLA's conversion pass already clears the command
   // types for OneAPI-capability devices, and a software-replay
@@ -162,12 +157,12 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
   }
   // --- end linalg ---
-  if (RewriteEnabled("scan")) {
+  if (Settings().scan_rewrite) {
     HloPassPipeline pipeline("metal-pre-optimization");
     pipeline.AddPass<MetalScanRewriter>();
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
   }
-  if (RewriteEnabled("cubsort")) {
+  if (Settings().cub_sort) {
     // SortRewriter (enabled in ApplyMetalDefaults) takes every simple sort of
     // more than 16384 elements (sort_rewriter.cc, non-CUDA default), however
     // short its rows. Rows of <= 64 stay with the straight-line bitonic

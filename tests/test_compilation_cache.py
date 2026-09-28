@@ -1,10 +1,13 @@
 """Persistent compilation cache opt-in (jax_plugins/openmetal/__init__.py).
 
-No GPU needed: .venv/bin/python -m pytest tests/test_compilation_cache.py
+No GPU work (the cache-key test creates the openmetal client, so it is
+marked metal): .venv/bin/python -m pytest tests/test_compilation_cache.py
 """
 
 import inspect
 import os
+
+import pytest
 
 from jax._src import compilation_cache
 
@@ -69,3 +72,27 @@ def test_plugin_sets_no_cache_dir():
         "print(jax.config.jax_compilation_cache_dir)\n", env)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip() == "None", out.stdout
+
+
+@pytest.mark.metal  # creates the openmetal client (no GPU work)
+def test_cache_key_fingerprints_parsed_settings():
+    # platform_version carries the compile-time settings as the passes read
+    # them: METAL_PJRT_DISABLE_LAPACK unset and "0" mean the same (one key),
+    # "1" does not; likewise the REWRITES list by its effect.
+    def version(**env):
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("METAL_PJRT_DISABLE_LAPACK",
+                             "METAL_PJRT_DISABLE_REWRITES")}
+        out = run_python("import jax\n"
+                         "print(jax.devices('openmetal')[0].client.platform_version)\n",
+                         dict(base, JAX_PLATFORMS="openmetal", **env))
+        assert out.returncode == 0, out.stderr[-2000:]
+        return out.stdout.strip()
+
+    unset = version()
+    assert version(METAL_PJRT_DISABLE_LAPACK="0") == unset
+    assert version(METAL_PJRT_DISABLE_LAPACK="") == unset
+    assert version(METAL_PJRT_DISABLE_LAPACK="1") != unset
+    assert version(METAL_PJRT_DISABLE_REWRITES="scan,cubsort") == \
+        version(METAL_PJRT_DISABLE_REWRITES="all")
+    assert version(METAL_PJRT_DISABLE_REWRITES="bogus") == unset

@@ -215,7 +215,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (a stream host task was measured and not faster: docs/performance.md,
   "Measured and rejected").
   f32 only. `METAL_PJRT_DISABLE_LAPACK=1` is the one switch for both
-  (checked per compile by the pass and per lowering by the Python rules) and
+  (read once per process by the pass and by the Python rules) and
   falls back to XLA's expanders / JAX's generic lowerings. Ownership table:
   the `linalg_lowerings.py` docstring.
 
@@ -239,9 +239,13 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (`se_gpu_pjrt_client.cc:262-277`) reports `"oneapi " +
   runtime_version.ToString()`. JAX hashes it into its compilation cache key,
   so `MetalExecutor` sets `runtime_version` to `{1, fingerprint(LC_UUID of
-  the plugin image), fingerprint(METAL_PJRT_DISABLE_REWRITES,
-  METAL_PJRT_DISABLE_LAPACK)}`: a rebuilt plugin or a different compile-time
-  setting gets a different key.
+  the plugin image), fingerprint(compile settings)}`: a rebuilt plugin or a
+  different compile-time setting gets a different key. The settings
+  (`compiler/compile_settings.h`: METAL_PJRT_DISABLE_LAPACK and
+  METAL_PJRT_DISABLE_REWRITES) are read once and the key hashes their parsed
+  values, the ones the passes use: unset and `DISABLE_LAPACK=0` share a
+  key, and changing the environment after the first compile changes
+  neither.
 - Persistent compilation cache. Two things kept JAX 0.11.2 from using it
   for "openmetal", both fixed without an XLA patch:
   (1) serialization failed with "Unsupported platform ID for

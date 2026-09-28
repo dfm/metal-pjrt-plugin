@@ -21,6 +21,7 @@
 #include "absl/synchronization/mutex.h"
 #include "metal_pjrt_plugin/blas/metal_blas.h"  // [metal-blas]
 #include "metal_pjrt_plugin/runtime/constants_container.h"
+#include "metal_pjrt_plugin/compiler/compile_settings.h"
 #include "metal_pjrt_plugin/runtime/metal_runtime.h"
 #include "metal_pjrt_plugin/stream_executor/metal_event.h"
 #include "metal_pjrt_plugin/stream_executor/metal_kernel.h"
@@ -384,25 +385,19 @@ namespace {
 // plugin or a different setting never loads another's executables:
 // {1, fingerprint(build UUID), fingerprint(compile-time settings)}.
 // Variables read only at run time (METAL_PJRT_TRACE, ...) are deliberately
-// excluded. A new variable that changes compiled code must be added here
-// (its getenv site says so).
+// excluded. A new variable that changes compiled code belongs in
+// compiler/compile_settings.h.
 SemanticVersion PluginVersion() {
   static const SemanticVersion version = [] {
     std::string uuid = metal_pjrt::rt::ImageUuid();
     if (uuid.empty()) LOG(WARNING) << "Metal: plugin image has no LC_UUID";
-    std::string settings;
-    for (const char* name : {
-             "METAL_PJRT_DISABLE_REWRITES",  // compiler/metal_compiler.cc
-             // linalg/linalg_rewriter.cc (linalg_lowerings.py reads it too,
-             // but what it lowers is in the HLO, i.e. already in the key).
-             "METAL_PJRT_DISABLE_LAPACK",
-         }) {
-      // Unset and empty mean the same to every reader.
-      const char* v = std::getenv(name);
-      absl::StrAppend(&settings, name, "=", v == nullptr ? "" : v, ";");
-    }
-    return SemanticVersion(1, tsl::Fingerprint32(uuid),
-                           tsl::Fingerprint32(settings));
+    // The values the passes use (read once), not the raw environment: so
+    // METAL_PJRT_DISABLE_LAPACK=0 and unset share cache entries.
+    // (linalg_lowerings.py reads that variable too, but what it lowers is
+    // in the HLO, i.e. already in the key.)
+    return SemanticVersion(
+        1, tsl::Fingerprint32(uuid),
+        tsl::Fingerprint32(metal_pjrt::GetCompileSettings().Fingerprint()));
   }();
   return version;
 }

@@ -12,6 +12,7 @@ sorted spectra) rather than raw factors, which are only unique up to signs /
 phases. Complex values cannot currently live in metal buffers, so FFT checks
 reduce to real outputs (abs / real / imag) inside the jitted function.
 """
+import os
 import re
 
 import numpy as np
@@ -211,11 +212,9 @@ def test_linalg(name):
   check(fn, *args, ulps=ULPS.get(name, 0), normwise=True, name=name)
 
 
-def test_disable_lapack(monkeypatch):
-  # METAL_PJRT_DISABLE_LAPACK is the one switch for both owners (the C++
-  # rewriter per compile, linalg_lowerings.py per lowering): set, no metal$*
-  # LAPACK custom call survives; unset, every one is back.
-  def f(a, b):
+DISABLE_LAPACK_CHILD = r"""
+import re, sys, numpy as np, jax, jax.numpy as jnp
+def f(a, b):
     l = jnp.linalg.cholesky(a)
     x = jax.scipy.linalg.solve_triangular(l, b, lower=True)
     lu = jax.scipy.linalg.lu_factor(a)[0]
@@ -223,21 +222,29 @@ def test_disable_lapack(monkeypatch):
     w = jnp.linalg.eigh(a)[0]
     u, s, vt = jnp.linalg.svd(a)
     return x, lu, q, r, w, u, s, vt, jnp.linalg.svd(a, compute_uv=False)
+m = np.random.default_rng(0).standard_normal((8, 8)).astype(np.float32)
+a, b = m @ m.T + 8 * np.eye(8, dtype=np.float32), m[:, :2]
+text = jax.jit(f).lower(a, b).compile().as_text()
+print(sorted(set(re.findall(r'custom_call_target="(metal\$[a-z_]+)"', text))))
+"""
 
-  a, b = spd(8), mat(8, 2)
-  targets = {"metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
-             "metal$lapack_geqrf", "metal$lapack_orgqr", "metal$lapack_syevd",
-             "metal$lapack_gesdd", "metal$lapack_gesdd_novec"}
 
-  def called():
-    jax.clear_caches()  # lowering and compilation caches ignore the variable
-    text = jax.jit(f).lower(a, b).compile().as_text()
-    return set(re.findall(r'custom_call_target="(metal\$[a-z_]+)"', text))
-
-  monkeypatch.setenv("METAL_PJRT_DISABLE_LAPACK", "1")
-  assert called() == set()
-  monkeypatch.delenv("METAL_PJRT_DISABLE_LAPACK")
-  assert called() == targets
+@pytest.mark.parametrize("value", [None, "0", "1"])
+def test_disable_lapack(value):
+  # METAL_PJRT_DISABLE_LAPACK is the one switch for both owners (the C++
+  # rewriter and linalg_lowerings.py), read once per process: "1" leaves
+  # no metal$* LAPACK custom call; unset or "0" keep every one.
+  env = {k: v for k, v in os.environ.items()
+         if k != "METAL_PJRT_DISABLE_LAPACK"}
+  if value is not None:
+    env["METAL_PJRT_DISABLE_LAPACK"] = value
+  out = run_python(DISABLE_LAPACK_CHILD, dict(env, JAX_PLATFORMS="openmetal"))
+  assert out.returncode == 0, out.stderr[-3000:]
+  want = [] if value == "1" else sorted(
+      ["metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
+       "metal$lapack_geqrf", "metal$lapack_orgqr", "metal$lapack_syevd",
+       "metal$lapack_gesdd", "metal$lapack_gesdd_novec"])
+  assert out.stdout.strip() == str(want)
 
 
 # Host LAPACK (n > 32, lapack_ffi.cc) between GPU work in one program: the

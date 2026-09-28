@@ -1,0 +1,34 @@
+// Compile-time settings from the environment, read once per process. The
+// passes and the persistent-cache key (MetalExecutor's PluginVersion) use
+// the same parsed values, so an executable is always cached under the
+// settings it was compiled with, and spellings that mean the same (unset,
+// empty, "0") give the same key.
+#ifndef METAL_PJRT_PLUGIN_COMPILER_COMPILE_SETTINGS_H_
+#define METAL_PJRT_PLUGIN_COMPILER_COMPILE_SETTINGS_H_
+
+#include <string>
+
+namespace metal_pjrt {
+
+struct CompileSettings {
+  // METAL_PJRT_DISABLE_LAPACK set to anything but "" or "0" turns off the
+  // Accelerate LAPACK rewriter (linalg/linalg_rewriter.cc); XLA's expanders
+  // take linear algebra instead. jax_plugins/openmetal/linalg_lowerings.py
+  // reads it the same way.
+  bool lapack = true;
+  // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off
+  // the metal$scan rewriter, "cubsort" XLA's SortRewriter (radix sort), and
+  // "all" both (compiler/metal_compiler.cc).
+  bool scan_rewrite = true;
+  bool cub_sort = true;
+
+  // The parsed values, for the cache key.
+  std::string Fingerprint() const;
+};
+
+// Read from the environment on first use; changing it later has no effect.
+const CompileSettings& GetCompileSettings();
+
+}  // namespace metal_pjrt
+
+#endif  // METAL_PJRT_PLUGIN_COMPILER_COMPILE_SETTINGS_H_

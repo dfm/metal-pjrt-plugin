@@ -24,6 +24,7 @@ cc_library(
     ],
     deps = [
         "//metal_pjrt_plugin/blas:metal_blas",  # [metal-blas]
+        "//metal_pjrt_plugin/compiler:compile_settings",
         "//metal_pjrt_plugin/runtime:constants_container",
         "//metal_pjrt_plugin/runtime:metal_runtime",
         "@com_google_absl//absl/base:core_headers",

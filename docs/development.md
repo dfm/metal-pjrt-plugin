@@ -110,8 +110,8 @@ read at run time.
 |---|---|---|
 | `JAX_PLATFORMS` | JAX | `openmetal,cpu` selects the plugin (it is not JAX's default backend) |
 | `JAX_OPENMETAL_MEMORY_FRACTION` | runtime, at device creation | scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED |
-| `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all` |
-| `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time | any value but `0`: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
+| `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time, read once | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all` |
+| `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time, read once | any value but `0`: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
 | `METAL_PJRT_TRACE` | runtime | `1` logs one line per committed command buffer (op count, GPU time) |
 | `METAL_PJRT_STATE_DIR` | runtime, `gpu_health.py` | directory of the GPU reset log (default `~/.cache/openmetal`) |
 | `METAL_PJRT_QUARANTINE_STRIKES` | runtime, `gpu_health.py` | resets since boot that quarantine a kernel (default 2; 0 disables) |

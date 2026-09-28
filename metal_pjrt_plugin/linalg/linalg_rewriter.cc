@@ -8,6 +8,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
+#include "metal_pjrt_plugin/compiler/compile_settings.h"
 #include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -31,11 +32,7 @@ const char* Bool(bool b) { return b ? "true" : "false"; }
 
 }  // namespace
 
-bool LapackDisabled() {
-  // Compile-time setting: listed in PluginVersion (metal_executor.cc).
-  const char* env = std::getenv("METAL_PJRT_DISABLE_LAPACK");
-  return env != nullptr && env[0] != '\0' && std::string(env) != "0";
-}
+bool LapackDisabled() { return !metal_pjrt::GetCompileSettings().lapack; }
 
 absl::StatusOr<bool> MetalLinalgRewriter::RunImpl(
     HloModule* module,

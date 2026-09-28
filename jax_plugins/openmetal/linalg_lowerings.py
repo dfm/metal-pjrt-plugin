@@ -29,14 +29,14 @@ RunHloPasses. getrf returns lu, 0-based pivots and the permutation.
 Unsupported options (eigh/svd subsets, Jacobi/polar/QDWH algorithms, m < n
 householder products, dynamic shapes) take the fallback too.
 ``METAL_PJRT_DISABLE_LAPACK=1`` is the one switch for both owners: every rule
-here checks it per lowering, and the C++ rewriter per compile, restoring the
-fallbacks for A/B comparisons. (The persistent compilation cache key
-fingerprints its value at client creation, so set it before starting JAX
-when that cache is on.)
+here and the C++ rewriter restore the fallbacks (for A/B comparisons). Both
+read it once per process, as the persistent compilation cache key does
+(compiler/compile_settings.h), so set it before starting JAX.
 """
 
 from __future__ import annotations
 
+import functools
 import os
 
 import numpy as np
@@ -44,6 +44,7 @@ import numpy as np
 from jax_plugins.openmetal import PLATFORM  # "openmetal"
 
 
+@functools.cache
 def lapack_disabled() -> bool:
   v = os.environ.get("METAL_PJRT_DISABLE_LAPACK", "")
   return v not in ("", "0")
