@@ -28,6 +28,7 @@ namespace {
 
 using ::absl_testing::IsOk;
 using ::absl_testing::StatusIs;
+using ::testing::AllOf;
 using ::testing::HasSubstr;
 
 constexpr char kMsl[] = R"(
@@ -245,9 +246,11 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   absl::StatusOr<std::unique_ptr<Device>> d2 = Device::Create(0);
   ASSERT_THAT(d2, IsOk());
   EXPECT_EQ((*d2)->resets_since_boot(), 2);
+  // The remedy works without the source checkout (gpu_health.py).
   EXPECT_THAT((*d2)->GetKernel(kMsl, "axpy"),
               StatusIs(absl::StatusCode::kFailedPrecondition,
-                       HasSubstr("quarantined")));
+                       AllOf(HasSubstr("quarantined"),
+                             HasSubstr("deleting " + dir + "/gpu_resets.jsonl"))));
 
   // Built-in kernels are listed by name, never struck or refused.
   absl::StatusOr<const Kernel*> fill =
@@ -725,8 +728,10 @@ TEST_F(MetalRuntimeTest, GpuErrorIsStickyForTheDevice) {
   EXPECT_THAT(e1->WaitOnHost(), StatusIs(absl::StatusCode::kInternal,
                                          HasSubstr("injected fault")));
   EXPECT_FALSE(e1->Poll().ok());
-  EXPECT_THAT(dev_->error(), StatusIs(absl::StatusCode::kInternal,
-                                      HasSubstr("restart")));
+  EXPECT_THAT(dev_->error(),
+              StatusIs(absl::StatusCode::kInternal,
+                       AllOf(HasSubstr("restart the Python process"),
+                             HasSubstr("Earlier GPU failure: "))));
   // New launches anywhere are refused.
   EXPECT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256),
               StatusIs(absl::StatusCode::kInternal));

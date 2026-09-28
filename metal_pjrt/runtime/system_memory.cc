@@ -6,6 +6,7 @@
 
 #include <cstdint>
 
+#include "absl/strings/str_format.h"
 #include "metal_pjrt/runtime/env.h"
 
 namespace metal_pjrt {
@@ -51,6 +52,13 @@ bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable) {
   if (reclaimable != nullptr) *reclaimable = r;
   const uint64_t reserve = SystemMemoryReserve();
   return r >= reserve && size <= r - reserve;
+}
+
+std::string FormatBytes(uint64_t bytes) {
+  if (bytes < (uint64_t{1} << 20) / 10) {
+    return absl::StrFormat("%d bytes", bytes);
+  }
+  return absl::StrFormat("%.1f MB", static_cast<double>(bytes) / (1 << 20));
 }
 
 }  // namespace rt

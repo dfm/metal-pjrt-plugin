@@ -328,9 +328,11 @@ absl::Status RunMpsGemmImpl(rt::Device* rt_device, void* mtl_command_buffer,
     uint64_t reclaimable = 0;
     if (!rt::FitsInSystemMemory(tmp_bytes, &reclaimable)) {
       return absl::ResourceExhaustedError(Describe(
-          absl::StrFormat("a %d-byte staging buffer was refused: only %d "
-                          "bytes of system memory are reclaimable",
-                          tmp_bytes, reclaimable),
+          absl::StrFormat("a %s staging buffer was refused: only %s of "
+                          "system memory is reclaimable. Close other "
+                          "memory-heavy applications or use smaller arrays",
+                          rt::FormatBytes(tmp_bytes),
+                          rt::FormatBytes(reclaimable)),
           p));
     }
     id<MTLBuffer> tmp =
@@ -338,10 +340,11 @@ absl::Status RunMpsGemmImpl(rt::Device* rt_device, void* mtl_command_buffer,
                             options:MTLResourceStorageModePrivate];
     if (tmp == nil) {
       return absl::ResourceExhaustedError(Describe(
-          absl::StrFormat("allocating a %d-byte staging buffer failed "
-                          "(maxBufferLength %d, current allocated size %d)",
-                          tmp_bytes, device.maxBufferLength,
-                          device.currentAllocatedSize),
+          absl::StrFormat("allocating a %s staging buffer failed "
+                          "(maxBufferLength %s, current allocated size %s)",
+                          rt::FormatBytes(tmp_bytes),
+                          rt::FormatBytes(device.maxBufferLength),
+                          rt::FormatBytes(device.currentAllocatedSize)),
           p));
     }
     [keep_alive addObject:tmp];

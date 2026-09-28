@@ -55,6 +55,11 @@ def test_injected_command_buffer_failure(n):
     else:
         assert any(raised), lines
         assert all(raised[raised.index(True):]), lines
+        # The sticky error says what to do. (n = 1, 2 fail the device_put
+        # itself: every step then fails on the poisoned input, with XLA's
+        # "Unknown predetermined error".)
+        if n > 2:
+            assert "restart the Python process" in lines[-1], lines
 
 
 def test_array_constant_after_failure_raises():

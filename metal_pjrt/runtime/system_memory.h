@@ -4,6 +4,7 @@
 #define METAL_PJRT_RUNTIME_SYSTEM_MEMORY_H_
 
 #include <cstdint>
+#include <string>
 
 namespace metal_pjrt {
 namespace rt {
@@ -22,6 +23,10 @@ uint64_t ReclaimableMemoryBytes();
 // fits; `*reclaimable` (if given) receives the current value.
 uint64_t SystemMemoryReserve();
 bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable = nullptr);
+
+// "12.3 MB" (MiB), or "N bytes" below 0.1 MB: the unit of every memory
+// message.
+std::string FormatBytes(uint64_t bytes);
 
 }  // namespace rt
 }  // namespace metal_pjrt

@@ -26,6 +26,7 @@
 
 #include "absl/cleanup/cleanup.h"
 #include "absl/log/log.h"
+#include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
@@ -124,11 +125,16 @@ absl::Status CheckNotWaitingOnOwnHostTask(const MTL::SharedEvent* ev,
 }
 
 // The error of a command buffer whose status is MTL::CommandBufferStatusError.
-absl::Status CommandBufferError(MTL::CommandBuffer* cb, int ordinal,
-                                uint64_t fence_value) {
+absl::Status CommandBufferError(MTL::CommandBuffer* cb, int ordinal) {
+  const bool timeout =
+      cb->error() != nullptr &&
+      cb->error()->code() == MTL::CommandBufferErrorTimeout;
   return absl::InternalError(absl::StrFormat(
-      "Metal command buffer failed on device %d (stream fence value %d): %s",
-      ordinal, fence_value, NSErrorToString(cb->error())));
+      "Metal: GPU command buffer failed on device %d: %s%s", ordinal,
+      NSErrorToString(cb->error()),
+      timeout ? ". The GPU watchdog stopped a computation that ran too "
+                "long: split it into smaller jit calls or shrink the inputs"
+              : ""));
 }
 
 constexpr uint64_t kPageBytes = 16384;
@@ -157,12 +163,25 @@ void LogMemoryState(Device* device) {
     rss = info.resident_size;
   }
   const Device::MemoryStats m = device->memory_stats();
-  LOG(ERROR) << "  memory: live " << (m.live_bytes >> 20) << " MB + cached "
-             << (m.cached_bytes >> 20) << " MB of budget "
-             << (m.budget_bytes >> 20) << " MB (pressure level " << m.pressure
-             << "), process RSS " << (rss >> 20)
-             << " MB, reclaimable system memory "
-             << (ReclaimableMemoryBytes() >> 20) << " MB";
+  LOG(ERROR) << "  memory: live " << FormatBytes(m.live_bytes)
+             << " + cached " << FormatBytes(m.cached_bytes) << " of budget "
+             << FormatBytes(m.budget_bytes) << " (pressure level "
+             << m.pressure << "), process RSS " << FormatBytes(rss)
+             << ", reclaimable system memory "
+             << FormatBytes(ReclaimableMemoryBytes());
+}
+
+// The budget refusal's remedy: the JAX_MTL_MEMORY_FRACTION that raises the
+// budget to the GPU's recommended working set, when that is above it.
+std::string RaiseBudgetHint(uint64_t budget, uint64_t working_set) {
+  const uint64_t base = std::min(PhysicalMemoryBytes() / 2, working_set);
+  if (budget >= working_set || base == 0) return ".";
+  const double f = std::floor(100.0 * working_set / base) / 100;
+  if (f * base <= budget) return ".";
+  return absl::StrFormat(
+      ", or raise the budget: JAX_MTL_MEMORY_FRACTION=%.2f gives %s (less "
+      "memory for the rest of the system).",
+      f, FormatBytes(std::min<uint64_t>(f * base, working_set)));
 }
 
 // Prefixes `context` to a non-OK status, keeping its code.
@@ -272,8 +291,8 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     }
     dev->memory_budget_ = budget;
     LOG(INFO) << "Metal device " << ordinal << " (" << info.name
-              << "): memory budget " << (budget >> 20) << " MB, "
-              << (ReclaimableMemoryBytes() >> 20) << " MB reclaimable now";
+              << "): memory budget " << FormatBytes(budget) << ", "
+              << FormatBytes(ReclaimableMemoryBytes()) << " reclaimable now";
   }  // All Apple GPUs; confirmed per-pipeline on creation.
   dev->LoadResetLog();
   dev->StartMemorySources();
@@ -489,8 +508,9 @@ void Device::RecordReset(
   LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
              << " with " << unique.size()
              << " suspect kernel(s); kernels seen in " << quarantine_strikes_
-             << " resets since boot are refused until a reboot or "
-                "scripts/gpu_health.py --clear";
+             << " resets since boot are refused until a reboot or until that "
+                "file is deleted (scripts/gpu_health.py --clear in a source "
+                "checkout)";
 }
 
 bool Device::WaitForCompletionHandlers() {
@@ -592,9 +612,10 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
   const uint64_t requested = size;
   if (size > info_.max_buffer_length) {
     return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
-        "Metal allocation of %d bytes exceeds the device's maxBufferLength of "
-        "%d bytes (device %d, %s)",
-        requested, info_.max_buffer_length, ordinal_, info_.name)));
+        "Metal: allocating %s exceeds the largest buffer the device can "
+        "create (maxBufferLength %s; device %d, %s)",
+        FormatBytes(requested), FormatBytes(info_.max_buffer_length), ordinal_,
+        info_.name)));
   }
   uint64_t length = BufferLength(size);
   if (length > info_.max_buffer_length) length = std::max<uint64_t>(size, 1);
@@ -631,12 +652,14 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
     allocated_bytes_ -= length;
   };
   if (over_budget) {
-    return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
-        "Metal allocation of %d bytes refused: this process already holds %d "
-        "bytes of its %d-byte memory budget (device %d; half of RAM, capped "
-        "by the GPU's recommended working set, times "
-        "JAX_MTL_MEMORY_FRACTION). Reduce the working set.",
-        requested, allocated_bytes(), memory_budget_, ordinal_)));
+    return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrCat(
+        absl::StrFormat(
+            "Metal: allocating %s refused: this process already holds %s of "
+            "its %s memory budget (device %d; half of RAM, capped by the "
+            "GPU's recommended working set). Use smaller arrays or batches",
+            FormatBytes(requested), FormatBytes(allocated_bytes()),
+            FormatBytes(memory_budget_), ordinal_),
+        RaiseBudgetHint(memory_budget_, info_.recommended_working_set))));
   }
   if (buf == nullptr) {
     // Refuse allocations that would push the system into swap (that is how
@@ -646,13 +669,13 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         !FitsAfterReleasingCache(length, &reclaimable)) {
       unreserve();
       return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
-          "Metal allocation of %d bytes refused by the system memory guard: "
-          "only %d bytes of system memory are free or reclaimable and %d "
-          "bytes are kept for the OS (device %d, %d bytes already allocated "
-          "by this process, budget %d bytes). Reduce the working set or "
-          "close other memory-heavy processes (e.g. `bazel shutdown`).",
-          requested, reclaimable, SystemMemoryReserve(), ordinal_,
-          allocated_bytes(), memory_budget_)));
+          "Metal: allocating %s refused by the system memory guard: only %s "
+          "of system memory is free or reclaimable and %s is kept for the "
+          "OS (device %d; this process holds %s, budget %s). Close other "
+          "memory-heavy applications or use smaller arrays or batches",
+          FormatBytes(requested), FormatBytes(reclaimable),
+          FormatBytes(SystemMemoryReserve()), ordinal_,
+          FormatBytes(allocated_bytes()), FormatBytes(memory_budget_))));
     }
     // Default (tracked) hazard mode: Metal orders dispatches touching the
     // same buffer for us.
@@ -660,11 +683,13 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
     if (buf == nullptr) {
       unreserve();
       return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
-          "Metal newBuffer failed for %d bytes on device %d (%s): %d bytes "
-          "already allocated, recommended working set %d bytes, "
-          "maxBufferLength %d bytes",
-          requested, ordinal_, info_.name, allocated_bytes(),
-          info_.recommended_working_set, info_.max_buffer_length)));
+          "Metal: the driver could not allocate %s on device %d (%s): %s "
+          "already allocated, recommended working set %s, maxBufferLength "
+          "%s",
+          FormatBytes(requested), ordinal_, info_.name,
+          FormatBytes(allocated_bytes()),
+          FormatBytes(info_.recommended_working_set),
+          FormatBytes(info_.max_buffer_length))));
     }
   }
   void* ptr = buf->contents();
@@ -822,10 +847,11 @@ void Device::SetError(const absl::Status& why) {
   std::lock_guard<std::mutex> lock(mu_);
   if (!error_.ok()) return;
   error_ = absl::Status(
-      why.code(), absl::StrCat(why.message(),
-                               " (Metal device ", ordinal_,
-                               "; no further GPU work is accepted in this "
-                               "process, restart it)"));
+      why.code(),
+      absl::StrCat("Metal device ", ordinal_,
+                   " accepts no further GPU work in this process; restart "
+                   "the Python process. Earlier GPU failure: ",
+                   why.message()));
 }
 
 void Device::AddInFlight(MTL::CommandBuffer* cb, MTL::SharedEvent* fence,
@@ -876,7 +902,7 @@ bool Device::CheckInFlight(bool wait) {
     if (!failed && wait) f.cb->waitUntilCompleted();
     const MTL::CommandBufferStatus st = f.cb->status();
     if (st == MTL::CommandBufferStatusError) {
-      SetError(CommandBufferError(f.cb, ordinal_, f.value));
+      SetError(CommandBufferError(f.cb, ordinal_));
     } else if (st != MTL::CommandBufferStatusCompleted) {
       done = false;
     } else if (!f.injected.ok()) {
@@ -909,13 +935,13 @@ absl::Status Device::CheckQuarantine(const KernelIdentity& id) {
     return absl::OkStatus();
   }
   return absl::FailedPreconditionError(absl::StrFormat(
-      "kernel %s is quarantined: it was in the command buffer that timed "
-      "out in %d GPU watchdog resets since boot (see "
-      "%s/gpu_resets.jsonl). Fix the kernel (a changed kernel gets a new "
-      "key); after a fix outside the kernel source, clear the log with "
-      "scripts/gpu_health.py --clear. A reboot also lifts it; "
-      "METAL_PJRT_QUARANTINE_STRIKES=0 disables the quarantine",
-      id.name, strikes->second, state_dir_));
+      "Metal: kernel %s is quarantined: it was in the command buffer that "
+      "timed out in %d GPU watchdog resets since boot. A reboot lifts the "
+      "quarantine, as does deleting %s (scripts/gpu_health.py --clear in a "
+      "source checkout); do that only once the cause is fixed (a changed "
+      "kernel gets a new key anyway). METAL_PJRT_QUARANTINE_STRIKES=0 "
+      "disables the quarantine",
+      id.name, strikes->second, ResetLogPath(state_dir_)));
 }
 
 absl::StatusOr<const Kernel*> Device::GetKernelImpl(
@@ -1343,22 +1369,24 @@ absl::Status Stream::Commit() {
     }
     absl::Status error = injected_error;
     const bool failed = cb->status() == MTL::CommandBufferStatusError;
-    if (failed) error = CommandBufferError(cb, device->ordinal(), v);
+    if (failed) error = CommandBufferError(cb, device->ordinal());
     if (!error.ok()) {
       LOG(ERROR) << error.message();
-      // Diagnostics: a timeout on a buffer with little GPU work usually
-      // means it sat on a wait whose signal never came. Say which.
-      for (const PendingWait& w : waits) {
-        LOG(ERROR) << "  this command buffer waited on " << w.kind
-                   << " event " << w.event << " for value " << w.value
-                   << "; its signaled value is now "
-                   << w.event->signaledValue();
+      // Diagnostics (--v=1): a timeout on a buffer with little GPU work
+      // usually means it sat on a wait whose signal never came. Say which.
+      if (VLOG_IS_ON(1)) {
+        for (const PendingWait& w : waits) {
+          VLOG(1) << "  this command buffer waited on " << w.kind
+                  << " event " << w.event << " for value " << w.value
+                  << "; its signaled value is now "
+                  << w.event->signaledValue();
+        }
+        std::string names;
+        for (const auto& k : *kernels) absl::StrAppend(&names, " ", k->name);
+        VLOG(1) << "  ops in buffer: " << traced_ops << ", gpu time ms: "
+                << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3
+                << ", kernels:" << names;
       }
-      std::string names;
-      for (const auto& k : *kernels) absl::StrAppend(&names, " ", k->name);
-      LOG(ERROR) << "  ops in buffer: " << traced_ops << ", gpu time ms: "
-                 << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3
-                 << ", kernels:" << names;
       LogMemoryState(device);
       // Watchdog timeouts and revoked/removed devices mean the GPU was
       // reset underneath us: record the suspects (quarantine).

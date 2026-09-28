@@ -141,8 +141,8 @@ from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
   `docs/accuracy.md`.
 - **A GPU error ends GPU work for the process.** After the first failed GPU
   command (a fault or a watchdog timeout), every later GPU operation in that
-  process fails with the original error plus "no further GPU work is
-  accepted in this process, restart it". Restart the Python process; the
+  process fails with "accepts no further GPU work in this process; restart
+  the Python process. Earlier GPU failure: ..." Restart it; the
   machine does not need a reboot.
 - **Memory.** GPU memory is system RAM. The plugin keeps a process under
   half of RAM, and it refuses any allocation that would push the machine

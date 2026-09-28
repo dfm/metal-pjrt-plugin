@@ -23,6 +23,7 @@
 #include "metal_pjrt/runtime/constants_container.h"
 #include "metal_pjrt/compiler/compile_settings.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
+#include "metal_pjrt/runtime/system_memory.h"
 #include "metal_pjrt/stream_executor/metal_event.h"
 #include "metal_pjrt/stream_executor/metal_kernel.h"
 #include "metal_pjrt/stream_executor/metal_stream.h"
@@ -122,13 +123,14 @@ bool MetalExecutor::SynchronizeAllActivity() {
 DeviceAddressBase MetalExecutor::Allocate(uint64_t size, int64_t memory_space) {
   // Every memory space is unified memory here; the space only matters to XLA's
   // buffer coloring.
-  // StreamExecutor contract: failure is a null DeviceAddressBase, so the
-  // status is logged here.
+  // StreamExecutor contract: failure is a null DeviceAddressBase. The user
+  // gets XLA's out-of-memory error with the runtime's reason appended
+  // (pjrt/metal_pjrt_api.cc), so this is only a debug log.
   absl::StatusOr<rt::Allocation> a = device_->Allocate(size);
   if (!a.ok()) {
-    LOG(ERROR) << "Metal device " << device_ordinal() << ": allocating "
-               << size << " bytes (memory space " << memory_space
-               << ") failed: " << a.status();
+    VLOG(1) << "Metal device " << device_ordinal() << ": allocating "
+            << size << " bytes (memory space " << memory_space
+            << ") failed: " << a.status();
     return DeviceAddressBase();
   }
   return DeviceAddressBase(a->ptr, size);
@@ -284,8 +286,8 @@ absl::StatusOr<ModuleHandle> MetalExecutor::LoadModule(
       // Release what this module already allocated.
       for (auto& kv : module.symbols) Deallocate(&kv.second);
       return absl::ResourceExhaustedError(absl::StrFormat(
-          "Metal device %d: failed to allocate %d bytes for module constant %s",
-          device_ordinal(), b.data.size(), b.name));
+          "Metal device %d: failed to allocate %s for module constant %s",
+          device_ordinal(), rt::FormatBytes(b.data.size()), b.name));
     }
     if (!b.data.empty()) std::memcpy(mem.opaque(), b.data.data(), b.data.size());
     module.symbols[b.name] = mem;

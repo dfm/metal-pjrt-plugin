@@ -62,6 +62,8 @@ try:
 except jax.errors.JaxRuntimeError as e:
     # XLA's generic message, then the runtime's reason.
     assert "RESOURCE_EXHAUSTED" in str(e) and "memory budget" in str(e), e
+    # Sizes in MB, and the setting that raises the budget, with a value.
+    assert " MB of its " in str(e) and "JAX_MTL_MEMORY_FRACTION=" in str(e), e
 print("held", len(held), "live MB", stats()["live"] // MB)
 assert len(held) * 64 * MB <= s["budget"]
 # One program whose output alone exceeds the budget.
@@ -88,6 +90,7 @@ try:
     raise SystemExit("no error")
 except jax.errors.JaxRuntimeError as e:
     assert "RESOURCE_EXHAUSTED" in str(e) and "system memory guard" in str(e), e
+    assert "Close other memory-heavy applications" in str(e), e
     print(str(e).splitlines()[0])
 assert float(jnp.sum(jnp.ones(1000))) == 1000.0
 print("OK")
