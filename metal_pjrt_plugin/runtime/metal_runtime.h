@@ -484,8 +484,10 @@ class Stream {
   // stream work. Ends the current compute encoder, then calls `encode` with the
   // raw MTL::CommandBuffer* (as void*, so Objective-C++ callers can bridge it
   // to id<MTLCommandBuffer>). `encode` must create, use and end its own
-  // encoders and must not commit the buffer or call back into this stream (the
-  // stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer
+  // encoders, also when it returns an error (the stream opens its next
+  // encoder on the same buffer, and two open encoders are invalid; what it
+  // did encode stays in the buffer), and must not commit the buffer or call
+  // back into this stream (the stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer
   // and `flops` toward kMaxFlopsPerCommandBuffer.
   absl::Status EncodeExternal(
       std::function<absl::Status(void* mtl_command_buffer)> encode,
@@ -514,9 +516,10 @@ class Stream {
   // subsequent stream work waits for it to finish. GPU work that waits for a
   // host task is committed only after the task has run (see Commit), so a
   // slow task never counts against the GPU watchdog. A task must not wait
-  // for its own stream: Synchronize, Event::WaitOnHost and commits that would
-  // wait for the running task (or later work on its stream) return
-  // FailedPreconditionError instead of deadlocking.
+  // for its own stream: every method of that stream called from the task
+  // (or its `on_error`), Event::WaitOnHost and commits of other streams
+  // that would wait for the running task (or later work on its stream)
+  // return FailedPreconditionError instead of deadlocking.
   //
   // After a failure (the device's sticky error), a task with `on_error` does
   // not run and `on_error` gets the error; one without it still runs (XLA's
@@ -615,6 +618,9 @@ class Stream {
   // with them. After a device error nothing is committed: the buffer is
   // dropped and its signals are force-signaled, as a failed buffer's are.
   absl::Status Commit();
+  // FailedPreconditionError when called from a host task (or its on_error)
+  // of this stream; checked before taking mu_ (see the .cc).
+  absl::Status RefuseOwnHostTask() const;
   Device* device_;
   MTL::CommandQueue* queue_;
   MTL::SharedEvent* fence_;      // private timeline for this stream

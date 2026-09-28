@@ -1147,18 +1147,19 @@ void Stream::WorkerLoop() {
     // After a failure, a task with on_error does not run and on_error gets
     // the error. Without one, the task runs anyway (XLA's callbacks without
     // an error callback free memory or complete transfers).
+    // on_error runs as the task too: it must not call into this stream.
+    current_host_task = {fence_, task.signal_value};
     if (!status.ok() && task.on_error) {
       task.on_error(status);
     } else {
-      current_host_task = {fence_, task.signal_value};
       absl::Status own = task.fn();
-      current_host_task = {};
       if (!own.ok() && task.on_error) {
         task.on_error(own);  // handled there
       } else if (!own.ok()) {
         device_->SetError(Annotate(own, "a Metal stream host task failed"));
       }
     }
+    current_host_task = {};
     // A failed command buffer may have force-signaled the fence past this
     // value meanwhile; never move it backwards.
     if (fence_->signaledValue() < task.signal_value) {
@@ -1394,6 +1395,7 @@ absl::Status Stream::Commit() {
 }
 
 absl::Status Stream::Flush() {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   return Commit();
 }
@@ -1408,12 +1410,17 @@ void Stream::FailNextCommandBufferForTesting(absl::Status error) {
   inject_error_ = std::move(error);
 }
 
+absl::Status Stream::RefuseOwnHostTask() const {
+  // Checked before taking mu_: a Commit on another thread may hold it while
+  // it waits (hold rule) for this very task, and the task would block on it.
+  if (current_host_task.fence != fence_) return absl::OkStatus();
+  return absl::FailedPreconditionError(
+      "a host task called into its own Metal stream; it could wait for "
+      "itself");
+}
+
 absl::Status Stream::Synchronize() {
-  if (current_host_task.fence == fence_) {
-    return absl::FailedPreconditionError(
-        "Synchronize called from a host task of the same Metal stream; it "
-        "would wait for itself");
-  }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   ABSL_RETURN_IF_ERROR(Commit());
   // Wait for completion (not just the fence signal) so resources referenced
@@ -1556,6 +1563,7 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
     return LaunchWithArgumentBuffer(kernel, threadgroups, threads, args,
                                     threadgroup_memory_bytes, flops);
   }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   // Resolve before opening an encoder so a bad pointer encodes nothing.
   BufferRef refs[kMaxBufferArgs];
@@ -1594,6 +1602,7 @@ absl::Status Stream::LaunchWithArgumentBuffer(
     const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
     absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes,
     uint64_t flops) {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   absl::InlinedVector<uint64_t, 64> addrs(std::max<size_t>(args.size(), 1), 0);
   absl::InlinedVector<MTL::Buffer*, 16> resident;
@@ -1632,6 +1641,7 @@ absl::Status Stream::LaunchWithArgumentBuffer(
 absl::Status Stream::EncodeExternal(
     std::function<absl::Status(void* mtl_command_buffer)> encode,
     uint64_t flops) {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
@@ -1655,6 +1665,7 @@ absl::Status CheckRange(const BufferRef& ref, uint64_t size,
 absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
                                           uint64_t size) {
   if (size == 0) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   const std::string what =
       absl::StrFormat("MemcpyDeviceToDevice(%p <- %p, %d bytes)", dst, src, size);
@@ -1700,18 +1711,23 @@ absl::Status Stream::EncodeCopy(BufferRef dst, BufferRef src, uint64_t size) {
   }
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
+  // The encoder is autoreleased; XLA threads have no pool of their own.
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
   if (blit == nullptr) {
+    pool->release();
     return absl::InternalError(absl::StrFormat(
         "Metal blitCommandEncoder creation failed for a %d-byte copy", size));
   }
   blit->copyFromBuffer(src.buffer, src.offset, dst.buffer, dst.offset, size);
   blit->endEncoding();
+  pool->release();
   return FinishOp(size / 4);  // about one thread per word
 }
 
 absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
   if (size == 0) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   const std::string what =
       absl::StrFormat("Memset8(%p, 0x%02x, %d bytes)", dst, value, size);
@@ -1729,6 +1745,7 @@ absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
         value, size));
   }
   if (size == 0) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   const std::string what =
       absl::StrFormat("Memset32(%p, 0x%08x, %d bytes)", dst, value, size);
@@ -1746,13 +1763,16 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
   if (uniform && size > kComputeCopyMaxBytes) {
     ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
     EndEncoder();
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
     MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
     if (blit == nullptr) {
+      pool->release();
       return absl::InternalError(absl::StrFormat(
           "Metal blitCommandEncoder creation failed for a %d-byte fill", size));
     }
     blit->fillBuffer(dst.buffer, NS::Range(dst.offset, size), b);
     blit->endEncoding();
+    pool->release();
     return FinishOp(size / 4);
   }
   // Word-granular when the range is 4-byte aligned; bytes otherwise.
@@ -1763,6 +1783,7 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
 
 absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
                                   std::function<void(absl::Status)> on_error) {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   // 1. Commit everything so far; it ends with a fence signal (value v). Waits
   //    still deferred on this stream become waits of the host task itself.
@@ -1805,6 +1826,7 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
         size));
   }
   {
+    ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);
     if (IdleLocked()) {
       std::memcpy(dst, src, size);
@@ -1842,6 +1864,7 @@ absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
         size));
   }
   {
+    ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);
     if (IdleLocked()) {
       std::memcpy(dst, src, size);
@@ -1858,6 +1881,7 @@ absl::Status Stream::RecordEvent(Event* event) {
   if (event == nullptr) {
     return absl::InvalidArgumentError("RecordEvent: null event");
   }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   uint64_t v;
@@ -1882,6 +1906,7 @@ absl::Status Stream::WaitForEvent(Event* event) {
   if (event == nullptr) {
     return absl::InvalidArgumentError("WaitForEvent: null event");
   }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   uint64_t v;
   {
@@ -1898,6 +1923,8 @@ absl::Status Stream::WaitForStream(Stream* other) {
     return absl::InvalidArgumentError("WaitForStream: null stream");
   }
   if (other == this) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  ABSL_RETURN_IF_ERROR(other->RefuseOwnHostTask());
   // Wait for the highest value `other` has issued: after its Commit that is
   // either its last command buffer or a host task enqueued after it (whose
   // value is signaled by the host, hence the hold rule applies). Values are

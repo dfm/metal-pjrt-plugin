@@ -137,7 +137,8 @@ committed.
 yet is not committed: `Stream::Commit` waits on the host for the task
 first, so a slow host task never sits on the GPU timeline. Host-task
 workers never take the stream lock, so this cannot deadlock with them; a
-task that waits for its own stream gets FAILED_PRECONDITION.
+task (or its error callback) that calls into its own stream gets
+FAILED_PRECONDITION before taking the lock.
 `Device::unsignaled_host_task_waits_committed()` counts violations and the
 runtime tests assert it stays 0.
 

@@ -485,6 +485,40 @@ TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// A host task (or its on_error) calling into its own stream is refused
+// before it takes the stream lock: here the main thread's Flush holds that
+// lock while it waits (hold rule) for the task, so taking it would hang.
+TEST_F(MetalRuntimeTest, HostTaskCallingIntoItsOwnStreamIsRefused) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  std::atomic<bool> flushing{false};
+  absl::Status memset_status, callback_status, on_error_status;
+  ASSERT_THAT(s->HostCallback([&]() {
+    for (int i = 0; i < 2000 && !flushing.load(); ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    memset_status = s->Memset32(x, 0, n * 4);
+    callback_status = s->HostCallback([]() { return absl::OkStatus(); });
+    return absl::DataLossError("handled by on_error");
+  }, [&](absl::Status) { on_error_status = s->Memset32(x, 0, n * 4); }),
+              IsOk());
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  flushing = true;
+  ASSERT_THAT(s->Flush(), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(memset_status, StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(callback_status,
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(on_error_status,
+              StatusIs(absl::StatusCode::kFailedPrecondition));
+  EXPECT_THAT(dev_->error(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // Commit encodes a buffer's fence signal before its event signals, so an
 // event value seen on the host implies the buffer's fence value is signaled
 // (Device::CheckInFlight relies on it).

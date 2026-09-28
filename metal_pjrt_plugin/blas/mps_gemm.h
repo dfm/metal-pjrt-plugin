@@ -53,7 +53,8 @@ struct GemmParams {
 // cases (k == 0, non-f32 dtypes, devices without MPS); InternalError when a
 // Metal/MPS object cannot be created; ResourceExhaustedError when a staging
 // buffer cannot be allocated. Staging work may already be encoded when an error
-// is returned; everything it references is kept alive.
+// is returned; everything it references is kept alive, and no encoder is left
+// open (rt::Stream::EncodeExternal relies on it).
 absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
                         const GemmParams& params);
 
