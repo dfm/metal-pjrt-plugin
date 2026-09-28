@@ -194,6 +194,113 @@ pipeline.AddPass<TopKSplitter>();
 pipeline.AddPass<TopkSpecializer>(gpu_version);
 pipeline.AddPass<TopkDecomposer>();
 
+### xla/service/gpu/gpu_compiler.cc @ ABSL_RETURN_IF_ERROR(OptimizeHloConvolutionCanonicalization(
+# why: MetalCompiler's OptimizeHloConvolutionCanonicalization hook runs TriangularSolveExpander and MetalSortExpander: after RunOptimizationPasses (CholeskyExpander, TopkDecomposer, StableSortExpander, SortSimplifier) and before layout assignment.
+DumpHloModuleIfEnabled(*hlo_module, "after_spmd_partitioner");
+ABSL_RETURN_IF_ERROR(RunOptimizationPasses(
+*this, hlo_module, gpu_topology.gpu_target_config(),
+layout_insensitive_algsimp_opts,
+/*is_deviceless=*/stream_exec == nullptr, options.early_exit_with_layouts,
+compilation_stats));
+se::GpuComputeCapability gpu_version =
+device_description.gpu_compute_capability();
+ABSL_RETURN_IF_ERROR(RunCollectiveOptimizationPasses(
+hlo_module, gpu_topology, layout_insensitive_algsimp_opts, gpu_version,
+pointer_size_, compilation_stats));
+// Run target-specific HLO optimization passes for convolution
+// canonicalization.
+ABSL_RETURN_IF_ERROR(OptimizeHloConvolutionCanonicalization(
+hlo_module, gpu_version,
+se::dnn::VersionInfo(
+gpu_topology.gpu_target_config().device_description.dnn_version()),
+device_description.runtime_version(), compilation_stats));
+
+### xla/service/gpu/gpu_compiler.cc @ pre_spmd_pipeline.AddPass<TopkDecomposer>(
+# why: top_k becomes a sort in the pre-SPMD pipeline, after RunHloPasses' metal-small-sorts decomposed the short-row ones (else SortRewriter takes them; metal_compiler.cc).
+// The TopkDecomposer generates a compare op with order=TOTAL and must
+// run before the ComparisonExpander which rewrites such comparisons.
+pre_spmd_pipeline.AddPass<TopkDecomposer>([&](const HloInstruction* instr) {
+return instr->opcode() == HloOpcode::kTopK;
+});
+// The SPMD partitioner would mess up the sort+slice structure, so we need to
+// rewrite Topk before that happens.
+pre_spmd_pipeline.AddPass<TopkRewriter>(
+[](const HloSortInstruction*, int64_t) { return true; });
+
+### xla/service/gpu/gpu_compiler.cc @ pipeline.AddPass<PermutationSortExpander>();
+# why: SortRewriter's first call site (RunOptimizationPasses); metal-small-sorts runs before it, so rows <= 64 never reach it.
+pipeline.AddPass<PermutationSortExpander>();
+if (debug_options.xla_gpu_enable_cub_radix_sort()) {
+pipeline.AddPass<SortRewriter>(gpu_target_config.device_description,
+is_deviceless, is_early_exit_with_layouts);
+}
+
+### xla/backends/gpu/transforms/sort_rewriter.cc @ bool AreOperandTypesSupportedByCub(
+# why: The key/value types SortRewriter hands to the CUB custom call: ffi/cub_sort_ffi.cc must handle a superset (cub_sort_test sweeps them).
+bool AreOperandTypesSupportedByCub(
+const SortComputationAnalysis& sort_analysis) {
+PrimitiveType key_type = sort_analysis.key_type;
+std::optional<PrimitiveType> value_type = sort_analysis.value_type;
+if (!value_type.has_value()) {
+switch (key_type) {
+case BF16:
+case F16:
+case F32:
+case F64:
+case S8:
+case S16:
+case S32:
+case S64:
+case U8:
+case U16:
+case U32:
+case U64:
+return true;
+default:
+return false;
+}
+}
+auto value_bitwidth = primitive_util::BitWidth(*value_type);
+switch (key_type) {
+case U8:
+case U16:
+case S32:
+case U32:
+case U64:
+case F32:
+return value_bitwidth == 16 || value_bitwidth == 32 ||
+value_bitwidth == 64;
+default:
+return false;
+}
+}
+
+### xla/hlo/transforms/expanders/cholesky_expander.cc @ /*block_size=*/128,
+# why: metal_compiler.cc assumes block size 128 (Cholesky of n <= 128 emits no triangular solve) when LAPACK is disabled.
+XlaOp a = Parameter(&builder, 0, instruction->operand(0)->shape(), "a");
+XlaOp l = BuildCholesky(MaybeTransposeInMinorDims(a, !options.lower()),
+/*block_size=*/128,
+/*precision=*/PrecisionConfig::HIGHEST);
+
+### xla/stream_executor/integrations/tf_allocator_adapter.cc @ absl::Status MemoryAllocationError(
+# why: pjrt/metal_pjrt_api.cc ErrorMessage matches 'Out of memory while trying to allocate <HumanReadableNumBytes> ' to append the runtime's refusal reason.
+absl::Status MemoryAllocationError(int64_t device_ordinal, uint64_t size,
+absl::string_view allocator_name,
+bool is_host_mem) {
+constexpr absl::string_view kHostMemoryExplanation =
+" Please set the environment variable "
+"XLA_PJRT_GPU_HOST_MEMORY_LIMIT_GB to allocate larger "
+"host memory than the default 64 GB.";
+absl::Status status = absl::ResourceExhaustedError(absl::StrCat(
+"Out of ", (is_host_mem ? "host " : ""),
+"memory while trying to allocate ",
+tsl::strings::HumanReadableNumBytes(size), " with allocator ",
+allocator_name, " on device ", device_ordinal, ".",
+(is_host_mem ? kHostMemoryExplanation : "")));
+status.SetPayload(kMemoryAllocationErrorPayloadKey, absl::Cord());
+return status;
+}
+
 ### xla/service/gpu/gpu_compiler.cc @ // SortRewriter needs to run before StableSortExpander.
 # why: SortRewriter only with xla_gpu_enable_cub_radix_sort (ApplyMetalDefaults turns it on unless DISABLE_REWRITES=cubsort); runs before MetalSortExpander.
 // SortRewriter needs to run before StableSortExpander.
@@ -365,6 +472,7 @@ xla/backends/gpu/transforms/topk_specializer.cc: 1
 xla/codegen/emitters/elemental_hlo_to_mlir.cc: 0
 xla/codegen/emitters/transforms/lower_tensors.cc: 1
 xla/codegen/emitters/transforms/vectorize_loads_stores.cc: 2
+xla/hlo/transforms/expanders/cholesky_expander.cc: 0
 xla/pjrt/c/pjrt_c_api_gpu_internal.cc: 0
 xla/pjrt/c_api_client/pjrt_c_api_client.cc: 0
 xla/pjrt/gpu/se_gpu_pjrt_client.cc: 0
@@ -374,3 +482,4 @@ xla/pjrt/se/stream_executor_executable.cc: 0
 xla/python/pjrt_ifrt/pjrt_executable.cc: 0
 xla/service/algorithm_util.cc: 4
 xla/service/gpu/gpu_compiler.cc: 1
+xla/stream_executor/integrations/tf_allocator_adapter.cc: 0
