@@ -68,29 +68,6 @@ bool ValidTileFor(const SteelTile& t, const GemmParams& p) {
   return loader_a && loader_b;
 }
 
-std::string VariantSource(MpsDType in, MpsDType out, const SteelTile& t,
-                          bool ta, bool tb, bool mn_aligned, bool k_aligned,
-                          bool use_c, const SteelEpilogue& epi) {
-  auto b = [](bool v) { return v ? "true" : "false"; };
-  return absl::StrCat(
-      "#include <metal_stdlib>\nusing namespace metal;\n",
-      "typedef ", MslType(in), " T;\ntypedef ", MslType(out), " U;\n",
-      "constant constexpr int BM = ", t.bm, ";\n",
-      "constant constexpr int BN = ", t.bn, ";\n",
-      "constant constexpr int BK = ", t.bk, ";\n",
-      "constant constexpr int WM = ", t.wm, ";\n",
-      "constant constexpr int WN = ", t.wn, ";\n",
-      "constant constexpr bool TRANS_A = ", b(ta), ";\n",
-      "constant constexpr bool TRANS_B = ", b(tb), ";\n",
-      "constant constexpr bool MN_ALIGNED = ", b(mn_aligned), ";\n",
-      "constant constexpr bool K_ALIGNED = ", b(k_aligned), ";\n",
-      "constant constexpr bool USE_C = ", b(use_c), ";\n",
-      "constant constexpr bool EPI_BIAS = ", b(epi.bias != nullptr), ";\n",
-      "constant constexpr bool EPI_AUX = ", b(epi.aux != nullptr), ";\n",
-      "constant constexpr int EPI_ACT = ", epi.act, ";\n",
-      kernels::kSteelGemmMsl);
-}
-
 const void* DevicePtr(const MpsOperand& x) {
   auto* buf = static_cast<MTL::Buffer*>(x.buffer);
   return static_cast<const char*>(buf->contents()) + x.offset;
@@ -101,6 +78,32 @@ bool FitsInt(int64_t v) {
 }
 
 }  // namespace
+
+SteelKernelSource SteelGemmKernel(MpsDType in, MpsDType out,
+                                  const SteelTile& t, bool trans_a,
+                                  bool trans_b) {
+  const std::string name = absl::StrCat(
+      "steel_gemm_", MslType(in), "_", MslType(out), "_", t.bm, "x", t.bn,
+      "x", t.bk, "_", t.wm, "x", t.wn, "_", trans_a ? "t" : "n",
+      trans_b ? "t" : "n");
+  auto b = [](bool v) { return v ? "true" : "false"; };
+  return {absl::StrCat(kernels::kSteelGemmMsl, "\ninstantiate_steel_gemm(\"",
+                       name, "\", ", MslType(in), ", ", MslType(out), ", ",
+                       t.bm, ", ", t.bn, ", ", t.bk, ", ", t.wm, ", ", t.wn,
+                       ", ", b(trans_a), ", ", b(trans_b), ")\n"),
+          name};
+}
+
+std::vector<rt::FunctionConstant> SteelGemmConstants(bool mn_aligned,
+                                                     bool k_aligned,
+                                                     bool use_c,
+                                                     const SteelEpilogue& epi) {
+  // The function_constant indices of kernels/steel_gemm.metal.
+  using C = rt::FunctionConstant;
+  return {C::Bool(0, mn_aligned),        C::Bool(1, k_aligned),
+          C::Bool(2, use_c),             C::Bool(3, epi.bias != nullptr),
+          C::Bool(4, epi.aux != nullptr), C::Int(5, epi.act)};
+}
 
 SteelTile ChooseSteelTile(const GemmParams& p) {
   SteelTile t;
@@ -187,12 +190,13 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
   const bool use_c = p.beta != 0.0;
   const bool mn_aligned = p.m % t.bm == 0 && p.n % t.bn == 0;
   const bool k_aligned = p.k % t.bk == 0;
+  const SteelKernelSource source =
+      SteelGemmKernel(p.a.dtype, p.c.dtype, t, p.a.transpose, p.b.transpose);
   ABSL_ASSIGN_OR_RETURN(
       const rt::Kernel* kernel,
-      device->GetKernel(VariantSource(p.a.dtype, p.c.dtype, t, p.a.transpose,
-                                      p.b.transpose, mn_aligned, k_aligned,
-                                      use_c, *epi),
-                        "steel_gemm"));
+      device->GetKernel(source.msl, source.function,
+                        SteelGemmConstants(mn_aligned, k_aligned, use_c,
+                                           *epi)));
 
   const int tn = static_cast<int>((p.n + t.bn - 1) / t.bn);
   const int tm = static_cast<int>((p.m + t.bm - 1) / t.bm);

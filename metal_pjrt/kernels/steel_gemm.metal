@@ -15,13 +15,13 @@
 //
 // Changes from MLX: self-contained (no MLX headers), in-place alpha/beta
 // epilogue reading C from D, the cuBLASLt bias / activation / aux epilogue
-// (blas_lt_support.h) applied in the store, batch strides via grid z, and
-// specializations chosen by a generated prefix (steel_gemm.cc) instead of
-// instantiating every variant in one library.
+// (blas_lt_support.h) applied in the store, batch strides via grid z, the
+// alignment / C / epilogue switches as function constants, and one
+// instantiation per compiled source (see the end) instead of every variant
+// in one library.
 //
-// The prefix defines: T (input type), U (output type), BM BN BK WM WN,
-// TRANS_A TRANS_B MN_ALIGNED K_ALIGNED USE_C EPI_BIAS EPI_AUX (bools),
-// EPI_ACT (int: 0 none, 1 ReLU, 2 GELU (tanh), 3 SiLU), then this body.
+// Template parameters: T (input type), U (output type), the tile BM BN BK and
+// warp grid WM WN, TRANS_A TRANS_B.
 #include <metal_simdgroup>
 #include <metal_simdgroup_matrix>
 #include <metal_stdlib>
@@ -29,6 +29,16 @@ using namespace metal;
 
 #define STEEL_CONST static constant constexpr const
 #define STEEL_PRAGMA_UNROLL _Pragma("clang loop unroll(full)")
+
+// Per-call switches, fixed at pipeline creation (MTLFunctionConstantValues;
+// SteelGemmConstants in steel_gemm.cc sets them).
+constant bool MN_ALIGNED [[function_constant(0)]];
+constant bool K_ALIGNED [[function_constant(1)]];
+constant bool USE_C [[function_constant(2)]];  // D = alpha AB + beta D
+constant bool EPI_BIAS [[function_constant(3)]];
+constant bool EPI_AUX [[function_constant(4)]];
+// 0 none, 1 ReLU, 2 GELU (tanh), 3 SiLU.
+constant int EPI_ACT [[function_constant(5)]];
 
 // Must match SteelGemmParams in steel_gemm.cc (72 bytes).
 struct SteelGemmParams {
@@ -199,21 +209,19 @@ struct BlockMMA {
     }
   }
 
-  // One output element: v = alpha * acc (+ beta * D when use_c) + bias of
+  // One output element: v = alpha * acc (+ beta * D when USE_C) + bias of
   // its column; aux = v, D = act(v), rounded once.
-  template <bool use_c>
   METAL_FUNC void store_one(device Uy* d, const device Uy* bias,
                             device Uy* aux, float acc, float alpha,
                             float beta) thread {
     float v = alpha * acc;
-    if (use_c) v += beta * float(*d);
+    if (USE_C) v += beta * float(*d);
     if (EPI_BIAS) v += float(*bias);
     if (EPI_AUX) *aux = Uy(v);
     *d = Uy(steel_act(v));
   }
 
   // Full tile. `bias` points at the tile's first column, `aux` like D.
-  template <bool use_c>
   METAL_FUNC void store_result(device Uy* D, const device Uy* bias,
                                device Uy* aux, const int ldd, float alpha,
                                float beta) thread {
@@ -228,15 +236,14 @@ struct BlockMMA {
         const int off = (i * TM_stride) * ldd + j * TN_stride;
         STEEL_PRAGMA_UNROLL
         for (short k = 0; k < 2; k++) {
-          store_one<use_c>(D + off + k, bias + j * TN_stride + k,
-                           aux + off + k, acc[k], alpha, beta);
+          store_one(D + off + k, bias + j * TN_stride + k,
+                    aux + off + k, acc[k], alpha, beta);
         }
       }
     }
   }
 
   // Edge tile: dims = (cols, rows) valid from the tile origin.
-  template <bool use_c>
   METAL_FUNC void store_result_safe(device Uy* D, const device Uy* bias,
                                     device Uy* aux, const int ldd, short2 dims,
                                     float alpha, float beta) thread {
@@ -255,8 +262,8 @@ struct BlockMMA {
           STEEL_PRAGMA_UNROLL
           for (short k = 0; k < 2; k++) {
             if (j * TN_stride + k < dims.x) {
-              store_one<use_c>(D + off + k, bias + j * TN_stride + k,
-                               aux + off + k, acc[k], alpha, beta);
+              store_one(D + off + k, bias + j * TN_stride + k,
+                        aux + off + k, acc[k], alpha, beta);
             }
           }
         }
@@ -265,49 +272,61 @@ struct BlockMMA {
   }
 };
 
-STEEL_CONST short kTgpPadA = 16 / sizeof(T);
-STEEL_CONST short kTgpPadB = 16 / sizeof(T);
-STEEL_CONST short kTgpSize = WM * WN * 32;
-STEEL_CONST short kLdaTgp = TRANS_A ? BM + kTgpPadA : BK + kTgpPadA;
-STEEL_CONST short kLdbTgp = TRANS_B ? BK + kTgpPadB : BN + kTgpPadB;
-STEEL_CONST int kTgpMemA = TRANS_A ? BK * (BM + kTgpPadA) : BM * (BK + kTgpPadA);
-STEEL_CONST int kTgpMemB = TRANS_B ? BN * (BK + kTgpPadB) : BK * (BN + kTgpPadB);
+// The threadgroup tiles, loaders and MMA of one variant (MLX GEMMKernel).
+template <typename T, typename U, int BM, int BN, int BK, int WM, int WN,
+          bool TRANS_A, bool TRANS_B>
+struct SteelGemm {
+  STEEL_CONST short kTgpPadA = 16 / sizeof(T);
+  STEEL_CONST short kTgpPadB = 16 / sizeof(T);
+  STEEL_CONST short kTgpSize = WM * WN * 32;
+  STEEL_CONST short kLdaTgp = TRANS_A ? BM + kTgpPadA : BK + kTgpPadA;
+  STEEL_CONST short kLdbTgp = TRANS_B ? BK + kTgpPadB : BN + kTgpPadB;
+  STEEL_CONST int kTgpMemA =
+      TRANS_A ? BK * (BM + kTgpPadA) : BM * (BK + kTgpPadA);
+  STEEL_CONST int kTgpMemB =
+      TRANS_B ? BN * (BK + kTgpPadB) : BK * (BN + kTgpPadB);
 
-typedef BlockLoader<T, TRANS_A ? BK : BM, TRANS_A ? BM : BK, kLdaTgp,
-                    !TRANS_A, kTgpSize> loader_a_t;
-typedef BlockLoader<T, TRANS_B ? BN : BK, TRANS_B ? BK : BN, kLdbTgp,
-                    TRANS_B, kTgpSize> loader_b_t;
-typedef BlockMMA<T, U, BM, BN, BK, WM, WN, TRANS_A, TRANS_B, kLdaTgp,
-                 kLdbTgp> mma_t;
+  typedef BlockLoader<T, TRANS_A ? BK : BM, TRANS_A ? BM : BK, kLdaTgp,
+                      !TRANS_A, kTgpSize> loader_a_t;
+  typedef BlockLoader<T, TRANS_B ? BN : BK, TRANS_B ? BK : BN, kLdbTgp,
+                      TRANS_B, kTgpSize> loader_b_t;
+  typedef BlockMMA<T, U, BM, BN, BK, WM, WN, TRANS_A, TRANS_B, kLdaTgp,
+                   kLdbTgp> mma_t;
 
-template <bool M_aligned, bool N_aligned>
-METAL_FUNC void gemm_loop(threadgroup T* As, threadgroup T* Bs,
-                          const int gemm_k_iterations,
-                          thread loader_a_t& loader_a,
-                          thread loader_b_t& loader_b, thread mma_t& mma_op,
-                          const short tgp_bm, const short tgp_bn,
-                          const short lbk) {
-  short2 tile_dims_A = TRANS_A ? short2(tgp_bm, BK) : short2(BK, tgp_bm);
-  short2 tile_dims_B = TRANS_B ? short2(BK, tgp_bn) : short2(tgp_bn, BK);
-  for (int k = 0; k < gemm_k_iterations; k++) {
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    if (M_aligned) loader_a.load_unsafe(); else loader_a.load_safe(tile_dims_A);
-    if (N_aligned) loader_b.load_unsafe(); else loader_b.load_safe(tile_dims_B);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    mma_op.mma(As, Bs);
-    loader_a.next();
-    loader_b.next();
+  template <bool M_aligned, bool N_aligned>
+  static METAL_FUNC void gemm_loop(threadgroup T* As, threadgroup T* Bs,
+                                   const int gemm_k_iterations,
+                                   thread loader_a_t& loader_a,
+                                   thread loader_b_t& loader_b,
+                                   thread mma_t& mma_op, const short tgp_bm,
+                                   const short tgp_bn, const short lbk) {
+    short2 tile_dims_A = TRANS_A ? short2(tgp_bm, BK) : short2(BK, tgp_bm);
+    short2 tile_dims_B = TRANS_B ? short2(BK, tgp_bn) : short2(tgp_bn, BK);
+    for (int k = 0; k < gemm_k_iterations; k++) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      if (M_aligned) loader_a.load_unsafe();
+      else loader_a.load_safe(tile_dims_A);
+      if (N_aligned) loader_b.load_unsafe();
+      else loader_b.load_safe(tile_dims_B);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      mma_op.mma(As, Bs);
+      loader_a.next();
+      loader_b.next();
+    }
+    if (!K_ALIGNED) {
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      short2 da = TRANS_A ? short2(tgp_bm, lbk) : short2(lbk, tgp_bm);
+      short2 db = TRANS_B ? short2(lbk, tgp_bn) : short2(tgp_bn, lbk);
+      loader_a.load_safe(da);
+      loader_b.load_safe(db);
+      threadgroup_barrier(mem_flags::mem_threadgroup);
+      mma_op.mma(As, Bs);
+    }
   }
-  if (!K_ALIGNED) {
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    short2 da = TRANS_A ? short2(tgp_bm, lbk) : short2(lbk, tgp_bm);
-    short2 db = TRANS_B ? short2(lbk, tgp_bn) : short2(tgp_bn, lbk);
-    loader_a.load_safe(da);
-    loader_b.load_safe(db);
-    threadgroup_barrier(mem_flags::mem_threadgroup);
-    mma_op.mma(As, Bs);
-  }
-}
+};
+
+template <typename T, typename U, int BM, int BN, int BK, int WM, int WN,
+          bool TRANS_A, bool TRANS_B>
 
 [[kernel, max_total_threads_per_threadgroup(WM * WN * 32)]] void steel_gemm(
     const device T* A [[buffer(0)]],
@@ -319,8 +338,9 @@ METAL_FUNC void gemm_loop(threadgroup T* As, threadgroup T* Bs,
     uint simd_lane_id [[thread_index_in_simdgroup]],
     uint simd_group_id [[simdgroup_index_in_threadgroup]],
     uint3 tid [[threadgroup_position_in_grid]]) {
-  threadgroup T As[kTgpMemA];
-  threadgroup T Bs[kTgpMemB];
+  typedef SteelGemm<T, U, BM, BN, BK, WM, WN, TRANS_A, TRANS_B> G;
+  threadgroup T As[G::kTgpMemA];
+  threadgroup T Bs[G::kTgpMemB];
 
   const int tid_y = ((tid.y) << params.swizzle_log) +
                     ((tid.x) & ((1 << params.swizzle_log) - 1));
@@ -342,39 +362,46 @@ METAL_FUNC void gemm_loop(threadgroup T* As, threadgroup T* Bs,
   aux += c_row_long * params.ldd + c_col_long;
   bias += c_col_long;
 
-  thread loader_a_t loader_a(A, params.lda, As, simd_group_id, simd_lane_id);
-  thread loader_b_t loader_b(B, params.ldb, Bs, simd_group_id, simd_lane_id);
-  thread mma_t mma_op(simd_group_id, simd_lane_id);
+  thread typename G::loader_a_t loader_a(A, params.lda, As, simd_group_id,
+                                        simd_lane_id);
+  thread typename G::loader_b_t loader_b(B, params.ldb, Bs, simd_group_id,
+                                        simd_lane_id);
+  thread typename G::mma_t mma_op(simd_group_id, simd_lane_id);
 
   const int gemm_k_iterations = params.gemm_k_iterations_aligned;
   const short lbk = params.K - gemm_k_iterations * BK;
 
   if (MN_ALIGNED) {
-    gemm_loop<true, true>(As, Bs, gemm_k_iterations, loader_a, loader_b,
-                          mma_op, BM, BN, lbk);
-    mma_op.template store_result<USE_C>(D, bias, aux, params.ldd,
-                                        params.alpha, params.beta);
+    G::template gemm_loop<true, true>(As, Bs, gemm_k_iterations, loader_a,
+                                      loader_b, mma_op, BM, BN, lbk);
+    mma_op.store_result(D, bias, aux, params.ldd, params.alpha, params.beta);
     return;
   }
   const short tgp_bm = min(BM, params.M - c_row);
   const short tgp_bn = min(BN, params.N - c_col);
   if (tgp_bm == BM && tgp_bn == BN) {
-    gemm_loop<true, true>(As, Bs, gemm_k_iterations, loader_a, loader_b,
-                          mma_op, tgp_bm, tgp_bn, lbk);
-    mma_op.template store_result<USE_C>(D, bias, aux, params.ldd,
-                                        params.alpha, params.beta);
+    G::template gemm_loop<true, true>(As, Bs, gemm_k_iterations, loader_a,
+                                      loader_b, mma_op, tgp_bm, tgp_bn, lbk);
+    mma_op.store_result(D, bias, aux, params.ldd, params.alpha, params.beta);
     return;
   } else if (tgp_bn == BN) {
-    gemm_loop<false, true>(As, Bs, gemm_k_iterations, loader_a, loader_b,
-                           mma_op, tgp_bm, tgp_bn, lbk);
+    G::template gemm_loop<false, true>(As, Bs, gemm_k_iterations, loader_a,
+                                       loader_b, mma_op, tgp_bm, tgp_bn, lbk);
   } else if (tgp_bm == BM) {
-    gemm_loop<true, false>(As, Bs, gemm_k_iterations, loader_a, loader_b,
-                           mma_op, tgp_bm, tgp_bn, lbk);
+    G::template gemm_loop<true, false>(As, Bs, gemm_k_iterations, loader_a,
+                                       loader_b, mma_op, tgp_bm, tgp_bn, lbk);
   } else {
-    gemm_loop<false, false>(As, Bs, gemm_k_iterations, loader_a, loader_b,
-                            mma_op, tgp_bm, tgp_bn, lbk);
+    G::template gemm_loop<false, false>(As, Bs, gemm_k_iterations, loader_a,
+                                        loader_b, mma_op, tgp_bm, tgp_bn, lbk);
   }
-  mma_op.template store_result_safe<USE_C>(D, bias, aux, params.ldd,
-                                           short2(tgp_bn, tgp_bm),
-                                           params.alpha, params.beta);
+  mma_op.store_result_safe(D, bias, aux, params.ldd, short2(tgp_bn, tgp_bm),
+                           params.alpha, params.beta);
 }
+
+// Each source compiles one variant: steel_gemm.cc appends one
+//   instantiate_steel_gemm("host name", T, U, BM, BN, BK, WM, WN, TA, TB)
+// (every variant in one library would take seconds to compile).
+#define instantiate_steel_gemm(name, T, U, BM, BN, BK, WM, WN, TA, TB)  \
+  template [[host_name(name)]] [[kernel]]                               \
+  decltype(steel_gemm<T, U, BM, BN, BK, WM, WN, TA, TB>)                \
+      steel_gemm<T, U, BM, BN, BK, WM, WN, TA, TB>;

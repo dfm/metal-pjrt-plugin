@@ -14,6 +14,7 @@
 #define METAL_PJRT_BLAS_STEEL_GEMM_H_
 
 #include <string>
+#include <vector>
 
 #include "absl/status/status.h"
 #include "metal_pjrt/blas/mps_gemm.h"
@@ -43,6 +44,22 @@ SteelTile ChooseSteelTile(const GemmParams& p);
 // limits as ValidateMatmul in blas_lt_support.h, which refuses the rest at
 // compile time). `why` receives the reason when not.
 bool SteelGemmSupports(const GemmParams& p, std::string* why = nullptr);
+
+// The steel kernel for these input/output types, tile and transposes: the
+// MSL (kernels/steel_gemm.metal plus one explicit instantiation) and the
+// instantiation's function name. The per-call switches are function
+// constants, SteelGemmConstants.
+struct SteelKernelSource {
+  std::string msl;
+  std::string function;
+};
+SteelKernelSource SteelGemmKernel(MpsDType in, MpsDType out,
+                                  const SteelTile& t, bool trans_a,
+                                  bool trans_b);
+std::vector<rt::FunctionConstant> SteelGemmConstants(bool mn_aligned,
+                                                     bool k_aligned,
+                                                     bool use_c,
+                                                     const SteelEpilogue& epi);
 
 // Encodes the GEMM onto `stream`. `tile` null means ChooseSteelTile(p);
 // `epi` null means none. InvalidArgumentError for bad shapes/strides or
