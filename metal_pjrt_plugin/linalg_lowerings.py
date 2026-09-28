@@ -1,4 +1,4 @@
-"""LAPACK-backed lowerings of JAX's linear algebra primitives on "openmetal".
+"""LAPACK-backed lowerings of JAX's linear algebra primitives on "mtl".
 
 The plugin's C++ side (metal_pjrt/linalg/lapack_ffi.cc) registers FFI
 handlers that synchronize the Metal stream and run Apple Accelerate's LAPACK
@@ -41,7 +41,7 @@ import os
 
 import numpy as np
 
-from jax_plugins.openmetal import PLATFORM  # "openmetal"
+from metal_pjrt_plugin import PLATFORM  # "mtl"
 
 
 @functools.cache
@@ -60,7 +60,7 @@ def _static(avals) -> bool:
 
 
 def register() -> None:
-  """Register the LAPACK lowerings for platform "openmetal" (after lowerings.py's
+  """Register the LAPACK lowerings for platform "mtl" (after lowerings.py's
   own registrations, which these override for float32)."""
   from jax._src.interpreters import mlir
   from jax._src.lax import linalg as ll

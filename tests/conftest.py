@@ -9,28 +9,28 @@ device lock (one GPU job at a time):
 Runs are hermetic: no persistent compilation cache, x64 off, and CPU next to
 metal for references (tests/metal_testing.py), whatever the environment
 says; and a run refuses to start with XLA_FLAGS or plugin settings
-(METAL_PJRT_*, JAX_OPENMETAL_*, e.g. the memory fraction) in the
+(METAL_PJRT_*, JAX_MTL_*, e.g. the memory fraction) in the
 environment (tests that need one set it for a child process).
 """
 import importlib.util
 import os
 import pathlib
 
-os.environ.update(JAX_PLATFORMS="openmetal,cpu", JAX_ENABLE_X64="0",
+os.environ.update(JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="0",
                   JAX_ENABLE_COMPILATION_CACHE="false")
 
 # Plugin variables that change nothing a test checks: where the GPU reset
 # log lives (a scratch dir for runs from a fresh checkout), trace logging
 # and the device lock's own marker.
 ALLOWED_PLUGIN_VARS = {"METAL_PJRT_STATE_DIR", "METAL_PJRT_TRACE",
-                       "JAX_OPENMETAL_DEVICE_LOCK_HELD"}
+                       "JAX_MTL_DEVICE_LOCK_HELD"}
 
 import pytest
 
 
 def pytest_configure(config):
     leaked = sorted(k for k in os.environ if k == "XLA_FLAGS" or (
-        k.startswith(("METAL_PJRT_", "JAX_OPENMETAL_"))
+        k.startswith(("METAL_PJRT_", "JAX_MTL_"))
         and k not in ALLOWED_PLUGIN_VARS))
     if leaked:
         raise pytest.UsageError(
@@ -63,5 +63,5 @@ def pytest_collection_modifyitems(config, items):
     import jax
     backend = jax.default_backend()
     print(f"\njax backend: {backend} {jax.devices()}", flush=True)
-    if backend != "openmetal":
-        raise pytest.UsageError(f"default backend is {backend!r}, not 'openmetal'")
+    if backend != "mtl":
+        raise pytest.UsageError(f"default backend is {backend!r}, not 'mtl'")

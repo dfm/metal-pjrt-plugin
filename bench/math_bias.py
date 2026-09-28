@@ -41,7 +41,7 @@ def errors(dev, f, ref, x):
 
 def main(names):
     rng = np.random.default_rng(0)
-    devs = [("metal", jax.devices("openmetal")[0]), ("cpu", jax.devices("cpu")[0])]
+    devs = [("metal", jax.devices("mtl")[0]), ("cpu", jax.devices("cpu")[0])]
     print(f"{'fn':7s} {'|x| range':15s} " + " ".join(
         f"{d:>5s} mean/abs/max    " for d, _ in devs))
     for name in names:

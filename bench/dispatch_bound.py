@@ -11,8 +11,8 @@ all three, not the median alone (docs/performance.md, 2026-09-27).
 """
 import os, statistics, sys, time
 sys.path.insert(0, os.path.dirname(__file__))
-# openmetal is opt-in (not the default backend); JAX_PLATFORMS=cpu for the CPU arm.
-os.environ.setdefault("JAX_PLATFORMS", "openmetal")
+# mtl is opt-in (not the default backend); JAX_PLATFORMS=cpu for the CPU arm.
+os.environ.setdefault("JAX_PLATFORMS", "mtl")
 import jax, jax.numpy as jnp
 from common import emit
 

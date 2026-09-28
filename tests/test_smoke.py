@@ -11,20 +11,20 @@ from metal_testing import check, run_python
 pytestmark = pytest.mark.metal
 
 
-def test_backend_is_openmetal():
-    # conftest sets JAX_PLATFORMS=openmetal,cpu.
-    assert jax.default_backend() == "openmetal", jax.default_backend()
+def test_backend_is_mtl():
+    # conftest sets JAX_PLATFORMS=mtl,cpu.
+    assert jax.default_backend() == "mtl", jax.default_backend()
 
 
 def test_opt_in():
     # Installed but not selected: CPU stays JAX's default backend, and
-    # openmetal is there to use explicitly.
+    # mtl is there to use explicitly.
     import os
     env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
     code = (
         "import jax, jax.numpy as jnp\n"
         "assert jax.default_backend() == 'cpu', jax.default_backend()\n"
-        "d = jax.devices('openmetal')[0]\n"
+        "d = jax.devices('mtl')[0]\n"
         "x = jax.device_put(jnp.arange(4.0), d)\n"
         "y = jax.jit(lambda x: x * 2 + 1)(x)\n"
         "assert y.devices() == {d} and y.tolist() == [1.0, 3.0, 5.0, 7.0]\n"

@@ -1,7 +1,7 @@
 [project]
-name = "openmetal_pjrt_plugin"
+name = "metal-pjrt-plugin"
 version = "0.0.1"
-description = "Open-source Metal PJRT plugin for JAX on Apple Silicon (JAX platform \"openmetal\")"
+description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"
 license = { file = "LICENSE" }
@@ -11,19 +11,22 @@ dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
 test = ["pytest"]
 
 [project.entry-points.jax_plugins]
-openmetal = "jax_plugins.openmetal"
+mtl = "metal_pjrt_plugin"
 
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
+# Only the Python package: never a "metal_pjrt*" pattern, which would sweep
+# the C++ tree metal_pjrt/ in as namespace packages.
 [tool.setuptools.packages.find]
-include = ["jax_plugins*"]
+include = ["metal_pjrt_plugin*"]
+namespaces = false
 
 # The plugin dylib (scripts/build_wheel.sh copies it in; for editable
 # installs it is scripts/install_dev.sh's link into bazel-bin).
 [tool.setuptools.package-data]
-"jax_plugins.openmetal" = ["*.dylib"]
+"metal_pjrt_plugin" = ["*.dylib"]
 
 # tests/: see tests/conftest.py. No pytest-timeout and no xdist: a timeout
 # ends the process with GPU work in flight, and parallel workers put several

@@ -30,7 +30,7 @@ REPORT = bool(os.environ.get("METAL_TEST_REPORT_ULPS"))
 
 @functools.cache
 def metal():
-    return jax.devices("openmetal")[0]
+    return jax.devices("mtl")[0]
 
 
 @functools.cache

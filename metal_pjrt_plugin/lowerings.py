@@ -1,5 +1,5 @@
 """MLIR lowering rules for primitives whose upstream rules are registered only
-for named platforms (cpu/cuda/rocm/tpu), so that they also lower on "openmetal".
+for named platforms (cpu/cuda/rocm/tpu), so that they also lower on "mtl".
 
 Policy: reuse JAX's own platform-independent implementations wherever one
 exists, i.e. do what the TPU platform does (TPU is JAX's reference "no vendor
@@ -8,7 +8,7 @@ HLO; nothing requires C++ support from the plugin beyond the XLA expander
 passes the GPU compiler pipeline already runs (CholeskyExpander, QrExpander,
 EighExpander, TriangularSolveExpander).
 
-Registered for platform "openmetal":
+Registered for platform "mtl":
 
 * ``fft``: a pure-JAX dense DFT (real matmuls against in-graph twiddle
   matrices). O(n^2) per transformed axis -- correct but slow; a stopgap until
@@ -18,12 +18,12 @@ Registered for platform "openmetal":
   rule, which raises from a host callback, is not wired up (host callbacks
   work, see docs/callbacks.md; nobody has needed it).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
-  goes through ``emit_python_callback``, which jax_plugins/openmetal/callbacks.py
+  goes through ``emit_python_callback``, which metal_pjrt_plugin/callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
 
 Float32 cholesky, triangular_solve, lu, geqrf/householder_product (qr), eigh
 and svd go through Accelerate LAPACK instead (the C++ MetalLinalgRewriter and
-jax_plugins/openmetal/linalg_lowerings.py, registered last; its docstring has
+metal_pjrt_plugin/linalg_lowerings.py, registered last; its docstring has
 the ownership table). The generic rules and the TPU ``eigh`` rule
 (``_eigh_tpu_lowering``: Jacobi via EighExpander for n <= 256, QDWH above;
 ``svd``'s generic rule calls it) are their fallbacks for other dtypes,
@@ -45,7 +45,7 @@ import logging
 
 import numpy as np
 
-from jax_plugins.openmetal import PLATFORM  # "openmetal"
+from metal_pjrt_plugin import PLATFORM  # "mtl"
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +147,7 @@ _registered = False
 
 
 def register() -> None:
-  """Register the lowerings. Must run after the "openmetal" plugin has been
+  """Register the lowerings. Must run after the "mtl" plugin has been
   registered with xla_bridge (register_lowering rejects unknown platforms)."""
   global _registered
   if _registered:
@@ -158,7 +158,7 @@ def register() -> None:
     try:
       fn()
     except Exception as e:  # noqa: BLE001 - never break plugin init
-      logger.warning("openmetal: could not register lowering for %s: %s", what, e)
+      logger.warning("metal-pjrt-plugin: could not register lowering for %s: %s", what, e)
 
   def _fft():
     from jax._src.lax import fft as lax_fft
@@ -184,5 +184,5 @@ def register() -> None:
   reg("fft", _fft)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
-  from jax_plugins.openmetal import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
+  from metal_pjrt_plugin import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
   _registered = True

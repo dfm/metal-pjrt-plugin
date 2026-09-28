@@ -108,7 +108,7 @@ def test_disable_cubsort(value):
            if k != "METAL_PJRT_DISABLE_REWRITES"}
     if value is not None:
         env["METAL_PJRT_DISABLE_REWRITES"] = value
-    out = run_python(DISABLE_CUBSORT_CHILD, dict(env, JAX_PLATFORMS="openmetal"))
+    out = run_python(DISABLE_CUBSORT_CHILD, dict(env, JAX_PLATFORMS="mtl"))
     assert out.returncode == 0, out.stderr[-3000:]
     assert out.stdout.split() == [str(value is None), "True"]
 
@@ -138,7 +138,7 @@ def test_non_strict_comparator_keeps_a_permutation():
     text = jax.jit(sort).lower(k, v).as_text()
     le = re.sub(r"stablehlo\.compare\s+LT,", "stablehlo.compare LE,", text)
     assert le != text
-    got_k, got_v = _run_hlo_text(le, "openmetal", k, v)
+    got_k, got_v = _run_hlo_text(le, "mtl", k, v)
     want_k, want_v = _run_hlo_text(le, "cpu", k, v)
     np.testing.assert_array_equal(got_k, want_k)
     np.testing.assert_array_equal(np.sort(got_v, axis=1), np.sort(want_v, axis=1))

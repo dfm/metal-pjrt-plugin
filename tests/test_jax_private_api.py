@@ -1,5 +1,5 @@
 """Tripwires for the private JAX APIs the plugin calls or replaces
-(jax_plugins/openmetal). The pinned jax version is checked at import
+(metal_pjrt_plugin). The pinned jax version is checked at import
 (test_packaging.py); these fail when a JAX upgrade changes a signature or
 removes a symbol, so the plugin's use of it can be re-checked. Parameter
 names, kinds and defaults are compared; annotations are not.
@@ -20,7 +20,7 @@ from jax._src.tpu.linalg import eigh as tpu_eigh
 from jax._src.tpu.linalg import svd as tpu_svd
 from jax.interpreters import mlir as public_mlir
 
-from jax_plugins.openmetal import callbacks
+from metal_pjrt_plugin import callbacks
 
 
 def params(fn):
@@ -111,7 +111,7 @@ def test_signature(name):
 
 
 def test_metal_emit_python_callback_matches_upstream():
-    # The openmetal branch receives the same arguments as upstream's.
+    # The mtl branch receives the same arguments as upstream's.
     assert (params(callbacks._metal_emit_python_callback)
             == params(callback.emit_python_callback))
 

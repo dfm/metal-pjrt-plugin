@@ -17,22 +17,26 @@ if [[ ! -x .venv/bin/python ]]; then
   fi
 fi
 if [[ "${1:-}" != "--no-build" ]]; then
-  bazel build //metal_pjrt/pjrt:pjrt_c_api_openmetal_plugin.dylib
+  bazel build //metal_pjrt/pjrt:pjrt_c_api_mtl_plugin.dylib
 fi
-SRC=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_openmetal_plugin.dylib
+SRC=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_mtl_plugin.dylib
 [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
-ln -sf "$(pwd)/$SRC" jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib
-# Leftovers of earlier names: the pre-rename "metal" platform's package
-# directory (only its generated files), dist "jax-metal-pjrt", whose
-# jax_plugins entry point would load the same dylib a second time as
-# platform "metal", and dist "jax-openmetal" (this package before it became
-# openmetal_pjrt_plugin), whose entry point would register it twice.
-OLD_DISTS=(jax-metal-pjrt jax-openmetal)
-rm -f jax_plugins/metal/pjrt_c_api_metal_plugin.dylib
-rm -rf jax_plugins/metal/__pycache__
-rmdir jax_plugins/metal 2>/dev/null || true
+ln -sf "$(pwd)/$SRC" metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib
+# Leftovers of earlier names, each of whose jax_plugins entry point would
+# load the same dylib a second time: dists "jax-metal-pjrt" (platform
+# "metal"), "jax-openmetal" and "openmetal_pjrt_plugin" (platform
+# "openmetal"), and the generated files left in their jax_plugins/metal and
+# jax_plugins/openmetal package directories (JAX also path-scans
+# jax_plugins/*).
+OLD_DISTS=(jax-metal-pjrt jax-openmetal openmetal_pjrt_plugin)
+for d in jax_plugins/metal jax_plugins/openmetal; do
+  rm -f "$d"/*.dylib
+  rm -rf "$d/__pycache__"
+  rmdir "$d" 2>/dev/null || true
+done
+rmdir jax_plugins 2>/dev/null || true
 # On sys.path when python runs from here.
-rm -rf jax_metal_pjrt.egg-info jax_openmetal.egg-info
+rm -rf jax_metal_pjrt.egg-info jax_openmetal.egg-info openmetal_pjrt_plugin.egg-info
 if command -v uv >/dev/null; then
   uv pip uninstall --python .venv/bin/python "${OLD_DISTS[@]}" >/dev/null 2>&1 || true
   uv pip install --python .venv/bin/python -e ".[test]" >/dev/null

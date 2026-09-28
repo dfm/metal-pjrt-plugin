@@ -39,7 +39,7 @@ step("fresh g(f(x))", lambda: g(f(x)), want + 1)
 
 @pytest.mark.parametrize("n", range(9))
 def test_injected_command_buffer_failure(n):
-    env = dict(os.environ, JAX_PLATFORMS="openmetal",
+    env = dict(os.environ, JAX_PLATFORMS="mtl",
                METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
     # No timeout: never kill a process with GPU work in flight. The runtime's
     # own waits are bounded.
@@ -76,7 +76,7 @@ try:
 except Exception as e:
     print("constant: RAISED", str(e).splitlines()[0][:120])
 """
-    env = dict(os.environ, JAX_PLATFORMS="openmetal",
+    env = dict(os.environ, JAX_PLATFORMS="mtl",
                METAL_PJRT_FAIL_COMMAND_BUFFER="1")
     out = run_python(child, env)
     assert out.returncode == 0, (out.returncode, out.stdout, out.stderr[-2000:])

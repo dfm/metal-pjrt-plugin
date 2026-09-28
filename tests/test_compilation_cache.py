@@ -1,6 +1,6 @@
-"""Persistent compilation cache opt-in (jax_plugins/openmetal/__init__.py).
+"""Persistent compilation cache opt-in (metal_pjrt_plugin/__init__.py).
 
-No GPU work (the cache-key test creates the openmetal client, so it is
+No GPU work (the cache-key test creates the mtl client, so it is
 marked metal): .venv/bin/python -m pytest tests/test_compilation_cache.py
 """
 
@@ -11,13 +11,13 @@ import pytest
 
 from jax._src import compilation_cache
 
-import jax_plugins.openmetal as openmetal
+import metal_pjrt_plugin
 from metal_testing import run_python
 
 
 def test_is_cache_used_still_has_local_platform_list():
-    # Tripwire for JAX upgrades: the opt-in presents openmetal backends as "gpu"
-    # to this check. If upstream changes it (e.g. adds "openmetal" or moves the
+    # Tripwire for JAX upgrades: the opt-in presents mtl backends as "gpu"
+    # to this check. If upstream changes it (e.g. adds "mtl" or moves the
     # list), revisit _install_is_cache_used_wrapper.
     src = inspect.getsource(compilation_cache)
     assert 'supported_platforms = ["tpu", "gpu", "cpu", "neuron"]' in src
@@ -31,7 +31,7 @@ class _FakeBackend:
         self.platform_version = "v"
 
 
-def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
+def test_wrapper_presents_mtl_as_gpu_and_leaves_cpu_alone(monkeypatch):
     seen = []
 
     def upstream(backend):
@@ -39,7 +39,7 @@ def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
         return backend.platform in ["tpu", "gpu", "cpu", "neuron"]
 
     monkeypatch.setattr(compilation_cache, "is_cache_used", upstream)
-    openmetal._install_is_cache_used_wrapper()
+    metal_pjrt_plugin._install_is_cache_used_wrapper()
     wrapped = compilation_cache.is_cache_used
     assert wrapped is not upstream
 
@@ -47,7 +47,7 @@ def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     assert wrapped(cpu) is True
     assert seen[-1] is cpu  # CPU backend is passed through untouched
 
-    mtl = _FakeBackend("openmetal")
+    mtl = _FakeBackend("mtl")
     assert wrapped(mtl) is True
     proxy = seen[-1]
     assert proxy.platform == "gpu"
@@ -55,7 +55,7 @@ def test_wrapper_presents_openmetal_as_gpu_and_leaves_cpu_alone(monkeypatch):
     assert not hasattr(proxy, "supports_executable_serialization")
 
     # Installing twice does not stack wrappers.
-    openmetal._install_is_cache_used_wrapper()
+    metal_pjrt_plugin._install_is_cache_used_wrapper()
     assert compilation_cache.is_cache_used is wrapped
 
 
@@ -68,13 +68,13 @@ def test_plugin_sets_no_cache_dir():
     out = run_python(
         "import jax, jax._src.xla_bridge as xb\n"
         "jax.devices()\n"
-        "assert 'openmetal' in xb._backend_factories, 'plugin not initialized'\n"
+        "assert 'mtl' in xb._backend_factories, 'plugin not initialized'\n"
         "print(jax.config.jax_compilation_cache_dir)\n", env)
     assert out.returncode == 0, out.stderr[-2000:]
     assert out.stdout.strip() == "None", out.stdout
 
 
-@pytest.mark.metal  # creates the openmetal client (no GPU work)
+@pytest.mark.metal  # creates the mtl client (no GPU work)
 def test_cache_key_fingerprints_parsed_settings():
     # platform_version carries the compile-time settings as the passes read
     # them: METAL_PJRT_DISABLE_LAPACK unset and "0" mean the same (one key),
@@ -84,8 +84,8 @@ def test_cache_key_fingerprints_parsed_settings():
                 if k not in ("METAL_PJRT_DISABLE_LAPACK",
                              "METAL_PJRT_DISABLE_REWRITES")}
         out = run_python("import jax\n"
-                         "print(jax.devices('openmetal')[0].client.platform_version)\n",
-                         dict(base, JAX_PLATFORMS="openmetal", **env))
+                         "print(jax.devices('mtl')[0].client.platform_version)\n",
+                         dict(base, JAX_PLATFORMS="mtl", **env))
         assert out.returncode == 0, out.stderr[-2000:]
         return out.stdout.strip()
 

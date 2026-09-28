@@ -251,7 +251,7 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     // swapped-out pages is what trips the watchdog).
     uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
-    if (const char* v = std::getenv("JAX_OPENMETAL_MEMORY_FRACTION")) {
+    if (const char* v = std::getenv("JAX_MTL_MEMORY_FRACTION")) {
       const double f = std::atof(v);
       if (f > 0) {
         budget = std::min(static_cast<uint64_t>(budget * f),
@@ -628,7 +628,7 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         "Metal allocation of %d bytes refused: this process already holds %d "
         "bytes of its %d-byte memory budget (device %d; half of RAM, capped "
         "by the GPU's recommended working set, times "
-        "JAX_OPENMETAL_MEMORY_FRACTION). Reduce the working set.",
+        "JAX_MTL_MEMORY_FRACTION). Reduce the working set.",
         requested, allocated_bytes(), memory_budget_, ordinal_)));
   }
   if (buf == nullptr) {

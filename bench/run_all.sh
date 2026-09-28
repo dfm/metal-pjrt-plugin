@@ -39,8 +39,8 @@ for round in $(seq 1 "$ROUNDS"); do
   echo "round $round" >&2
   for label in $BACKENDS; do
     case $label in
-      metal) BENCH_OUT=bench/results/metal.jsonl BENCH_LABEL=metal BENCH_ONLY=$ONLY JAX_PLATFORMS=openmetal .venv/bin/python bench/jax_bench.py 2>&1 | quiet ;;
-      metal-gpu) BENCH_OUT=bench/results/metal-gpu.jsonl BENCH_LABEL=metal-gpu METAL_PJRT_TRACE=1 BENCH_ONLY=$ONLY JAX_PLATFORMS=openmetal .venv/bin/python bench/jax_bench.py 2>/dev/null | quiet ;;
+      metal) BENCH_OUT=bench/results/metal.jsonl BENCH_LABEL=metal BENCH_ONLY=$ONLY JAX_PLATFORMS=mtl .venv/bin/python bench/jax_bench.py 2>&1 | quiet ;;
+      metal-gpu) BENCH_OUT=bench/results/metal-gpu.jsonl BENCH_LABEL=metal-gpu METAL_PJRT_TRACE=1 BENCH_ONLY=$ONLY JAX_PLATFORMS=mtl .venv/bin/python bench/jax_bench.py 2>/dev/null | quiet ;;
       cpu) BENCH_OUT=bench/results/cpu.jsonl BENCH_LABEL=cpu BENCH_ONLY=$ONLY JAX_PLATFORMS=cpu .venv/bin/python bench/jax_bench.py 2>&1 | quiet ;;
       mlx) BENCH_OUT=bench/results/mlx.jsonl BENCH_ONLY=$ONLY .venv/bin/python bench/mlx_bench.py 2>&1 | quiet ;;
       *) echo "unknown backend $label" >&2; exit 1 ;;

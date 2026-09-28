@@ -1,6 +1,6 @@
 diff -ruN a/xla/pjrt/c/BUILD b/xla/pjrt/c/BUILD
---- a/xla/pjrt/c/BUILD	2026-09-16 12:39:05
-+++ b/xla/pjrt/c/BUILD	2026-09-27 19:42:34
+--- a/xla/pjrt/c/BUILD	2026-09-28 07:43:44
++++ b/xla/pjrt/c/BUILD	2026-09-28 07:43:44
 @@ -34,6 +34,7 @@
      "internal_visibility",
  )
@@ -20,8 +20,8 @@ diff -ruN a/xla/pjrt/c/BUILD b/xla/pjrt/c/BUILD
      visibility = ["//visibility:public"],
      deps = [
 diff -ruN a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc b/xla/pjrt/c/pjrt_c_api_gpu_internal.cc
---- a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-16 12:39:05
-+++ b/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-27 19:42:34
+--- a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-28 07:43:44
++++ b/xla/pjrt/c/pjrt_c_api_gpu_internal.cc	2026-09-28 07:43:44
 @@ -85,6 +85,8 @@
  #define PJRT_GPU_PLUGIN_PLATFORM_NAME "ROCM"
  #elif TENSORFLOW_USE_SYCL
@@ -42,8 +42,8 @@ diff -ruN a/xla/pjrt/c/pjrt_c_api_gpu_internal.cc b/xla/pjrt/c/pjrt_c_api_gpu_in
      platform_id = xla::CudaId();
      platform_name = xla::CudaName();
 diff -ruN a/xla/pjrt/gpu/BUILD b/xla/pjrt/gpu/BUILD
---- a/xla/pjrt/gpu/BUILD	2026-09-16 12:39:05
-+++ b/xla/pjrt/gpu/BUILD	2026-09-27 19:42:34
+--- a/xla/pjrt/gpu/BUILD	2026-09-28 07:43:44
++++ b/xla/pjrt/gpu/BUILD	2026-09-28 07:43:44
 @@ -20,7 +20,7 @@
  load("//xla/pjrt/gpu:package_groups.bzl", "xla_gpu_internal_packages")
  load("//xla/stream_executor:build_defs.bzl", "if_cuda_or_rocm")
@@ -77,8 +77,8 @@ diff -ruN a/xla/pjrt/gpu/BUILD b/xla/pjrt/gpu/BUILD
  )
  
 diff -ruN a/xla/pjrt/gpu/se_gpu_pjrt_client.cc b/xla/pjrt/gpu/se_gpu_pjrt_client.cc
---- a/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-16 12:39:05
-+++ b/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-27 19:42:34
+--- a/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-28 07:43:44
++++ b/xla/pjrt/gpu/se_gpu_pjrt_client.cc	2026-09-28 07:43:44
 @@ -145,7 +145,7 @@
  #include "tsl/profiler/lib/traceme.h"
  
@@ -134,15 +134,15 @@ diff -ruN a/xla/pjrt/gpu/se_gpu_pjrt_client.cc b/xla/pjrt/gpu/se_gpu_pjrt_client
  static absl::StatusOr<PjRtStreamExecutorExecutionOutput> RunGpuAsync(
      LocalExecutable& exec, PjRtStreamExecutorRawClient* raw_client,
 diff -ruN a/xla/pjrt/pjrt_compiler.h b/xla/pjrt/pjrt_compiler.h
---- a/xla/pjrt/pjrt_compiler.h	2026-09-16 12:39:05
-+++ b/xla/pjrt/pjrt_compiler.h	2026-09-27 19:42:34
+--- a/xla/pjrt/pjrt_compiler.h	2026-09-28 07:43:44
++++ b/xla/pjrt/pjrt_compiler.h	2026-09-28 07:43:44
 @@ -103,6 +103,13 @@
  // TODO(intel-tf): Remove this function once Jaxlib is updated to use
  // OneapId() instead of SyclId()
  inline PjRtPlatformId SyclId() { return OneapiId(); }
 +
 +// Apple Metal (metal-pjrt-plugin).
-+inline const char* MetalName() { return "openmetal"; }
++inline const char* MetalName() { return "mtl"; }
 +inline PjRtPlatformId MetalId() {
 +  static const PjRtPlatformId kMetalId = tsl::Fingerprint64(MetalName());
 +  return kMetalId;
@@ -161,8 +161,8 @@ diff -ruN a/xla/pjrt/pjrt_compiler.h b/xla/pjrt/pjrt_compiler.h
  
  // Returns true if it's CPU id.
 diff -ruN a/xla/service/BUILD b/xla/service/BUILD
---- a/xla/service/BUILD	2026-09-16 12:39:05
-+++ b/xla/service/BUILD	2026-09-27 19:42:34
+--- a/xla/service/BUILD	2026-09-28 07:43:44
++++ b/xla/service/BUILD	2026-09-28 07:43:44
 @@ -2,6 +2,7 @@
  #   XLA service implementation.
  
@@ -181,8 +181,8 @@ diff -ruN a/xla/service/BUILD b/xla/service/BUILD
          ":compiler",
          "//xla:debug_options_flags",
 diff -ruN a/xla/service/gpu/gpu_executable.cc b/xla/service/gpu/gpu_executable.cc
---- a/xla/service/gpu/gpu_executable.cc	2026-09-16 12:39:05
-+++ b/xla/service/gpu/gpu_executable.cc	2026-09-27 19:42:34
+--- a/xla/service/gpu/gpu_executable.cc	2026-09-28 07:43:44
++++ b/xla/service/gpu/gpu_executable.cc	2026-09-28 07:43:44
 @@ -547,7 +547,8 @@
    } else if (platform_id == se::sycl::kSyclPlatformId) {
      // TODO: Add check.
@@ -194,8 +194,8 @@ diff -ruN a/xla/service/gpu/gpu_executable.cc b/xla/service/gpu/gpu_executable.c
  
    return absl::OkStatus();
 diff -ruN a/xla/service/gpu/gpu_module_globals.cc b/xla/service/gpu/gpu_module_globals.cc
---- a/xla/service/gpu/gpu_module_globals.cc	2026-09-16 12:39:05
-+++ b/xla/service/gpu/gpu_module_globals.cc	2026-09-27 19:42:34
+--- a/xla/service/gpu/gpu_module_globals.cc	2026-09-28 07:43:44
++++ b/xla/service/gpu/gpu_module_globals.cc	2026-09-28 07:43:44
 @@ -139,7 +139,7 @@
    // destructor will not race with any operations in flight (deallocate
    // xla::Literal owned by the HLO module).
@@ -206,8 +206,8 @@ diff -ruN a/xla/service/gpu/gpu_module_globals.cc b/xla/service/gpu/gpu_module_g
  
    module_handles_.emplace(executor,
 diff -ruN a/xla/service/platform_util.cc b/xla/service/platform_util.cc
---- a/xla/service/platform_util.cc	2026-09-16 12:39:05
-+++ b/xla/service/platform_util.cc	2026-09-27 19:42:34
+--- a/xla/service/platform_util.cc	2026-09-28 07:43:44
++++ b/xla/service/platform_util.cc	2026-09-28 07:43:44
 @@ -75,6 +75,8 @@
      return "rocm";
  #elif TENSORFLOW_USE_SYCL

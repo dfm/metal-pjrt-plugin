@@ -13,7 +13,7 @@ the lock also takes the old ~/.cache/jax_metal/device.lock first (creating
 it if needed, so an older checkout cannot take it unnoticed later), so this
 script and an older checkout's exclude each other.
 
-Re-entrant: the child's environment carries JAX_OPENMETAL_DEVICE_LOCK_HELD=
+Re-entrant: the child's environment carries JAX_MTL_DEVICE_LOCK_HELD=
 <holder pid>, and a nested device_lock.py (e.g. run_jax_tests.sh, which
 locks itself, run under device_lock.py) whose ancestor is that live holder
 runs the command without locking again. Any other value (stale, exported by
@@ -54,7 +54,7 @@ def acquire(path, argv):
 
 def held_by_ancestor():
     try:
-        holder = int(os.environ.get("JAX_OPENMETAL_DEVICE_LOCK_HELD", ""))
+        holder = int(os.environ.get("JAX_MTL_DEVICE_LOCK_HELD", ""))
     except ValueError:
         return False
     pid = os.getppid()
@@ -87,7 +87,7 @@ def main(argv):
     held.append(acquire(OLD_LOCK, argv))
     held.append(acquire(LOCK, argv))
     # Tells tests/conftest.py the lock is held.
-    env = dict(os.environ, JAX_OPENMETAL_DEVICE_LOCK_HELD=str(os.getpid()))
+    env = dict(os.environ, JAX_MTL_DEVICE_LOCK_HELD=str(os.getpid()))
     return run(argv, env, [f.fileno() for f in held])
 
 

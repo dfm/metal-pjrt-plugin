@@ -4,7 +4,7 @@ keeps working; memory goes back to the system after a computation; a
 memory-pressure warning drops the cache.
 
 Each test runs in a fresh process, so the budget can be made artificially
-small (JAX_OPENMETAL_MEMORY_FRACTION) and nothing here gets near physical
+small (JAX_MTL_MEMORY_FRACTION) and nothing here gets near physical
 memory. No timeouts: never kill a process with GPU work in flight.
 """
 import os
@@ -18,8 +18,8 @@ pytestmark = pytest.mark.metal
 PRELUDE = r"""
 import ctypes, gc, time
 import numpy as np, jax, jax.numpy as jnp
-import jax_plugins.openmetal as om
-lib = ctypes.CDLL(str(om._get_library_path()))
+import metal_pjrt_plugin
+lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
 def stats():
     out = (ctypes.c_uint64 * 6)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0
@@ -37,13 +37,13 @@ jnp.zeros(1).block_until_ready()
 
 def run_child(code, **env):
     out = run_python(PRELUDE + code,
-                     dict(os.environ, JAX_PLATFORMS="openmetal", **env))
+                     dict(os.environ, JAX_PLATFORMS="mtl", **env))
     assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-3000:])
     return out.stdout
 
 
 def small_budget_fraction(budget_mb=512):
-    """JAX_OPENMETAL_MEMORY_FRACTION giving a ~budget_mb budget (the default
+    """JAX_MTL_MEMORY_FRACTION giving a ~budget_mb budget (the default
     budget is half of RAM, capped by the GPU's recommended working set)."""
     ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     return str(budget_mb * 2**20 / (ram / 2))
@@ -75,7 +75,7 @@ gc.collect()
 x = make(3.0) * 2
 assert float(x[123]) == 6.0 and float(jnp.sum(x[:1000])) == 6000.0
 print("after: OK")
-""", JAX_OPENMETAL_MEMORY_FRACTION=small_budget_fraction())
+""", JAX_MTL_MEMORY_FRACTION=small_budget_fraction())
     assert "after: OK" in out, out
 
 

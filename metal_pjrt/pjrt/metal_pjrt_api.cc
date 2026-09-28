@@ -181,7 +181,7 @@ void ErrorMessage(PJRT_Error_Message_Args* args) {
   }
   std::lock_guard<std::mutex> lock(g_messages_mu);
   auto [it, inserted] = g_messages->try_emplace(args->error);
-  if (inserted) it->second = absl::StrCat(message, " openmetal: ", reason);
+  if (inserted) it->second = absl::StrCat(message, " metal-pjrt-plugin: ", reason);
   args->message = it->second.data();
   args->message_size = it->second.size();
 }

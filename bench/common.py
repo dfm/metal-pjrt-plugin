@@ -55,9 +55,9 @@ def run_info():
     if jax is not None:
         info["platform_version"] = jax.devices()[0].client.platform_version
     info["knobs"] = {k: v for k, v in sorted(os.environ.items())
-                     if (k.startswith(("METAL_PJRT_", "JAX_OPENMETAL_", "MLX_")) or
+                     if (k.startswith(("METAL_PJRT_", "JAX_MTL_", "MLX_")) or
                          k in ("XLA_FLAGS", "JAX_PLATFORMS")) and
-                     k != "JAX_OPENMETAL_DEVICE_LOCK_HELD"}
+                     k != "JAX_MTL_DEVICE_LOCK_HELD"}
     return info
 
 

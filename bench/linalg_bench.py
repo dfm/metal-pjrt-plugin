@@ -7,8 +7,8 @@ Sizes default to 256, 1000, 3000; eigh / svd are only timed for n <= 1000.
 import os
 import sys
 
-# openmetal is opt-in (not the default backend).
-os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
+# mtl is opt-in (not the default backend).
+os.environ.setdefault("JAX_PLATFORMS", "mtl,cpu")
 import numpy as np
 import jax
 import jax.numpy as jnp

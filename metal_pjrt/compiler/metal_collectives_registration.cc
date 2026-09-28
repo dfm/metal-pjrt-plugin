@@ -5,7 +5,7 @@
 #include "xla/core/collectives/collectives_registry.h"
 
 // Single-device backend: register the no-op collectives. The PJRT GPU client
-// resolves them by the PJRT platform name (MetalName(), "openmetal") when it
+// resolves them by the PJRT platform name (MetalName(), "mtl") when it
 // is created, collective thunks by the StreamExecutor platform name ("METAL",
 // canonical "metal"), so register under both.
 XLA_COLLECTIVES_REGISTER(xla::MetalName(), "stub", 1,

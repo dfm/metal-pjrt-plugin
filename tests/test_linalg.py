@@ -3,7 +3,7 @@
 
 Float32 cholesky / triangular_solve go through Accelerate LAPACK (HLO
 rewriter), lu / qr / eigh / svd through the LAPACK JAX lowerings
-(jax_plugins/openmetal/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
+(metal_pjrt_plugin/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
 XLA's expanders / the pure-JAX paths for A/B comparisons. Timings:
 bench/linalg_bench.py.
 
@@ -239,7 +239,7 @@ def test_disable_lapack(value):
          if k != "METAL_PJRT_DISABLE_LAPACK"}
   if value is not None:
     env["METAL_PJRT_DISABLE_LAPACK"] = value
-  out = run_python(DISABLE_LAPACK_CHILD, dict(env, JAX_PLATFORMS="openmetal"))
+  out = run_python(DISABLE_LAPACK_CHILD, dict(env, JAX_PLATFORMS="mtl"))
   assert out.returncode == 0, out.stderr[-3000:]
   want = [] if value == "1" else sorted(
       ["metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
@@ -321,7 +321,7 @@ run("bad call", lambda: jax.ffi.ffi_call(
 
 def test_lapack_failures_are_values():
   import os
-  env = dict(os.environ, JAX_PLATFORMS="openmetal")
+  env = dict(os.environ, JAX_PLATFORMS="mtl")
   # No timeout: never kill a process with GPU work in flight.
   out = run_python(FAILURE_CHILD, env)
   got = dict(l.split(": ", 1) for l in out.stdout.splitlines() if ": " in l)
@@ -345,7 +345,7 @@ n = 3000
 a = np.random.default_rng(0).standard_normal((n, n)).astype(np.float32)
 a = (a + a.T) / 2
 f = lambda a: jnp.linalg.eigh(a)[0]
-got = np.asarray(jax.jit(f)(jax.device_put(a, jax.devices("openmetal")[0])))
+got = np.asarray(jax.jit(f)(jax.device_put(a, jax.devices("mtl")[0])))
 want = np.asarray(jax.jit(f)(jax.device_put(a, jax.devices("cpu")[0])))
 print("err:", np.abs(got - want).max() / np.abs(want).max())
 """
@@ -353,7 +353,7 @@ print("err:", np.abs(got - want).max() / np.abs(want).max())
 
 def test_eigh_workspace_above_2_24():
   import os
-  env = dict(os.environ, JAX_PLATFORMS="openmetal,cpu")
+  env = dict(os.environ, JAX_PLATFORMS="mtl,cpu")
   out = run_python(BIG_EIGH_CHILD, env)
   assert out.returncode == 0 and "err:" in out.stdout, (out.returncode, out.stdout, out.stderr[-2000:])
   assert float(out.stdout.split("err:")[1]) < 1e-5, out.stdout
