@@ -1,7 +1,10 @@
 #include "metal_pjrt_plugin/compiler/passes/hlo_checks.h"
 
+#include <cstdint>
+#include <limits>
 #include <string>
 
+#include "absl/algorithm/container.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
@@ -49,6 +52,43 @@ std::string DescribeOp(const HloInstruction& instr) {
 
 namespace {
 
+// XLA's GetBatchRowColumnShape (matmul_utils.cc, under GemmConfig::For)
+// multiplies each group of dimensions (batch, rows, columns) with an int
+// accumulator (absl::c_accumulate(dims, 1, ...)), so a group of 2^31 or more
+// elements wraps and the thunk would run the GEMM on the wrapped size. Checks
+// the HLO's int64 dimensions before that.
+absl::Status CheckGemmGroupsFitInt32(const HloInstruction& instr,
+                                     const DotDimensionNumbers& dnums) {
+  auto check = [](const Shape& shape, absl::Span<const int64_t> batch,
+                  absl::Span<const int64_t> contracting) -> absl::Status {
+    int64_t b = 1, c = 1, rest = 1;
+    for (int64_t d = 0; d < shape.dimensions().size(); ++d) {
+      const int64_t size = shape.dimensions(d);
+      if (absl::c_linear_search(batch, d)) {
+        b *= size;
+      } else if (absl::c_linear_search(contracting, d)) {
+        c *= size;
+      } else {
+        rest *= size;
+      }
+    }
+    for (int64_t group : {b, c, rest}) {
+      if (group > std::numeric_limits<int32_t>::max()) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: GEMM ", ShapeUtil::HumanString(shape),
+            " has a batch, row or column group of ", group,
+            " elements; XLA's GEMM config counts them in 32 bits"));
+      }
+    }
+    return absl::OkStatus();
+  };
+  TF_RETURN_IF_ERROR(check(instr.operand(0)->shape(),
+                           dnums.lhs_batch_dimensions(),
+                           dnums.lhs_contracting_dimensions()));
+  return check(instr.operand(1)->shape(), dnums.rhs_batch_dimensions(),
+               dnums.rhs_contracting_dimensions());
+}
+
 absl::Status CheckGemm(const HloInstruction& instr) {
   if (!IsCublasLtMatmul(instr)) {
     return absl::UnimplementedError(
@@ -59,6 +99,8 @@ absl::Status CheckGemm(const HloInstruction& instr) {
   // What GetMatmulPlan checks again at run time, on the config the thunk
   // builds.
   absl::Status s = [&]() -> absl::Status {
+    TF_RETURN_IF_ERROR(CheckGemmGroupsFitInt32(
+        instr, config.gemm_backend_config().dot_dimension_numbers()));
     TF_ASSIGN_OR_RETURN(
         stream_executor::gpu::BlasLt::Epilogue e,
         gpublas_lt::AsBlasLtEpilogue(config.gemm_backend_config().epilogue()));

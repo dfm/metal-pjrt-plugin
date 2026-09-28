@@ -77,9 +77,32 @@ TEST_F(MetalHloChecksTest, GemmIndexLimits) {
   EXPECT_TRUE(Check(big_k(Gemm("f32", "f32", "f32", "DEFAULT"))).ok());
 }
 
+// XLA's GemmConfig::For multiplies each dimension group in an int
+// (GetBatchRowColumnShape), so 2^32 rows would become a 0-row GEMM and
+// 2^31 a negative one: refused on the HLO's own dimensions.
+TEST_F(MetalHloChecksTest, GemmGroupsPast32BitsAreRefused) {
+  for (const char* rows : {"2147483648", "4294967296"}) {
+    std::string hlo = absl::StrReplaceAll(
+        Gemm("f32", "f32", "f32", "DEFAULT"),
+        {{"[64,32]", absl::StrCat("[", rows, ",32]")},
+         {"[64,16]", absl::StrCat("[", rows, ",16]")}});
+    absl::Status s = Check(hlo);
+    EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented) << rows;
+    EXPECT_NE(s.message().find(absl::StrCat("group of ", rows)),
+              std::string::npos)
+        << s;
+    EXPECT_NE(s.message().find("jit(f)/dot_general"), std::string::npos) << s;
+  }
+  EXPECT_TRUE(Check(absl::StrReplaceAll(Gemm("f32", "f32", "f32", "DEFAULT"),
+                                        {{"[64,32]", "[2147483647,32]"},
+                                         {"[64,16]", "[2147483647,16]"}}))
+                  .ok());
+}
+
 // f32 with an epilogue: the epilogue kernel's grid is (n, m, batch), each
-// bounded by uint32; without an epilogue MPS alone runs it. (Called
-// directly: such rows do not survive the trip through HLO shapes.)
+// bounded by uint32. Not reachable from HLO (the check above refuses rows
+// past int32 first), so ValidateMatmul is called directly: a backstop for
+// the kernel's uint32 casts.
 TEST(ValidateMatmulTest, F32EpilogueGridLimit) {
   namespace se_gpu = stream_executor::gpu;
   using Order = se_gpu::MatrixLayout::Order;
