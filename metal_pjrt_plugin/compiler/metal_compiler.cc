@@ -39,7 +39,10 @@
 #include "xla/service/dump.h"
 #include "xla/service/triangular_solve_expander.h"
 #include "xla/service/topk_rewriter.h"
+#include "xla/hlo/ir/hlo_casting_utils.h"
+#include "xla/hlo/ir/hlo_computation.h"
 #include "xla/hlo/ir/hlo_instruction.h"
+#include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
@@ -161,6 +164,18 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     HloPassPipeline pipeline("metal-pre-optimization");
     pipeline.AddPass<MetalScanRewriter>();
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
+  }
+  // Every sort ends up stable whatever its is_stable flag: SortRewriter's
+  // radix sort is stable, and MetalSortExpander breaks ties on the original
+  // index. On a key-only sort the flag only makes StableSortExpander add an
+  // iota operand (and tie-break) that the bitonic network then carries next
+  // to its own index.
+  for (HloComputation* computation : module->computations()) {
+    for (HloInstruction* instr : computation->instructions()) {
+      if (instr->opcode() == HloOpcode::kSort && instr->operand_count() == 1) {
+        Cast<HloSortInstruction>(instr)->set_is_stable(false);
+      }
+    }
   }
   if (Settings().cub_sort) {
     // SortRewriter (enabled in ApplyMetalDefaults) takes every simple sort of
