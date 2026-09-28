@@ -33,12 +33,13 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "absl/strings/str_replace.h"
+#include "absl/types/span.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
 #include "metal_pjrt/kernels/cub_sort.metal.h"
 #include "xla/backends/gpu/ffi.h"
@@ -63,26 +64,28 @@ struct Params {
   uint32_t descending;
 };
 
+// Key bits' storage type as named in the kernels' instantiations
+// (kernels/cub_sort.metal): u8, u16, u32 or u64; values likewise.
 struct KeyTraits {
-  const char* msl_type;
+  const char* bits_type;
   int bits;
-  int kind;  // 0 unsigned, 1 signed, 2 float
+  int kind;  // 0 unsigned, 1 signed, 2 float (the KIND function constant)
 };
 
 absl::StatusOr<KeyTraits> GetKeyTraits(xla::PrimitiveType t) {
   switch (t) {
-    case xla::U8: return KeyTraits{"uchar", 8, 0};
-    case xla::S8: return KeyTraits{"uchar", 8, 1};
-    case xla::U16: return KeyTraits{"ushort", 16, 0};
-    case xla::S16: return KeyTraits{"ushort", 16, 1};
+    case xla::U8: return KeyTraits{"u8", 8, 0};
+    case xla::S8: return KeyTraits{"u8", 8, 1};
+    case xla::U16: return KeyTraits{"u16", 16, 0};
+    case xla::S16: return KeyTraits{"u16", 16, 1};
     case xla::F16:
-    case xla::BF16: return KeyTraits{"ushort", 16, 2};
-    case xla::U32: return KeyTraits{"uint", 32, 0};
-    case xla::S32: return KeyTraits{"uint", 32, 1};
-    case xla::F32: return KeyTraits{"uint", 32, 2};
-    case xla::U64: return KeyTraits{"ulong", 64, 0};
-    case xla::S64: return KeyTraits{"ulong", 64, 1};
-    case xla::F64: return KeyTraits{"ulong", 64, 2};
+    case xla::BF16: return KeyTraits{"u16", 16, 2};
+    case xla::U32: return KeyTraits{"u32", 32, 0};
+    case xla::S32: return KeyTraits{"u32", 32, 1};
+    case xla::F32: return KeyTraits{"u32", 32, 2};
+    case xla::U64: return KeyTraits{"u64", 64, 0};
+    case xla::S64: return KeyTraits{"u64", 64, 1};
+    case xla::F64: return KeyTraits{"u64", 64, 2};
     default:
       return absl::UnimplementedError(absl::StrCat(
           "Metal radix sort: unsupported key type ",
@@ -90,13 +93,13 @@ absl::StatusOr<KeyTraits> GetKeyTraits(xla::PrimitiveType t) {
   }
 }
 
-absl::StatusOr<const char*> ValueMslType(xla::PrimitiveType t) {
+absl::StatusOr<const char*> ValueBitsType(xla::PrimitiveType t) {
   if (xla::primitive_util::IsArrayType(t) && t != xla::PRED) {
     switch (xla::primitive_util::BitWidth(t)) {
-      case 8: return "uchar";
-      case 16: return "ushort";
-      case 32: return "uint";
-      case 64: return "ulong";
+      case 8: return "u8";
+      case 16: return "u16";
+      case 32: return "u32";
+      case 64: return "u64";
       default: break;
     }
   }
@@ -112,7 +115,7 @@ uint64_t Align256(uint64_t x) { return (x + 255) / 256 * 256; }
 // check the scratch buffer before encoding).
 struct Plan {
   KeyTraits key;
-  const char* value_type = "uint";
+  const char* value_type = "u32";  // any instantiation, when keys only
   bool has_values = false;
   uint64_t key_bytes = 0, value_bytes = 0;
   uint64_t total = 0, batch = 0, n = 0, tiles = 0;
@@ -138,7 +141,7 @@ absl::StatusOr<Plan> MakePlan(const xffi::AnyBuffer& keys_in,
   plan.total = keys_in.element_count();
   plan.key_bytes = plan.key.bits / 8;
   if (values_in != nullptr) {
-    absl::StatusOr<const char*> vt = ValueMslType(values_in->element_type());
+    absl::StatusOr<const char*> vt = ValueBitsType(values_in->element_type());
     if (!vt.ok()) return vt.status();
     if (values_out->element_type() != values_in->element_type() ||
         values_in->element_count() != plan.total ||
@@ -186,19 +189,24 @@ struct SortKernels {
 
 // From the device's kernel cache (compiled on first use).
 absl::StatusOr<SortKernels> GetKernels(rt::Device* device, const Plan& plan) {
-  std::string msl = absl::StrReplaceAll(
-      kernels::kCubSortMsl, {{"@KBITS@", absl::StrCat(plan.key.bits)},
-                             {"@KIND@", absl::StrCat(plan.key.kind)},
-                             {"@HASV@", plan.has_values ? "1" : "0"},
-                             {"@KEYT@", plan.key.msl_type},
-                             {"@VALT@", plan.value_type}});
+  // The function_constant indices of kernels/cub_sort.metal.
+  const rt::FunctionConstant constants[] = {
+      rt::FunctionConstant::Int(0, plan.key.kind),
+      rt::FunctionConstant::Bool(1, plan.has_values)};
+  const std::string kv =
+      absl::StrCat(plan.key.bits_type, "_", plan.value_type);
   SortKernels k;
-  for (auto [out, name] :
-       {std::make_pair(&k.small, "sort_small"),
-        std::make_pair(&k.hist, "sort_hist"),
-        std::make_pair(&k.scan, "sort_scan"),
-        std::make_pair(&k.scatter, "sort_scatter")}) {
-    absl::StatusOr<const rt::Kernel*> kernel = device->GetKernel(msl, name);
+  for (auto [out, name, with_constants] :
+       {std::make_tuple(&k.small, absl::StrCat("sort_small_", kv), true),
+        std::make_tuple(&k.hist,
+                        absl::StrCat("sort_hist_", plan.key.bits_type), true),
+        std::make_tuple(&k.scan, std::string("sort_scan"), false),
+        std::make_tuple(&k.scatter, absl::StrCat("sort_scatter_", kv),
+                        true)}) {
+    absl::StatusOr<const rt::Kernel*> kernel = device->GetKernel(
+        kernels::kCubSortMsl, name,
+        with_constants ? absl::Span<const rt::FunctionConstant>(constants)
+                       : absl::Span<const rt::FunctionConstant>());
     if (!kernel.ok()) return kernel.status();
     // The kernels assume exactly kThreads threads in 32-wide SIMD groups.
     if ((*kernel)->max_total_threads_per_threadgroup() < kThreads ||
