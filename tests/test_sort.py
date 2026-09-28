@@ -103,3 +103,34 @@ def test_disable_cubsort(monkeypatch):
     same_bits(run_on(metal(), jnp.argsort, x), run_on(cpu(), jnp.argsort, x))
     monkeypatch.delenv("METAL_PJRT_DISABLE_REWRITES")
     assert called() == {"xla.gpu.ext.cub_sort_pairs"}
+
+
+def _run_hlo_text(text, backend_name, *args):
+    # JAX's public API only builds strict (LT/GT) comparators; compile the
+    # edited StableHLO directly (private API, as jax.jit does underneath).
+    from jax._src import compiler, xla_bridge
+    from jax._src.lib import xla_client as xc
+    backend = xla_bridge.get_backend(backend_name)
+    dev = backend.devices()[0]
+    exe = backend.compile_and_load(
+        text, xc.DeviceList((dev,)),
+        compiler.get_compile_options(num_replicas=1, num_partitions=1))
+    out = exe.execute_sharded([jax.device_put(a, dev) for a in args])
+    return [np.asarray(o[0]) for o in out.disassemble_into_single_device_arrays()]
+
+
+def test_non_strict_comparator_keeps_a_permutation():
+    # A LE comparator says a <= b and b <= a for equal keys; the bitonic
+    # network used to duplicate and drop elements then. Keys match CPU; the
+    # values' order among equal keys is unspecified, but they must be the
+    # same multiset per row.
+    k = np.random.default_rng(0).integers(0, 4, (5, 19)).astype(np.int32)
+    v = np.arange(95, dtype=np.int32).reshape(5, 19)
+    sort = lambda k, v: lax.sort((k, v), dimension=1, num_keys=1, is_stable=False)
+    text = jax.jit(sort).lower(k, v).as_text()
+    le = re.sub(r"stablehlo\.compare\s+LT,", "stablehlo.compare LE,", text)
+    assert le != text
+    got_k, got_v = _run_hlo_text(le, "openmetal", k, v)
+    want_k, want_v = _run_hlo_text(le, "cpu", k, v)
+    np.testing.assert_array_equal(got_k, want_k)
+    np.testing.assert_array_equal(np.sort(got_v, axis=1), np.sort(want_v, axis=1))

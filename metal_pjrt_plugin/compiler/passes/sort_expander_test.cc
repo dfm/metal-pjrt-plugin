@@ -164,6 +164,56 @@ ENTRY e {
   RunAndCompare(hlo, args);
 }
 
+// A non-strict comparator (LE) says both a <= b and b <= a for equal keys.
+// The network must still move a permutation of the input: keys sorted as
+// the evaluator's, values the same multiset per row (their order among
+// equal keys is unspecified for such a comparator).
+TEST_F(MetalSortExpanderTest, NonStrictComparatorKeepsAPermutation) {
+  const char* hlo = R"(
+HloModule m
+le {
+  a = s32[] parameter(0)
+  b = s32[] parameter(1)
+  c = s32[] parameter(2)
+  d = s32[] parameter(3)
+  ROOT r = pred[] compare(a, b), direction=LE
+}
+ENTRY e {
+  k = s32[5,19] parameter(0)
+  v = s32[5,19] parameter(1)
+  ROOT s = (s32[5,19], s32[5,19]) sort(k, v), dimensions={1}, to_apply=le
+})";
+  std::mt19937 rng(5);
+  std::vector<Literal> args;
+  args.push_back(MakeLiteral<int32_t>(ShapeUtil::MakeShape(S32, {5, 19}),
+                                      [&](int64_t) { return rng() % 4; }));
+  args.push_back(MakeLiteral<int32_t>(ShapeUtil::MakeShape(S32, {5, 19}),
+                                      [&](int64_t i) { return i; }));
+  auto module_or = ParseAndReturnVerifiedModule(hlo);
+  ASSERT_TRUE(module_or.ok()) << module_or.status();
+  std::unique_ptr<HloModule> module = std::move(module_or).value();
+  std::vector<const Literal*> arg_ptrs = {&args[0], &args[1]};
+  HloEvaluator before;
+  auto expected = before.Evaluate(*module, arg_ptrs);
+  ASSERT_TRUE(expected.ok()) << expected.status();
+  MetalSortExpander pass;
+  ASSERT_TRUE(RunHloPass(&pass, module.get()).ok());
+  HloEvaluator after;
+  auto actual = after.Evaluate(*module, arg_ptrs);
+  ASSERT_TRUE(actual.ok()) << actual.status();
+  std::vector<Literal> want = expected->DecomposeTuple();
+  std::vector<Literal> got = actual->DecomposeTuple();
+  EXPECT_EQ(want[0], got[0]) << "expected " << want[0].ToString()
+                             << "\nactual " << got[0].ToString();
+  const Literal& values = got[1];
+  for (int64_t r = 0; r < 5; ++r) {
+    std::vector<int32_t> row;
+    for (int64_t c = 0; c < 19; ++c) row.push_back(values.Get<int32_t>({r, c}));
+    std::sort(row.begin(), row.end());
+    for (int64_t c = 0; c < 19; ++c) EXPECT_EQ(row[c], r * 19 + c) << "row " << r;
+  }
+}
+
 TEST_F(MetalSortExpanderTest, MajorSortDimDescending) {
   const char* hlo = R"(
 HloModule m

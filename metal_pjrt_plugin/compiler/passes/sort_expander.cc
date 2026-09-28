@@ -167,9 +167,10 @@ absl::StatusOr<HloInstruction*> ApplyComparator(
   return root;
 }
 
-// Strict total order "a < b" built from the user comparator: ties (neither
-// compares less) are broken by the original flat index, and padded elements
-// (original row position >= n) sort after all real elements.
+// Strict total order "a < b" built from the user comparator: ties (both or
+// neither compare less, so a non-strict comparator such as LE works too) are
+// broken by the original flat index, and padded elements (original row
+// position >= n) sort after all real elements.
 absl::StatusOr<HloInstruction*> TotalLess(
     FlatBuilder& b, HloComputation* comparator, int64_t n, int64_t pow2,
     absl::Span<HloInstruction* const> a_vals, HloInstruction* a_idx,
@@ -180,8 +181,10 @@ absl::StatusOr<HloInstruction*> TotalLess(
                       ApplyComparator(b, comparator, b_vals, a_vals));
   HloInstruction* idx_lt =
       b.Compare(Comparison::Direction::kLt, a_idx, b_idx);
-  HloInstruction* tie = b.Binary(HloOpcode::kAnd, b.Not(c_ba), idx_lt);
-  HloInstruction* valid_less = b.Binary(HloOpcode::kOr, c_ab, tie);
+  HloInstruction* same = b.Compare(Comparison::Direction::kEq, c_ab, c_ba);
+  HloInstruction* tie = b.Binary(HloOpcode::kAnd, same, idx_lt);
+  HloInstruction* valid_less = b.Binary(
+      HloOpcode::kOr, b.Binary(HloOpcode::kAnd, c_ab, b.Not(c_ba)), tie);
   if (n == pow2) return valid_less;
 
   HloInstruction* row_mask = b.Broadcast(b.ScalarIndex(pow2 - 1));
