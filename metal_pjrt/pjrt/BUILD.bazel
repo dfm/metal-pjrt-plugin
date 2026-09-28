@@ -34,6 +34,7 @@ cc_library(
     name = "metal_pjrt_api",
     srcs = ["metal_pjrt_api.cc"],
     deps = [
+        "//metal_pjrt/runtime:env",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/log:initialize",
         "@com_google_absl//absl/strings",

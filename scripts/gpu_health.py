@@ -21,7 +21,20 @@ import collections, json, os, pathlib, subprocess, sys, time
 STATE_DIR = pathlib.Path(os.environ.get("METAL_PJRT_STATE_DIR") or
                          pathlib.Path.home() / ".cache" / "metal-pjrt")
 LOG = STATE_DIR / "gpu_resets.jsonl"
-STRIKES = int(os.environ.get("METAL_PJRT_QUARANTINE_STRIKES", "2"))
+
+
+def strikes_setting():
+    # Parsed like the runtime (EnvUint): a bad value keeps the default 2.
+    v = os.environ.get("METAL_PJRT_QUARANTINE_STRIKES", "").strip()
+    if v.isascii() and v.isdigit():
+        return int(v)
+    if v:
+        print(f"ignoring METAL_PJRT_QUARANTINE_STRIKES={v!r} (not a non-negative integer); "
+              "using 2", file=sys.stderr)
+    return 2
+
+
+STRIKES = strikes_setting()
 
 
 def boot_time():

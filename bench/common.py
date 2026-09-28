@@ -18,7 +18,8 @@ def gpu_ms(fn, *, iters=5, sync=lambda r: None):
     """Mean GPU time in ms of fn() on the Metal plugin: the sum of its command
     buffers' GPUEndTime - GPUStartTime, read from the METAL_PJRT_TRACE=1 log
     lines (fd 2 is captured while it runs). None without the trace."""
-    if os.environ.get("METAL_PJRT_TRACE", "0") in ("", "0"):
+    from metal_pjrt_plugin import _env_flag
+    if not _env_flag("METAL_PJRT_TRACE"):
         return None
     time.sleep(0.05)  # completion handlers of earlier calls log late
     sys.stderr.flush()

@@ -135,3 +135,34 @@ assert stats()["cached"] >= 64 * MB, stats()
 print("OK")
 """)
     assert "OK" in out
+
+
+@pytest.mark.parametrize("fraction", ["abc", "0", "1.5"])
+def test_bad_settings_warn_and_keep_defaults(fraction):
+    # A value that does not parse is ignored with a warning (strtoull/atof
+    # read a typo as 0, which silently turned the swap guard off); a
+    # fraction above 1 is allowed, with a warning.
+    out = run_python(PRELUDE + r"""
+print("budget", stats()["budget"])
+print(jax.jit(lambda x: x + 1)(1.0))
+jnp.zeros(MB).block_until_ready()  # 4 MB: consults the system guard
+""", dict(os.environ, JAX_PLATFORMS="mtl", JAX_MTL_MEMORY_FRACTION=fraction,
+          METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB="512MB",
+          METAL_PJRT_QUARANTINE_STRIKES="two",
+          METAL_PJRT_DISABLE_REWRITES="scan,bogus"))
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert "2.0" in out.stdout, out.stdout
+    for want in ("Ignoring METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB=512MB",
+                 "Ignoring METAL_PJRT_QUARANTINE_STRIKES=two",
+                 'Ignoring "bogus" in METAL_PJRT_DISABLE_REWRITES'):
+        assert want in out.stderr, (want, out.stderr[-3000:])
+    budget = int(out.stdout.split("budget ")[1].split()[0])
+    half_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 2
+    if fraction == "1.5":
+        assert "JAX_MTL_MEMORY_FRACTION=1.5 is above 1" in out.stderr
+        # Past half of RAM, capped at the working set (~2/3 of RAM or more
+        # on Apple GPUs).
+        assert budget > half_ram, budget
+    else:
+        assert f"Ignoring JAX_MTL_MEMORY_FRACTION={fraction}" in out.stderr
+        assert 0 < budget <= half_ram, budget

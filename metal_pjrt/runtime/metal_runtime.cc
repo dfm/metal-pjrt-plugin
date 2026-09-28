@@ -1,4 +1,5 @@
 #include "metal_pjrt/runtime/metal_runtime.h"
+#include "metal_pjrt/runtime/env.h"
 #include "metal_pjrt/runtime/system_memory.h"
 
 #include <Foundation/Foundation.hpp>
@@ -6,6 +7,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <dispatch/dispatch.h>
 #include <dlfcn.h>
 #include <mach/mach.h>
@@ -44,10 +46,7 @@ namespace {
 // METAL_PJRT_TRACE=1 logs one line per committed command buffer with its op
 // count and GPU execution time. Diagnostic only.
 bool TraceEnabled() {
-  static const bool enabled = [] {
-    const char* v = std::getenv("METAL_PJRT_TRACE");
-    return v != nullptr && v[0] != '\0' && v[0] != '0';
-  }();
+  static const bool enabled = EnvFlag("METAL_PJRT_TRACE");
   return enabled;
 }
 
@@ -252,11 +251,23 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     // swapped-out pages is what trips the watchdog).
     uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
-    if (const char* v = std::getenv("JAX_MTL_MEMORY_FRACTION")) {
-      const double f = std::atof(v);
-      if (f > 0) {
+    // JAX_MTL_MEMORY_FRACTION scales it; above 1 it can grow up to the
+    // working set.
+    const char* v = std::getenv("JAX_MTL_MEMORY_FRACTION");
+    if (v != nullptr && v[0] != '\0') {
+      double f = 0;
+      if (!absl::SimpleAtod(v, &f) || !(f > 0) || !std::isfinite(f)) {
+        LOG(WARNING) << "Ignoring JAX_MTL_MEMORY_FRACTION=" << v
+                     << " (not a number > 0)";
+      } else {
         budget = std::min(static_cast<uint64_t>(budget * f),
                           static_cast<uint64_t>(info.recommended_working_set));
+        if (f > 1) {
+          LOG(WARNING) << "JAX_MTL_MEMORY_FRACTION=" << v
+                       << " is above 1: the memory budget grows past half "
+                          "of RAM (capped at the GPU's recommended working "
+                          "set), leaving less for the rest of the system";
+        }
       }
     }
     dev->memory_budget_ = budget;
@@ -388,14 +399,9 @@ void Device::LoadResetLog() {
     std::string base = absl::StrCat(home != nullptr ? home : ".", "/.cache");
     state_dir_ = absl::StrCat(base, "/metal-pjrt");
   }
-  if (const char* v = std::getenv("METAL_PJRT_QUARANTINE_STRIKES")) {
-    int n = 0;
-    if (absl::SimpleAtoi(v, &n) && n >= 0) {
-      quarantine_strikes_ = n;
-    } else {
-      LOG(WARNING) << "Ignoring METAL_PJRT_QUARANTINE_STRIKES=" << v;
-    }
-  }
+  quarantine_strikes_ = static_cast<int>(std::min<uint64_t>(
+      EnvUint("METAL_PJRT_QUARANTINE_STRIKES", quarantine_strikes_),
+      std::numeric_limits<int>::max()));
   std::ifstream in(ResetLogPath(state_dir_));
   if (!in) return;
   const int64_t boot = BootTimeSeconds();
@@ -1285,11 +1291,7 @@ absl::Status Stream::Commit() {
   inject_error_ = absl::OkStatus();
   // METAL_PJRT_FAIL_COMMAND_BUFFER=n fails the n-th command buffer this
   // process commits (testing error handling end to end).
-  static const uint64_t fail_at = [] {
-    const char* e = std::getenv("METAL_PJRT_FAIL_COMMAND_BUFFER");
-    uint64_t n = 0;
-    return e != nullptr && absl::SimpleAtoi(e, &n) ? n : 0;
-  }();
+  static const uint64_t fail_at = EnvUint("METAL_PJRT_FAIL_COMMAND_BUFFER", 0);
   static std::atomic<uint64_t> commits{0};
   if (fail_at != 0 && commits.fetch_add(1) + 1 == fail_at) {
     injected_error = absl::InternalError(absl::StrFormat(

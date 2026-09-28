@@ -23,6 +23,7 @@
 #include "absl/log/initialize.h"
 #include "absl/strings/match.h"
 #include "absl/strings/str_cat.h"
+#include "metal_pjrt/runtime/env.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/runtime/system_memory.h"
 #include "xla/pjrt/c/pjrt_c_api.h"
@@ -62,11 +63,9 @@ constexpr uint64_t kSnapshotAlwaysBytes = uint64_t{16} << 20;
 
 bool Snapshot(uint64_t size) {
   // METAL_PJRT_SNAPSHOT_MAX_MB replaces the 256 MB cap (for tests).
-  static const uint64_t max_bytes = [] {
-    const char* v = std::getenv("METAL_PJRT_SNAPSHOT_MAX_MB");
-    return v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 10) << 20
-                                        : kSnapshotMaxBytes;
-  }();
+  static const uint64_t max_bytes =
+      metal_pjrt::EnvUint("METAL_PJRT_SNAPSHOT_MAX_MB", kSnapshotMaxBytes >> 20)
+      << 20;
   if (size >= max_bytes) return false;
   return size < kSnapshotAlwaysBytes ||
          size < metal_pjrt::rt::ReclaimableMemoryBytes() /

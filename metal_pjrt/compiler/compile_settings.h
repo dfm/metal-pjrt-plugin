@@ -2,7 +2,7 @@
 // passes and the persistent-cache key (MetalExecutor's PluginVersion) use
 // the same parsed values, so an executable is always cached under the
 // settings it was compiled with, and spellings that mean the same (unset,
-// empty, "0") give the same key.
+// empty, "0", "false") give the same key.
 #ifndef METAL_PJRT_COMPILER_COMPILE_SETTINGS_H_
 #define METAL_PJRT_COMPILER_COMPILE_SETTINGS_H_
 
@@ -11,14 +11,15 @@
 namespace metal_pjrt {
 
 struct CompileSettings {
-  // METAL_PJRT_DISABLE_LAPACK set to anything but "" or "0" turns off the
+  // METAL_PJRT_DISABLE_LAPACK, a boolean (runtime/env.h), turns off the
   // Accelerate LAPACK rewriter (linalg/linalg_rewriter.cc); XLA's expanders
   // take linear algebra instead. metal_pjrt_plugin/linalg_lowerings.py
-  // reads it the same way.
+  // reads it the same way (_env_flag).
   bool lapack = true;
   // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off
   // the metal$scan rewriter, "cubsort" XLA's SortRewriter (radix sort), and
-  // "all" both (compiler/metal_compiler.cc).
+  // "all" both (compiler/metal_compiler.cc). Other names are ignored with a
+  // warning.
   bool scan_rewrite = true;
   bool cub_sort = true;
 

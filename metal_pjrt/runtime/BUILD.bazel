@@ -9,6 +9,25 @@ METAL_LINKOPTS = [
 ]
 
 cc_library(
+    name = "env",
+    srcs = ["env.cc"],
+    hdrs = ["env.h"],
+    deps = [
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "env_test",
+    srcs = ["env_test.cc"],
+    deps = [
+        ":env",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
     name = "metal_runtime",
     srcs = [
         "metal_cpp_impl.cc",
@@ -21,6 +40,7 @@ cc_library(
     ],
     linkopts = METAL_LINKOPTS,
     deps = [
+        ":env",
         "//metal_pjrt/kernels:runtime_builtins",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:flat_hash_map",

@@ -6,7 +6,11 @@ cc_library(
     name = "compile_settings",
     srcs = ["compile_settings.cc"],
     hdrs = ["compile_settings.h"],
-    deps = ["@com_google_absl//absl/strings"],
+    deps = [
+        "//metal_pjrt/runtime:env",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/strings",
+    ],
 )
 
 cc_library(

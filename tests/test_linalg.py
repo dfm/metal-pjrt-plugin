@@ -230,18 +230,19 @@ print(sorted(set(re.findall(r'custom_call_target="(metal\$[a-z_]+)"', text))))
 """
 
 
-@pytest.mark.parametrize("value", [None, "0", "1"])
+@pytest.mark.parametrize("value", [None, "0", "false", "1", "yes"])
 def test_disable_lapack(value):
   # METAL_PJRT_DISABLE_LAPACK is the one switch for both owners (the C++
-  # rewriter and linalg_lowerings.py), read once per process: "1" leaves
-  # no metal$* LAPACK custom call; unset or "0" keep every one.
+  # rewriter and linalg_lowerings.py), read once per process as a boolean
+  # (runtime/env.h): "1"/"yes" leave no metal$* LAPACK custom call; unset,
+  # "0" or "false" keep every one.
   env = {k: v for k, v in os.environ.items()
          if k != "METAL_PJRT_DISABLE_LAPACK"}
   if value is not None:
     env["METAL_PJRT_DISABLE_LAPACK"] = value
   out = run_python(DISABLE_LAPACK_CHILD, dict(env, JAX_PLATFORMS="mtl"))
   assert out.returncode == 0, out.stderr[-3000:]
-  want = [] if value == "1" else sorted(
+  want = [] if value in ("1", "yes") else sorted(
       ["metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
        "metal$lapack_geqrf", "metal$lapack_orgqr", "metal$lapack_syevd",
        "metal$lapack_gesdd", "metal$lapack_gesdd_novec"])

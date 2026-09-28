@@ -37,17 +37,15 @@ read it once per process, as the persistent compilation cache key does
 from __future__ import annotations
 
 import functools
-import os
 
 import numpy as np
 
-from metal_pjrt_plugin import PLATFORM  # "mtl"
+from metal_pjrt_plugin import PLATFORM, _env_flag  # "mtl"
 
 
 @functools.cache
 def lapack_disabled() -> bool:
-  v = os.environ.get("METAL_PJRT_DISABLE_LAPACK", "")
-  return v not in ("", "0")
+  return _env_flag("METAL_PJRT_DISABLE_LAPACK")
 
 
 def _is_f32(aval) -> bool:

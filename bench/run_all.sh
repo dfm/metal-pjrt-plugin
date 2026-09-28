@@ -16,13 +16,16 @@ cd "$(dirname "$0")/.."
 if ! .venv/bin/python -c 'import sys; sys.path.insert(0, "scripts"); import device_lock; sys.exit(not device_lock.held_by_ancestor())'; then
   exec scripts/device_lock.py -- "$0" "$@"
 fi
+# Booleans as everywhere (docs/development.md): unset, "", 0, false, no,
+# off (any case) are off.
+flag() { case "$(printf %s "${1:-}" | tr '[:upper:]' '[:lower:]')" in ""|0|false|no|off) return 1 ;; esac; }
 # Refuse to time a GPU that was reset since boot (it runs slow until reboot).
-if [[ -z "${BENCH_ALLOW_DEGRADED:-}" ]]; then
+if ! flag "${BENCH_ALLOW_DEGRADED:-}"; then
   scripts/gpu_health.py --strict || { echo "set BENCH_ALLOW_DEGRADED=1 to run anyway" >&2; exit 1; }
 fi
 # The Bazel server JVM holds a lot of memory after a build; the allocation
 # guard then refuses large pools (nanoGPT train step needs a 1.2 GB chunk).
-if [[ -n "${BENCH_BAZEL_SHUTDOWN:-}" ]] && command -v bazel >/dev/null; then
+if flag "${BENCH_BAZEL_SHUTDOWN:-}" && command -v bazel >/dev/null; then
   bazel shutdown >/dev/null 2>&1
 fi
 mkdir -p bench/results

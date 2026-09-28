@@ -10,6 +10,7 @@ lowerings and host callbacks the plugin needs.
 """
 
 import logging
+import os
 import pathlib
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,15 @@ _PLUGIN_BASENAME = "pjrt_c_api_mtl_plugin.dylib"
 # commit, and this package imports private jax._src modules, so the pin is
 # real even where pip lets another version in.
 JAX_VERSION = "0.11.2"
+
+
+def _env_flag(name: str) -> bool:
+    """A boolean environment variable: unset, "", "0", "false", "no" and
+    "off" (any case) are off, anything else on. The C++ twin is EnvFlag in
+    metal_pjrt/runtime/env.h; both must agree (METAL_PJRT_DISABLE_LAPACK is
+    read on both sides)."""
+    v = os.environ.get(name, "").strip().lower()
+    return v not in ("", "0", "false", "no", "off")
 
 
 def _get_library_path() -> pathlib.Path | None:

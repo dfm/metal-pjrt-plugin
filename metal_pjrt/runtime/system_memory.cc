@@ -5,7 +5,8 @@
 #include <sys/sysctl.h>
 
 #include <cstdint>
-#include <cstdlib>
+
+#include "metal_pjrt/runtime/env.h"
 
 namespace metal_pjrt {
 namespace rt {
@@ -39,9 +40,7 @@ uint64_t ReclaimableMemoryBytes() {
 
 uint64_t SystemMemoryReserve() {
   static const uint64_t reserve = [] {
-    const char* v = std::getenv("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB");
-    return (v != nullptr && v[0] != '\0' ? std::strtoull(v, nullptr, 10) : 512)
-           << 20;
+    return EnvUint("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB", 512) << 20;
   }();
   return reserve;
 }

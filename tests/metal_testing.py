@@ -17,15 +17,15 @@ every comparison (with pytest -s), plus the CPU float32 error for context,
 which is how the tolerances were set.
 """
 import functools
-import os
 import subprocess
 import sys
 
 import jax
 import ml_dtypes
 import numpy as np
+from metal_pjrt_plugin import _env_flag
 
-REPORT = bool(os.environ.get("METAL_TEST_REPORT_ULPS"))
+REPORT = _env_flag("METAL_TEST_REPORT_ULPS")
 
 
 @functools.cache
