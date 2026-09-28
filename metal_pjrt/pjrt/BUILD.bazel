@@ -53,7 +53,7 @@ cc_binary(
     name = "pjrt_c_api_mtl_plugin.dylib",
     linkopts = [
         "-Wl,-exported_symbol,_GetPjrtApi",
-        # Host callbacks: metal_pjrt_plugin/callbacks.py installs its trampoline.
+        # Host callbacks: metal_pjrt_plugin/_callbacks.py installs its trampoline.
         "-Wl,-exported_symbol,_metal_pjrt_register_python_callback_trampoline",
         # Memory stats and the memory-pressure test hook (metal_runtime.cc).
         "-Wl,-exported_symbol,_metal_pjrt_memory_stats",

@@ -18,12 +18,12 @@ Registered for platform "mtl":
   rule, which raises from a host callback, is not wired up (host callbacks
   work, see docs/callbacks.md; nobody has needed it).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
-  goes through ``emit_python_callback``, which metal_pjrt_plugin/callbacks.py
+  goes through ``emit_python_callback``, which metal_pjrt_plugin/_callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
 
 Float32 cholesky, triangular_solve, lu, geqrf/householder_product (qr), eigh
 and svd go through Accelerate LAPACK instead (the C++ MetalLinalgRewriter and
-metal_pjrt_plugin/linalg_lowerings.py, registered last; its docstring has
+metal_pjrt_plugin/_linalg_lowerings.py, registered last; its docstring has
 the ownership table). The generic rules and the TPU ``eigh`` rule
 (``_eigh_tpu_lowering``: Jacobi via EighExpander for n <= 256, QDWH above;
 ``svd``'s generic rule calls it) are their fallbacks for other dtypes,
@@ -184,5 +184,5 @@ def register() -> None:
   reg("fft", _fft)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
-  from metal_pjrt_plugin import linalg_lowerings; reg("lapack linalg", linalg_lowerings.register)  # noqa: E702
+  from metal_pjrt_plugin import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702
   _registered = True

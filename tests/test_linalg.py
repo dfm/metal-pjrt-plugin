@@ -3,7 +3,7 @@
 
 Float32 cholesky / triangular_solve go through Accelerate LAPACK (HLO
 rewriter), lu / qr / eigh / svd through the LAPACK JAX lowerings
-(metal_pjrt_plugin/linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
+(metal_pjrt_plugin/_linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
 XLA's expanders / the pure-JAX paths for A/B comparisons. Timings:
 bench/linalg_bench.py.
 
@@ -233,7 +233,7 @@ print(sorted(set(re.findall(r'custom_call_target="(metal\$[a-z_]+)"', text))))
 @pytest.mark.parametrize("value", [None, "0", "false", "1", "yes"])
 def test_disable_lapack(value):
   # METAL_PJRT_DISABLE_LAPACK is the one switch for both owners (the C++
-  # rewriter and linalg_lowerings.py), read once per process as a boolean
+  # rewriter and _linalg_lowerings.py), read once per process as a boolean
   # (runtime/env.h): "1"/"yes" leave no metal$* LAPACK custom call; unset,
   # "0" or "false" keep every one.
   env = {k: v for k, v in os.environ.items()

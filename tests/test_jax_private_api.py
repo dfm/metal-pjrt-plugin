@@ -6,7 +6,11 @@ names, kinds and defaults are compared; annotations are not.
 
 No GPU needed: .venv/bin/python -m pytest tests/test_jax_private_api.py
 """
+import dataclasses
 import inspect
+import os
+import subprocess
+import sys
 
 import pytest
 from jax._src import (callback, checkify, compilation_cache, compiler, config,
@@ -20,7 +24,7 @@ from jax._src.tpu.linalg import eigh as tpu_eigh
 from jax._src.tpu.linalg import svd as tpu_svd
 from jax.interpreters import mlir as public_mlir
 
-from metal_pjrt_plugin import callbacks
+from metal_pjrt_plugin import _callbacks as callbacks
 
 
 def params(fn):
@@ -33,7 +37,7 @@ def params(fn):
 
 
 SIGNATURES = {
-    # callbacks.py: replaced (emit_python_callback also on the public alias)
+    # _callbacks.py: replaced (emit_python_callback also on the public alias)
     # and called.
     "callback.emit_python_callback": (
         callback.emit_python_callback,
@@ -68,7 +72,7 @@ SIGNATURES = {
         xb.register_plugin,
         "(plugin_name, *, priority=400, library_path=None, options=None, "
         "c_api=None, factory=None, make_topology=None)"),
-    # lowerings.py
+    # _lowerings.py
     "mlir.register_lowering": (
         mlir.register_lowering,
         "(prim, rule, platform=None, inline=True, cacheable=True)"),
@@ -82,7 +86,7 @@ SIGNATURES = {
         debugging.debug_print_lowering_rule,
         "(ctx, *dyn_args, fmt, ordered, partitioned, in_tree, static_args, "
         "np_printoptions, has_placeholders, logging_record)"),
-    # linalg_lowerings.py: the fallbacks it calls with these arguments.
+    # _linalg_lowerings.py: the fallbacks it calls with these arguments.
     "core.is_constant_shape": (core.is_constant_shape, "(s)"),
     "ll._linalg_ffi_lowering": (
         ll._linalg_ffi_lowering,
@@ -131,3 +135,71 @@ def test_symbols_exist():
     assert [p.name for p in prims] == [
         "lu", "geqrf", "householder_product", "eigh", "svd", "fft", "check",
         "debug_callback", "debug_print"]
+
+
+def test_backend_init_failure_is_quiet_unless_selected():
+    # __init__.py sets fail_quietly on the mtl registration: with
+    # JAX_PLATFORMS unset JAX initializes every registered backend, and a
+    # failing plugin must not break CPU-only programs. xla_bridge.backends()
+    # takes fail_quietly from the registration only then; a platform named
+    # in JAX_PLATFORMS always fails loudly.
+    assert "fail_quietly" in {f.name for f in dataclasses.fields(
+        xb.BackendRegistration)}
+    src = inspect.getsource(xb.backends)
+    assert "registration.fail_quietly" in src, src
+    assert "fail_quietly_list = [False] * len(platforms)" in src, src
+    xb._discover_and_register_pjrt_plugins()
+    assert xb._backend_factories["mtl"].fail_quietly is True
+
+
+# A child whose mtl client creation fails (simulated before plugin
+# discovery; no Metal device is created).
+FAILING_CLIENT = r"""
+import jax._src.xla_bridge as xb
+upstream = xb.make_pjrt_c_api_client
+def make(name, *a, **k):
+    if name == "mtl":
+        raise RuntimeError("simulated client failure")
+    return upstream(name, *a, **k)
+xb.make_pjrt_c_api_client = make
+import jax, jax.numpy as jnp
+try:
+    print(jax.default_backend(), float(jnp.arange(4.0).sum()))
+except RuntimeError as e:
+    print("RAISED", e)
+"""
+
+
+@pytest.mark.parametrize("platforms", [None, "mtl,cpu"])
+def test_failing_client(platforms):
+    env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
+    if platforms is not None:
+        env["JAX_PLATFORMS"] = platforms
+    out = subprocess.run([sys.executable, "-c", FAILING_CLIENT], env=env,
+                         capture_output=True, text=True)
+    assert out.returncode == 0, out.stderr[-3000:]
+    if platforms is None:
+        assert out.stdout.strip() == "cpu 6.0", (out.stdout, out.stderr[-3000:])
+    else:
+        assert "RAISED Unable to initialize backend 'mtl'" in out.stdout, out.stdout
+        assert "simulated client failure" in out.stdout, out.stdout
+
+
+def test_cache_bypass_only_for_mtl_callbacks():
+    # The compile_or_get_cached wrapper (_callbacks.py) checks the platform
+    # first and leaves anything it cannot bind to upstream, so it cannot
+    # break another backend's compile.
+    sig = inspect.signature(inspect.unwrap(compiler.compile_or_get_cached))
+    ours = lambda: None  # noqa: E731
+    ours._metal_host_callback = True
+    other = lambda: None  # noqa: E731
+    mtl = type("B", (), {"platform": "mtl"})()
+    cpu = type("B", (), {"platform": "cpu"})()
+    bypass = lambda *a, **k: callbacks._cache_bypass_arguments(sig, a, k)  # noqa: E731
+    assert bypass(mtl, "hlo", [], "opts", [ours], []) is not None
+    assert bypass(mtl, "hlo", [], "opts", host_callbacks=[other, ours],
+                  executable_devices=[])["computation"] == "hlo"
+    assert bypass(mtl, "hlo", [], "opts", [other], []) is None
+    assert bypass(cpu, "hlo", [], "opts", [ours], []) is None
+    assert bypass() is None
+    assert bypass(mtl, "hlo", [], "opts", [ours], [], None, "extra") is None

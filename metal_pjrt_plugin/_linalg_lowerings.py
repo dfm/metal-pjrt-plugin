@@ -58,7 +58,7 @@ def _static(avals) -> bool:
 
 
 def register() -> None:
-  """Register the LAPACK lowerings for platform "mtl" (after lowerings.py's
+  """Register the LAPACK lowerings for platform "mtl" (after _lowerings.py's
   own registrations, which these override for float32)."""
   from jax._src.interpreters import mlir
   from jax._src.lax import linalg as ll

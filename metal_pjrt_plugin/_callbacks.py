@@ -242,6 +242,24 @@ def _is_metal_module(ctx) -> bool:
 _installed = False
 
 
+def _cache_bypass_arguments(signature, args, kwargs):
+  """compile_or_get_cached's arguments by name when the compile is for mtl
+  and has one of our host callbacks (so it must bypass the persistent
+  cache), else None. The platform is checked first, and arguments that do
+  not bind leave the call to upstream, so other backends' compiles never
+  depend on this (tests/test_jax_private_api.py pins the names used)."""
+  try:
+    a = signature.bind(*args, **kwargs).arguments
+  except TypeError:
+    return None
+  if getattr(a.get("backend"), "platform", None) != PLATFORM:
+    return None
+  if not any(getattr(cb, "_metal_host_callback", False)
+             for cb in a.get("host_callbacks") or ()):
+    return None
+  return a
+
+
 def install(library_path) -> None:
   """Install the trampoline into the plugin and patch JAX's lowering. Call
   after the plugin is registered."""
@@ -272,14 +290,11 @@ def install(library_path) -> None:
   public_mlir.emit_python_callback = emit_python_callback
 
   upstream_compile = compiler.compile_or_get_cached
-  # Arguments by name, so a new upstream parameter passes through
-  # (tests/test_jax_private_api.py pins the names used here).
   upstream_signature = inspect.signature(upstream_compile)
 
   def compile_or_get_cached(*args, **kwargs):
-    a = upstream_signature.bind(*args, **kwargs).arguments
-    if any(getattr(cb, "_metal_host_callback", False)
-           for cb in a["host_callbacks"]):
+    a = _cache_bypass_arguments(upstream_signature, args, kwargs)
+    if a is not None:
       # Per-process callback ids must not go through the persistent cache.
       return compiler.backend_compile_and_load(
           a["backend"], a["computation"], a["executable_devices"],

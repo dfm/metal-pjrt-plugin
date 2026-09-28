@@ -1,6 +1,6 @@
 // "xla_ffi_python_metal_callback": host (Python) callbacks on the Metal
 // platform, used by jax.pure_callback, io_callback, jax.debug.callback and
-// jax.debug.print (lowering in metal_pjrt_plugin/callbacks.py).
+// jax.debug.print (lowering in metal_pjrt_plugin/_callbacks.py).
 //
 // Upstream JAX routes callbacks through FfiLoadedHostCallbacks user data that
 // jaxlib only attaches for the cpu/cuda/rocm/oneapi platform ids, so it never

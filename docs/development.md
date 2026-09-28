@@ -74,8 +74,8 @@ uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/pyt
 
 The wheel is pure Python plus the dylib (a copy, not the link), so it is
 tagged `py3-none-macosx_26_0_arm64` and depends on `jax==0.11.2` and
-`jaxlib==0.11.2`; `metal_pjrt_plugin/__init__.py` warns at import when
-either version differs (`JAX_VERSION`, checked against `pyproject.toml` by
+`jaxlib==0.11.2`; `metal_pjrt_plugin/__init__.py` warns at plugin discovery when
+either version differs (`_JAX_VERSION`, checked against `pyproject.toml` by
 `tests/test_packaging.py`). Checked by installing it with `uv` into a fresh
 venv and running `tests/test_smoke.py`, `test_sort.py` and
 `test_callbacks.py` from outside the checkout.

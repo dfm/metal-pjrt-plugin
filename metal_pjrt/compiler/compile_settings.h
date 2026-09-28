@@ -13,7 +13,7 @@ namespace metal_pjrt {
 struct CompileSettings {
   // METAL_PJRT_DISABLE_LAPACK, a boolean (runtime/env.h), turns off the
   // Accelerate LAPACK rewriter (linalg/linalg_rewriter.cc); XLA's expanders
-  // take linear algebra instead. metal_pjrt_plugin/linalg_lowerings.py
+  // take linear algebra instead. metal_pjrt_plugin/_linalg_lowerings.py
   // reads it the same way (_env_flag).
   bool lapack = true;
   // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off

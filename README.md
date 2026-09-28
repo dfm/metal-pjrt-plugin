@@ -26,8 +26,8 @@ convolution the kernel translator cannot handle. Tested on one machine (M3,
   `macosx_26_0_arm64`.
 - Python 3.12 or later, with exactly `jax==0.11.2` and `jaxlib==0.11.2`. The
   plugin is built against that jaxlib's XLA commit and uses private
-  `jax._src` APIs, so it warns at import on any other version and may not
-  work there.
+  `jax._src` APIs, so it warns when JAX discovers it on any other version
+  and may not work there.
 - To build from source: the Xcode command-line tools
   (`xcode-select --install`; full Xcode is not needed), `bazelisk`
   (`brew install bazelisk`), `uv`, and the time and disk for a first build of

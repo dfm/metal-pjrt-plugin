@@ -205,7 +205,7 @@ def test_callback(fn):
 
 
 def test_unsupported_dtype_is_named():
-    from metal_pjrt_plugin import callbacks
+    from metal_pjrt_plugin import _callbacks as callbacks
     with pytest.raises(TypeError, match="do not support dtype int4 on platform mtl"):
         callbacks._view(callbacks._Buffer(dtype=21))
 
@@ -214,7 +214,7 @@ def test_unknown_callback_id_says_how_to_fix():
     # An executable from another process's persistent cache names a
     # callback id this process never registered.
     import ctypes
-    from metal_pjrt_plugin import callbacks
+    from metal_pjrt_plugin import _callbacks as callbacks
     err = ctypes.create_string_buffer(4096)
     assert callbacks._trampoline(0x1234, 0, None, 0, None,
                                  ctypes.addressof(err), len(err)) == 1
@@ -233,7 +233,7 @@ def test_public_emit_python_callback_is_patched():
 
 
 def test_executables_with_callbacks_skip_the_persistent_cache(tmp_path):
-    # Callback ids are per process (callbacks.py): such an executable must
+    # Callback ids are per process (_callbacks.py): such an executable must
     # never be written to (or read from) JAX's persistent cache.
     import os
     from metal_testing import run_python

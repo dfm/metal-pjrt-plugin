@@ -212,7 +212,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
   row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,
-  gesdd_novec}` (targets of `metal_pjrt_plugin/linalg_lowerings.py`,
+  gesdd_novec}` (targets of `metal_pjrt_plugin/_linalg_lowerings.py`,
   column-major operands via layout constraints). Matrices up to 32x32 in
   `metal$cholesky`, `metal$triangular_solve` and `metal$lapack_getrf` run as
   GPU kernels on the stream, with no synchronization. Above that, each
@@ -224,7 +224,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   f32 only. `METAL_PJRT_DISABLE_LAPACK=1` is the one switch for both
   (read once per process by the pass and by the Python rules) and
   falls back to XLA's expanders / JAX's generic lowerings. Ownership table:
-  the `linalg_lowerings.py` docstring.
+  the `_linalg_lowerings.py` docstring.
 
 ## PJRT client
 

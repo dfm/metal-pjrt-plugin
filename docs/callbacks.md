@@ -7,7 +7,7 @@ and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
 exception in the callback surfaces as a `JaxRuntimeError` carrying its
 message. Tests: `tests/test_callbacks.py` (against CPU) and three cases in
 `tests/test_lax.py`. checkify's runtime-error path uses the TPU rule
-(`debug_check` is a no-op; `metal_pjrt_plugin/lowerings.py`).
+(`debug_check` is a no-op; `metal_pjrt_plugin/_lowerings.py`).
 
 ## Why not the CUDA path
 
@@ -23,7 +23,7 @@ its own table.
 
 ## How the mtl path works
 
-- **Lowering** (`metal_pjrt_plugin/callbacks.py`, installed by
+- **Lowering** (`metal_pjrt_plugin/_callbacks.py`, installed by
   `initialize()`): `jax._src.callback.emit_python_callback` and its public
   alias `jax.interpreters.mlir.emit_python_callback` are wrapped. For
   modules lowered only for mtl it wraps the callable with upstream's

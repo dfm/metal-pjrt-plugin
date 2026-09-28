@@ -342,7 +342,7 @@ SemanticVersion PluginVersion() {
     if (uuid.empty()) LOG(WARNING) << "Metal: plugin image has no LC_UUID";
     // The values the passes use (read once), not the raw environment: so
     // METAL_PJRT_DISABLE_LAPACK=0 and unset share cache entries.
-    // (linalg_lowerings.py reads that variable too, but what it lowers is
+    // (_linalg_lowerings.py reads that variable too, but what it lowers is
     // in the HLO, i.e. already in the key.)
     return SemanticVersion(
         1, tsl::Fingerprint32(uuid),
