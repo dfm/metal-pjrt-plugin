@@ -101,17 +101,34 @@ def _is_float(dtype):
         ml_dtypes.bfloat16, ml_dtypes.float8_e4m3fn)
 
 
+def _check_dtype(got, want, name):
+    """`got` has the dtype of `want`, or, against a 64-bit reference
+    (f64_reference: floats upcast, x64 integers), at least its kind."""
+    g, w = np.dtype(got), np.dtype(want)
+    if g == w:
+        return
+    assert w.itemsize == 8 and g.itemsize < 8, f"{name}: dtype {g}, want {w}"
+    same_kind = (_is_float(g) and _is_float(w)) or (
+        not _is_float(g) and not _is_float(w) and g.kind == w.kind)
+    assert same_kind, f"{name}: dtype {g}, want (a narrower) {w}"
+
+
 def assert_close(got, want, ulps, normwise=False, name="", cpu32=None):
-    """Compare pytrees leafwise: floating leaves within `ulps` (of the
-    dtype of `got`), everything else exactly. `cpu32`, if given, is the
-    same computation on CPU in the original precision, reported alongside
-    the metal error when METAL_TEST_REPORT_ULPS is set."""
+    """Compare pytrees leafwise: dtypes (see _check_dtype), floating leaves
+    within `ulps` (of the dtype of `got`), everything else exactly. `cpu32`,
+    if given, is the same computation on CPU in the original precision,
+    reported alongside the metal error when METAL_TEST_REPORT_ULPS is set,
+    and its dtypes must match `got` exactly."""
     got_leaves, want_leaves = jax.tree.leaves(got), jax.tree.leaves(want)
     assert len(got_leaves) == len(want_leaves)
     cpu_leaves = jax.tree.leaves(cpu32) if cpu32 is not None else None
     worst = worst_cpu = 0.0
     for i, (g, w) in enumerate(zip(got_leaves, want_leaves)):
         g, w = np.asarray(g), np.asarray(w)
+        _check_dtype(g.dtype, w.dtype, name)
+        if cpu_leaves is not None:
+            assert g.dtype == np.asarray(cpu_leaves[i]).dtype, (
+                f"{name}: dtype {g.dtype}, CPU gives {np.asarray(cpu_leaves[i]).dtype}")
         if not _is_float(g.dtype):
             np.testing.assert_array_equal(g, w.astype(g.dtype), err_msg=name)
             continue

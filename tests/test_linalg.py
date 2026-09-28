@@ -205,7 +205,8 @@ ULPS = {
 
 
 @pytest.mark.parametrize("name", [
-    pytest.param(n, marks=[pytest.mark.xfail(reason="complex buffers", strict=True)] if n in XFAIL else [])
+    pytest.param(n, marks=[pytest.mark.xfail(reason="complex buffers", strict=True,
+                                             raises=jax.errors.JaxRuntimeError)] if n in XFAIL else [])
     for n in CHECKS])
 def test_linalg(name):
   fn, *args = CHECKS[name]

@@ -7,17 +7,31 @@ device lock (one GPU job at a time):
   .venv/bin/python -m pytest tests -m "not metal"   # host-only tests
 
 Runs are hermetic: no persistent compilation cache, x64 off, and CPU next to
-metal for references (tests/metal_testing.py).
+metal for references (tests/metal_testing.py), whatever the environment
+says; and a run refuses to start with XLA_FLAGS or plugin settings in the
+environment (tests that need one set it for a child process).
 """
 import importlib.util
 import os
 import pathlib
 
-os.environ.setdefault("JAX_PLATFORMS", "openmetal,cpu")
-os.environ.setdefault("JAX_ENABLE_X64", "0")
-os.environ.setdefault("JAX_ENABLE_COMPILATION_CACHE", "false")
+os.environ.update(JAX_PLATFORMS="openmetal,cpu", JAX_ENABLE_X64="0",
+                  JAX_ENABLE_COMPILATION_CACHE="false")
+
+# Plugin variables that change nothing a test checks: where the GPU reset
+# log lives (a scratch dir for runs from a fresh checkout) and trace logging.
+ALLOWED_PLUGIN_VARS = {"METAL_PJRT_STATE_DIR", "METAL_PJRT_TRACE"}
 
 import pytest
+
+
+def pytest_configure(config):
+    leaked = sorted(k for k in os.environ if k == "XLA_FLAGS" or (
+        k.startswith("METAL_PJRT_") and k not in ALLOWED_PLUGIN_VARS))
+    if leaked:
+        raise pytest.UsageError(
+            f"unset {', '.join(leaked)}: the tests assume the defaults (tests "
+            "that need a setting set it for a child process)")
 
 
 def lock_held():

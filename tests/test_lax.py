@@ -245,7 +245,8 @@ NORMWISE = {
 
 
 @pytest.mark.parametrize("name,fn", [
-    pytest.param(n, f, id=n, marks=[pytest.mark.xfail(reason=XFAIL[n], strict=True)] if n in XFAIL else [])
+    pytest.param(n, f, id=n, marks=[pytest.mark.xfail(reason=XFAIL[n], strict=True,
+                                             raises=jax.errors.JaxRuntimeError)] if n in XFAIL else [])
     for n, f in CASES])
 def test_lax(name, fn):
     _current[0] = name

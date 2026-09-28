@@ -52,6 +52,17 @@ bench/run_all.sh                                               # benchmarks vs c
 scripts/build_wheel.sh                                         # dist/openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
 
+`install_dev.sh` creates `.venv` with uv, or without it with `python3.12`
+(JAX 0.11.2 needs Python 3.12+). `run_jax_tests.sh` needs a checkout of
+JAX's tests at the pinned version and the two packages they import, once:
+
+```
+git clone --depth 1 --branch jax-v0.11.2 https://github.com/jax-ml/jax ~/.cache/openmetal/jax-tests
+uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/python -m pip install
+```
+
+(`JAX_TESTS_DIR` points it at another checkout.)
+
 The wheel is pure Python plus the dylib (a copy, not the link), so it is
 tagged `py3-none-macosx_26_0_arm64` and depends on `jax==0.11.2` and
 `jaxlib==0.11.2`; `jax_plugins/openmetal/__init__.py` warns at import when
