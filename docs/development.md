@@ -29,6 +29,8 @@ the plugin.
 - `metal_pjrt_plugin/xla_tripwire/`: snapshots of the XLA code the plugin
   relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
   in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
+  `tests/test_jax_private_api.py` (host-only) is the same for the private
+  JAX APIs the Python package calls or replaces.
 - `jax_plugins/openmetal/`: Python registration package (dist
   `openmetal_pjrt_plugin`) modeled on `jax_plugins/cuda`, plus lowerings and host
   callbacks.

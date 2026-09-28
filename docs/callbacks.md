@@ -56,7 +56,8 @@ its own table.
   any exception into the error message.
 - **Persistent compilation cache**: ids are per-process, so
   `compiler.compile_or_get_cached` is wrapped to compile executables with an
-  openmetal callback without the cache. A stale executable loaded anyway
+  openmetal callback without the cache (tested in `tests/test_callbacks.py`
+  with the cache on). A stale executable loaded anyway
   fails with "unknown metal host callback id" instead of calling the wrong
   function.
 

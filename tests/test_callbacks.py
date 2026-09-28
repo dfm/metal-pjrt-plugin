@@ -209,3 +209,32 @@ def test_public_emit_python_callback_is_patched():
     from jax.interpreters import mlir
     assert mlir.emit_python_callback is jax_callback.emit_python_callback
     assert hasattr(mlir.emit_python_callback, "__wrapped__")
+
+
+def test_executables_with_callbacks_skip_the_persistent_cache(tmp_path):
+    # Callback ids are per process (callbacks.py): such an executable must
+    # never be written to (or read from) JAX's persistent cache.
+    import os
+    from metal_testing import run_python
+    code = r"""
+import os, numpy as np, jax
+def with_callback(x):
+    return jax.pure_callback(lambda a: np.asarray(a) * 2,
+                             jax.ShapeDtypeStruct(x.shape, x.dtype), x) + 1
+def plain(x):
+    return x * 3 + 1
+x = np.ones(4, np.float32)
+assert np.asarray(jax.jit(with_callback)(x)).tolist() == [3.0] * 4
+assert np.asarray(jax.jit(plain)(x)).tolist() == [4.0] * 4
+print(sorted(f.split("-")[0] for f in os.listdir(os.environ["JAX_COMPILATION_CACHE_DIR"])))
+"""
+    env = dict(os.environ, JAX_PLATFORMS="openmetal,cpu",
+               JAX_ENABLE_COMPILATION_CACHE="true",
+               JAX_COMPILATION_CACHE_DIR=str(tmp_path),
+               JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="0",
+               JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="0")
+    out = run_python(code, env)
+    assert out.returncode == 0, out.stderr[-3000:]
+    entries = out.stdout.strip()
+    assert "jit_plain" in entries, entries  # the cache is on
+    assert "jit_with_callback" not in entries, entries

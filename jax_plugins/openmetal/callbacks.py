@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import ctypes
 import dataclasses
+import inspect
 import itertools
 import logging
 import os
@@ -261,16 +262,19 @@ def install(library_path) -> None:
   public_mlir.emit_python_callback = emit_python_callback
 
   upstream_compile = compiler.compile_or_get_cached
+  # Arguments by name, so a new upstream parameter passes through
+  # (tests/test_jax_private_api.py pins the names used here).
+  upstream_signature = inspect.signature(upstream_compile)
 
-  def compile_or_get_cached(backend, computation, devices, compile_options,
-                            host_callbacks, executable_devices,
-                            pgle_profiler=None):
-    if any(getattr(cb, "_metal_host_callback", False) for cb in host_callbacks):
+  def compile_or_get_cached(*args, **kwargs):
+    a = upstream_signature.bind(*args, **kwargs).arguments
+    if any(getattr(cb, "_metal_host_callback", False)
+           for cb in a["host_callbacks"]):
       # Per-process callback ids must not go through the persistent cache.
       return compiler.backend_compile_and_load(
-          backend, computation, executable_devices, compile_options,
-          host_callbacks)
-    return upstream_compile(backend, computation, devices, compile_options,
-                            host_callbacks, executable_devices, pgle_profiler)
+          a["backend"], a["computation"], a["executable_devices"],
+          a["compile_options"], a["host_callbacks"])
+    return upstream_compile(*args, **kwargs)
+  compile_or_get_cached.__wrapped__ = upstream_compile
   compiler.compile_or_get_cached = compile_or_get_cached
   _installed = True
