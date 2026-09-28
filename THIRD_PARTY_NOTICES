@@ -19,7 +19,7 @@ ported from mlx/backend/metal/kernels/steel/gemm/{loader,mma,gemm}.h.
 
 MIT License
 
-Copyright (c) 2023 ml-explore
+Copyright © 2023 Apple Inc.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

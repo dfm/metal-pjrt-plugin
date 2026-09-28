@@ -81,7 +81,7 @@ def test_license_files_in_wheel():
                        (ROOT / "scripts/build_wheel.sh").read_text(), re.M)
     assert staged and set(files) <= set(staged.group(1).split()), staged
     notices = (ROOT / "THIRD_PARTY_NOTICES").read_text()
-    for needle in ("Copyright (c) 2023 ml-explore",
+    for needle in ("Copyright © 2023 Apple Inc.",
                    "Copyright \u00a9 2024 Apple Inc.",
                    "Apache License\n                           Version 2.0"):
         assert needle in notices, needle
