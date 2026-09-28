@@ -115,7 +115,12 @@ their work, so they are charged an estimate instead, `blas::GemmWork`:
 TFLOPS measured over f32/f16/bf16 shapes), a >= 5x margin for a throttled
 base M1 and for shapes that run less efficiently; a single larger GEMM
 gets a buffer of its own. Eight chained 4096^3 f32 GEMMs used to share one
-371 ms buffer; now each buffer holds two (93 ms). Copies and uniform fills up to 16 MB run as built-in
+371 ms buffer; now each buffer holds two (93 ms). Two gaps remain: the
+budget splits only between dispatches, so one kernel longer than the
+watchdog still resets the GPU (one 16384^3 f32 GEMM is ~8.8e12 flops, 3-4 s
+in one dispatch here); and non-GEMM heavy kernels (emitted fusions,
+especially convolutions through XLA's loop emitter) are charged only their
+thread count, so a large convolution can be a multi-second single kernel. Copies and uniform fills up to 16 MB run as built-in
 compute kernels so kernels and copies share one compute encoder (an encoder
 switch costs ~10 us of GPU time); larger ones use the blit engine.
 

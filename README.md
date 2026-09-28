@@ -189,6 +189,11 @@ resets since boot is refused until a reboot or
   work in flight. Let it finish or fail; the plugin's waits are bounded.
 - Keep problems well inside memory. Swapping is what stalls a GPU long
   enough to trip the watchdog.
+- Very large convolutions and single matmuls over ~1e12 flops can exceed
+  the GPU watchdog on smaller Macs; split them. The command-buffer budget
+  splits work only between kernels: one 16384^3 f32 matmul (~8.8e12 flops)
+  is a single 3-4 s kernel on an M3, and convolutions and other fused
+  kernels are budgeted only by their thread count.
 
 ## More
 

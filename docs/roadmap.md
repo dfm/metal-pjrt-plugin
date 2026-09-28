@@ -95,6 +95,10 @@ Open decisions for dfm:
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
+Watchdog: tile giant GEMMs (over ~1e12 flops) over N or batch into several
+dispatches, so the command-buffer flops budget can split them; today one
+such GEMM is a single multi-second kernel (docs/design.md, Runtime).
+
 Upstreaming candidate: patch 0001's `gpu_module_globals.cc` hunk
 (`CHECK_OK(stream->BlockHostUntilDone())` -> `ABSL_RETURN_IF_ERROR`). On
 any backend, a failed wait after uploading an executable's constants
