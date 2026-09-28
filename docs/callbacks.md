@@ -40,7 +40,7 @@ its own table.
   `module_context.host_callbacks`, so the executable owns it (and JAX runs
   it with runtime tokens, as on CPU); the table holds a weak reference that
   goes with the executable.
-- **Handler** (`metal_pjrt_plugin/ffi/python_callback_ffi.cc`, registered
+- **Handler** (`metal_pjrt/ffi/python_callback_ffi.cc`, registered
   statically for "METAL"): calls `rt::Stream::Synchronize()` so all earlier
   GPU work is done, then a C trampoline with (pointer, PrimitiveType, dims)
   for the non-token operands and results. Buffers are shared-storage

@@ -79,7 +79,7 @@ common --repository_cache=~/.cache/metal-pjrt-plugin/bazel-repo
 common:public_cache --remote_cache="https://storage.googleapis.com/jax-bazel-cache/" --remote_upload_local_results=false
 common:public_cache --remote_timeout=120s
 
-common:debug_symbols --strip=never --per_file_copt="metal_pjrt_plugin|xla/pjrt@-g3"
+common:debug_symbols --strip=never --per_file_copt="metal_pjrt/|xla/pjrt@-g3"
 common:debug --config=debug_symbols -c fastbuild
 
 try-import %workspace%/user.bazelrc

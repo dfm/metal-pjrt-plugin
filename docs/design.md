@@ -23,7 +23,7 @@ Metal support is therefore:
 - `stream_executor/metal/`: `MetalPlatform`, `MetalExecutor`, streams as
   `MTLCommandQueue`, events as `MTLSharedEvent`, shared-storage `MTLBuffer`s,
   kernel launch from an `MTLLibrary`, over an XLA-free runtime layer
-  (`metal_pjrt_plugin/runtime/`, "Runtime" below). XLA's `CommandBuffer`
+  (`metal_pjrt/runtime/`, "Runtime" below). XLA's `CommandBuffer`
   (its CUDA-graph abstraction) is deliberately not implemented: a
   software-replay version was built, measured to be a wash once the
   runtime's per-launch overhead was fixed, and removed to keep the platform
@@ -38,7 +38,7 @@ Metal support is therefore:
 
 Intel's extension for OpenXLA did exactly this for SYCL out of tree. The
 device reports a OneAPI compute capability, so XLA takes its generic
-non-NVIDIA branches; `metal_pjrt_plugin/xla_tripwire` fails when a pin bump
+non-NVIDIA branches; `metal_pjrt/xla_tripwire` fails when a pin bump
 changes any of them (`docs/integration-notes.md`).
 
 ## Codegen
@@ -99,7 +99,7 @@ time; double-float emulation is an idea in `docs/roadmap.md`).
 
 ## Runtime
 
-`metal_pjrt_plugin/runtime/metal_runtime.h` is the XLA-free layer every
+`metal_pjrt/runtime/metal_runtime.h` is the XLA-free layer every
 Metal call goes through (`rt::Device`, `rt::Stream`, `rt::Event`); its
 header comments are the reference. The policies, in the present tense:
 

@@ -17,9 +17,9 @@ if [[ ! -x .venv/bin/python ]]; then
   fi
 fi
 if [[ "${1:-}" != "--no-build" ]]; then
-  bazel build //metal_pjrt_plugin/pjrt:pjrt_c_api_openmetal_plugin.dylib
+  bazel build //metal_pjrt/pjrt:pjrt_c_api_openmetal_plugin.dylib
 fi
-SRC=bazel-bin/metal_pjrt_plugin/pjrt/pjrt_c_api_openmetal_plugin.dylib
+SRC=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_openmetal_plugin.dylib
 [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
 ln -sf "$(pwd)/$SRC" jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib
 # Leftovers of earlier names: the pre-rename "metal" platform's package

@@ -10,9 +10,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 MACOS_MIN=26_0
 if [[ "${1:-}" != "--no-build" ]]; then
-  bazel build //metal_pjrt_plugin/pjrt:pjrt_c_api_openmetal_plugin.dylib
+  bazel build //metal_pjrt/pjrt:pjrt_c_api_openmetal_plugin.dylib
 fi
-DYLIB=bazel-bin/metal_pjrt_plugin/pjrt/pjrt_c_api_openmetal_plugin.dylib
+DYLIB=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_openmetal_plugin.dylib
 [[ -f "$DYLIB" ]] || { echo "missing $DYLIB" >&2; exit 1; }
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT

@@ -1,0 +1,116 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
+
+package(default_visibility = ["//visibility:public"])
+
+cc_library(
+    name = "metal_platform_id",
+    srcs = ["metal_platform_id.cc"],
+    hdrs = ["metal_platform_id.h"],
+    deps = ["@xla//xla/stream_executor:platform_id"],
+)
+
+cc_library(
+    name = "metal_executor",
+    srcs = [
+        "metal_executor.cc",
+        "metal_kernel.cc",
+        "metal_stream.cc",
+    ],
+    hdrs = [
+        "metal_event.h",
+        "metal_executor.h",
+        "metal_kernel.h",
+        "metal_stream.h",
+    ],
+    deps = [
+        "//metal_pjrt/blas:metal_blas",  # [metal-blas]
+        "//metal_pjrt/compiler:compile_settings",
+        "//metal_pjrt/runtime:constants_container",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/functional:any_invocable",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/synchronization",
+        "@com_google_absl//absl/types:span",
+        "@xla//xla/stream_executor:blas",  # [metal-blas]
+        "@xla//xla/stream_executor:device_address",
+        "@xla//xla/stream_executor:device_description",
+        "@xla//xla/stream_executor:event",
+        "@xla//xla/stream_executor:generic_memory_allocation",
+        "@xla//xla/stream_executor:generic_memory_allocator",
+        "@xla//xla/stream_executor:kernel",
+        "@xla//xla/stream_executor:kernel_args",
+        "@xla//xla/stream_executor:kernel_spec",
+        "@xla//xla/stream_executor:launch_dim",
+        "@xla//xla/stream_executor:memory_allocation",
+        "@xla//xla/stream_executor:memory_allocator",
+        "@xla//xla/stream_executor:module_spec",
+        "@xla//xla/stream_executor:platform",
+        "@xla//xla/stream_executor:semantic_version",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_common",
+        "@xla//xla/stream_executor:stream_executor_h",
+        "@xla//xla/stream_executor/gpu:gpu_executor_header",
+        "@tsl//tsl/platform:fingerprint",
+    ],
+)
+
+cc_library(
+    name = "metal_platform",
+    srcs = ["metal_platform.cc"],
+    hdrs = ["metal_platform.h"],
+    deps = [
+        ":metal_executor",
+        ":metal_platform_id",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/log",
+        "@com_google_absl//absl/log:check",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings:str_format",
+        "@xla//xla/stream_executor:device_description",
+        "@xla//xla/stream_executor:executor_cache",
+        "@xla//xla/stream_executor:platform",
+        "@xla//xla/stream_executor:platform_manager",
+        "@xla//xla/stream_executor:stream_executor_h",
+        "@xla//xla/stream_executor/platform:initialize",
+    ],
+    alwayslink = True,  # Registers itself with the PlatformManager.
+)
+
+# MetalExecutor / MetalStream / MetalEvent; needs a Metal device.
+cc_test(
+    name = "metal_executor_test",
+    srcs = ["metal_executor_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":metal_executor",
+        ":metal_platform",
+        ":metal_platform_id",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest",
+        "@xla//xla/stream_executor:device_address",
+        "@xla//xla/stream_executor:kernel",
+        "@xla//xla/stream_executor:kernel_args",
+        "@xla//xla/stream_executor:kernel_spec",
+        "@xla//xla/stream_executor:launch_dim",
+        "@xla//xla/stream_executor:module_spec",
+        "@xla//xla/stream_executor:platform_manager",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+        "@xla//xla/tsl/platform:statusor",
+        "@xla//xla/tsl/lib/core:status_test_util",
+        "@xla//xla/tsl/platform:test",
+        "@xla//xla/tsl/platform:test_main",
+    ],
+)

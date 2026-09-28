@@ -14,7 +14,7 @@ the cpu/cuda/rocm/oneapi platform ids. So metal uses its own path:
   ``xla_ffi_python_metal_callback`` (``has_side_effect`` as upstream, ordered
   effects threading a ``!stablehlo.token`` operand/result exactly like the
   cpu/gpu path) is emitted with that id as an attribute.
-* Runtime: the handler (metal_pjrt_plugin/ffi/python_callback_ffi.cc)
+* Runtime: the handler (metal_pjrt/ffi/python_callback_ffi.cc)
   synchronizes the execution stream and calls the ctypes trampoline below,
   which looks up the id, wraps the (unified-memory, host-addressable)
   argument buffers as numpy arrays (copied, so the callee may keep them),

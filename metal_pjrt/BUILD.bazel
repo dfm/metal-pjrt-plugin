@@ -1,0 +1,26 @@
+# Plugin sources; each subdirectory is its own package:
+#
+#   runtime/           XLA-free layer over Metal (metal-cpp)
+#   stream_executor/   MetalPlatform, MetalExecutor, MetalStream, MetalEvent
+#   compiler/          MetalCompiler : xla::gpu::GpuCompiler, HLO passes
+#   codegen/           MLIR -> EmitC -> MSL (MetalKernelCompiler)
+#   blas/, linalg/     GEMM (MPS, steel) and linear algebra
+#   ffi/               FFI custom-call handlers
+#   pjrt/              the plugin dylib (XLA's GPU C API shim, own GetPjrtApi)
+
+# Tests that need a Metal device (tagged manual, so `//...` skips them; see
+# device_test.bzl). A test_suite only picks up manual tests listed here by
+# name, so list every one:
+#   scripts/device_lock.py -- bazel test //metal_pjrt:device_tests
+test_suite(
+    name = "device_tests",
+    tags = ["manual"],
+    tests = [
+        "//metal_pjrt/blas:metal_blas_lt_test",
+        "//metal_pjrt/blas:mps_gemm_test",
+        "//metal_pjrt/blas:steel_gemm_test",
+        "//metal_pjrt/ffi:cub_sort_test",
+        "//metal_pjrt/runtime:metal_runtime_test",
+        "//metal_pjrt/stream_executor:metal_executor_test",
+    ],
+)

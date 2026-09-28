@@ -1,7 +1,7 @@
 """Sorts on metal against CPU, bit for bit. Sorts of more than 16384
 elements with a simple comparator go through XLA's SortRewriter to the MSL
-radix sort (metal_pjrt_plugin/ffi/cub_sort_ffi.cc; exhaustive type sweep in
-//metal_pjrt_plugin/ffi:cub_sort_test); rows of <= 64 and smaller sorts stay
+radix sort (metal_pjrt/ffi/cub_sort_ffi.cc; exhaustive type sweep in
+//metal_pjrt/ffi:cub_sort_test); rows of <= 64 and smaller sorts stay
 with MetalSortExpander. The inputs carry duplicates, +-0 and NaNs, so
 stability and the NaN/zero order are checked too.
 """

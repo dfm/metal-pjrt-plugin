@@ -7,7 +7,7 @@ cc_binary(
     srcs = ["dispatch_bench.cc"],
     tags = ["manual"],
     deps = [
-        "//metal_pjrt_plugin/runtime:metal_runtime",
+        "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@metal_cpp",

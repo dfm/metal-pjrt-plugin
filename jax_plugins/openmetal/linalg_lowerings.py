@@ -1,6 +1,6 @@
 """LAPACK-backed lowerings of JAX's linear algebra primitives on "openmetal".
 
-The plugin's C++ side (metal_pjrt_plugin/linalg/lapack_ffi.cc) registers FFI
+The plugin's C++ side (metal_pjrt/linalg/lapack_ffi.cc) registers FFI
 handlers that synchronize the Metal stream and run Apple Accelerate's LAPACK
 on the unified-memory buffers (zero copy). This module lowers JAX primitives
 to those handlers, mirroring JAX's own CPU lowerings (``lapack_*_ffi``): the
@@ -18,7 +18,7 @@ Who owns which primitive (float32; other dtypes take the fallback):
   eigh                 here     metal$lapack_syevd        _eigh_tpu_lowering
   svd                  here     metal$lapack_gesdd[_novec]  _svd_tpu_lowering_rule
 
-  [1] MetalLinalgRewriter (metal_pjrt_plugin/linalg/linalg_rewriter.cc)
+  [1] MetalLinalgRewriter (metal_pjrt/linalg/linalg_rewriter.cc)
   [2] the ProductOfElementaryHouseholderReflectors custom call
 
 cholesky_p and triangular_solve_p need nothing here: their generic lowerings

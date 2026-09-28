@@ -5,8 +5,8 @@ XLA tree (`external/xla+` in the Bazel output base).
 
 The load-bearing sites (OneAPI branches, the copied `AddLoweringPasses`
 prefix, assumptions of the plugin's HLO passes) are snapshotted by
-`//metal_pjrt_plugin/xla_tripwire:xla_tripwire_test`, which fails with a diff
-when a pin bump changes one; `metal_pjrt_plugin/xla_tripwire/oneapi_callsites.py`
+`//metal_pjrt/xla_tripwire:xla_tripwire_test`, which fails with a diff
+when a pin bump changes one; `metal_pjrt/xla_tripwire/oneapi_callsites.py`
 lists every `IsOneAPI()`/`IsIntelGpu()`/`is_sycl` line XLA-wide against a
 golden list. Both have an `--update` mode.
 
@@ -146,7 +146,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `ir_emitter_context.kernel_compiler()->CompileMlirToLlvm(...)`
   (`mlir_kernel_emitter.cc`), and `KernelCompiler::CompileMlirToLlvm` is
   virtual (`xla/backends/gpu/codegen/kernel_compiler.h`). `MetalKernelCompiler`
-  (`metal_pjrt_plugin/codegen/metal_kernel_compiler.{h,cc}`) overrides it and
+  (`metal_pjrt/codegen/metal_kernel_compiler.{h,cc}`) overrides it and
   delegates `Compile`/`CompileToTargetBinary`/`CompileTritonToLlvm` to an inner
   `CubinCustomKernelCompiler`; `GpuCompiler` sets the pre-optimization hook on
   the outer object, so the inner one's `LlvmIrCompiler` calls it.
@@ -174,7 +174,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `PlatformUtil::CanonicalPlatformName` (`xla/ffi/ffi_registry.cc`), so
   "METAL" and "metal" are the same key ("metal").
 - The registry is a static inside the plugin dylib's copy of XLA. Handlers in
-  `metal_pjrt_plugin/ffi` register with
+  `metal_pjrt/ffi` register with
   `XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), name, "METAL", h)` in
   an `alwayslink` library; nothing is needed from Python
   (`jax.ffi.ffi_call(name, ...)` just emits the custom call). Handlers
@@ -193,7 +193,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
 - Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_scan.py`
-  also calls it through `jax.ffi.ffi_call`); `//metal_pjrt_plugin/ffi:cub_sort_test`
+  also calls it through `jax.ffi.ffi_call`); `//metal_pjrt/ffi:cub_sort_test`
   looks handlers up in the static registry and invokes them as XLA does.
   `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.
 - XLA's SortRewriter targets `xla.gpu.ext.cub_sort_keys` / `cub_sort_pairs`
@@ -208,7 +208,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `METAL_PJRT_DISABLE_REWRITES=cubsort` turns SortRewriter off.
   (A `metal$softmax` rewriter existed until 2026-09-27; removed after an
   end-to-end A/B, docs/performance.md, "Measured and rejected".)
-- Dense linear algebra (`metal_pjrt_plugin/linalg/`): handlers
+- Dense linear algebra (`metal_pjrt/linalg/`): handlers
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
   row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,

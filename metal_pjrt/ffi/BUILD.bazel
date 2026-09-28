@@ -1,0 +1,69 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
+
+package(default_visibility = ["//visibility:public"])
+
+# XLA FFI support for the Metal platform: helpers plus the handlers the Metal
+# compiler's scan rewriter targets (metal$scan), XLA's SortRewriter targets
+# (xla.gpu.ext.cub_sort_keys/pairs) and the Python callback handler. Handlers register statically, so this is alwayslink.
+cc_library(
+    name = "metal_ffi",
+    srcs = [
+        "cub_sort_ffi.cc",
+        "metal_ffi.cc",
+        "python_callback_ffi.cc",
+        "scan_ffi.cc",
+    ],
+    hdrs = ["metal_ffi.h"],
+    deps = [
+        "//metal_pjrt/runtime:metal_runtime",
+        "//metal_pjrt/stream_executor:metal_executor",
+        "//metal_pjrt/stream_executor:metal_platform_id",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla:shape_util",
+        "@xla//xla/backends/gpu:ffi",
+        "@xla//xla/ffi",
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/stream_executor:platform",
+        "@xla//xla/stream_executor:platform_manager",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+    ],
+    alwayslink = True,
+)
+
+# The radix sort handlers (cub_sort_ffi.cc) against a CPU stable sort.
+# Needs a Metal device.
+cc_test(
+    name = "cub_sort_test",
+    srcs = ["cub_sort_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":metal_ffi",
+        "//metal_pjrt/stream_executor:metal_platform",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/ffi:attribute_map",
+        "@xla//xla/ffi:call_frame",
+        "@xla//xla/ffi:execution_state",
+        "@xla//xla/ffi",
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/ffi:ffi_registry",
+        "@xla//xla/ffi:invoke",
+        "@xla//xla/stream_executor:device_address",
+        "@xla//xla/stream_executor:platform_manager",
+        "@xla//xla/stream_executor:stream",
+        "@xla//xla/stream_executor:stream_executor_h",
+        "@xla//xla/tsl/lib/core:status_test_util",
+        "@xla//xla/tsl/platform:statusor",
+        "@xla//xla/tsl/platform:test",
+        "@xla//xla/tsl/platform:test_main",
+    ],
+)

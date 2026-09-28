@@ -15,7 +15,7 @@
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "metal_pjrt_plugin/runtime/metal_runtime.h"
+#include "metal_pjrt/runtime/metal_runtime.h"
 #include <Metal/Metal.hpp>
 
 namespace rt = metal_pjrt::rt;

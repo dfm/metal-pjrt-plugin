@@ -10,23 +10,23 @@ the plugin.
   `jax-v0.11.2`, pinned to the same XLA commit jaxlib 0.11.2 was built from.
 - `third_party/`: root-module patches (abseil, protobuf, grpc) copied from
   JAX, and the plugin's XLA patches (`third_party/xla/patches`).
-- `metal_pjrt_plugin/runtime/`: XLA-free C++ layer over Metal (metal-cpp):
+- `metal_pjrt/runtime/`: XLA-free C++ layer over Metal (metal-cpp):
   device, streams, events, kernels, allocations. Has a standalone device test.
-- `metal_pjrt_plugin/stream_executor/`: the StreamExecutor platform.
-- `metal_pjrt_plugin/compiler/`: `MetalCompiler : GpuCompiler` and the
+- `metal_pjrt/stream_executor/`: the StreamExecutor platform.
+- `metal_pjrt/compiler/`: `MetalCompiler : GpuCompiler` and the
   registrations (compiler, transfer manager, collectives stub, PJRT compiler).
-- `metal_pjrt_plugin/codegen/`: MLIR -> EmitC -> MSL kernel emitter and
+- `metal_pjrt/codegen/`: MLIR -> EmitC -> MSL kernel emitter and
   `MetalKernelCompiler`, the `KernelCompiler` that `MetalCompiler` hands to
   XLA's emitters.
-- `metal_pjrt_plugin/blas/`: GEMM via Metal Performance Shaders (f32) and
+- `metal_pjrt/blas/`: GEMM via Metal Performance Shaders (f32) and
   MSL "steel" kernels (f16/bf16, applying BlasLt epilogues in their store).
-- `metal_pjrt_plugin/linalg/`: Cholesky, triangular solve and LAPACK-backed
+- `metal_pjrt/linalg/`: Cholesky, triangular solve and LAPACK-backed
   decompositions as FFI custom calls (Accelerate, or GPU kernels for small
   matrices).
-- `metal_pjrt_plugin/ffi/`: FFI helpers and the scan, radix sort and Python
+- `metal_pjrt/ffi/`: FFI helpers and the scan, radix sort and Python
   callback handlers.
-- `metal_pjrt_plugin/pjrt/`: the plugin dylib target and its `GetPjrtApi`.
-- `metal_pjrt_plugin/xla_tripwire/`: snapshots of the XLA code the plugin
+- `metal_pjrt/pjrt/`: the plugin dylib target and its `GetPjrtApi`.
+- `metal_pjrt/xla_tripwire/`: snapshots of the XLA code the plugin
   relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
   in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
   `tests/test_jax_private_api.py` (host-only) is the same for the private
@@ -45,8 +45,8 @@ brew install bazelisk
 scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/openmetal, pip install -e .
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
-bazel test //metal_pjrt_plugin/...                             # host-only C++ tests
-scripts/device_lock.py -- bazel test //metal_pjrt_plugin:device_tests   # C++ device tests, one at a time
+bazel test //metal_pjrt/...                                    # host-only C++ tests
+scripts/device_lock.py -- bazel test //metal_pjrt:device_tests # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
 scripts/build_wheel.sh                                         # dist/openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
