@@ -13,13 +13,13 @@
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/strings/str_cat.h"
-#include "metal_pjrt/blas/steel_gemm_msl.h"
+#include "metal_pjrt/kernels/steel_gemm.metal.h"
 
 namespace metal_pjrt {
 namespace blas {
 namespace {
 
-// Must match SteelGemmParams in steel_gemm_msl.h.
+// Must match SteelGemmParams in kernels/steel_gemm.metal.
 struct SteelGemmParams {
   int32_t M, N, K;
   int32_t lda, ldb, ldd;
@@ -87,7 +87,8 @@ std::string VariantSource(MpsDType in, MpsDType out, const SteelTile& t,
       "constant constexpr bool USE_C = ", b(use_c), ";\n",
       "constant constexpr bool EPI_BIAS = ", b(epi.bias != nullptr), ";\n",
       "constant constexpr bool EPI_AUX = ", b(epi.aux != nullptr), ";\n",
-      "constant constexpr int EPI_ACT = ", epi.act, ";\n", kSteelGemmMslBody);
+      "constant constexpr int EPI_ACT = ", epi.act, ";\n",
+      kernels::kSteelGemmMsl);
 }
 
 const void* DevicePtr(const MpsOperand& x) {
@@ -191,7 +192,7 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
       device->GetKernel(VariantSource(p.a.dtype, p.c.dtype, t, p.a.transpose,
                                       p.b.transpose, mn_aligned, k_aligned,
                                       use_c, *epi),
-                        kSteelGemmKernelName));
+                        "steel_gemm"));
 
   const int tn = static_cast<int>((p.n + t.bn - 1) / t.bn);
   const int tm = static_cast<int>((p.m + t.bm - 1) / t.bm);

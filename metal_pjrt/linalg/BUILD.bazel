@@ -9,6 +9,7 @@ cc_library(
     linkopts = ["-framework Accelerate"],
     deps = [
         "//metal_pjrt/ffi:metal_ffi",
+        "//metal_pjrt/kernels:small_linalg",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",

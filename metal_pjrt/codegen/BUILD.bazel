@@ -12,6 +12,7 @@ cc_library(
     hdrs = ["msl_emitter.h"],
     deps = [
         ":msl_kernel",
+        "//metal_pjrt/kernels:msl_prelude",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",

@@ -25,6 +25,13 @@ the plugin.
   matrices).
 - `metal_pjrt/ffi/`: FFI helpers and the scan, radix sort and Python
   callback handlers.
+- `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,
+  radix sort, scan, small linear algebra, MPS staging, the runtime's
+  fill/copy kernels, the emitter's prelude). A genrule (`embed_msl.bzl`)
+  embeds each as a char array in the dylib; they are compiled at run time
+  (`newLibraryWithSource`: the command-line tools have no offline `metal`
+  compiler), so nothing ships besides the dylib, and the dylib's LC_UUID,
+  which keys the compilation cache, covers them.
 - `metal_pjrt/pjrt/`: the plugin dylib target and its `GetPjrtApi`.
 - `metal_pjrt/xla_tripwire/`: snapshots of the XLA code the plugin
   relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch

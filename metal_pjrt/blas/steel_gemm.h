@@ -1,6 +1,6 @@
 // Native half-precision GEMM ("steel", after the MLX kernels it is ported
-// from; see steel_gemm_msl.h): bf16/f16 with simdgroup-matrix MSL kernels
-// that accumulate in f32 (MPSMatrixMultiplication has no bf16).
+// from; see kernels/steel_gemm.metal): bf16/f16 with simdgroup-matrix MSL
+// kernels that accumulate in f32 (MPSMatrixMultiplication has no bf16).
 //
 // Same GemmParams contract as RunMpsGemm (row-major, operand buffers already
 // bound to (MTLBuffer, offset)), except that it is launched on an rt::Stream

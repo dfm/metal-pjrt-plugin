@@ -22,15 +22,6 @@
 // The prefix defines: T (input type), U (output type), BM BN BK WM WN,
 // TRANS_A TRANS_B MN_ALIGNED K_ALIGNED USE_C EPI_BIAS EPI_AUX (bools),
 // EPI_ACT (int: 0 none, 1 ReLU, 2 GELU (tanh), 3 SiLU), then this body.
-#ifndef METAL_PJRT_BLAS_STEEL_GEMM_MSL_H_
-#define METAL_PJRT_BLAS_STEEL_GEMM_MSL_H_
-
-namespace metal_pjrt {
-namespace blas {
-
-inline constexpr char kSteelGemmKernelName[] = "steel_gemm";
-
-inline constexpr char kSteelGemmMslBody[] = R"MSL(
 #include <metal_simdgroup>
 #include <metal_simdgroup_matrix>
 #include <metal_stdlib>
@@ -387,9 +378,3 @@ METAL_FUNC void gemm_loop(threadgroup T* As, threadgroup T* Bs,
                                            short2(tgp_bn, tgp_bm),
                                            params.alpha, params.beta);
 }
-)MSL";
-
-}  // namespace blas
-}  // namespace metal_pjrt
-
-#endif  // METAL_PJRT_BLAS_STEEL_GEMM_MSL_H_

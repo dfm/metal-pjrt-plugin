@@ -6,6 +6,7 @@
 #   codegen/           MLIR -> EmitC -> MSL (MetalKernelCompiler)
 #   blas/, linalg/     GEMM (MPS, steel) and linear algebra
 #   ffi/               FFI custom-call handlers
+#   kernels/           hand-written MSL (.metal), embedded in the dylib
 #   pjrt/              the plugin dylib (XLA's GPU C API shim, own GetPjrtApi)
 
 # Tests that need a Metal device (tagged manual, so `//...` skips them; see

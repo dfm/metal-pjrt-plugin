@@ -21,6 +21,7 @@ cc_library(
     ],
     linkopts = METAL_LINKOPTS,
     deps = [
+        "//metal_pjrt/kernels:runtime_builtins",
         "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:inlined_vector",

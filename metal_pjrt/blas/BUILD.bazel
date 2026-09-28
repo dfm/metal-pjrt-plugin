@@ -19,6 +19,7 @@ cc_library(
         "-framework Foundation",
     ],
     deps = [
+        "//metal_pjrt/kernels:mps_staging",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_macros",
@@ -121,12 +122,10 @@ cc_test(
 cc_library(
     name = "steel_gemm",
     srcs = ["steel_gemm.cc"],
-    hdrs = [
-        "steel_gemm.h",
-        "steel_gemm_msl.h",
-    ],
+    hdrs = ["steel_gemm.h"],
     deps = [
         ":mps_gemm",
+        "//metal_pjrt/kernels:steel_gemm",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_macros",

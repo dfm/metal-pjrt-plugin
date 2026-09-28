@@ -16,6 +16,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "metal_pjrt/kernels/mps_staging.metal.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/runtime/system_memory.h"
 
@@ -136,25 +137,12 @@ int64_t RequiredElems(const MpsOperand& x, const Stored& s, int64_t batches,
 // off + batch*bs + row*ld + col on both sides, so only the elements of the
 // matrices are touched, never row padding. Buffers are bound at offset 0 and
 // indexed with element offsets, so no binding-offset alignment applies.
+// The kernel is kernels/mps_staging.metal.
 
-struct StagingArgs {  // must match `Args` in kStagingMsl
+struct StagingArgs {  // must match `Args` in kernels/mps_staging.metal
   uint64_t in_off, out_off, ld, bs;
   uint32_t cols, rows, batches, pad;
 };
-
-constexpr const char* kStagingMsl = R"MSL(
-#include <metal_stdlib>
-using namespace metal;
-struct Args { ulong in_off, out_off, ld, bs; uint cols, rows, batches, pad; };
-kernel void copy_f32(device const uint* in [[buffer(0)]],
-                     device uint* out [[buffer(1)]],
-                     constant Args& a [[buffer(2)]],
-                     uint3 g [[thread_position_in_grid]]) {
-  if (g.x >= a.cols || g.y >= a.rows || g.z >= a.batches) return;
-  ulong e = ulong(g.z) * a.bs + ulong(g.y) * a.ld + ulong(g.x);
-  out[a.out_off + e] = in[a.in_off + e];
-}
-)MSL";
 
 // Copies the matrices of an operand between `in` and `out`, which share
 // ld/bs (all quantities in elements).
@@ -328,8 +316,9 @@ absl::Status RunMpsGemmImpl(rt::Device* rt_device, void* mtl_command_buffer,
       return absl::OkStatus();
     }
     if (pipe == nil) {
-      ABSL_ASSIGN_OR_RETURN(const rt::Kernel* k,
-                            rt_device->GetKernel(kStagingMsl, "copy_f32"));
+      ABSL_ASSIGN_OR_RETURN(
+          const rt::Kernel* k,
+          rt_device->GetKernel(kernels::kMpsStagingMsl, "copy_f32"));
       pipe = (__bridge id<MTLComputePipelineState>)static_cast<void*>(
           k->pso());
     }

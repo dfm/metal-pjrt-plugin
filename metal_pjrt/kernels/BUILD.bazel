@@ -1,0 +1,50 @@
+load(":embed_msl.bzl", "embed_msl")
+
+package(default_visibility = ["//visibility:public"])
+
+# The hand-written Metal Shading Language, embedded in the dylib as char
+# arrays (embed_msl.bzl) and compiled at run time. Nothing here is shipped as
+# a separate file.
+
+embed_msl(
+    name = "cub_sort",
+    src = "cub_sort.metal",
+    symbol = "kCubSortMsl",
+)
+
+embed_msl(
+    name = "mps_staging",
+    src = "mps_staging.metal",
+    symbol = "kMpsStagingMsl",
+)
+
+# Prepended to every kernel the MSL emitter generates (codegen/).
+embed_msl(
+    name = "msl_prelude",
+    src = "msl_prelude.metal",
+    symbol = "kMslPrelude",
+)
+
+embed_msl(
+    name = "runtime_builtins",
+    src = "runtime_builtins.metal",
+    symbol = "kRuntimeBuiltinsMsl",
+)
+
+embed_msl(
+    name = "scan",
+    src = "scan.metal",
+    symbol = "kScanMsl",
+)
+
+embed_msl(
+    name = "small_linalg",
+    src = "small_linalg.metal",
+    symbol = "kSmallLinalgMsl",
+)
+
+embed_msl(
+    name = "steel_gemm",
+    src = "steel_gemm.metal",
+    symbol = "kSteelGemmMsl",
+)
