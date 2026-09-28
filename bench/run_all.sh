@@ -5,6 +5,9 @@
 # the commit, versions and METAL_PJRT_*/XLA knobs (bench/common.py).
 #   BENCH_BACKENDS="metal metal-gpu cpu mlx"  (default: all)
 #   BENCH_ROUNDS=3  BENCH_ONLY=<case substrings>
+#   BENCH_BAZEL_SHUTDOWN=1  stop this workspace's Bazel server first (its JVM
+#     holds memory the allocation guard then refuses; off by default, since
+#     it would kill another session's build)
 # Compare against MLX only on a freshly booted, idle machine.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -19,7 +22,9 @@ if [[ -z "${BENCH_ALLOW_DEGRADED:-}" ]]; then
 fi
 # The Bazel server JVM holds a lot of memory after a build; the allocation
 # guard then refuses large pools (nanoGPT train step needs a 1.2 GB chunk).
-command -v bazel >/dev/null && bazel shutdown >/dev/null 2>&1
+if [[ -n "${BENCH_BAZEL_SHUTDOWN:-}" ]] && command -v bazel >/dev/null; then
+  bazel shutdown >/dev/null 2>&1
+fi
 mkdir -p bench/results
 ONLY=${BENCH_ONLY:-}
 BACKENDS=${BENCH_BACKENDS:-metal metal-gpu cpu mlx}

@@ -27,8 +27,10 @@ in `docs/design.md`, "Runtime".
   which logs every command buffer's GPU start/end time; the trace adds
   ~0.1-0.3 ms to sub-millisecond wall times, hence a separate pass. TFLOPS
   are computed at the best wall time.
-- Run `bazel shutdown` first. The Bazel server's memory makes the system
-  memory guard refuse large allocations (see "Runtime" in `docs/design.md`).
+- Run `bazel shutdown` first (or set `BENCH_BAZEL_SHUTDOWN=1`; `run_all.sh`
+  no longer does it by default, as it would kill another session's build).
+  The Bazel server's memory makes the system memory guard refuse large
+  allocations (see "Runtime" in `docs/design.md`).
 - A/Bs of sub-millisecond programs interleave the arms and report p10 /
   median / p90. Tiny kernels run in one of two GPU performance states
   (~4.2 vs ~2.3 us of GPU time per dispatch), which macOS picks from the
