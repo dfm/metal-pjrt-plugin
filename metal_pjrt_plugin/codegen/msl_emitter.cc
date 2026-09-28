@@ -343,11 +343,20 @@ inline T xla_erfc(T x) {
   float r = xla_erfc_pos(fabs(xf));
   return T(xf < 0.0f ? 2.0f - r : r);
 }
-template <typename T>
-inline T xla_cbrt(T x) {
-  float xf = float(x);
-  return T(copysign(pow(fabs(xf), 1.0f / 3.0f), xf));
+// pow(|x|, 1/3) alone is 7-12 ulps off away from 1 (1/3 rounds up in float,
+// an error that grows with |log x|) and 0 for subnormals (flushed). One
+// Newton step, (2r + a / r^2) / 3, which cannot overflow near FLT_MAX,
+// fixes the first; a subnormal m * 2^-149 is cbrt(2m) * 2^-50.
+inline float xla_cbrt(float x) {
+  bool s = xla_subnormal(x);
+  float a = s ? 2.0f * float(as_type<int>(x) & 0x7fffffff) : fabs(x);
+  if (a == 0.0f || !isfinite(a)) return x;
+  float r = pow(a, 1.0f / 3.0f);
+  r = (2.0f * r + a / (r * r)) / 3.0f;
+  return copysign(s ? r * 8.8817841970012523e-16f : r, x);  // 2^-50
 }
+template <typename T>
+inline T xla_cbrt(T x) { return T(xla_cbrt(float(x))); }
 template <typename T>
 inline T xla_powf(T x, T y) {
   float xf = float(x);
@@ -826,8 +835,9 @@ absl::Status RewriteLlvmArithmetic(ModuleOp module) {
   return absl::OkStatus();
 }
 
-// Expands arith ops that have no EmitC lowering into ones that do, and
-// makes signed index arithmetic and index loops signed in MSL.
+// Expands arith ops that have no EmitC lowering into ones that do, makes
+// signed index arithmetic and index loops signed in MSL, and 16-bit
+// multiplies free of C's integer promotion.
 absl::Status ExpandArith(ModuleOp module) {
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
@@ -889,6 +899,31 @@ absl::Status ExpandArith(ModuleOp module) {
     b.setInsertionPointToStart(f.getBody());
     auto idx = mlir::arith::IndexCastOp::create(b, loc, b.getIndexType(), iv);
     iv.replaceAllUsesExcept(idx, idx);
+  }
+  // C promotes 16-bit operands to int, so the uint16_t multiply ArithToEmitC
+  // emits can overflow int (65535 * 65535, undefined behaviour). Multiply
+  // in 32 bits and truncate: the low 16 bits are the same. (8-bit products
+  // fit in int; uint32_t operands are not promoted.)
+  llvm::SmallVector<mlir::arith::MulIOp> mul16;
+  module.walk([&](mlir::arith::MulIOp m) {
+    if (mlir::getElementTypeOrSelf(m.getType()).isInteger(16)) {
+      mul16.push_back(m);
+    }
+  });
+  for (mlir::arith::MulIOp m : mul16) {
+    OpBuilder b(m);
+    const Location loc = m.getLoc();
+    const Type narrow = m.getType();
+    Type wide = b.getI32Type();
+    if (auto v = mlir::dyn_cast<mlir::VectorType>(narrow)) {
+      wide = mlir::VectorType::get(v.getShape(), wide);
+    }
+    Value lhs = mlir::arith::ExtUIOp::create(b, loc, wide, m.getLhs());
+    Value rhs = mlir::arith::ExtUIOp::create(b, loc, wide, m.getRhs());
+    Value prod = mlir::arith::MulIOp::create(b, loc, lhs, rhs);
+    m.getResult().replaceAllUsesWith(
+        mlir::arith::TruncIOp::create(b, loc, narrow, prod));
+    m.erase();
   }
   return absl::OkStatus();
 }
@@ -1748,9 +1783,18 @@ class AllocaLowering : public MslPattern<ml::AllocaOp> {
     if (!count || !size || !ty) return rewriter.notifyMatchFailure(op, "alloca");
     int64_t chunks = std::max<int64_t>(1, (*count * *size + 15) / 16);
     std::string name = absl::StrCat("xla_alloca_", state_->alloca_counter++);
-    mlir::emitc::VerbatimOp::create(
-        rewriter, op.getLoc(),
-        absl::StrCat("thread uint4 ", name, "[", chunks, "];"));
+    // An LLVM alloca lives until the function returns; a C array declared
+    // in a loop or branch body would end with that block, and a pointer to
+    // it may be yielded out. Declare it at the top of the function.
+    auto fn = op->getParentOfType<mlir::FunctionOpInterface>();
+    if (!fn) return rewriter.notifyMatchFailure(op, "alloca outside a function");
+    {
+      mlir::OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&fn.getFunctionBody().front());
+      mlir::emitc::VerbatimOp::create(
+          rewriter, op.getLoc(),
+          absl::StrCat("thread uint4 ", name, "[", chunks, "];"));
+    }
     rewriter.replaceOpWithNewOp<mlir::emitc::LiteralOp>(
         op, ty, absl::StrCat("((thread char*)", name, ")"));
     return mlir::success();

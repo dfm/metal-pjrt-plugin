@@ -481,6 +481,77 @@ TEST_F(MslEmitterTest, SignedIndexLoop) {
   EXPECT_EQ(m[1].str(), "int64_t");
 }
 
+constexpr char kSmallIntMul[] = R"mlir(
+module {
+  func.func @smallmul(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %tid = gpu.thread_id x
+    %i = arith.index_cast %tid : index to i32
+    %p0 = llvm.getelementptr inbounds %arg0[0, %i] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<64 x i16>
+    %a = llvm.load %p0 : !llvm.ptr -> i16
+    %m = arith.muli %a, %a : i16
+    llvm.store %m, %p0 : i16, !llvm.ptr
+    %p1 = llvm.getelementptr inbounds %arg1[0, %i] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<64 x i8>
+    %b = llvm.load %p1 : !llvm.ptr -> i8
+    %n = arith.muli %b, %b : i8
+    %s = arith.addi %n, %b : i8
+    llvm.store %s, %p1 : i8, !llvm.ptr
+    return
+  }
+})mlir";
+
+// uint16_t operands promote to int in C, where 65535 * 65535 overflows
+// (undefined); 16-bit multiplies must happen in uint32_t.
+TEST_F(MslEmitterTest, SixteenBitMultiplyAvoidsIntPromotion) {
+  absl::StatusOr<MslKernel> kernel = Emit(kSmallIntMul, "smallmul");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string msl = kernel->msl_source.substr(
+      kernel->msl_source.find("smallmul_impl("));  // not the prelude
+  const std::regex mul(R"((\w+) \w+ = \w+ \* \w+;)");
+  std::vector<std::string> types;
+  for (auto it = std::sregex_iterator(msl.begin(), msl.end(), mul);
+       it != std::sregex_iterator(); ++it) {
+    if ((*it)[1].str() != "int64_t") types.push_back((*it)[1].str());  // gep
+  }
+  EXPECT_THAT(types, ::testing::UnorderedElementsAre("uint32_t", "uint8_t"));
+}
+
+// An alloca in a branch whose pointer is used after it: the array must be
+// declared at function scope (an LLVM alloca lives until return), not in
+// the if block.
+constexpr char kAllocaInBranch[] = R"mlir(
+module {
+  func.func @branchalloca(%arg0: !llvm.ptr) {
+    %c1 = arith.constant 1 : i32
+    %f = arith.constant 2.0 : f32
+    %tid = gpu.thread_id x
+    %i = arith.index_cast %tid : index to i32
+    %cond = arith.cmpi slt, %i, %c1 : i32
+    %p = scf.if %cond -> !llvm.ptr {
+      %a = llvm.alloca %c1 x f32 : (i32) -> !llvm.ptr
+      scf.yield %a : !llvm.ptr
+    } else {
+      %b = llvm.alloca %c1 x f32 : (i32) -> !llvm.ptr
+      scf.yield %b : !llvm.ptr
+    }
+    llvm.store %f, %p : f32, !llvm.ptr
+    %v = llvm.load %p : !llvm.ptr -> f32
+    %q = llvm.getelementptr inbounds %arg0[0, %i] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<64 x f32>
+    llvm.store %v, %q : f32, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, AllocasAreDeclaredAtFunctionScope) {
+  absl::StatusOr<MslKernel> kernel = Emit(kAllocaInBranch, "branchalloca");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string body = kernel->msl_source.substr(
+      kernel->msl_source.find("branchalloca_impl("));
+  const size_t branch = body.find("if (");
+  ASSERT_NE(branch, std::string::npos) << body;
+  EXPECT_LT(body.find("thread uint4 xla_alloca_0["), branch) << body;
+  EXPECT_LT(body.find("thread uint4 xla_alloca_1["), branch) << body;
+}
+
 TEST(MslLlvmBridgeTest, RoundTrip) {
   llvm::LLVMContext ctx;
   llvm::Module m("test", ctx);

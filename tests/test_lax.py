@@ -50,6 +50,12 @@ for op in ["abs","neg","sign","floor","ceil","round","exp","exp2","expm1","log",
             ref(getattr(lax, op), x)
         return fn
     case(f"lax.{op}")(mk(op))
+@case("lax.cbrt wide range")
+def _():
+    # Subnormals (flushed to 0 before the prelude handled them) to near
+    # FLT_MAX (pow(|x|, 1/3) alone was 7-12 ulps off there).
+    m = np.geomspace(1e-44, 3e38, 512).astype(np.float32)
+    ref(lax.cbrt, np.concatenate([m, -m]))
 for op in ["bessel_i0e","bessel_i1e","igamma","igammac","polygamma","zeta","random_gamma_grad","betainc"]:
     def mk(op):
         def fn():
@@ -207,7 +213,7 @@ ULPS = {
     'lax.cos': 2.3, 'lax.tan': 2.9, 'lax.asin': 2, 'lax.acos': 4.8,
     'lax.atan': 2.5, 'lax.sinh': 2.9, 'lax.cosh': 1.9, 'lax.asinh': 3.2,
     'lax.acosh': 3, 'lax.atanh': 3.4, 'lax.sqrt': 1, 'lax.rsqrt': 1,
-    'lax.cbrt': 1.7, 'lax.erf': 3.8, 'lax.erfc': 11, 'lax.erf_inv': 4.3,
+    'lax.cbrt': 1.7, 'lax.cbrt wide range': 2.8, 'lax.erf': 3.8, 'lax.erfc': 11, 'lax.erf_inv': 4.3,
     'lax.lgamma': 580, 'lax.digamma': 1600, 'lax.square': 1,
     'lax.reciprocal': 1, 'lax.bessel_i0e': 2.7, 'lax.bessel_i1e': 5,
     'lax.igamma': 5.9, 'lax.igammac': 26, 'lax.polygamma': 17, 'lax.zeta': 2,
