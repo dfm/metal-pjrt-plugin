@@ -1,11 +1,15 @@
-# openmetal_pjrt_plugin
+# metal-pjrt-plugin: a JAX PJRT plugin for Apple GPUs via Metal
 
 An open-source PJRT plugin that runs JAX on Apple Silicon GPUs. It treats
 Metal as a fourth XLA:GPU platform, next to CUDA, ROCm and SYCL: XLA's own
 GPU compiler fuses the program and its emitters generate the kernels, which
 the plugin translates to Metal Shading Language. It does not re-interpret
-StableHLO op by op. Its JAX platform is `"openmetal"`, so it can be
-installed next to Apple's closed-source `jax-metal` (platform `"metal"`).
+StableHLO op by op.
+
+Its JAX platform is `"mtl"` (`jax.devices("mtl")`,
+`JAX_PLATFORMS=mtl,cpu`), not `"metal"`: that name belongs to Apple's
+closed-source `jax-metal` plugin, and the two can be installed side by
+side. MTL is Metal's own prefix (`MTLDevice`, `MTLBuffer`).
 
 Status: a working minimum. f32, f16 and bf16 programs run end to end,
 including training loops, linear algebra, sorting and host callbacks. JAX's
@@ -37,44 +41,44 @@ From a wheel (the plugin library is inside it; `scripts/build_wheel.sh`
 builds one into `dist/`):
 
 ```
-pip install jax==0.11.2 jaxlib==0.11.2 openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl
+pip install jax==0.11.2 jaxlib==0.11.2 metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl
 ```
 
 From source, as an editable install into `.venv` (see `docs/development.md`):
 
 ```
-git clone <this repository> openmetal-pjrt-plugin && cd openmetal-pjrt-plugin
+git clone <this repository> metal-pjrt-plugin && cd metal-pjrt-plugin
 scripts/install_dev.sh     # creates .venv with uv, builds, installs (editable, with pytest)
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 ```
 
 ## Use
 
-openmetal is opt-in: installing it does not change JAX's default backend
+The plugin is opt-in: installing it does not change JAX's default backend
 (CPU). Select it for a whole program:
 
 ```
-JAX_PLATFORMS=openmetal,cpu python my_script.py
+JAX_PLATFORMS=mtl,cpu python my_script.py
 ```
 
 or in Python before JAX initializes its backends:
 
 ```python
 import jax
-jax.config.update("jax_platforms", "openmetal,cpu")
+jax.config.update("jax_platforms", "mtl,cpu")
 ```
 
 Or leave the default alone and place work explicitly:
 
 ```python
-dev = jax.devices("openmetal")[0]
+dev = jax.devices("mtl")[0]
 x = jax.device_put(x, dev)   # jitted functions run where their inputs are
 ```
 
 **Next to Apple's jax-metal** (untested: the two have never been installed
 together here). Both register a JAX plugin under different platform names.
 With `JAX_PLATFORMS` set, JAX creates backends only for the platforms
-listed, so `JAX_PLATFORMS=openmetal,cpu` does not use jax-metal (and
+listed, so `JAX_PLATFORMS=mtl,cpu` does not use jax-metal (and
 `metal,cpu` does not use this plugin), but JAX still loads every installed
 plugin. jax-metal pins its own jax version, so use separate virtual
 environments.
@@ -102,7 +106,7 @@ environments.
 
 ## Compilation cache
 
-JAX's persistent compilation cache works for openmetal but, as in JAX, is
+JAX's persistent compilation cache works for mtl but, as in JAX, is
 off until you give it a directory. The plugin never sets one: the setting
 is process-wide, so it would also cache your CPU compiles.
 
@@ -112,7 +116,7 @@ export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
 ```
 
 The second line matters: JAX only caches compiles that took over 1 s, and
-most openmetal compiles are faster. With both set, the first call of the
+most mtl compiles are faster. With both set, the first call of the
 nanoGPT training step in `bench/jax_bench.py` in a new process takes ~0.42 s
 from the cache instead of ~0.75 s (MLP train step: 41 ms instead of ~66 ms).
 

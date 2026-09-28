@@ -1,6 +1,6 @@
 # Performance
 
-Where openmetal stands, how it is measured, and what was tried and dropped.
+Where metal-pjrt-plugin stands, how it is measured, and what was tried and dropped.
 The dated measurements behind every line here, including superseded ones,
 are in `docs/archive/performance-log-2026-09.md`. The runtime policies the
 numbers depend on (command-buffer batching, the buffer cache) are described
@@ -18,7 +18,7 @@ in `docs/design.md`, "Runtime".
   backends (`BENCH_BACKENDS`, default `metal metal-gpu cpu mlx`) interleaved
   inside each round, and `bench/report.py` writes the median over rounds to
   `bench/results/table.md`. Rows record the commit, JAX/MLX versions, the
-  plugin's platform version and the `METAL_PJRT_*`, `JAX_OPENMETAL_*`,
+  plugin's platform version and the `METAL_PJRT_*`, `JAX_MTL_*`,
   `XLA_FLAGS` and `JAX_PLATFORMS` settings. It refuses to run after a GPU
   reset since boot (`scripts/gpu_health.py --strict`;
   `BENCH_ALLOW_DEGRADED=1` overrides): a GPU that has been reset several
@@ -46,7 +46,7 @@ in `docs/design.md`, "Runtime".
 64488ff, before the platform rename; MLX's column is an older run without
 metadata). Medians, ms:
 
-| case | openmetal | CPU | MLX |
+| case | mtl | CPU | MLX |
 |---|---|---|---|
 | nanoGPT train step | 187 | 1258 | 232 |
 | nanoGPT forward (loss) | 60 | 408 | 69 |

@@ -15,8 +15,8 @@ golden list. Both have an `--update` mode.
 - StreamExecutor platform: `PLATFORM_DEFINE_ID(kMetalPlatformId, METAL)`;
   `Platform::Name()` is "METAL", canonical name "metal"
   (`xla/service/platform_util.cc` lowercases unknown names).
-- PJRT platform (the JAX platform): name "openmetal" (`MetalName()`), id
-  `tsl::Fingerprint64("openmetal")`. Not "metal": that is Apple's
+- PJRT platform (the JAX platform): name "mtl" (`MetalName()`), id
+  `tsl::Fingerprint64("mtl")`. Not "metal": that is Apple's
   closed-source jax-metal plugin, and both may be installed together.
   The StreamExecutor, FFI and XLA-internal names stay "METAL"/"metal": they
   live in registries private to our dylib (it exports only `GetPjrtApi`,
@@ -24,8 +24,8 @@ golden list. Both have an `--update` mode.
   and `metal_pjrt_memory_pressure`, used by `tests/test_memory.py` via
   ctypes; they are not an API), so they cannot collide with another plugin.
   JAX looks lowerings up by `backend.platform`, i.e. `MetalName()`, so
-  `register_plugin`'s name and every `PLATFORM` in `jax_plugins/openmetal`
-  must be exactly "openmetal".
+  `register_plugin`'s name and every `PLATFORM` in `metal_pjrt_plugin`
+  must be exactly "mtl".
 - Things keyed on identity that need registration from our code:
   `Compiler::RegisterCompilerFactory(kMetalPlatformId, ...)`,
   `TransferManager` for `kMetalPlatformId`,
@@ -212,7 +212,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   `metal$cholesky`, `metal$triangular_solve` (targets of
   `MetalLinalgRewriter`, run at the start of `MetalCompiler::RunHloPasses`,
   row-major operands) and `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd,
-  gesdd_novec}` (targets of `jax_plugins/openmetal/linalg_lowerings.py`,
+  gesdd_novec}` (targets of `metal_pjrt_plugin/linalg_lowerings.py`,
   column-major operands via layout constraints). Matrices up to 32x32 in
   `metal$cholesky`, `metal$triangular_solve` and `metal$lapack_getrf` run as
   GPU kernels on the stream, with no synchronization. Above that, each
@@ -254,7 +254,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   key, and changing the environment after the first compile changes
   neither.
 - Persistent compilation cache. Two things kept JAX 0.11.2 from using it
-  for "openmetal", both fixed without an XLA patch:
+  for "mtl", both fixed without an XLA patch:
   (1) serialization failed with "Unsupported platform ID for
   XlaExecutableAbiVersion": XLA's GPU C API shim adds a `PJRT_AbiVersion`
   extension, so `PjRtCApiExecutable::GetAbiVersion` reports the OneAPI ABI,
@@ -277,8 +277,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   bitwise-identical results (MSL rides in the GPU executable's asm/binary,
   the constants container in the constants module's binary).
   (2) `compilation_cache.is_cache_used` accepts only the platforms in a
-  local list (tpu/gpu/cpu/neuron). `jax_plugins/openmetal` wraps it and, for
-  openmetal backends only, calls the original with a proxy whose `platform` is
+  local list (tpu/gpu/cpu/neuron). `metal_pjrt_plugin` wraps it and, for
+  mtl backends only, calls the original with a proxy whose `platform` is
   "gpu" (all else forwarded), so upstream's one-shot bookkeeping still
   runs. `tests/test_compilation_cache.py` asserts the list is still there.
   The plugin never sets `jax_compilation_cache_dir` (dfm, 2026-09-27): the

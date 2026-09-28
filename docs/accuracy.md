@@ -89,7 +89,7 @@ Repro:
 ### Policy (open for dfm to confirm)
 
 Fix clearly wrong values on valid inputs when the fix is cheap. The
-subnormal `log` fix makes openmetal closer to numpy / IEEE than JAX's CPU
+subnormal `log` fix makes mtl closer to numpy / IEEE than JAX's CPU
 backend; subnormal *outputs* still flush, as with CUDA's ftz, and are
 deliberately not fixed. Open question: "match numpy / IEEE" or "match
 XLA:CPU" as the rule for cases like this.

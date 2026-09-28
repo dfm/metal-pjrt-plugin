@@ -48,8 +48,8 @@ emitter's default case ("Unsupported instruction opcode").
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
 | triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
-| lu / geqrf / householder_product / eigh / svd | JAX lowerings in `jax_plugins/openmetal/linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
-| fft | `jax_plugins/openmetal/lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | verified (fft, rfft2); a native FFT is still missing |
+| lu / geqrf / householder_product / eigh / svd | JAX lowerings in `metal_pjrt_plugin/linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
+| fft | `metal_pjrt_plugin/lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | verified (fft, rfft2); a native FFT is still missing |
 | cuDNN conv / norm / attention | DNN thunks | not produced | conv rewriter is a no-op |
 | Triton fusions | Triton | not produced | gated to CUDA/ROCm |
 | custom fusions (CUTLASS), PTX custom kernels | custom kernel thunks | NO | not produced |

@@ -34,7 +34,9 @@ Metal support is therefore:
   behind the plugin's own small `GetPjrtApi` (`pjrt/metal_pjrt_api.cc`),
   which drops the ABI-version extension so JAX's persistent cache works and
   is done with `device_put`'s host data before returning.
-- `jax_plugins/openmetal` modeled on `jax_plugins/cuda`.
+- The Python package `metal_pjrt_plugin`, modeled on JAX's
+  `jax_plugins/cuda`: a top-level package found through its `jax_plugins`
+  entry point, like `jax_cuda12_plugin`.
 
 Intel's extension for OpenXLA did exactly this for SYCL out of tree. The
 device reports a OneAPI compute capability, so XLA takes its generic
@@ -179,7 +181,7 @@ sizes.
   as XLA assumes for its stream-ordered allocators; command buffers retain
   what they bind.
 - Budget: live + cached stays within half of physical RAM, capped by the
-  GPU's recommended working set, times `JAX_OPENMETAL_MEMORY_FRACTION`. A
+  GPU's recommended working set, times `JAX_MTL_MEMORY_FRACTION`. A
   miss evicts least recently freed buffers first, then fails with
   RESOURCE_EXHAUSTED. The compiler sees the recommended working set as the
   device size, so compiled programs do not vary with load.

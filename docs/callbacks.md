@@ -1,13 +1,13 @@
-# Host callbacks on openmetal (`io_callback`, `pure_callback`, `jax.debug.*`)
+# Host callbacks on mtl (`io_callback`, `pure_callback`, `jax.debug.*`)
 
-Status: **supported** under `jit` on a single openmetal device:
+Status: **supported** under `jit` on a single mtl device:
 `jax.pure_callback` (including `vmap_method=...` and custom_jvp wrappers),
 `jax.experimental.io_callback` (ordered and unordered), `jax.debug.callback`
 and `jax.debug.print` (ordered or not, inside `scan`/`grad`). A Python
 exception in the callback surfaces as a `JaxRuntimeError` carrying its
 message. Tests: `tests/test_callbacks.py` (against CPU) and three cases in
 `tests/test_lax.py`. checkify's runtime-error path uses the TPU rule
-(`debug_check` is a no-op; `jax_plugins/openmetal/lowerings.py`).
+(`debug_check` is a no-op; `metal_pjrt_plugin/lowerings.py`).
 
 ## Why not the CUDA path
 
@@ -17,16 +17,16 @@ an `index` into the module's `host_callbacks`. At execution, jaxlib's IFRT
 (`PjRtLoadedExecutable::Execute`, `xla/python/pjrt_ifrt/pjrt_executable.cc`)
 attaches those callables as FFI user data only when the client's
 `platform_id` is the CPU, CUDA, ROCm or OneAPI id. A C API plugin's id is
-`Fingerprint64(<platform name>)`, so for openmetal the user data never
+`Fingerprint64(<platform name>)`, so for mtl the user data never
 arrives, and that gate is compiled into jaxlib. The plugin therefore keeps
 its own table.
 
-## How the openmetal path works
+## How the mtl path works
 
-- **Lowering** (`jax_plugins/openmetal/callbacks.py`, installed by
+- **Lowering** (`metal_pjrt_plugin/callbacks.py`, installed by
   `initialize()`): `jax._src.callback.emit_python_callback` and its public
   alias `jax.interpreters.mlir.emit_python_callback` are wrapped. For
-  modules lowered only for openmetal it wraps the callable with upstream's
+  modules lowered only for mtl it wraps the callable with upstream's
   output shape/dtype checks, registers it in a process-global table under a
   fresh 64-bit `callback_id` (random per-process salt in the high bits), and
   emits a typed-FFI (api_version 4) custom call
@@ -56,7 +56,7 @@ its own table.
   any exception into the error message.
 - **Persistent compilation cache**: ids are per-process, so
   `compiler.compile_or_get_cached` is wrapped to compile executables with an
-  openmetal callback without the cache (tested in `tests/test_callbacks.py`
+  mtl callback without the cache (tested in `tests/test_callbacks.py`
   with the cache on). A stale executable loaded anyway
   fails with "unknown metal host callback id" instead of calling the wrong
   function.
@@ -66,7 +66,7 @@ its own table.
 - One device only; sub-byte and complex dtypes are refused.
 - Each callback costs a full stream synchronization and runs on the XLA
   execution thread while the stream is drained, so callbacks in hot loops
-  are slow. Dispatching new openmetal work from inside a callback and
+  are slow. Dispatching new mtl work from inside a callback and
   waiting on it is untested and may deadlock.
 - The synchronization is deliberate: callbacks stay off the stream's
   host-task worker, so no stream commit can wait for a task that needs the

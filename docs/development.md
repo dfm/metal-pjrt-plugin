@@ -31,9 +31,9 @@ the plugin.
   in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
   `tests/test_jax_private_api.py` (host-only) is the same for the private
   JAX APIs the Python package calls or replaces.
-- `jax_plugins/openmetal/`: Python registration package (dist
-  `openmetal_pjrt_plugin`) modeled on `jax_plugins/cuda`, plus lowerings and host
-  callbacks.
+- `metal_pjrt_plugin/`: the Python package (dist `metal-pjrt-plugin`, found
+  by JAX through its `jax_plugins` entry point `mtl`), modeled on
+  `jax_plugins/cuda`, plus lowerings and host callbacks.
 - `tests/`: pytest suite (below); `scripts/jax_known_failures/`: the expected
   failures of JAX's own tests.
 - `bench/`: benchmarks (Python, and the C++ dispatch microbenchmark).
@@ -42,14 +42,14 @@ the plugin.
 
 ```
 brew install bazelisk
-scripts/install_dev.sh                       # builds the dylib, links it into jax_plugins/openmetal, pip install -e .
+scripts/install_dev.sh                       # builds the dylib, links it into metal_pjrt_plugin/, pip install -e .
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt/...                                    # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt:device_tests # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests, serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
-scripts/build_wheel.sh                                         # dist/openmetal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
+scripts/build_wheel.sh                                         # dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
 
 `install_dev.sh` creates `.venv` with uv, or without it with `python3.12`
@@ -65,7 +65,7 @@ uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/pyt
 
 The wheel is pure Python plus the dylib (a copy, not the link), so it is
 tagged `py3-none-macosx_26_0_arm64` and depends on `jax==0.11.2` and
-`jaxlib==0.11.2`; `jax_plugins/openmetal/__init__.py` warns at import when
+`jaxlib==0.11.2`; `metal_pjrt_plugin/__init__.py` warns at import when
 either version differs (`JAX_VERSION`, checked against `pyproject.toml` by
 `tests/test_packaging.py`). Checked by installing it with `uv` into a fresh
 venv and running `tests/test_smoke.py`, `test_sort.py` and
@@ -76,11 +76,11 @@ A fresh clone builds with `scripts/install_dev.sh` alone (checked at
 deleting a scratch clone, run `bazel clean --expunge` in it: its output base
 is separate (~8 GB).
 
-`scripts/install_dev.sh` installs the `openmetal_pjrt_plugin` package (editable,
+`scripts/install_dev.sh` installs the `metal-pjrt-plugin` dist (editable,
 with the `test` extra) into `.venv`, with
-`jax_plugins/openmetal/pjrt_c_api_openmetal_plugin.dylib` a link into
+`metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib` a link into
 `bazel-bin`. The tests and scripts select the platform
-themselves (`JAX_PLATFORMS=openmetal,cpu`), since openmetal is not JAX's
+themselves (`JAX_PLATFORMS=mtl,cpu`), since mtl is not JAX's
 default backend.
 
 `tests/` is a pytest suite; tests that need the GPU are marked `metal` and
@@ -119,8 +119,8 @@ read at run time.
 
 | variable | read by | effect |
 |---|---|---|
-| `JAX_PLATFORMS` | JAX | `openmetal,cpu` selects the plugin (it is not JAX's default backend) |
-| `JAX_OPENMETAL_MEMORY_FRACTION` | runtime, at device creation | scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED |
+| `JAX_PLATFORMS` | JAX | `mtl,cpu` selects the plugin (it is not JAX's default backend) |
+| `JAX_MTL_MEMORY_FRACTION` | runtime, at device creation | scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED |
 | `METAL_PJRT_DISABLE_REWRITES` | compiler; compile-time, read once | comma list: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all` |
 | `METAL_PJRT_DISABLE_LAPACK` | compiler and Python lowerings; compile-time, read once | any value but `0`: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead |
 | `METAL_PJRT_TRACE` | runtime | `1` logs one line per committed command buffer (op count, GPU time) |
@@ -130,7 +130,7 @@ read at run time.
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | `pjrt/metal_pjrt_api.cc` | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap (default 256; for tests) |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | runtime | `n` fails the n-th committed command buffer (tests of the error path) |
 | `METAL_TEST_REPORT_ULPS` | `tests/metal_testing.py` | print every measured error (with `pytest -s`) |
-| `JAX_OPENMETAL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |
+| `JAX_MTL_DEVICE_LOCK_HELD` | `scripts/device_lock.py`, `tests/conftest.py` | set by the lock for its command: the holder's pid, which makes the lock re-entrant for descendants |
 | `JAX_TESTS_DIR` | `scripts/run_jax_tests.sh` | JAX checkout with the tests (default `~/.cache/openmetal/jax-tests`) |
 | `JAX_NUM_GENERATED_CASES`, `PYTEST_TIMEOUT` | `scripts/run_jax_tests.sh` | JAX's generated cases per test (default 3); seconds before a slow test's stack dump (default 180; the test is not stopped) |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | `bench/run_all.sh` | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot, `bazel shutdown` first (off by default) |
