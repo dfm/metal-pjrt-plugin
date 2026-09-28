@@ -60,11 +60,9 @@ int main(int argc, char** argv) {
   auto dev_or = rt::Device::Create(0);
   Check(dev_or.status(), "Device::Create");
   std::unique_ptr<rt::Device> dev = *std::move(dev_or);
-  auto lib = dev->CompileLibrary(kMsl);
-  Check(lib.status(), "CompileLibrary");
-  auto k = dev->CreateKernel(*lib, "add3");
-  Check(k.status(), "CreateKernel");
-  std::unique_ptr<rt::Kernel> kernel = *std::move(k);
+  auto k = dev->GetKernel(kMsl, "add3");
+  Check(k.status(), "GetKernel");
+  const rt::Kernel* kernel = *k;
   auto s_or = dev->CreateStream();
   Check(s_or.status(), "CreateStream");
   std::unique_ptr<rt::Stream> stream = *std::move(s_or);
