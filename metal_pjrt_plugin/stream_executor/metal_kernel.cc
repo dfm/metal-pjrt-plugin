@@ -25,12 +25,6 @@ namespace metal {
 
 namespace rt = metal_pjrt::rt;
 
-MetalKernel::MetalKernel(MetalExecutor* executor, const rt::Kernel* kernel,
-                         unsigned arity)
-    : executor_(executor), kernel_(kernel), arity_(arity) {}
-
-MetalKernel::~MetalKernel() { executor_->UnloadKernel(this); }
-
 absl::StatusOr<int32_t> MetalKernel::GetMaxOccupiedBlocksPerCore(
     ThreadDim threads, size_t dynamic_shared_memory_bytes) const {
   uint64_t per_block = threads.x * threads.y * threads.z;

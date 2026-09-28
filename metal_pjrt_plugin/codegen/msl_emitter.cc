@@ -368,35 +368,6 @@ inline T xla_powf(T x, T y) {
   }
   return T(pow(xf, yf));
 }
-template <typename T, typename I>
-inline T xla_fpowi(T x, I n) {
-  float b = float(x);
-  long e = long(n);
-  bool neg = e < 0;
-  if (neg) e = -e;
-  float r = 1.0f;
-  while (e != 0) {
-    if (e & 1) r *= b;
-    b *= b;
-    e >>= 1;
-  }
-  return T(neg ? 1.0f / r : r);
-}
-template <typename T>
-inline T xla_ipowi(T b, T e) {
-  if (e < 0) {
-    if (b == 1) return T(1);
-    if (b == -1) return (e & 1) ? T(-1) : T(1);
-    return T(0);
-  }
-  T r = T(1);
-  while (e != 0) {
-    if (e & 1) r *= b;
-    b *= b;
-    e >>= 1;
-  }
-  return r;
-}
 )msl";
 
 // ---------------------------------------------------------------------------
@@ -575,7 +546,6 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"math.erfc", "xla_erfc"},    {"math.exp", "xla_exp"},
       {"math.exp2", "exp2"},        {"math.expm1", "xla_expm1"},
       {"math.floor", "floor"},      {"math.fma", "fma"},
-      {"math.ipowi", "xla_ipowi"},  {"math.fpowi", "xla_fpowi"},
       {"math.isfinite", "isfinite"}, {"math.isinf", "isinf"},
       {"math.isnan", "isnan"},      {"math.isnormal", "isnormal"},
       {"math.log", "xla_log"},      {"math.log10", "xla_log10"},

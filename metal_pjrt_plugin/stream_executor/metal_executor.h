@@ -64,8 +64,6 @@ class MetalExecutor : public gpu::GpuExecutor {
   absl::Status SynchronousMemcpy(void* host_dst,
                                  const DeviceAddressBase& device_src,
                                  uint64_t size) override;
-  absl::StatusOr<std::shared_ptr<DeviceAddressBase>> CreateOrShareConstant(
-      Stream* stream, absl::Span<const uint8_t> content) override;
 
   // Peer access: there is one GPU and one address space.
   absl::Status EnablePeerAccessTo(StreamExecutor* other) override;
@@ -75,7 +73,6 @@ class MetalExecutor : public gpu::GpuExecutor {
   // constants containers (see runtime/constants_container.h).
   absl::StatusOr<std::unique_ptr<Kernel>> LoadKernel(
       const KernelLoaderSpec& spec) override;
-  void UnloadKernel(const Kernel* kernel) override;
   absl::StatusOr<ModuleHandle> LoadModule(
       const MultiModuleLoaderSpec& spec) override;
   bool UnloadModule(ModuleHandle module_handle) override;
@@ -112,8 +109,6 @@ class MetalExecutor : public gpu::GpuExecutor {
   mutable absl::Mutex mu_;
   absl::flat_hash_set<Stream*> live_streams_ ABSL_GUARDED_BY(mu_);
   absl::flat_hash_map<const void*, LoadedModule> modules_ ABSL_GUARDED_BY(mu_);
-  absl::flat_hash_map<uint64_t, std::weak_ptr<DeviceAddressBase>>
-      shared_constants_ ABSL_GUARDED_BY(mu_);
   std::unique_ptr<blas::BlasSupport> blas_ ABSL_GUARDED_BY(mu_);  // [metal-blas]
 };
 

@@ -62,11 +62,14 @@ golden list. Both have an `--update` mode.
 - Base: `gpu::GpuExecutor(Platform*, int ordinal)` (adds `device_ordinal()`).
 - Pure: `Init`, `CreateStream(priority)`, `CreateEvent`, `Allocate(size,
   memory_space)`, `Deallocate`, `HostMemoryAllocate`, `SynchronizeAllActivity`,
-  `SynchronousMemcpy` x2, `DeallocateStream`, `EnablePeerAccessTo`,
-  `CanEnablePeerAccessTo`, `CreateDeviceDescription`.
+  `SynchronousMemcpy` x2 (Unimplemented: only multi-device thunks call
+  it), `DeallocateStream`, `EnablePeerAccessTo`, `CanEnablePeerAccessTo`,
+  `CreateDeviceDescription`.
 - Required by the PJRT client: `DeviceMemoryUsage` returns true;
-  `CreateMemoryAllocator(kCollective|kHost)`; `LoadKernel`, `UnloadKernel`,
-  `LoadModule`, `GetSymbol` (constants), `CreateOrShareConstant`.
+  `CreateMemoryAllocator(kCollective|kHost)`; `LoadKernel`, `LoadModule`,
+  `GetSymbol` (constants). `UnloadKernel` and `CreateOrShareConstant` keep
+  the base defaults (a no-op; Unimplemented, which only the CUDA/ROCm/SYCL
+  executors override and nothing on our path calls).
 - Memory spaces (`memory_space.h`): kDevice=0, kUnified=1, kCollective=2,
   kHost=5. XLA colors: default 0, collective 1, temp 2. With unified memory all
   of these are the same shared MTLBuffer allocation.

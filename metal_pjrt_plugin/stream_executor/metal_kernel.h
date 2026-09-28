@@ -18,17 +18,14 @@
 namespace stream_executor {
 namespace metal {
 
-class MetalExecutor;
-
 // A compiled Metal compute pipeline. Arguments are device pointers in HLO
 // buffer order (one [[buffer(i)]] each), optionally followed by threadgroup
 // memory.
 class MetalKernel : public Kernel {
  public:
   // `kernel` is owned by the runtime device's kernel cache.
-  MetalKernel(MetalExecutor* executor, const metal_pjrt::rt::Kernel* kernel,
-              unsigned arity);
-  ~MetalKernel() override;
+  MetalKernel(const metal_pjrt::rt::Kernel* kernel, unsigned arity)
+      : kernel_(kernel), arity_(arity) {}
 
   unsigned Arity() const override { return arity_; }
 
@@ -50,7 +47,6 @@ class MetalKernel : public Kernel {
                       const std::optional<ClusterDim>& cluster_dims,
                       Stream* stream, const KernelArgs& args) override;
 
-  MetalExecutor* executor_;
   const metal_pjrt::rt::Kernel* kernel_;
   unsigned arity_;
 };

@@ -192,61 +192,18 @@ bool MetalExecutor::DeviceMemoryUsage(int64_t* free, int64_t* total) const {
   return true;
 }
 
+// Pure virtual in StreamExecutor, called only by multi-device thunks
+// (ragged all-to-all); every copy we run goes through a Stream.
 absl::Status MetalExecutor::SynchronousMemcpy(DeviceAddressBase* device_dst,
                                               const void* host_src,
                                               uint64_t size) {
-  // Unified memory: make sure no in-flight GPU work touches the destination,
-  // then copy directly.
-  if (size == 0) return absl::OkStatus();
-  if (device_dst == nullptr || device_dst->opaque() == nullptr ||
-      host_src == nullptr) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "SynchronousMemcpy H2D of %d bytes: null pointer", size));
-  }
-  ABSL_RETURN_IF_ERROR(SynchronizeAllStreams());
-  std::memcpy(device_dst->opaque(), host_src, size);
-  return absl::OkStatus();
+  return absl::UnimplementedError("Metal: SynchronousMemcpy (use a Stream)");
 }
 
 absl::Status MetalExecutor::SynchronousMemcpy(void* host_dst,
                                               const DeviceAddressBase& device_src,
                                               uint64_t size) {
-  if (size == 0) return absl::OkStatus();
-  if (host_dst == nullptr || device_src.opaque() == nullptr) {
-    return absl::InvalidArgumentError(absl::StrFormat(
-        "SynchronousMemcpy D2H of %d bytes: null pointer", size));
-  }
-  ABSL_RETURN_IF_ERROR(SynchronizeAllStreams());
-  std::memcpy(host_dst, device_src.opaque(), size);
-  return absl::OkStatus();
-}
-
-absl::StatusOr<std::shared_ptr<DeviceAddressBase>>
-MetalExecutor::CreateOrShareConstant(Stream* stream,
-                                     absl::Span<const uint8_t> content) {
-  uint64_t key = tsl::Fingerprint64(
-      absl::string_view(reinterpret_cast<const char*>(content.data()),
-                        content.size()));
-  absl::MutexLock lock(&mu_);
-  auto it = shared_constants_.find(key);
-  if (it != shared_constants_.end()) {
-    if (auto existing = it->second.lock()) return existing;
-    shared_constants_.erase(it);
-  }
-  DeviceAddressBase mem = Allocate(content.size(), 0);
-  if (mem.is_null()) {
-    return absl::ResourceExhaustedError(absl::StrFormat(
-        "Metal device %d: failed to allocate a %d-byte shared constant",
-        device_ordinal(), content.size()));
-  }
-  std::memcpy(mem.opaque(), content.data(), content.size());
-  std::shared_ptr<DeviceAddressBase> owned(
-      new DeviceAddressBase(mem), [this](DeviceAddressBase* p) {
-        Deallocate(p);
-        delete p;
-      });
-  shared_constants_[key] = owned;
-  return owned;
+  return absl::UnimplementedError("Metal: SynchronousMemcpy (use a Stream)");
 }
 
 absl::Status MetalExecutor::EnablePeerAccessTo(StreamExecutor* other) {
@@ -277,7 +234,7 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
                         absl::StrCat("loading kernel ", spec.kernel_name(),
                                      ": ", rt_kernel.status().message()));
   }
-  auto kernel = std::make_unique<MetalKernel>(this, *rt_kernel, spec.arity());
+  auto kernel = std::make_unique<MetalKernel>(*rt_kernel, spec.arity());
   kernel->set_name(spec.kernel_name());
   if (std::holds_alternative<KernelLoaderSpec::KernelArgsPackingFunc>(
           spec.kernel_args_packing())) {
@@ -296,10 +253,6 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
         });
   }
   return std::unique_ptr<Kernel>(std::move(kernel));
-}
-
-void MetalExecutor::UnloadKernel(const Kernel* kernel) {
-  // Pipeline states are cached by the runtime device; nothing to do.
 }
 
 absl::StatusOr<ModuleHandle> MetalExecutor::LoadModule(
