@@ -3,6 +3,7 @@ import importlib.metadata
 import importlib.util
 import pathlib
 import re
+import tomllib
 
 import pytest
 
@@ -66,3 +67,21 @@ def test_missing_library_warning(monkeypatch, tmp_path, caplog, dangling):
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
     assert "scripts/install_dev.sh" in caplog.text, caplog.text
     assert ("which does not exist" in caplog.text) == dangling, caplog.text
+
+
+def test_license_files_in_wheel():
+    # PEP 639 license-files put both in the wheel's dist-info/licenses/
+    # (setuptools >= 77); scripts/build_wheel.sh stages both. The notices
+    # carry the MLX and metal-cpp licenses for code compiled into the dylib.
+    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    files = ["LICENSE", "THIRD_PARTY_NOTICES"]
+    assert pyproject["project"]["license-files"] == files
+    assert pyproject["build-system"]["requires"] == ["setuptools>=77"]
+    staged = re.search(r"^cp (.*) \"\$STAGE\"/$",
+                       (ROOT / "scripts/build_wheel.sh").read_text(), re.M)
+    assert staged and set(files) <= set(staged.group(1).split()), staged
+    notices = (ROOT / "THIRD_PARTY_NOTICES").read_text()
+    for needle in ("Copyright (c) 2023 ml-explore",
+                   "Copyright \u00a9 2024 Apple Inc.",
+                   "Apache License\n                           Version 2.0"):
+        assert needle in notices, needle

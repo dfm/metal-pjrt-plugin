@@ -16,7 +16,7 @@ DYLIB=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_mtl_plugin.dylib
 [[ -f "$DYLIB" ]] || { echo "missing $DYLIB" >&2; exit 1; }
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-cp pyproject.toml README.md LICENSE "$STAGE"/
+cp pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES "$STAGE"/
 mkdir -p "$STAGE/metal_pjrt_plugin"
 cp metal_pjrt_plugin/*.py "$STAGE/metal_pjrt_plugin/"
 cp -L "$DYLIB" "$STAGE/metal_pjrt_plugin/"

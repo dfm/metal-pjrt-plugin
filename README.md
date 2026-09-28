@@ -259,7 +259,8 @@ please run the GPU tests under `scripts/device_lock.py`.
 
 ## License
 
-Apache-2.0 (`LICENSE`). The f16/bf16 matmul ("steel") kernels are ported
-from [MLX](https://github.com/ml-explore/mlx) (MIT; its notice is kept in
-`metal_pjrt/kernels/steel_gemm.metal`), and Apple's metal-cpp headers
-(Apache-2.0) are fetched at build time and compiled into the plugin.
+Apache-2.0 (`LICENSE`). The plugin also contains third-party code: the
+f16/bf16 matmul ("steel") kernels are ported from
+[MLX](https://github.com/ml-explore/mlx) (MIT), and Apple's metal-cpp headers
+(Apache-2.0) are compiled in. Their notices are in `THIRD_PARTY_NOTICES`,
+which the wheel ships next to `LICENSE`.

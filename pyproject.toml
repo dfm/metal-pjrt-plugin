@@ -4,7 +4,10 @@ version = "0.0.1"
 description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"
-license = { file = "LICENSE" }
+# PEP 639 (setuptools >= 77): both files land in the wheel's
+# dist-info/licenses/.
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
 
 [project.optional-dependencies]
@@ -14,7 +17,7 @@ test = ["pytest"]
 mtl = "metal_pjrt_plugin"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 # Only the Python package: never a "metal_pjrt*" pattern, which would sweep
