@@ -349,6 +349,9 @@ bool FitsSmallKernel(std::initializer_list<uint64_t> counts) {
 absl::Status LaunchSmall(stream_executor::Stream* stream, const char* function,
                          const std::vector<const void*>& buffers,
                          const SmallParams& params, uint64_t threads) {
+  // An empty batch has nothing to do and may have null buffers to bind.
+  // (XLA folds zero-element ops away before this, so it is a backstop.)
+  if (threads == 0) return absl::OkStatus();
   const uint32_t group = 64;
   const uint32_t groups =
       static_cast<uint32_t>((threads + group - 1) / group);
