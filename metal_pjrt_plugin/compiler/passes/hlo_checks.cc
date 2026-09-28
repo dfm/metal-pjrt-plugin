@@ -56,23 +56,18 @@ absl::Status CheckGemm(const HloInstruction& instr) {
                      instr.custom_call_target(), " (", DescribeOp(instr), ")"));
   }
   TF_ASSIGN_OR_RETURN(auto config, instr.backend_config<GpuBackendConfig>());
-  const Shape& out =
-      instr.shape().IsTuple() ? instr.shape().tuple_shapes(0) : instr.shape();
-  absl::Status s = stream_executor::metal::CheckBlasLtTypes(
-      instr.operand(0)->shape().element_type(),
-      instr.operand(1)->shape().element_type(), out.element_type());
-  if (s.ok()) {
-    absl::StatusOr<stream_executor::gpu::BlasLt::Epilogue> e =
-        gpublas_lt::AsBlasLtEpilogue(config.gemm_backend_config().epilogue());
-    s = e.ok() ? stream_executor::metal::DecodeEpilogue(*e).status()
-               : e.status();
-  }
-  if (s.ok()) {
-    // A config XLA itself cannot build fails at thunk emission anyway.
-    absl::StatusOr<GemmConfig> gemm = GemmConfig::For(
-        &instr, se::GpuComputeCapability(se::OneAPIComputeCapability()));
-    if (gemm.ok()) s = stream_executor::metal::CheckBlasLtShape(*gemm);
-  }
+  // What GetMatmulPlan checks again at run time, on the config the thunk
+  // builds.
+  absl::Status s = [&]() -> absl::Status {
+    TF_ASSIGN_OR_RETURN(
+        stream_executor::gpu::BlasLt::Epilogue e,
+        gpublas_lt::AsBlasLtEpilogue(config.gemm_backend_config().epilogue()));
+    TF_ASSIGN_OR_RETURN(
+        GemmConfig gemm,
+        GemmConfig::For(&instr,
+                        se::GpuComputeCapability(se::OneAPIComputeCapability())));
+    return stream_executor::metal::ValidateMatmul(gemm, e).status();
+  }();
   if (s.ok()) return s;
   return absl::Status(s.code(),
                       absl::StrCat(s.message(), " (", DescribeOp(instr), ")"));

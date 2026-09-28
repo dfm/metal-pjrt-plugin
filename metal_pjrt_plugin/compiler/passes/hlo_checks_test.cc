@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <memory>
 #include <string>
 
@@ -5,10 +6,13 @@
 #include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
+#include "metal_pjrt_plugin/blas/blas_lt_support.h"
 #include "metal_pjrt_plugin/compiler/passes/dot_upcast.h"
 #include "metal_pjrt_plugin/compiler/passes/hlo_checks.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
+#include "xla/stream_executor/gpu/gpu_blas_lt.h"
+#include "xla/xla_data.pb.h"
 
 namespace xla {
 namespace gpu {
@@ -55,6 +59,46 @@ TEST_F(MetalHloChecksTest, UnsupportedGemmTypeNamesTheOp) {
   EXPECT_NE(s.message().find("model.py:12"), std::string::npos) << s;
   EXPECT_FALSE(Check(Gemm("f16", "bf16", "f32", "DEFAULT")).ok());
   EXPECT_FALSE(Check(Gemm("f32", "f32", "bf16", "DEFAULT")).ok());
+}
+
+// The index limits of the kernel that would run the GEMM (ValidateMatmul),
+// checked on the HLO shapes without allocating anything.
+TEST_F(MetalHloChecksTest, GemmIndexLimits) {
+  // f16/bf16: steel's 32-bit index math; K = 2^23 + 16 puts A's leading
+  // dimension past kSteelMaxLd. MPS (f32) has no such limit.
+  auto big_k = [](const std::string& hlo) {
+    return absl::StrReplaceAll(
+        hlo, {{"[64,32]", "[64,8388624]"}, {"[32,16]", "[8388624,16]"}});
+  };
+  absl::Status s = Check(big_k(Gemm("f16", "f16", "f16", "DEFAULT")));
+  EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(s.message().find("leading dimension"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("jit(f)/dot_general"), std::string::npos) << s;
+  EXPECT_TRUE(Check(big_k(Gemm("f32", "f32", "f32", "DEFAULT"))).ok());
+}
+
+// f32 with an epilogue: the epilogue kernel's grid is (n, m, batch), each
+// bounded by uint32; without an epilogue MPS alone runs it. (Called
+// directly: such rows do not survive the trip through HLO shapes.)
+TEST(ValidateMatmulTest, F32EpilogueGridLimit) {
+  namespace se_gpu = stream_executor::gpu;
+  using Order = se_gpu::MatrixLayout::Order;
+  const int64_t m = int64_t{1} << 32;
+  const se_gpu::MatrixLayout out(F32, m, 16, Order::kRowMajor);
+  se_gpu::GemmConfig cfg{se_gpu::MatrixLayout(F32, m, 32, Order::kRowMajor),
+                         se_gpu::MatrixLayout(F32, 32, 16, Order::kRowMajor),
+                         out, out};
+  cfg.alpha = 1.0;
+  cfg.beta = 0.0;
+  auto v = stream_executor::metal::ValidateMatmul(
+      cfg, se_gpu::BlasLt::Epilogue::kReLU);
+  EXPECT_EQ(v.status().code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(v.status().message().find("epilogue on a 1x4294967296x16"),
+            std::string::npos)
+      << v.status();
+  EXPECT_TRUE(stream_executor::metal::ValidateMatmul(
+                  cfg, se_gpu::BlasLt::Epilogue::kDefault)
+                  .ok());
 }
 
 TEST_F(MetalHloChecksTest, NarrowOperandDot) {

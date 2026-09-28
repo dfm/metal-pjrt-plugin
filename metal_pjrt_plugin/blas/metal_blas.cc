@@ -223,59 +223,10 @@ absl::Status MetalBlas::GetVersion(std::string* version) {
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
     const gpu::GemmConfig& cfg, Epilogue epilogue) const {
-  ABSL_ASSIGN_OR_RETURN(EpilogueSpec epi, DecodeEpilogue(epilogue));
-  if (cfg.alpha.imag() != 0.0) {
-    return absl::UnimplementedError("Metal BlasLt: complex alpha");
-  }
-  gpu::MatrixLayout lhs = cfg.lhs_layout, rhs = cfg.rhs_layout,
-                    c = cfg.c_layout, out = cfg.output_layout;
-  for (const gpu::MatrixLayout* l : {&lhs, &rhs, &c, &out}) {
-    if (l->transpose != blas::Transpose::kNoTranspose) {
-      return absl::UnimplementedError(
-          absl::StrCat("Metal BlasLt: transposed layout ", l->ToString()));
-    }
-  }
-  // As in cuBLASLt: an operand without a batch dimension is broadcast
-  // (its batch_stride is 0).
-  const int64_t batch = std::max(lhs.batch_size, rhs.batch_size);
-  lhs.batch_size = rhs.batch_size = batch;
-  if (out.batch_size != batch) {
-    return absl::InvalidArgumentError(
-        absl::StrCat("Metal BlasLt: batch mismatch ", out.ToString()));
-  }
-
-  // MPS writes a row-major result. For a column-major output use
-  //   D^T = (A B)^T = B^T A^T,
-  // i.e. swap the operands and view every layout transposed (the inverse of
-  // gpu::MakeOutputColumnMajor).
-  const bool swap = out.order == gpu::MatrixLayout::Order::kColumnMajor;
-  if (swap) {
-    std::swap(lhs, rhs);
-    lhs.Transpose();
-    rhs.Transpose();
-    c.Transpose();
-    out.Transpose();
-  }
-
-  const int64_t m = out.num_rows, n = out.num_cols, k = lhs.num_cols;
-  if (lhs.num_rows != m || rhs.num_rows != k || rhs.num_cols != n) {
-    return absl::InvalidArgumentError(absl::StrCat(
-        "Metal BlasLt: inconsistent shapes lhs=", lhs.ToString(),
-        " rhs=", rhs.ToString(), " out=", out.ToString()));
-  }
-  ABSL_RETURN_IF_ERROR(CheckBlasLtTypes(lhs.dtype, rhs.dtype, out.dtype));
-  ABSL_ASSIGN_OR_RETURN(mps::MpsDType ta, FromPrimitiveType(lhs.dtype));
-  ABSL_ASSIGN_OR_RETURN(mps::MpsDType tb, FromPrimitiveType(rhs.dtype));
-  ABSL_ASSIGN_OR_RETURN(mps::MpsDType tout, FromPrimitiveType(out.dtype));
-  if (cfg.beta != 0.0 &&
-      (c.dtype != out.dtype || c.order != out.order ||
-       c.leading_dim_stride != out.leading_dim_stride ||
-       c.batch_stride != out.batch_stride || c.num_rows != out.num_rows ||
-       c.num_cols != out.num_cols)) {
-    return absl::UnimplementedError(
-        absl::StrCat("Metal BlasLt: C layout ", c.ToString(),
-                     " differs from output layout ", out.ToString()));
-  }
+  ABSL_ASSIGN_OR_RETURN(ValidatedMatmul v, ValidateMatmul(cfg, epilogue));
+  ABSL_ASSIGN_OR_RETURN(mps::MpsDType ta, FromPrimitiveType(v.lhs.dtype));
+  ABSL_ASSIGN_OR_RETURN(mps::MpsDType tb, FromPrimitiveType(v.rhs.dtype));
+  ABSL_ASSIGN_OR_RETURN(mps::MpsDType tout, FromPrimitiveType(v.out.dtype));
 
   // A row-major logical matrix is its stored matrix; a column-major one is the
   // transpose of the row-major view of its storage.
@@ -288,45 +239,32 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
     return o;
   };
   mps::GemmParams p;
-  p.m = m;
-  p.n = n;
-  p.k = k;
-  p.batch_count = batch;
+  p.m = v.m;
+  p.n = v.n;
+  p.k = v.k;
+  p.batch_count = v.batch;
   p.alpha = cfg.alpha.real();
   p.beta = cfg.beta;
-  p.a = operand(lhs, ta);
-  p.b = operand(rhs, tb);
-  p.c = operand(out, tout);  // row-major after the swap above
+  p.a = operand(v.lhs, ta);
+  p.b = operand(v.rhs, tb);
+  p.c = operand(v.out, tout);  // row-major after the swap
+  // f16/bf16 run only on steel, which applies any epilogue in its store
+  // (bias index = column of the row-major view of D, i.e. the stored minor
+  // dimension).
   if (ta != mps::MpsDType::kF32) {
-    // f16/bf16 run only on steel. CheckPostGemmRewriter refuses the shapes
-    // it cannot run at compile time (CheckBlasLtShape), so this is a
-    // backstop.
-    std::string why;
-    if (!mps::SteelGemmSupports(p, &why)) {
-      return absl::InvalidArgumentError(
-          absl::StrCat("Metal BlasLt: the steel GEMM cannot run this ",
-                       mps::MpsDTypeName(ta), " GEMM (", why,
-                       "): ", mps::GemmParamsDebugString(p)));
-    }
-    // Steel applies any epilogue in its store (bias index = column of the
-    // row-major view of D, i.e. the stored minor dimension).
-    return std::make_unique<MatmulPlan>(device_, p, swap, epi);
+    return std::make_unique<MatmulPlan>(device_, p, v.swap, v.epi);
   }
-  if (epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, swap);
+  if (v.epi.trivial()) return std::make_unique<MatmulPlan>(device_, p, v.swap);
 
   // MPS (f32): a second kernel over the row-major view of D: the bias index
-  // is the column, aux shares D's layout. The batch is the grid's z, which
-  // Metal bounds by uint32 (not CUDA's 65535; steel's GEMM does the same).
-  if (m > UINT32_MAX || n > UINT32_MAX || batch > UINT32_MAX) {
-    return absl::UnimplementedError(absl::StrCat(
-        "Metal BlasLt: epilogue on a ", batch, "x", m, "x", n, " output"));
-  }
+  // is the column, aux shares D's layout.
   ABSL_ASSIGN_OR_RETURN(MTL::Library * lib,
-                        device_->CompileLibrary(EpilogueSource(epi)));
+                        device_->CompileLibrary(EpilogueSource(v.epi)));
   ABSL_ASSIGN_OR_RETURN(std::unique_ptr<rt::Kernel> kernel,
                         device_->CreateKernel(lib, kEpilogueKernelName));
   return std::make_unique<MatmulPlan>(
-      device_, p, swap, epi, std::shared_ptr<rt::Kernel>(std::move(kernel)));
+      device_, p, v.swap, v.epi,
+      std::shared_ptr<rt::Kernel>(std::move(kernel)));
 }
 
 absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(

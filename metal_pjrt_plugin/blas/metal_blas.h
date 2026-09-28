@@ -11,9 +11,10 @@
 // f16/bf16 inputs; alpha/beta real; transposes; leading dims; strided batches
 // (including stride-0 broadcast); every BlasLt epilogue (bias, ReLU, GELU,
 // SiLU, with or without aux output). Steel applies an epilogue in its store;
-// f32 GEMMs run on MPS plus a small MSL kernel over D afterwards. f16/bf16
-// shapes steel cannot run (32-bit index limits) are refused at compile
-// time (CheckBlasLtShape).
+// f32 GEMMs run on MPS plus a small MSL kernel over D afterwards. What is
+// supported is ValidateMatmul (blas_lt_support.h), which the compiler also
+// runs, so unsupported GEMMs (e.g. f16/bf16 shapes past steel's 32-bit index
+// limits) are refused at compile time.
 // Complex/f64/int8 and GEMV/TRSM/Scal are unimplemented.
 #ifndef METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_
 #define METAL_PJRT_PLUGIN_BLAS_METAL_BLAS_H_

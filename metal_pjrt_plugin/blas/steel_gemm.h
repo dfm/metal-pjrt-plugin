@@ -40,7 +40,7 @@ struct SteelEpilogue {
 SteelTile ChooseSteelTile(const GemmParams& p);
 
 // True when the steel kernel can run `p` (dtypes, index ranges; the same
-// limits as CheckBlasLtShape in blas_lt_support.h, which refuses the rest at
+// limits as ValidateMatmul in blas_lt_support.h, which refuses the rest at
 // compile time). `why` receives the reason when not.
 bool SteelGemmSupports(const GemmParams& p, std::string* why = nullptr);
 

@@ -43,18 +43,25 @@ struct EpilogueSpec {
   bool trivial() const { return !bias && act == Activation::kNone; }
 };
 
-absl::StatusOr<EpilogueSpec> DecodeEpilogue(gpu::BlasLt::Epilogue e);
+// A GEMM MetalBlasLt can run, in the row-major form MPS and steel take.
+struct ValidatedMatmul {
+  // A column-major output is computed as D^T = B^T A^T: lhs and rhs are
+  // swapped and every layout (c and out included) is viewed transposed.
+  bool swap = false;
+  gpu::MatrixLayout lhs, rhs, c, out;  // lhs/rhs batch_size = batch
+  int64_t m = 0, n = 0, k = 0, batch = 0;
+  EpilogueSpec epi;
+};
 
-// f32, f16 or bf16 operands of one type; output of the same type, or f32.
-absl::Status CheckBlasLtTypes(xla::PrimitiveType a, xla::PrimitiveType b,
-                              xla::PrimitiveType out);
-
-// f16/bf16 GEMMs run only on steel, whose index math is 32-bit: every
-// dimension and the batch count must fit in int32, and every leading
-// dimension in kSteelMaxLd elements (steel_gemm.cc SteelGemmSupports checks
-// the same again before encoding). f32 GEMMs (MPS) have no such limits.
-inline constexpr int64_t kSteelMaxLd = 2147483647 / 256;
-absl::Status CheckBlasLtShape(const gpu::GemmConfig& cfg);
+// Everything MetalBlasLt requires of a GEMM, without Metal: a supported
+// epilogue; f32, f16 or bf16 operands of one type with an output of that
+// type or f32; real alpha; no transposed layouts; C laid out like D when
+// beta != 0; and the index limits of the kernel that will run it (steel's
+// 32-bit index math for f16/bf16; the f32 epilogue kernel's uint32 grid).
+// CheckPostGemmRewriter calls it at compile time and GetMatmulPlan again as
+// a backstop, so a GEMM that compiles gets a plan.
+absl::StatusOr<ValidatedMatmul> ValidateMatmul(const gpu::GemmConfig& cfg,
+                                               gpu::BlasLt::Epilogue epilogue);
 
 }  // namespace metal
 }  // namespace stream_executor

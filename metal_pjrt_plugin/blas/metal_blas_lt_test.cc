@@ -204,8 +204,8 @@ TEST_P(MetalBlasLtEpilogueTest, MatchesReference) {
 
 // f16/bf16 GEMMs run only on steel: a shape past its 32-bit index limits
 // is refused when the plan is created (before any buffer or GPU work; the
-// compiler refuses it earlier still, CheckBlasLtShape), and f32 is not
-// limited.
+// compiler refuses it earlier still, with the same ValidateMatmul), and f32
+// is not limited.
 TEST(MetalBlasLtTest, SteelOnlyShapeLimit) {
   TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
                           PlatformManager::PlatformWithName("METAL"));
@@ -228,8 +228,8 @@ TEST(MetalBlasLtTest, SteelOnlyShapeLimit) {
     if (t == xla::F32) {
       EXPECT_TRUE(plan.ok()) << plan.status();
     } else {
-      EXPECT_EQ(plan.status().code(), absl::StatusCode::kInvalidArgument);
-      EXPECT_NE(plan.status().message().find("leading dimension too large"),
+      EXPECT_EQ(plan.status().code(), absl::StatusCode::kUnimplemented);
+      EXPECT_NE(plan.status().message().find("leading dimension"),
                 std::string::npos)
           << plan.status();
     }

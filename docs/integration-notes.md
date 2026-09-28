@@ -106,9 +106,10 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   the base pipeline (GemmRewriter), then
   `MetalDotOperandUpcaster` on the dots left for the loop emitter and
   `CheckPostGemmRewriter` (`compiler/passes/hlo_checks.h`): no narrow-operand
-  kDot, every `__cublas$lt$matmul` has types and an
-  epilogue `MetalBlasLt` supports (`blas/blas_lt_support.h`, shared with
-  `MetalBlasLt`). A violation is a compile error naming the JAX op and line.
+  kDot, every `__cublas$lt$matmul` passes `ValidateMatmul`
+  (`blas/blas_lt_support.h`: types, epilogue, layouts and the index limits
+  of the kernel that will run it), which `MetalBlasLt::GetMatmulPlan` runs
+  again as a backstop. A violation is a compile error naming the JAX op and line.
   (A TopK custom call is not checked since 8976842: TopK is decomposed to
   a sort for OneAPI, and one that survived fails at thunk emission, having
   no Metal handler.)
