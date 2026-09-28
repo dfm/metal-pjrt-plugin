@@ -25,14 +25,16 @@ its own table.
 ## How the openmetal path works
 
 - **Lowering** (`jax_plugins/openmetal/callbacks.py`, installed by
-  `initialize()`): `jax._src.callback.emit_python_callback` is wrapped. For
+  `initialize()`): `jax._src.callback.emit_python_callback` and its public
+  alias `jax.interpreters.mlir.emit_python_callback` are wrapped. For
   modules lowered only for openmetal it wraps the callable with upstream's
   output shape/dtype checks, registers it in a process-global table under a
   fresh 64-bit `callback_id` (random per-process salt in the high bits), and
   emits a typed-FFI (api_version 4) custom call
   `xla_ffi_python_metal_callback` with attribute `callback_id: u64`,
   `has_side_effect` as upstream, and a leading `!stablehlo.token`
-  operand/result for ordered effects. The lowering rules in callback.py,
+  operand/result for ordered effects (under Shardy with its own sharding
+  annotation, as upstream). The lowering rules in callback.py,
   debugging.py and checkify.py look the function up on the module at call
   time, so nothing else is patched.
 - **Lifetime**: the wrapped callable is also added to

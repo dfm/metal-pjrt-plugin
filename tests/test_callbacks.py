@@ -108,6 +108,16 @@ def io_callback_ordered_in_scan():
     assert glog == elog and [i for i, _ in glog] == list(range(6)), (glog, elog)
 
 @case
+def io_callback_ordered_with_results():
+    # Ordered: a token operand/result besides the value result. Under Shardy
+    # the token needs its own sharding annotation, or lowering fails.
+    def f(x):
+        y = io_callback(lambda a: np.asarray(a) * 2, jax.ShapeDtypeStruct(x.shape, x.dtype),
+                        x + 1, ordered=True)
+        return y - 1
+    both(f, x8)
+
+@case
 def io_callback_vmap_unordered():
     def f(x):
         return jax.vmap(lambda v: io_callback(lambda a: np.asarray(a) * 3, jax.ShapeDtypeStruct(v.shape, v.dtype), v))(x)
@@ -190,3 +200,12 @@ def many_calls_same_executable():
 @pytest.mark.parametrize("fn", CASES, ids=[f.__name__ for f in CASES])
 def test_callback(fn):
     fn()
+
+
+def test_public_emit_python_callback_is_patched():
+    # User lowering rules call jax.interpreters.mlir.emit_python_callback.
+    metal()  # the plugin is initialized
+    from jax._src import callback as jax_callback
+    from jax.interpreters import mlir
+    assert mlir.emit_python_callback is jax_callback.emit_python_callback
+    assert hasattr(mlir.emit_python_callback, "__wrapped__")

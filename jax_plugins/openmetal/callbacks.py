@@ -166,8 +166,9 @@ def _metal_emit_python_callback(ctx, callback, token, operands, operand_avals,
                                 result_avals, *, has_side_effect,
                                 returns_token=True, partitioned=False,
                                 sharding=None):
-  from jax._src import core, dtypes, ffi
+  from jax._src import config, core, dtypes, ffi
   from jax._src.interpreters import mlir
+  from jax._src.sharding_impls import SdyArray, SdyArrayList
 
   del operand_avals, returns_token
   if partitioned and result_avals:
@@ -194,6 +195,14 @@ def _metal_emit_python_callback(ctx, callback, token, operands, operand_avals,
 
   if token:
     operands = [token, *operands]
+    # As upstream (jax/_src/callback.py): under Shardy, results besides the
+    # token need a sharding for the token too.
+    if (config.use_shardy_partitioner.value and sharding is not None
+        and len(ctx.avals_out) > 0 and isinstance(sharding, SdyArrayList)):
+      sharding = SdyArrayList((
+          SdyArray(mesh_shape=(), dim_shardings=(),
+                   logical_device_ids=sharding.shardings[0].logical_device_ids),
+          *sharding.shardings))
     ctx = dataclasses.replace(
         ctx,
         avals_in=[core.abstract_token, *ctx.avals_in],
@@ -236,6 +245,7 @@ def install(library_path) -> None:
 
   from jax._src import callback as jax_callback
   from jax._src import compiler
+  from jax.interpreters import mlir as public_mlir
 
   upstream_emit = jax_callback.emit_python_callback
 
@@ -246,8 +256,9 @@ def install(library_path) -> None:
   emit_python_callback.__wrapped__ = upstream_emit
   emit_python_callback.__doc__ = upstream_emit.__doc__
   # Lowering rules in callback.py, debugging.py and checkify.py look the name
-  # up on the module at call time.
+  # up on the module at call time; user lowering rules use the public alias.
   jax_callback.emit_python_callback = emit_python_callback
+  public_mlir.emit_python_callback = emit_python_callback
 
   upstream_compile = compiler.compile_or_get_cached
 
