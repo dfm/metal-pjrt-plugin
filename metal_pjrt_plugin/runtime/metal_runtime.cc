@@ -1195,6 +1195,7 @@ absl::Status Stream::EnsureCommandBuffer() {
   cmd_ticket_ = device_->BeginWork();
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
+  flops_in_cmd_ = 0;
   FlushDeferredWaits();
   return absl::OkStatus();
 }
@@ -1258,6 +1259,7 @@ absl::Status Stream::Commit() {
     device_->EndWork(cmd_ticket_);
     ops_in_cmd_ = 0;
     threads_in_cmd_ = 0;
+    flops_in_cmd_ = 0;
     return absl::OkStatus();
   }
   for (const PendingWait& w : pending_waits_) {
@@ -1375,6 +1377,7 @@ absl::Status Stream::Commit() {
   cmd_ = nullptr;
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
+  flops_in_cmd_ = 0;
   last_committed_fence_value_ = v;
   std::vector<MTL::CommandBuffer*> still_running;
   for (MTL::CommandBuffer* cb : in_flight_) {
@@ -1483,11 +1486,13 @@ uint32_t DeclaredMaxThreadsPerThreadgroup(const std::string& msl_source,
   return n;
 }
 
-absl::Status Stream::FinishOp(uint64_t work) {
+absl::Status Stream::FinishOp(uint64_t work, uint64_t flops) {
   threads_in_cmd_ += work;
+  flops_in_cmd_ += std::min(flops, kMaxFlopsPerCommandBuffer);
   ++ops_in_cmd_;
   if (ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
-      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer) {
+      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer ||
+      flops_in_cmd_ >= kMaxFlopsPerCommandBuffer) {
     return Commit();
   }
   if (ops_in_cmd_ >= kEarlyCommitOps &&
@@ -1544,11 +1549,12 @@ uint64_t LaunchWork(Dim3 threadgroups, Dim3 threads) {
 
 absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
                             Dim3 threads, absl::Span<const KernelArg> args,
-                            uint32_t threadgroup_memory_bytes) {
+                            uint32_t threadgroup_memory_bytes,
+                            uint64_t flops) {
   ABSL_RETURN_IF_ERROR(ValidateLaunch(kernel, threads, args));
   if (kernel.uses_argument_buffer()) {
     return LaunchWithArgumentBuffer(kernel, threadgroups, threads, args,
-                                    threadgroup_memory_bytes);
+                                    threadgroup_memory_bytes, flops);
   }
   std::lock_guard<std::mutex> lock(mu_);
   // Resolve before opening an encoder so a bad pointer encodes nothing.
@@ -1581,12 +1587,13 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(LaunchWork(threadgroups, threads));
+  return FinishOp(LaunchWork(threadgroups, threads), flops);
 }
 
 absl::Status Stream::LaunchWithArgumentBuffer(
     const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
-    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes) {
+    absl::Span<const KernelArg> args, uint32_t threadgroup_memory_bytes,
+    uint64_t flops) {
   std::lock_guard<std::mutex> lock(mu_);
   absl::InlinedVector<uint64_t, 64> addrs(std::max<size_t>(args.size(), 1), 0);
   absl::InlinedVector<MTL::Buffer*, 16> resident;
@@ -1619,16 +1626,17 @@ absl::Status Stream::LaunchWithArgumentBuffer(
   enc_->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(LaunchWork(threadgroups, threads));
+  return FinishOp(LaunchWork(threadgroups, threads), flops);
 }
 
 absl::Status Stream::EncodeExternal(
-    std::function<absl::Status(void* mtl_command_buffer)> encode) {
+    std::function<absl::Status(void* mtl_command_buffer)> encode,
+    uint64_t flops) {
   std::lock_guard<std::mutex> lock(mu_);
   ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
   EndEncoder();
   ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(cmd_)));
-  return FinishOp(kExternalOpWork);
+  return FinishOp(0, flops);
 }
 
 namespace {

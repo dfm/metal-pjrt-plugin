@@ -748,6 +748,34 @@ TEST_F(MetalRuntimeTest, HostTaskEnqueuedWhenTheHoldSeesAFailure) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// GEMM launches are charged their flops: the buffer is committed once the
+// budget is reached, even with few ops and threads (and the GPU busy). The
+// kernel is a tiny axpy; only its declared cost is large.
+TEST_F(MetalRuntimeTest, FlopsBudgetCommits) {
+  const uint32_t n = 256;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  ASSERT_THAT(s->Memset32(x, 0, n * 4), IsOk());
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  Params p{n, 1.0f};
+  auto launch = [&](uint64_t flops) {
+    return s->Launch(*kernel_, Dim3{1, 1, 1}, Dim3{256, 1, 1},
+                     {KernelArg::Buffer(x), KernelArg::Buffer(y),
+                      KernelArg::Bytes(&p, sizeof(p))},
+                     0, flops);
+  };
+  const uint64_t committed = s->FenceForTesting().first;
+  ASSERT_THAT(launch(Stream::kMaxFlopsPerCommandBuffer / 2), IsOk());
+  EXPECT_EQ(s->FenceForTesting().first, committed);  // still open
+  ASSERT_THAT(launch(Stream::kMaxFlopsPerCommandBuffer / 2), IsOk());
+  EXPECT_GT(s->FenceForTesting().first, committed);  // budget reached
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // Work encoded before another stream's failure is never committed: the open
 // command buffer is dropped (its fence and events force-signaled), and no
 // more work goes into it.

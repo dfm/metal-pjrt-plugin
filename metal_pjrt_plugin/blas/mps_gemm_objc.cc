@@ -49,6 +49,18 @@ const char* MpsDTypeName(MpsDType t) {
   return "?";
 }
 
+uint64_t GemmWork(const GemmParams& p) {
+  const double b = static_cast<double>(p.batch_count);
+  const double m = static_cast<double>(p.m), n = static_cast<double>(p.n),
+               k = static_cast<double>(p.k);
+  const double flops = 2.0 * b * m * n * k;
+  const double bytes = b * (m * k * MpsDTypeSize(p.a.dtype) +
+                            k * n * MpsDTypeSize(p.b.dtype) +
+                            m * n * MpsDTypeSize(p.c.dtype));
+  const double work = std::max(flops, 64.0 * bytes);
+  return work >= 1.8e19 ? UINT64_MAX : static_cast<uint64_t>(work);
+}
+
 std::string GemmParamsDebugString(const GemmParams& p) {
   std::ostringstream os;
   auto op = [&os](const char* name, const MpsOperand& x) {

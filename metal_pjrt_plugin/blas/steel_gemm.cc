@@ -256,7 +256,8 @@ absl::Status RunSteelGemm(rt::Device* device, rt::Stream* stream,
                          rt::KernelArg::Buffer(d),
                          rt::KernelArg::Bytes(&sp, sizeof(sp)),
                          rt::KernelArg::Buffer(bias),
-                         rt::KernelArg::Buffer(aux)});
+                         rt::KernelArg::Buffer(aux)},
+                        /*threadgroup_memory_bytes=*/0, GemmWork(p));
 }
 
 }  // namespace blas

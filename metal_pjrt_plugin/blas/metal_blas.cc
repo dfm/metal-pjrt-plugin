@@ -90,9 +90,11 @@ absl::Status Encode(rt::Device* device, Stream* stream,
   if (params.a.dtype != mps::MpsDType::kF32) {
     return mps::RunSteelGemm(device, rs, params);
   }
-  return rs->EncodeExternal([&](void* cmd) {
-    return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
-  });
+  return rs->EncodeExternal(
+      [&](void* cmd) {
+        return mps::RunMpsGemm(static_cast<void*>(device->mtl()), cmd, params);
+      },
+      mps::GemmWork(params));
 }
 
 // BlasLt epilogues: semantics and DecodeEpilogue in blas_lt_support.h.

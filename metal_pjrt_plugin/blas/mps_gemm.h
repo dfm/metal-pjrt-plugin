@@ -59,6 +59,12 @@ absl::Status RunMpsGemm(void* mtl_device, void* mtl_command_buffer,
 
 std::string GemmParamsDebugString(const GemmParams& p);
 
+// The GEMM's cost for the command buffer budget (rt::Stream::Launch's
+// `flops`), in flop-equivalents: 2*m*n*k*batch, or, for bandwidth-bound
+// shapes (GEMV-like), 64 flops per byte of A, B and C (measured on an M3:
+// ~2.9 TFLOPS against 40-100 GB/s).
+uint64_t GemmWork(const GemmParams& p);
+
 }  // namespace blas
 }  // namespace metal_pjrt
 

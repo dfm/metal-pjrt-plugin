@@ -106,9 +106,16 @@ microseconds of CPU and GPU-scheduler time (the driver spends ~150 us of a
 dedicated thread submitting each), so a stream packs many dispatches into
 one. It commits when the GPU has nothing of the stream's left to run and at
 least 16 ops are encoded, if 500 us have passed since its last commit;
-explicit syncs commit at once. Caps keep each buffer far from the GPU watchdog: 1024 ops, or 2^27
-dispatched threads, with an op whose cost is invisible (an MPS GEMM)
-charged 1/32 of that. Copies and uniform fills up to 16 MB run as built-in
+explicit syncs commit at once. Caps keep each buffer far from the GPU
+watchdog: 1024 ops, 2^27 dispatched threads, or 2e11 GEMM flops. GEMMs
+(steel launches and MPS through `EncodeExternal`) launch few threads for
+their work, so they are charged an estimate instead, `blas::GemmWork`:
+2mnk per batch, or 64 flops per byte of A, B and C for bandwidth-bound
+(GEMV-like) shapes. The budget is <= 0.1 s of GEMM on the M3 (2.0-3.1
+TFLOPS measured over f32/f16/bf16 shapes), a >= 5x margin for a throttled
+base M1 and for shapes that run less efficiently; a single larger GEMM
+gets a buffer of its own. Eight chained 4096^3 f32 GEMMs used to share one
+371 ms buffer; now each buffer holds two (93 ms). Copies and uniform fills up to 16 MB run as built-in
 compute kernels so kernels and copies share one compute encoder (an encoder
 switch costs ~10 us of GPU time); larger ones use the blit engine.
 

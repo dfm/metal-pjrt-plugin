@@ -465,10 +465,13 @@ class Stream {
   Stream& operator=(const Stream&) = delete;
 
   // Kernel launch. threadgroups = grid in threadgroup units, threads = per
-  // threadgroup. Buffer args are resolved to (buffer, offset) here.
+  // threadgroup. Buffer args are resolved to (buffer, offset) here. `flops`
+  // is the launch's cost for the kMaxFlopsPerCommandBuffer budget (GEMMs;
+  // blas::GemmWork), 0 for kernels whose cost the thread count describes.
   absl::Status Launch(const Kernel& kernel, Dim3 threadgroups, Dim3 threads,
                       absl::Span<const KernelArg> args,
-                      uint32_t threadgroup_memory_bytes = 0);
+                      uint32_t threadgroup_memory_bytes = 0,
+                      uint64_t flops = 0);
 
   // Metal's per-stage buffer argument table has 31 slots. Kernels using an
   // argument buffer (Kernel::uses_argument_buffer) take up to
@@ -482,9 +485,11 @@ class Stream {
   // raw MTL::CommandBuffer* (as void*, so Objective-C++ callers can bridge it
   // to id<MTLCommandBuffer>). `encode` must create, use and end its own
   // encoders and must not commit the buffer or call back into this stream (the
-  // stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer.
+  // stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer
+  // and `flops` toward kMaxFlopsPerCommandBuffer.
   absl::Status EncodeExternal(
-      std::function<absl::Status(void* mtl_command_buffer)> encode);
+      std::function<absl::Status(void* mtl_command_buffer)> encode,
+      uint64_t flops);
 
   // Device-to-device copy and fill. Copies and fills up to
   // kComputeCopyMaxBytes, and fills whose pattern is not one repeated byte,
@@ -549,9 +554,10 @@ class Stream {
   // workloads made of many tiny kernels (scans, while loops) need many
   // dispatches per buffer. Policy: commit when the GPU has nothing of ours
   // left to run and at least kEarlyCommitOps ops are encoded (keeps the GPU
-  // fed with low latency), or when kMaxOpsPerCommandBuffer ops or
-  // kMaxThreadsPerCommandBuffer thread-equivalents of work are encoded (the
-  // latter keeps each buffer far from the GPU watchdog).
+  // fed with low latency), or when kMaxOpsPerCommandBuffer ops,
+  // kMaxThreadsPerCommandBuffer thread-equivalents or kMaxFlopsPerCommandBuffer
+  // GEMM flops are encoded (the latter two keep each buffer far from the GPU
+  // watchdog).
   static constexpr int kMaxOpsPerCommandBuffer = 1024;
   static constexpr int kEarlyCommitOps = 16;
   // Early commits are also paced in time: submitting a command buffer costs
@@ -567,9 +573,15 @@ class Stream {
   // kernels cannot approach the GPU watchdog timeout, especially under
   // contention from other processes.
   static constexpr uint64_t kMaxThreadsPerCommandBuffer = 1ull << 27;
-  // Work charged for an op whose cost we cannot see (EncodeExternal, e.g. an
-  // MPS GEMM): at most 32 such ops per command buffer.
-  static constexpr uint64_t kExternalOpWork = kMaxThreadsPerCommandBuffer / 32;
+  // GEMMs launch few threads for their work, so they are charged their
+  // flop-equivalents (Launch/EncodeExternal `flops`) against this budget
+  // instead. 2e11 is <= 0.1 s of GEMM on the M3 this was measured on
+  // (2.0-3.1 TFLOPS over f32 MPS and f16/bf16 steel shapes, 64 flops per
+  // byte for bandwidth-bound ones; see blas::GemmWork). That leaves a >= 5x
+  // margin for the slowest supported GPU (a base M1, 2-3x slower when
+  // throttled) and for shapes steel runs less efficiently, well under the
+  // watchdog. A single larger GEMM still gets a buffer of its own.
+  static constexpr uint64_t kMaxFlopsPerCommandBuffer = 200'000'000'000ull;
 
  private:
   friend class Device;
@@ -578,7 +590,8 @@ class Stream {
   absl::Status LaunchWithArgumentBuffer(const Kernel& kernel,
                                         Dim3 threadgroups, Dim3 threads,
                                         absl::Span<const KernelArg> args,
-                                        uint32_t threadgroup_memory_bytes);
+                                        uint32_t threadgroup_memory_bytes,
+                                        uint64_t flops);
   // Encoders for already-resolved work. Caller holds mu_.
   absl::Status EncodeBuiltin(Device::Builtin kind,
                              absl::Span<const BufferRef> buffers,
@@ -588,7 +601,7 @@ class Stream {
                           uint64_t size);
   // Account one encoded op of `work` thread-equivalents and commit the
   // command buffer if the batching policy says so. Caller holds mu_.
-  absl::Status FinishOp(uint64_t work);
+  absl::Status FinishOp(uint64_t work, uint64_t flops = 0);
 
   // Ensure an open command buffer/encoder exist.
   absl::Status EnsureCommandBuffer();
@@ -612,6 +625,7 @@ class Stream {
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
+  uint64_t flops_in_cmd_ = 0;
   std::chrono::steady_clock::time_point last_commit_time_{};
   // FailNextCommandBufferForTesting.
   absl::Status inject_error_;
