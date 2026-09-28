@@ -79,6 +79,8 @@ SITES = [
          why="IsComplete is PollForStatus() == kComplete; MetalEvent::PollForStatus returns kError for failed work (48ac173, sticky device error)."),
     Site("xla/backends/gpu/transforms/sort_rewriter.cc", "return Product(operand_shape.dimensions()) > 16384;", before=2, after=0,
          why="Non-CUDA CUB-sort threshold counts total elements; RunHloPasses pre-expands rows <= 64 above it so SortRewriter never sees them (cub_sort_ffi.cc)."),
+    Site("xla/service/gpu/matmul_utils.cc", "return absl::c_accumulate(dims, 1, [&](int64_t size, int64_t dim) {", before=1, after=2,
+         why="GetBatchRowColumnShape multiplies dimension groups in an int (2^31 aborts, 2^32 becomes a 0-row GEMM); hlo_checks.cc CheckGemmGroupsFitInt32 refuses such GEMMs first. Revisit it if this changes."),
     # --- Pipeline order the plugin's passes rely on ---
     Site(GC, "pipeline.AddPass<TopkSpecializer>(gpu_version);", before=1, after=1,
          why="TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks."),

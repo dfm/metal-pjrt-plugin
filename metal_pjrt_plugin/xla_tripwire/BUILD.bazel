@@ -16,6 +16,7 @@ filegroup(
         "@xla//xla/codegen/emitters/transforms:vectorize_loads_stores.cc",
         "@xla//xla/service:algorithm_util.cc",
         "@xla//xla/service/gpu:gpu_compiler.cc",
+        "@xla//xla/service/gpu:matmul_utils.cc",
         "@xla//xla/hlo/transforms/expanders:cholesky_expander.cc",
         "@xla//xla/stream_executor/integrations:tf_allocator_adapter.cc",
         "@xla//xla/backends/gpu/transforms:sort_rewriter.cc",

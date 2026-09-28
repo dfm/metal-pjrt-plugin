@@ -106,6 +106,11 @@ aborts the process instead of returning the error. Returning an error instead
 of CHECK means the constant copies may still be queued: callers must keep
 the executable's constant storage alive until the stream drains.
 
+Upstreaming candidate: `GetBatchRowColumnShape` (`matmul_utils.cc`)
+accumulates dims in int: 2^31 aborts, 2^32 becomes a 0-row GEMM (affects
+CUDA too). The plugin refuses such GEMMs at compile time
+(`CheckGemmGroupsFitInt32`, tripwired).
+
 ## Deferred / unverified
 
 - The GPU-error path is exercised only by injected failures; no real fault

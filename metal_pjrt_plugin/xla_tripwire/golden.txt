@@ -188,6 +188,13 @@ return event_->event.event()->PollForStatus() == se::Event::Status::kComplete;
 // case. Run benchmarks on different devices and add a heuristic per device.
 return Product(operand_shape.dimensions()) > 16384;
 
+### xla/service/gpu/matmul_utils.cc @ return absl::c_accumulate(dims, 1, [&](int64_t size, int64_t dim) {
+# why: GetBatchRowColumnShape multiplies dimension groups in an int (2^31 aborts, 2^32 becomes a 0-row GEMM); hlo_checks.cc CheckGemmGroupsFitInt32 refuses such GEMMs first. Revisit it if this changes.
+auto dim_size = [&](absl::Span<const int64_t> dims) {
+return absl::c_accumulate(dims, 1, [&](int64_t size, int64_t dim) {
+return size * shape.dimensions(dim);
+});
+
 ### xla/service/gpu/gpu_compiler.cc @ pipeline.AddPass<TopkSpecializer>(gpu_version);
 # why: TopK is specialized/decomposed in RunOptimizationPasses, before the post-layout checks.
 pipeline.AddPass<TopKSplitter>();
@@ -482,4 +489,5 @@ xla/pjrt/se/stream_executor_executable.cc: 0
 xla/python/pjrt_ifrt/pjrt_executable.cc: 0
 xla/service/algorithm_util.cc: 4
 xla/service/gpu/gpu_compiler.cc: 1
+xla/service/gpu/matmul_utils.cc: 0
 xla/stream_executor/integrations/tf_allocator_adapter.cc: 0
