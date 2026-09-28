@@ -483,7 +483,7 @@ void Device::RecordReset(
                 "scripts/gpu_health.py --clear";
 }
 
-Device::~Device() {
+bool Device::WaitForCompletionHandlers() {
   // After a failure Synchronize stops waiting for committed buffers, so a
   // completion handler (which uses this device) may still be pending. Wait
   // for it, bounded: after a reset it may never come.
@@ -491,15 +491,18 @@ Device::~Device() {
   while (true) {
     {
       std::lock_guard<std::mutex> lock(in_flight_mu_);
-      if (in_flight_.empty()) break;
+      if (in_flight_.empty()) return true;
     }
-    if (std::chrono::steady_clock::now() > deadline) {
-      LOG(ERROR) << "Metal device " << ordinal_
-                 << " destroyed with command buffers whose completion "
-                    "handlers have not run";
-      break;
-    }
+    if (std::chrono::steady_clock::now() > deadline) return false;
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+Device::~Device() {
+  if (!WaitForCompletionHandlers()) {
+    LOG(ERROR) << "Metal device " << ordinal_
+               << " destroyed with command buffers whose completion "
+                  "handlers have not run";
   }
   {
     std::lock_guard<std::mutex> lock(g_devices_mu);

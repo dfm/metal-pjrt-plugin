@@ -210,6 +210,13 @@ class Device {
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
 
+  // Waits (up to kHandlerWait) for the completion handlers of committed
+  // command buffers, which use this Device; false if some are still pending
+  // (after a failure, e.g. a reset, they may never run). ~Device waits too,
+  // but an owner that gets false should leak the Device rather than destroy
+  // it: a handler running later would use freed memory.
+  bool WaitForCompletionHandlers();
+
   const DeviceInfo& info() const { return info_; }
 
   // Memory this process may hold (live + cached): half of physical RAM,

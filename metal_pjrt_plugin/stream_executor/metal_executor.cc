@@ -41,7 +41,17 @@ namespace rt = metal_pjrt::rt;
 MetalExecutor::MetalExecutor(Platform* platform, int device_ordinal)
     : gpu::GpuExecutor(platform, device_ordinal) {}
 
-MetalExecutor::~MetalExecutor() = default;
+MetalExecutor::~MetalExecutor() {
+  // A completion handler still pending after a failure (a GPU reset) would
+  // use the device after it is freed: leak the device instead (this happens
+  // at process exit).
+  if (device_ != nullptr && !device_->WaitForCompletionHandlers()) {
+    LOG(ERROR) << "Metal device " << device_ordinal()
+               << ": command buffer completion handlers still pending at "
+                  "shutdown; leaking the device";
+    (void)device_.release();
+  }
+}
 
 absl::Status MetalExecutor::Init() {
   ABSL_ASSIGN_OR_RETURN(device_, rt::Device::Create(device_ordinal()));
