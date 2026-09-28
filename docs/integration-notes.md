@@ -53,8 +53,8 @@ golden list. Both have an `--update` mode.
   Cuda/Rocm/OneAPI (`xla/stream_executor/device_description.h:98-178`).
   Default-constructed reads as CUDA 0.0. v1 reports **OneAPI** so that the
   SPIR-V/Intel branches are taken (scalar-only transpose, explicit NaN
-  propagation, command buffers off, `ExecutableAbiVersion` accepted, atomics
-  via the SPIRV path). No Apple alternative is planned: the tripwire test
+  propagation, command buffers off, atomics via the SPIRV path; the
+  executable ABI-version extension is dropped instead, see "PJRT client"). No Apple alternative is planned: the tripwire test
   checks the OneAPI branches instead.
 
 ## StreamExecutor contract (what MetalExecutor must implement)
@@ -106,9 +106,12 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   the base pipeline (GemmRewriter), then
   `MetalDotOperandUpcaster` on the dots left for the loop emitter and
   `CheckPostGemmRewriter` (`compiler/passes/hlo_checks.h`): no narrow-operand
-  kDot, no TopK custom call, every `__cublas$lt$matmul` has types and an
+  kDot, every `__cublas$lt$matmul` has types and an
   epilogue `MetalBlasLt` supports (`blas/blas_lt_support.h`, shared with
   `MetalBlasLt`). A violation is a compile error naming the JAX op and line.
+  (A TopK custom call is not checked since 8976842: TopK is decomposed to
+  a sort for OneAPI, and one that survived fails at thunk emission, having
+  no Metal handler.)
 - Kernels are compiled one module at a time via
   `CompileSingleModule -> CompileTargetBinary`; result bytes become a
   `CustomKernelThunk` with a cubin spec. `GpuExecutable::binary()` holds only

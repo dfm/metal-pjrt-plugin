@@ -71,6 +71,11 @@ Repro:
   (243 / 1040). The polynomial is faster than Metal's functions on
   ALU-bound code (8 rounds of exp+sin+cos over 4M: 1.81 -> 1.22-1.25 ms)
   and costs nothing measurable elsewhere.
+- **cbrt** (ce2475b). `pow(|x|, 1/3)` was 7-12 ulps off away from 1 (1/3
+  rounds up in float) and 0 for subnormal inputs. The prelude's `xla_cbrt`
+  adds one Newton step and handles a subnormal as cbrt(2m) * 2^-50: max
+  1.38 ulps against float64 over 1e-45..3e38 (`lax.cbrt wide range` in
+  `tests/test_lax.py`).
 - **log of subnormal inputs** (70bf680). Metal's float32 arithmetic flushes
   subnormals even with fast math off, so `log(1e-40)` was -inf (true
   -92.10) and `log(-1e-40)` -inf (true NaN). The prelude's `xla_log` /
