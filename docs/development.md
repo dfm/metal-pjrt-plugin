@@ -139,7 +139,7 @@ ignored with a warning and the default kept.
 
 | variable | scope | audience | values and default | read in |
 |---|---|---|---|---|
-| `JAX_MTL_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
+| `METAL_PJRT_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
 | `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all`; other names are ignored with a warning | compiler |
 | `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
@@ -151,7 +151,7 @@ ignored with a warning and the default kept.
 | `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
 | `JAX_TESTS_DIR` | script | dev | JAX checkout with the tests, default `~/.cache/metal-pjrt/jax-tests` | `scripts/run_jax_tests.sh` |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | script | dev | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot (boolean), `bazel shutdown` first (boolean, off) | `bench/run_all.sh` |
-| `JAX_MTL_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |
+| `METAL_PJRT_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |
 | `BENCH_OUT`, `BENCH_LABEL` | script | internal | set by `bench/run_all.sh`: the JSONL file and the backend label of the rows | `bench/*.py` |
 
 Other tools' variables the scripts set or check:
@@ -165,8 +165,8 @@ Other tools' variables the scripts set or check:
 - `PYTEST_TIMEOUT` (`scripts/run_jax_tests.sh`): seconds before a slow
   test's stack dump, default 180; the test is not stopped.
 - `XLA_FLAGS` (XLA): `tests/conftest.py` refuses to run with it set, as it
-  does with any `METAL_PJRT_*` or `JAX_MTL_*` setting other than
-  `METAL_PJRT_STATE_DIR`, `METAL_PJRT_TRACE` and `JAX_MTL_DEVICE_LOCK_HELD`.
+  does with any `METAL_PJRT_*` setting other than `METAL_PJRT_STATE_DIR`,
+  `METAL_PJRT_TRACE` and `METAL_PJRT_DEVICE_LOCK_HELD`.
 
 ## State
 

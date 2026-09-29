@@ -241,7 +241,7 @@ class Device {
 
   // Memory this process may hold (live + cached): half of physical RAM,
   // capped by the GPU's recommended working set, times
-  // JAX_MTL_MEMORY_FRACTION (default 1).
+  // METAL_PJRT_MEMORY_FRACTION (default 1).
   uint64_t memory_budget() const { return memory_budget_; }
 
   // The first GPU (or unhandled host-task) failure; sticky for the

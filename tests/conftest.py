@@ -9,7 +9,7 @@ device lock (one GPU job at a time):
 Runs are hermetic: no persistent compilation cache, x64 off, and CPU next to
 metal for references (tests/metal_testing.py), whatever the environment
 says; and a run refuses to start with XLA_FLAGS or plugin settings
-(METAL_PJRT_*, JAX_MTL_*, e.g. the memory fraction) in the
+(METAL_PJRT_*, e.g. the memory fraction) in the
 environment (tests that need one set it for a child process).
 """
 import importlib.util
@@ -23,14 +23,14 @@ os.environ.update(JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="0",
 # log lives (a scratch dir for runs from a fresh checkout), trace logging
 # and the device lock's own marker.
 ALLOWED_PLUGIN_VARS = {"METAL_PJRT_STATE_DIR", "METAL_PJRT_TRACE",
-                       "JAX_MTL_DEVICE_LOCK_HELD"}
+                       "METAL_PJRT_DEVICE_LOCK_HELD"}
 
 import pytest
 
 
 def pytest_configure(config):
     leaked = sorted(k for k in os.environ if k == "XLA_FLAGS" or (
-        k.startswith(("METAL_PJRT_", "JAX_MTL_"))
+        k.startswith("METAL_PJRT_")
         and k not in ALLOWED_PLUGIN_VARS))
     if leaked:
         raise pytest.UsageError(

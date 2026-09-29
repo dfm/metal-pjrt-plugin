@@ -184,7 +184,7 @@ sizes.
   as XLA assumes for its stream-ordered allocators; command buffers retain
   what they bind.
 - Budget: live + cached stays within half of physical RAM, capped by the
-  GPU's recommended working set, times `JAX_MTL_MEMORY_FRACTION`. A
+  GPU's recommended working set, times `METAL_PJRT_MEMORY_FRACTION`. A
   miss evicts least recently freed buffers first, then fails with
   RESOURCE_EXHAUSTED. The compiler sees the recommended working set as the
   device size, so compiled programs do not vary with load.

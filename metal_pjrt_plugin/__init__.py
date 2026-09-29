@@ -146,7 +146,7 @@ def initialize():
     # (a fresh MTLBuffer costs ~60 us/MB of page faults on first touch),
     # releases them after ~2 s unused or on a system memory-pressure warning,
     # and refuses (RESOURCE_EXHAUSTED) beyond the process budget or when the
-    # system is short of memory. The budget (JAX_MTL_MEMORY_FRACTION
+    # system is short of memory. The budget (METAL_PJRT_MEMORY_FRACTION
     # scales it) is applied by the runtime, so memory_fraction stays 1.
     # "platform_name" selects the StreamExecutor platform ("METAL"), not the
     # JAX/PJRT one (PLATFORM, from MetalName() in the XLA patch).

@@ -198,14 +198,15 @@ has timings).
   process; restart the Python process. Earlier GPU failure: ...". Restart
   Python; the machine does not need a reboot.
 - **Memory.** GPU memory is system RAM. A process may hold up to half of
-  RAM (capped by the GPU's recommended working set; `JAX_MTL_MEMORY_FRACTION`
-  scales it), and the plugin refuses any allocation that would push the
-  machine into swap. Both fail with RESOURCE_EXHAUSTED and the numbers:
-  "refused: this process already holds ... of its ... memory budget" is
-  this process; "refused by the system memory guard: only ... of system
-  memory is free or reclaimable" is the machine. On an 8 GB Mac a
-  nanoGPT-sized training step (a 1.2 GB allocation) can hit the guard with
-  a browser open: close other programs or use a smaller batch.
+  RAM (capped by the GPU's recommended working set;
+  `METAL_PJRT_MEMORY_FRACTION` scales it), and the plugin refuses any
+  allocation that would push the machine into swap. Both fail with
+  RESOURCE_EXHAUSTED and the numbers: "refused: this process already
+  holds ... of its ... memory budget" is this process; "refused by the
+  system memory guard: only ... of system memory is free or reclaimable"
+  is the machine. On an 8 GB Mac a nanoGPT-sized training step (a 1.2 GB
+  allocation) can hit the guard with a browser open: close other programs
+  or use a smaller batch.
   `device_put` copies the array or waits until it is copied, so changing
   a NumPy array afterwards does not change what the device gets.
 - **Small dense linear algebra is slow.** Above 32x32 it runs in Accelerate

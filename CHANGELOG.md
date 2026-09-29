@@ -16,6 +16,10 @@ describe the present only. Commit hashes point at the change.
   from `metal_pjrt_plugin/` to `metal_pjrt/` (6aa0587), and the state
   directory from `~/.cache/openmetal/` to `~/.cache/metal-pjrt/` (881a2f8).
   The XLA-internal names stay "METAL".
+- Every environment variable the plugin defines is `METAL_PJRT_*`:
+  `JAX_MTL_MEMORY_FRACTION` and `JAX_MTL_DEVICE_LOCK_HELD` are now
+  `METAL_PJRT_MEMORY_FRACTION` and `METAL_PJRT_DEVICE_LOCK_HELD`, with no
+  alias (the old names are ignored).
 - The hand-written MSL moved out of C++ string literals into `.metal` files
   under `metal_pjrt/kernels/` (f59719c), with a device test that compiles
   every kernel (318c2ba).

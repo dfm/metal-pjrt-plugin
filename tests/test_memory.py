@@ -4,7 +4,7 @@ keeps working; memory goes back to the system after a computation; a
 memory-pressure warning drops the cache.
 
 Each test runs in a fresh process, so the budget can be made artificially
-small (JAX_MTL_MEMORY_FRACTION) and nothing here gets near physical
+small (METAL_PJRT_MEMORY_FRACTION) and nothing here gets near physical
 memory. No timeouts: never kill a process with GPU work in flight.
 """
 import os
@@ -43,7 +43,7 @@ def run_child(code, **env):
 
 
 def small_budget_fraction(budget_mb=512):
-    """JAX_MTL_MEMORY_FRACTION giving a ~budget_mb budget (the default
+    """METAL_PJRT_MEMORY_FRACTION giving a ~budget_mb budget (the default
     budget is half of RAM, capped by the GPU's recommended working set)."""
     ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     return str(budget_mb * 2**20 / (ram / 2))
@@ -63,7 +63,8 @@ except jax.errors.JaxRuntimeError as e:
     # XLA's generic message, then the runtime's reason.
     assert "RESOURCE_EXHAUSTED" in str(e) and "memory budget" in str(e), e
     # Sizes in MB, and the setting that raises the budget, with a value.
-    assert " MB of its " in str(e) and "JAX_MTL_MEMORY_FRACTION=" in str(e), e
+    assert (" MB of its " in str(e)
+            and "METAL_PJRT_MEMORY_FRACTION=" in str(e)), e
 print("held", len(held), "live MB", stats()["live"] // MB)
 assert len(held) * 64 * MB <= s["budget"]
 # One program whose output alone exceeds the budget.
@@ -77,7 +78,7 @@ gc.collect()
 x = make(3.0) * 2
 assert float(x[123]) == 6.0 and float(jnp.sum(x[:1000])) == 6000.0
 print("after: OK")
-""", JAX_MTL_MEMORY_FRACTION=small_budget_fraction())
+""", METAL_PJRT_MEMORY_FRACTION=small_budget_fraction())
     assert "after: OK" in out, out
 
 
@@ -149,7 +150,7 @@ def test_bad_settings_warn_and_keep_defaults(fraction):
 print("budget", stats()["budget"])
 print(jax.jit(lambda x: x + 1)(1.0))
 jnp.zeros(MB).block_until_ready()  # 4 MB: consults the system guard
-""", dict(os.environ, JAX_PLATFORMS="mtl", JAX_MTL_MEMORY_FRACTION=fraction,
+""", dict(os.environ, JAX_PLATFORMS="mtl", METAL_PJRT_MEMORY_FRACTION=fraction,
           METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB="512MB",
           METAL_PJRT_QUARANTINE_STRIKES="two",
           METAL_PJRT_DISABLE_REWRITES="scan,bogus"))
@@ -162,11 +163,11 @@ jnp.zeros(MB).block_until_ready()  # 4 MB: consults the system guard
     budget = int(out.stdout.split("budget ")[1].split()[0])
     half_ram = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES") // 2
     if fraction == "1.5":
-        assert "JAX_MTL_MEMORY_FRACTION=1.5 is above 1" in out.stderr
+        assert "METAL_PJRT_MEMORY_FRACTION=1.5 is above 1" in out.stderr
         # Past half of RAM, capped at the working set (~2/3 of RAM or more
         # on Apple GPUs).
         assert budget > half_ram, budget
     else:
-        assert (f"Ignoring JAX_MTL_MEMORY_FRACTION={fraction} (not a number "
+        assert (f"Ignoring METAL_PJRT_MEMORY_FRACTION={fraction} (not a number "
                 "> 0); using 1, a budget of ") in out.stderr, out.stderr[-3000:]
         assert 0 < budget <= half_ram, budget

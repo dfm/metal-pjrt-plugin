@@ -47,8 +47,8 @@ different limits:
 - `Metal: allocating ... refused: this process already holds ... of its
   ... memory budget (device 0; half of RAM, capped by the GPU's
   recommended working set). Use smaller arrays or batches, or raise the
-  budget: JAX_MTL_MEMORY_FRACTION=... gives ... (less memory for the rest
-  of the system).` This process hit its own budget. Use smaller arrays or
+  budget: METAL_PJRT_MEMORY_FRACTION=... gives ... (less memory for the
+  rest of the system).` This process hit its own budget. Use smaller arrays or
   batches, free arrays you no longer need, or raise the budget with the
   value the message names (the last clause is left out when the budget
   already equals the GPU's working set).

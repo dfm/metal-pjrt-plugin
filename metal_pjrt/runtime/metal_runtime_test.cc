@@ -576,9 +576,9 @@ TEST_F(MetalRuntimeTest, EventSignalsFollowTheFenceSignal) {
 TEST_F(MetalRuntimeTest, MemoryBudgetAndCache) {
   const uint64_t mb = 1 << 20;
   const double fraction = 64.0 * mb / dev_->memory_budget();
-  setenv("JAX_MTL_MEMORY_FRACTION", std::to_string(fraction).c_str(), 1);
+  setenv("METAL_PJRT_MEMORY_FRACTION", std::to_string(fraction).c_str(), 1);
   absl::StatusOr<std::unique_ptr<Device>> made = Device::Create(0);
-  unsetenv("JAX_MTL_MEMORY_FRACTION");
+  unsetenv("METAL_PJRT_MEMORY_FRACTION");
   ASSERT_THAT(made, IsOk());
   Device& d = **made;
   EXPECT_NEAR(static_cast<double>(d.memory_budget()), 64.0 * mb, mb);

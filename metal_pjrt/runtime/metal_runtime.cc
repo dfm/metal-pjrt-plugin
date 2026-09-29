@@ -171,7 +171,7 @@ void LogMemoryState(Device* device) {
              << FormatBytes(ReclaimableMemoryBytes());
 }
 
-// The budget refusal's remedy: the JAX_MTL_MEMORY_FRACTION that raises the
+// The budget refusal's remedy: the METAL_PJRT_MEMORY_FRACTION that raises the
 // budget to the GPU's recommended working set, when that is above it.
 std::string RaiseBudgetHint(uint64_t budget, uint64_t working_set) {
   const uint64_t base = std::min(PhysicalMemoryBytes() / 2, working_set);
@@ -179,7 +179,7 @@ std::string RaiseBudgetHint(uint64_t budget, uint64_t working_set) {
   const double f = std::floor(100.0 * working_set / base) / 100;
   if (f * base <= budget) return ".";
   return absl::StrFormat(
-      ", or raise the budget: JAX_MTL_MEMORY_FRACTION=%.2f gives %s (less "
+      ", or raise the budget: METAL_PJRT_MEMORY_FRACTION=%.2f gives %s (less "
       "memory for the rest of the system).",
       f, FormatBytes(std::min<uint64_t>(f * base, working_set)));
 }
@@ -270,20 +270,20 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
     // swapped-out pages is what trips the watchdog).
     uint64_t budget = PhysicalMemoryBytes() / 2;
     budget = std::min(budget, static_cast<uint64_t>(info.recommended_working_set));
-    // JAX_MTL_MEMORY_FRACTION scales it; above 1 it can grow up to the
+    // METAL_PJRT_MEMORY_FRACTION scales it; above 1 it can grow up to the
     // working set.
-    const char* v = std::getenv("JAX_MTL_MEMORY_FRACTION");
+    const char* v = std::getenv("METAL_PJRT_MEMORY_FRACTION");
     if (v != nullptr && v[0] != '\0') {
       double f = 0;
       if (!absl::SimpleAtod(v, &f) || !(f > 0) || !std::isfinite(f)) {
-        LOG(WARNING) << "Ignoring JAX_MTL_MEMORY_FRACTION=" << v
+        LOG(WARNING) << "Ignoring METAL_PJRT_MEMORY_FRACTION=" << v
                      << " (not a number > 0); using 1, a budget of "
                      << FormatBytes(budget);
       } else {
         budget = std::min(static_cast<uint64_t>(budget * f),
                           static_cast<uint64_t>(info.recommended_working_set));
         if (f > 1) {
-          LOG(WARNING) << "JAX_MTL_MEMORY_FRACTION=" << v
+          LOG(WARNING) << "METAL_PJRT_MEMORY_FRACTION=" << v
                        << " is above 1: the memory budget grows past half "
                           "of RAM (capped at the GPU's recommended working "
                           "set), leaving less for the rest of the system";

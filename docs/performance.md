@@ -18,11 +18,11 @@ in `docs/design.md`, "Runtime".
   backends (`BENCH_BACKENDS`, default `metal metal-gpu cpu mlx`) interleaved
   inside each round, and `bench/report.py` writes the median over rounds to
   `bench/results/table.md`. Rows record the commit, JAX/MLX versions, the
-  plugin's platform version and the `METAL_PJRT_*`, `JAX_MTL_*`,
-  `XLA_FLAGS` and `JAX_PLATFORMS` settings. It refuses to run after a GPU
-  reset since boot (`scripts/gpu_health.py --strict`;
-  `BENCH_ALLOW_DEGRADED=1` overrides): a GPU that has been reset several
-  times stays ~10x slower per dispatch until a reboot.
+  plugin's platform version and the `METAL_PJRT_*`, `XLA_FLAGS` and
+  `JAX_PLATFORMS` settings. It refuses to run after a GPU reset since boot
+  (`scripts/gpu_health.py --strict`; `BENCH_ALLOW_DEGRADED=1` overrides): a
+  GPU that has been reset several times stays ~10x slower per dispatch
+  until a reboot.
 - The arms keep their names from before the platform rename: `metal` runs
   `jax_bench.py` with `JAX_PLATFORMS=mtl`, `metal-gpu` the same with the
   trace below, `cpu` with `JAX_PLATFORMS=cpu`.
