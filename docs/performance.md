@@ -151,6 +151,26 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   17.11. DotMerger does not touch that model (no difference with it off),
   and `bench/jax_bench.py` did not move with DotMerger off (4 interleaved
   rounds, every case within noise).
+  The 16-row rule ignores the batch count, so it was also measured on
+  decode attention: 8 independent bf16 GEMMs of batch 1024 (batch x
+  heads), [m, 128] x [128, 128], as q K^T (NT) and p V (NN). p10 ms per
+  call, 4 interleaved rounds of 3 bursts of 10, without the rule, with it,
+  and with it but the gemv off:
+
+  | m | NT: no rule | rule | rule, no gemv | NN: no rule | rule |
+  |---|---|---|---|---|---|
+  | 1 | 3.28 | 3.41 | 3.40 | 3.31 | 3.13 |
+  | 2 | 3.70 | 3.63 | 3.37 | 6.51 | 3.65 |
+  | 4 | 5.47 | 6.29 | 3.73 | 6.68 | 3.51 |
+  | 8 | 6.47 | 6.55 | 3.66 | 6.56 | 3.60 |
+  | 16 | 6.01 | 4.01 | 4.01 | 6.64 | 3.99 |
+
+  m = 1 is a reduction fusion and NT 2..8 is the gemv in the first two
+  columns, so those differences are noise. Where the rule applies (NN 2..16,
+  NT 16) it is 1.5-1.9x faster, so it keeps no batch condition. The gemv
+  is not: on 1024 batches of a 128-row matrix it is 1.7-1.8x slower than
+  the 16-row tile at 4 and 8 vectors (and 8% at 2), about where the
+  64-row tile was before. Open (`docs/roadmap.md`).
 
 - FFTs run on MLX's FFT kernels (`metal$fft`, `metal_pjrt/fft`).
   `bench/fft_bench.py` (one process; bursts of 10 calls, 15 interleaved

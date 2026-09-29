@@ -30,6 +30,12 @@ for dt in (jnp.bfloat16, jnp.float16):
         CASES[f"{d} few cols {n}x{k}x{m}"] = ("matmul", lambda x, w: w @ x.T, (x, w))
         CASES[f"{d} few rows {m}x{k}x{n} f32 out"] = ("f32 out", lambda x, w: jnp.matmul(x, w.T, preferred_element_type=jnp.float32), (x, w))
         CASES[f"{d} few rows {m}x{k}x{n} +bias gelu"] = ("matmul", lambda x, w, c: jax.nn.gelu(x @ w.T + c), (x, w, bias))
+    # K % 4 != 0: the gemv refuses it, so steel's 16-row tile runs it.
+    x, w = host(4, 1022), host(300, 1022)
+    CASES[f"{d} few rows 4x1022x300"] = ("matmul", lambda x, w: x @ w.T, (x, w))
+    # A transposed (x stored [k, m]): never the gemv; steel's 16-row tile.
+    a, y = host(200, 24), host(200, 90)
+    CASES[f"{d} few rows A.T 24x200x90"] = ("matmul", lambda a, y: a.T @ y, (a, y))
     x, w = host(3, 4, 128), host(3, 96, 128)
     CASES[f"{d} few rows batched"] = ("matmul", lambda x, w: jnp.einsum("bmk,bnk->bmn", x, w), (x, w))
     CASES[f"{d} few rows batched bcast"] = ("matmul", lambda x, w: jnp.einsum("bmk,nk->bmn", x, w[0]), (x, w))

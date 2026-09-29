@@ -184,7 +184,10 @@ Other tools' variables the scripts set or check:
   test's stack dump, default 180; the test is not stopped.
 - `XLA_FLAGS` (XLA): `tests/conftest.py` refuses to run with it set, as it
   does with any `METAL_PJRT_*` setting other than `METAL_PJRT_STATE_DIR`,
-  `METAL_PJRT_TRACE` and `METAL_PJRT_DEVICE_LOCK_HELD`.
+  `METAL_PJRT_TRACE` and `METAL_PJRT_DEVICE_LOCK_HELD`. The plugin forces
+  `xla_gpu_enable_triton_gemm=false` and `xla_gpu_dot_merger_threshold_mb=0`
+  whatever `XLA_FLAGS` says (DotMerger would copy every weight matrix that
+  shares an input on each call; `docs/integration-notes.md`).
 
 ## State
 

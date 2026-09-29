@@ -140,6 +140,11 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   (`GetNonFp8GemmCustomCallTarget`; the legacy `__cublas$gemm` fallback is
   gone), so matmul runs through `MetalBlasLt` (MPS or steel kernels).
 - Triton is gated off for non-CUDA/ROCm; cuDNN passes default to no-op.
+- `ApplyMetalDefaults` forces `xla_gpu_dot_merger_threshold_mb=0` (as it
+  forces `xla_gpu_enable_triton_gemm=false`; `XLA_FLAGS` cannot override
+  either): DotMerger turns dots sharing an input into one dot against a
+  concatenation of the others, which copies every weight matrix on each
+  call (336 MB per call in the case study's 28-GEMM bench).
 
 ## Codegen: MLIR -> EmitC -> MSL
 

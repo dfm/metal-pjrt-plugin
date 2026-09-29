@@ -102,12 +102,13 @@ Still on hold:
 - Full third-party notices for the statically linked XLA dependencies:
   before a release, alongside CI.
 
-Small-M bf16/f16 GEMM: M=2..64 runs at ~23 GB/s regardless of M, 3.7-4x
-slower than MLX. Example: 28 GEMMs of [M,1024]x[1024,6144] take 15.1 ms at
-M=2 vs MLX's 3.9 ms, and 15.7 vs 8.4 at M=64; M=1 is fine, as a reduction
-fusion at 85 GB/s. It makes batched LLM decode ~2x slower at batch 2 than
-at batch 1. MLX uses its gemv/small-M kernels for these shapes: a port
-candidate like steel. (Found by the LLM case study.)
+Small-M bf16/f16 GEMM: done (e30480f: MLX's wide gemv for 2..8 rows, a
+16-row steel tile to 48, DotMerger off). 28 independent [M,1024]x[1024,6144]
+GEMMs at M=2: 15.03 -> 4.47 ms p10 (MLX 4.07); Qwen3-0.6B bf16 decode at
+batch 2: 26.71 -> 13.88 ms. Open: on heavily batched small matrices (1024
+x [4..8, 128] x [128, 128]^T) the gemv is 1.7x slower than the 16-row tile
+(`docs/performance.md`); a gemv condition on rows per batch would need a
+sweep.
 
 Complex dot / sort: a probe matched CPU; ~5 lines in
 `CheckBeforeOptimization` to enable, plus tests (kept refused for now).

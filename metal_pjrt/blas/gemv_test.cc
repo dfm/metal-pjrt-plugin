@@ -132,6 +132,9 @@ class GemvTest : public ::testing::Test {
 
   // D = A B^T (A m x k, B stored n x k), the form ChooseGemv takes.
   void Run(const Case& c) {
+    if (device_->info().gpu_family < 9) {
+      GTEST_SKIP() << "the gemv needs Apple9 (M3) or later, as in MLX";
+    }
     SCOPED_TRACE(c.Name());
     std::mt19937 rng(1234);
     Op a = MakeOp(c.m, c.k, c.pad, c.batch, false, c.in, &rng);
