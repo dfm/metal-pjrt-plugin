@@ -241,6 +241,46 @@ standalone softmax
 (XLA's two fusions vs MLX's one kernel) and anything bound by per-dispatch
 latency.
 
+## Host memory per executable
+
+A compiled executable holds host memory for as long as it lives, and JAX
+keeps every executable a live jitted function compiled (pxla's
+`_cached_compilation`, a weak-keyed LRU behind the function's trace cache):
+`del` of the compiled object frees nothing while the function lives. It
+comes back when the function is deleted or after `jax.clear_caches()`; XLA:CPU
+behaves the same. Measured (2026-09-29) with `heap -s` (malloc'd bytes in
+use), `malloc_history -callTree` under `MallocStackLogging=lite`, `vmmap
+--summary` and `footprint`, on a Qwen3-0.6B LoRA train step (bf16, grad
+checkpointing, batch 4, lengths 97/129/161: ~3150 kernel thunks each, of
+which XLA's KernelReuseCache leaves 159 distinct kernels at length 97):
+
+| per executable (length 97) | MB |
+|---|---|
+| MSL, the kernel thunks' copies (one per thunk) | 66 |
+| MSL, `GpuExecutable`'s serialized thunks (kept for serialization) | 65 |
+| rest of XLA: HLO module with fusion computations (~50), `ModuleAnnotations` (22), MLIR dialects in pooled contexts (18), GEMM thunks (8), buffer assignment (4), ... | ~120 |
+| outside XLA's compile (JAX lowering, Python objects) | ~40 |
+| total malloc in use (272 on average over the three lengths) | 292 |
+
+With the prelude out of each kernel's binary (`docs/design.md`,
+Compiler), the two MSL rows drop by ~40 MB: 3 lengths compiled, malloc
+in use 889 -> 769 MB and footprint 2619 -> 2503 MB (1714 MB after loading
+the model). Once an executable has run, its kernels (pipeline, library,
+MSL cache key: ~40 KB per distinct kernel) are cached by the runtime until
+the executable goes; before 2026-09-29 they stayed for the process (400
+kernels after the 3 lengths; 1200 in a synthetic 6 x 300-fusion test).
+One-time costs: Metal's shader-cache index (~30 MB, on the first
+compile) and XLA's pooled MLIR contexts (~15 MB).
+
+`footprint` overstates what is live: after `jax.clear_caches()` malloc is
+back to 133 MB (72 at load) while footprint stays ~300 MB above the load
+point, because the malloc zone keeps the compile's freed pages dirty (82%
+fragmentation; `malloc_zone_pressure_relief` returns nothing). XLA:CPU
+shows the same (a synthetic program: malloc back to +3 MB, footprint +73
+MB). The persistent compilation cache is off by default and not involved.
+For training loops over many batch shapes, bucket the lengths: each
+distinct shape is an executable (~230 MB for this model).
+
 ## Measured and rejected
 
 One line each; the numbers and reasoning are in the archived log and the

@@ -110,15 +110,31 @@ rows and K: below that the 16-row tile wins by up to 2.8x), so batched
 decode attention, 1024 x [4..8, 128] x [128, 128]^T, is 1.9-2.0x faster
 (6.9 -> 3.5 ms per 8 GEMMs; `docs/performance.md`).
 
-Host memory grows per compiled executable and isn't freed when it's
-dropped: a Qwen3-0.6B LoRA train step (~3150 kernels) adds 160-570 MB of
-host footprint per executable (1714 -> 2623 MB after 3 compiles; unchanged
-after del + gc). 5 batch shapes reach 4.1 GB vs mlx-lm 2.3 GB, and the
-system guard then refuses a 707 MB scratch. Suspects to attribute first
-(footprint/vmmap before and after drop + gc): Device::GetKernel's
-never-evicted pipeline/library cache; retained MSL source/library blobs;
-XLA-side state outliving the executable; the persistent compilation
-cache. Found by the LoRA case study.
+Host memory per compiled executable: attributed (`docs/performance.md`,
+host memory). "Unchanged after del + gc" was JAX's own cache, which keeps
+every executable of a live jitted function (`jax.clear_caches()` or
+deleting the function frees it: malloc 885 -> 136 MB for 3 LoRA steps).
+The plugin's parts are fixed: compiled kernels now go with their
+executables (the runtime cache kept them, ~40 KB each, for the process),
+and emitted kernels carry a one-line stand-in for the ~9 KB MSL prelude
+(-40 MB per LoRA executable, 272 -> 232 MB of malloc). The rest is XLA's:
+two copies of each kernel thunk's MSL (the thunk's and the executable's
+serialized thunks), the HLO module and annotations; footprint also keeps
+~300 MB of freed-but-dirty malloc pages after a compile (fragmentation, as
+on CPU). Left open: an upstream change so thunks share one kernel binary
+(and the serialized copy is made on demand); examples/lora could use
+coarser length buckets (`--pad-to`; each length is an executable).
+
+OOM diagnostics: a memory-guard RESOURCE_EXHAUSTED can name the wrong
+executable. Seen: 'jit__reduce_sum', the next eager op, while the failing
+allocation was jit_predict's 1.8 GB temp. Found by the CIFAR case study.
+
+Conv weight gradient is the CNN-training bottleneck: 2.5-5x the forward.
+Example: bf16 N=1024 31x31 24->64 3x3, wgrad 53.8 ms vs torch-MPS' whole
+backward 25.0 ms. airbench94 takes 242-289 s to 94% vs torch-MPS 225 s.
+Profile unfold vs split-K GEMM vs sum_splits, and check MLX's wgrad path
+for these shapes (possibly the swapped-axes conv rather than
+patches+GEMM). Found by the CIFAR case study.
 
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
