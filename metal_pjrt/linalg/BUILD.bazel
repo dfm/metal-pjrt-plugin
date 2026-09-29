@@ -35,16 +35,44 @@ cc_test(
     ],
 )
 
+# The Accelerate LAPACK/BLAS calls behind the handlers, on host pointers.
+# No XLA, no Metal.
+cc_library(
+    name = "lapack_host",
+    srcs = ["lapack_host.cc"],
+    hdrs = ["lapack_host.h"],
+    linkopts = ["-framework Accelerate"],
+    deps = [
+        "//metal_pjrt/compiler:report_bug",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# lapack_host against reconstruction residuals. A host test (runs in //...).
+cc_test(
+    name = "lapack_host_test",
+    srcs = ["lapack_host_test.cc"],
+    deps = [
+        ":lapack_host",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Dense linear algebra via Apple Accelerate (LAPACK/BLAS on the CPU, zero
 # copy on unified memory): FFI handlers plus the HLO pass that targets them.
 # See lapack_ffi.cc. Handlers register statically, so this is alwayslink.
 cc_library(
     name = "lapack_ffi",
     srcs = ["lapack_ffi.cc"],
-    linkopts = ["-framework Accelerate"],
     deps = [
+        ":lapack_host",
         ":small_linalg",
-        "//metal_pjrt/compiler:report_bug",
         "//metal_pjrt/ffi:metal_ffi",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",

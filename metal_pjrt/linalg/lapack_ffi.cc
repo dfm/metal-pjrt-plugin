@@ -6,9 +6,10 @@
 // stream (all previously enqueued GPU work has completed and its writes are
 // visible), then runs LAPACK directly on the shared-storage buffers (a device
 // pointer is the MTLBuffer's contents() address, so there is no copy) and
-// returns. Later stream work is encoded after the handler returns, so it sees
-// the results. Cholesky, triangular solve and getrf of matrices of up to 32
-// rows/cols run on the GPU instead, with no synchronization (small_linalg.h).
+// returns (the LAPACK calls are in lapack_host.h). Later stream work is
+// encoded after the handler returns, so it sees the results. Cholesky,
+// triangular solve and getrf of matrices of up to 32 rows/cols run on the
+// GPU instead, with no synchronization (small_linalg.h).
 //
 // Two families of targets:
 //
@@ -41,67 +42,26 @@
 //   (singular matrices are not an error, as on CPU).
 //
 // Only f32 is supported (JAX's x64 mode is off on this backend).
-#include <algorithm>
-#include <cmath>
 #include <cstdint>
-#include <cstdlib>
 #include <cstring>
 #include <limits>
-#include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
-#include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
+#include "metal_pjrt/linalg/lapack_host.h"
 #include "metal_pjrt/linalg/small_linalg.h"
 #include "xla/backends/gpu/ffi.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
-
-// Accelerate's classic LAPACK (LP64, 32-bit integers) and CBLAS interfaces.
-// Declared here rather than through <Accelerate/Accelerate.h> to keep the
-// framework headers out of the XLA build.
-extern "C" {
-int spotrf_(const char* uplo, const int* n, float* a, const int* lda,
-            int* info);
-int sgetrf_(const int* m, const int* n, float* a, const int* lda, int* ipiv,
-            int* info);
-int sgeqrf_(const int* m, const int* n, float* a, const int* lda, float* tau,
-            float* work, const int* lwork, int* info);
-int sorgqr_(const int* m, const int* n, const int* k, float* a, const int* lda,
-            const float* tau, float* work, const int* lwork, int* info);
-int ssyevd_(const char* jobz, const char* uplo, const int* n, float* a,
-            const int* lda, float* w, float* work, const int* lwork, int* iwork,
-            const int* liwork, int* info);
-int sgesdd_(const char* jobz, const int* m, const int* n, float* a,
-            const int* lda, float* s, float* u, const int* ldu, float* vt,
-            const int* ldvt, float* work, const int* lwork, int* iwork,
-            int* info);
-void cblas_strsm(int order, int side, int uplo, int transa, int diag, int m,
-                 int n, float alpha, const float* a, int lda, float* b,
-                 int ldb);
-}
 
 namespace metal_pjrt {
 namespace linalg {
 namespace {
 
 namespace xffi = ::xla::ffi;
-
-// CBLAS enum values (cblas.h).
-constexpr int kCblasRowMajor = 101;
-constexpr int kCblasNoTrans = 111;
-constexpr int kCblasTrans = 112;
-constexpr int kCblasUpper = 121;
-constexpr int kCblasLower = 122;
-constexpr int kCblasNonUnit = 131;
-constexpr int kCblasUnit = 132;
-constexpr int kCblasLeft = 141;
-constexpr int kCblasRight = 142;
-
-constexpr float kNaN = std::numeric_limits<float>::quiet_NaN();
 
 // Waits for all work enqueued on the stream so far. The FFI handler runs on
 // the host thread that enqueues the executable's thunks, so after this the
@@ -152,27 +112,6 @@ void CopyIfDistinct(void* dst, const void* src, size_t bytes) {
   if (dst != src && bytes > 0) std::memmove(dst, src, bytes);
 }
 
-absl::Status LapackError(const char* name, int info) {
-  return absl::InternalError(
-      absl::StrCat(name, ": LAPACK reported illegal argument ", -info,
-                   metal_pjrt::kReportBug));
-}
-
-// The workspace size for a float `query` result (LAPACK's lwork = -1 call),
-// at least `minimum` (the documented minimum). Above 2^24 the float can round
-// below the size LAPACK then requires, so round up to the next float and
-// take the documented minimum too (as jaxlib does).
-absl::StatusOr<int> Workspace(const char* name, float query, int64_t minimum) {
-  const double w = std::max<double>(
-      std::ceil(std::nextafter(query, std::numeric_limits<float>::infinity())),
-      static_cast<double>(std::max<int64_t>(minimum, 1)));
-  if (w > std::numeric_limits<int>::max()) {
-    return absl::InvalidArgumentError(
-        absl::StrCat(name, ": workspace too large for 32-bit LAPACK"));
-  }
-  return static_cast<int>(w);
-}
-
 //===--------------------------------------------------------------------===//
 // HLO-level ops (row-major).
 //===--------------------------------------------------------------------===//
@@ -198,30 +137,7 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   const int n = static_cast<int>(d->rows);
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  if (n == 0) return absl::OkStatus();
-  // Row-major lower L (A = L L^T) is, read column-major, the upper factor U =
-  // L^T with A^T = A = U^T U; likewise row-major upper is column-major lower.
-  const char uplo = lower ? 'U' : 'L';
-  for (int64_t b = 0; b < d->batch; ++b) {
-    float* m = x + b * int64_t{n} * n;
-    int info = 0;
-    spotrf_(&uplo, &n, m, &n, &info);
-    if (info < 0) return LapackError(kName, info);
-    if (info > 0) {
-      std::fill(m, m + int64_t{n} * n, kNaN);
-      continue;
-    }
-    // Zero the (row-major) triangle LAPACK did not write.
-    for (int i = 0; i < n; ++i) {
-      float* row = m + int64_t{i} * n;
-      if (lower) {
-        std::fill(row + i + 1, row + n, 0.0f);
-      } else {
-        std::fill(row, row + i, 0.0f);
-      }
-    }
-  }
-  return absl::OkStatus();
+  return HostCholesky(x, d->batch, n, lower);
 }
 
 absl::Status TriangularSolve(stream_executor::Stream* stream,
@@ -257,17 +173,10 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
   if (absl::Status s = ctx->stream->Synchronize(); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, b.untyped_data(), b.size_bytes());
-  const int m = static_cast<int>(db->rows);
-  const int n = static_cast<int>(db->cols);
-  if (m == 0 || n == 0) return absl::OkStatus();
-  const float* av = static_cast<const float*>(a.untyped_data());
-  for (int64_t i = 0; i < db->batch; ++i) {
-    cblas_strsm(kCblasRowMajor, left_side ? kCblasLeft : kCblasRight,
-                lower ? kCblasLower : kCblasUpper,
-                trans ? kCblasTrans : kCblasNoTrans,
-                unit_diagonal ? kCblasUnit : kCblasNonUnit, m, n, 1.0f,
-                av + i * k * k, static_cast<int>(k), x + i * int64_t{m} * n, n);
-  }
+  HostTriangularSolve(static_cast<const float*>(a.untyped_data()), x,
+                      db->batch, static_cast<int>(db->rows),
+                      static_cast<int>(db->cols), left_side, lower, trans,
+                      unit_diagonal);
   return absl::OkStatus();
 }
 
@@ -301,28 +210,10 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (absl::Status s = ctx->stream->Synchronize(); !s.ok()) return s;
   float* x = static_cast<float*>(lu->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  const int m = static_cast<int>(d->rows);
-  const int n = static_cast<int>(d->cols);
-  const int k = std::min(m, n);
-  int32_t* piv = static_cast<int32_t*>(pivots->untyped_data());
-  int32_t* perm = static_cast<int32_t*>(permutation->untyped_data());
-  for (int64_t b = 0; b < d->batch; ++b) {
-    float* mb = x + b * int64_t{m} * n;
-    int32_t* pb = piv + b * k;
-    int32_t* qb = perm + b * m;
-    int info = 0;
-    if (m > 0 && n > 0) {
-      const int lda = std::max(m, 1);
-      sgetrf_(&m, &n, mb, &lda, pb, &info);
-    }
-    if (info < 0) return LapackError(kName, info);
-    for (int i = 0; i < m; ++i) qb[i] = i;
-    for (int i = 0; i < k; ++i) {
-      pb[i] -= 1;  // 1-based to 0-based
-      std::swap(qb[i], qb[pb[i]]);
-    }
-  }
-  return absl::OkStatus();
+  return HostGetrf(x, static_cast<int32_t*>(pivots->untyped_data()),
+                   static_cast<int32_t*>(permutation->untyped_data()),
+                   d->batch, static_cast<int>(d->rows),
+                   static_cast<int>(d->cols));
 }
 
 absl::Status Geqrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
@@ -335,27 +226,8 @@ absl::Status Geqrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  const int m = static_cast<int>(d->rows);
-  const int n = static_cast<int>(d->cols);
-  const int k = std::min(m, n);
-  if (k == 0) return absl::OkStatus();
-  float* t = static_cast<float*>(taus->untyped_data());
-  const int lda = std::max(m, 1);
-  int info = 0;
-  int lwork = -1;
-  float wq = 0;
-  sgeqrf_(&m, &n, x, &lda, t, &wq, &lwork, &info);
-  if (info < 0) return LapackError(kName, info);
-  absl::StatusOr<int> ws = Workspace(kName, wq, n);
-  if (!ws.ok()) return ws.status();
-  lwork = *ws;
-  std::vector<float> work(lwork);
-  for (int64_t b = 0; b < d->batch; ++b) {
-    sgeqrf_(&m, &n, x + b * int64_t{m} * n, &lda, t + b * k, work.data(),
-            &lwork, &info);
-    if (info < 0) return LapackError(kName, info);
-  }
-  return absl::OkStatus();
+  return HostGeqrf(x, static_cast<float*>(taus->untyped_data()), d->batch,
+                   static_cast<int>(d->rows), static_cast<int>(d->cols));
 }
 
 absl::Status Orgqr(stream_executor::Stream* stream, xffi::AnyBuffer a,
@@ -375,24 +247,8 @@ absl::Status Orgqr(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  if (n == 0) return absl::OkStatus();
-  const float* t = static_cast<const float*>(taus.untyped_data());
-  const int lda = std::max(m, 1);
-  int info = 0;
-  int lwork = -1;
-  float wq = 0;
-  sorgqr_(&m, &n, &k, x, &lda, t, &wq, &lwork, &info);
-  if (info < 0) return LapackError(kName, info);
-  absl::StatusOr<int> ws = Workspace(kName, wq, n);
-  if (!ws.ok()) return ws.status();
-  lwork = *ws;
-  std::vector<float> work(lwork);
-  for (int64_t b = 0; b < d->batch; ++b) {
-    sorgqr_(&m, &n, &k, x + b * int64_t{m} * n, &lda, t + b * k, work.data(),
-            &lwork, &info);
-    if (info < 0) return LapackError(kName, info);
-  }
-  return absl::OkStatus();
+  return HostOrgqr(x, static_cast<const float*>(taus.untyped_data()),
+                   d->batch, m, n, k);
 }
 
 absl::Status Syevd(stream_executor::Stream* stream, xffi::AnyBuffer a,
@@ -408,38 +264,8 @@ absl::Status Syevd(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(v->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  const int n = static_cast<int>(d->rows);
-  if (n == 0) return absl::OkStatus();
-  float* wv = static_cast<float*>(w->untyped_data());
-  const char jobz = 'V';
-  const char uplo = lower ? 'L' : 'U';
-  int info = 0;
-  int lwork = -1;
-  int liwork = -1;
-  float wq = 0;
-  int iwq = 0;
-  ssyevd_(&jobz, &uplo, &n, x, &n, wv, &wq, &lwork, &iwq, &liwork, &info);
-  if (info < 0) return LapackError(kName, info);
-  // Documented minimums for jobz = 'V'.
-  absl::StatusOr<int> ws =
-      Workspace(kName, wq, 1 + 6 * int64_t{n} + 2 * int64_t{n} * n);
-  if (!ws.ok()) return ws.status();
-  lwork = *ws;
-  liwork = std::max(3 + 5 * n, iwq);
-  std::vector<float> work(lwork);
-  std::vector<int> iwork(liwork);
-  for (int64_t b = 0; b < d->batch; ++b) {
-    float* mb = x + b * int64_t{n} * n;
-    float* wb = wv + b * n;
-    ssyevd_(&jobz, &uplo, &n, mb, &n, wb, work.data(), &lwork, iwork.data(),
-            &liwork, &info);
-    if (info < 0) return LapackError(kName, info);
-    if (info > 0) {
-      std::fill(mb, mb + int64_t{n} * n, kNaN);
-      std::fill(wb, wb + n, kNaN);
-    }
-  }
-  return absl::OkStatus();
+  return HostSyevd(x, static_cast<float*>(w->untyped_data()), d->batch,
+                   static_cast<int>(d->rows), lower);
 }
 
 absl::Status GesddImpl(stream_executor::Stream* stream, xffi::AnyBuffer a,
@@ -451,54 +277,8 @@ absl::Status GesddImpl(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (!d.ok()) return d.status();
   if (absl::Status st = SyncStream(stream); !st.ok()) return st;
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  const int m = static_cast<int>(d->rows);
-  const int n = static_cast<int>(d->cols);
-  const int k = std::min(m, n);
-  if (k == 0) return absl::OkStatus();
-  const bool uv = u != nullptr;
-  const char jobz = !uv ? 'N' : (full_matrices ? 'A' : 'S');
-  const int ucols = full_matrices ? m : k;
-  const int vtrows = full_matrices ? n : k;
-  const int ldu = std::max(m, 1);
-  const int ldvt = uv ? std::max(vtrows, 1) : 1;
-  float udummy = 0, vtdummy = 0;
-  int info = 0;
-  int lwork = -1;
-  float wq = 0;
-  std::vector<int> iwork(8 * static_cast<size_t>(k));
-  sgesdd_(&jobz, &m, &n, x, &m, s, uv ? u : &udummy, &ldu,
-          uv ? vt : &vtdummy, &ldvt, &wq, &lwork, iwork.data(), &info);
-  if (info < 0) return LapackError(kName, info);
-  // Documented minimums: jobz = 'N' needs 3mn + max(mx, 7mn); 'S' and 'A'
-  // need 4mn^2 + 7mn and 4mn^2 + 6mn + mx (LAPACK 3.7+), older releases
-  // 3mn + max(mx, 4mn^2 + 4mn). Take the largest that applies.
-  const int64_t mn = k;
-  const int64_t mx = std::max(m, n);
-  const int64_t min_work =
-      !uv ? 3 * mn + std::max(mx, 7 * mn)
-          : std::max({4 * mn * mn + 7 * mn, 4 * mn * mn + 6 * mn + mx,
-                      3 * mn + std::max(mx, 4 * mn * mn + 4 * mn)});
-  absl::StatusOr<int> ws = Workspace(kName, wq, min_work);
-  if (!ws.ok()) return ws.status();
-  lwork = *ws;
-  std::vector<float> work(lwork);
-  for (int64_t b = 0; b < d->batch; ++b) {
-    float* xb = x + b * int64_t{m} * n;
-    float* sb = s + b * k;
-    float* ub = uv ? u + b * int64_t{m} * ucols : &udummy;
-    float* vb = uv ? vt + b * int64_t{vtrows} * n : &vtdummy;
-    sgesdd_(&jobz, &m, &n, xb, &m, sb, ub, &ldu, vb, &ldvt, work.data(),
-            &lwork, iwork.data(), &info);
-    if (info < 0) return LapackError(kName, info);
-    if (info > 0) {
-      std::fill(sb, sb + k, kNaN);
-      if (uv) {
-        std::fill(ub, ub + int64_t{m} * ucols, kNaN);
-        std::fill(vb, vb + int64_t{vtrows} * n, kNaN);
-      }
-    }
-  }
-  return absl::OkStatus();
+  return HostGesdd(x, s, u, vt, d->batch, static_cast<int>(d->rows),
+                   static_cast<int>(d->cols), full_matrices);
 }
 
 absl::Status Gesdd(stream_executor::Stream* stream, xffi::AnyBuffer a,
