@@ -32,14 +32,18 @@ the plugin.
   `linalg:lapack_host` (Accelerate on host pointers). `metal_pjrt/conv/`
   (`conv:conv`, MLX's steel convolutions: path choice, implicit-GEMM
   kernels, unfold + GEMM, the weight gradient as patches x dY with split-K
-  parts, launches bounded in flops) is one too, behind `metal$conv`. Their
-  tests, `conv_test`, `scan_test`, `radix_sort_test`, `small_linalg_test`
-  (device tests) and
-  `lapack_host_test` (host), link no XLA, so they build quickly and test a
-  kernel in isolation; `//metal_pjrt:xla_free_test` fails if an XLA
-  dependency creeps back in.
+  parts, launches bounded in flops) is one too, behind `metal$conv`, and
+  so is `metal_pjrt/fft/` (`fft:fft_plan`, MLX's FFT plan and its Rader and
+  Bluestein constants in double, host only; `fft:fft`, the Stockham, Rader,
+  Bluestein and four-step kernels over contiguous complex64/float32 rows,
+  in row chunks; not yet behind a handler). Their tests, `conv_test`,
+  `fft_test`, `scan_test`, `radix_sort_test`, `small_linalg_test` (device
+  tests), `lapack_host_test` and `fft_plan_test` (host), link no XLA, so
+  they build quickly and test a kernel in isolation;
+  `//metal_pjrt:xla_free_test` fails if an XLA dependency creeps back in
+  (or a Metal one into the host tests).
 - `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,
-  steel convolutions, radix sort, scan, small linear algebra, MPS staging, the runtime's
+  steel convolutions, FFTs, radix sort, scan, small linear algebra, MPS staging, the runtime's
   fill/copy kernels, the emitter's prelude). A genrule (`embed_msl.bzl`)
   embeds each as a char array in the dylib; they are compiled at run time
   (`newLibraryWithSource`: the command-line tools have no offline `metal`

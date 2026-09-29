@@ -18,7 +18,9 @@ The f16/bf16 "steel" GEMM kernels (metal_pjrt/kernels/steel_gemm.metal) are
 ported from mlx/backend/metal/kernels/steel/gemm/{loader,mma,gemm}.h; the
 convolution kernels (metal_pjrt/kernels/steel_conv.metal, conv_misc.metal)
 from mlx/backend/metal/kernels/steel/conv/ and kernels/conv.metal (MLX
-0.32.2).
+0.32.2); the FFT kernels (metal_pjrt/kernels/fft.metal) from
+mlx/backend/metal/kernels/{fft.h,fft/radix.h,fft/readwrite.h}, and the FFT
+plan (metal_pjrt/fft/) from mlx/backend/metal/fft.cpp (MLX 0.32.2).
 
 MIT License
 

@@ -1,0 +1,68 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
+
+package(default_visibility = ["//visibility:public"])
+
+# The FFTs' host side: MLX's plan, the launch geometry, the Rader and
+# Bluestein constants and the workspace size. No Metal, no XLA.
+cc_library(
+    name = "fft_plan",
+    srcs = ["fft_plan.cc"],
+    hdrs = ["fft_plan.h"],
+    deps = [
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# The FFT kernels (kernels/fft.metal, kernels/fft_misc.metal) and their
+# dispatch. No XLA.
+cc_library(
+    name = "fft",
+    srcs = ["fft.cc"],
+    hdrs = ["fft.h"],
+    deps = [
+        ":fft_plan",
+        "//metal_pjrt/kernels:fft",
+        "//metal_pjrt/kernels:fft_misc",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# PlanFft, the geometry and the constants against MLX's rules and double
+# references. A host test (runs in //...).
+cc_test(
+    name = "fft_plan_test",
+    srcs = ["fft_plan_test.cc"],
+    deps = [
+        ":fft_plan",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# RunFft on every path against a double reference, on rt::Device alone.
+# Needs a Metal device.
+cc_test(
+    name = "fft_test",
+    srcs = ["fft_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":fft",
+        ":fft_plan",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

@@ -18,8 +18,11 @@
 #include "metal_pjrt/blas/mps_gemm.h"
 #include "metal_pjrt/blas/steel_gemm.h"
 #include "metal_pjrt/conv/conv_kernels.h"
+#include "metal_pjrt/fft/fft.h"
 #include "metal_pjrt/kernels/conv_misc.metal.h"
 #include "metal_pjrt/kernels/cub_sort.metal.h"
+#include "metal_pjrt/kernels/fft.metal.h"
+#include "metal_pjrt/kernels/fft_misc.metal.h"
 #include "metal_pjrt/kernels/mps_staging.metal.h"
 #include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "metal_pjrt/kernels/runtime_builtins.metal.h"
@@ -83,9 +86,9 @@ class KernelsTest : public ::testing::Test {
 // instantiation appended by the host (steel) still compile on their own.
 TEST_F(KernelsTest, EverySourceCompiles) {
   for (const char* source :
-       {kConvMiscMsl, kCubSortMsl, kMpsStagingMsl, kMslPrelude,
-        kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl, kSteelConvMsl,
-        kSteelGemmMsl}) {
+       {kConvMiscMsl, kCubSortMsl, kFftMsl, kFftMiscMsl, kMpsStagingMsl,
+        kMslPrelude, kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl,
+        kSteelConvMsl, kSteelGemmMsl}) {
     FunctionNames(source);
   }
 }
@@ -224,6 +227,22 @@ TEST_F(KernelsTest, SteelConv) {
   // all 5 implicit tiles; general 3 tiles x ALIGN_C; unfold, pad, sum.
   EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 3));
   for (const conv::ConvKernelSource& k : all) {
+    ExpectKernel(k.msl.c_str(), k.function, k.constants);
+  }
+}
+
+// Every FFT variant the dispatch can select (fft::AllFftKernels: the
+// single-kernel plans of every length up to 4096 in the three I/O type
+// pairs, the four-step passes of every power of two up to 2^24), each
+// specialized for the first length that selects it, and fft_misc's kernels.
+TEST_F(KernelsTest, Fft) {
+  EXPECT_EQ(FunctionNames(kFftMiscMsl).size(), 11);
+  const std::vector<fft::FftKernelSource> all = fft::AllFftKernels();
+  // Stockham on 5 threadgroup memory sizes (256-4096), Rader on 4 (n <=
+  // 2048), fused Bluestein on 5, each x 3 I/O pairs; four-step pass 0 on 4
+  // sizes and pass 1 on 2 (256, 4096), each for c2c, rfft and irfft.
+  EXPECT_EQ(all.size(), (5 + 4 + 5) * 3 + (4 + 2) * 3 + 11);
+  for (const fft::FftKernelSource& k : all) {
     ExpectKernel(k.msl.c_str(), k.function, k.constants);
   }
 }

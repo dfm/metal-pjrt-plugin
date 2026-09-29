@@ -20,6 +20,18 @@ embed_msl(
 )
 
 embed_msl(
+    name = "fft",
+    src = "fft.metal",
+    symbol = "kFftMsl",
+)
+
+embed_msl(
+    name = "fft_misc",
+    src = "fft_misc.metal",
+    symbol = "kFftMiscMsl",
+)
+
+embed_msl(
     name = "mps_staging",
     src = "mps_staging.metal",
     symbol = "kMpsStagingMsl",
@@ -72,6 +84,8 @@ cc_test(
     deps = [
         ":conv_misc",
         ":cub_sort",
+        ":fft",
+        ":fft_misc",
         ":mps_staging",
         ":msl_prelude",
         ":runtime_builtins",
@@ -82,6 +96,7 @@ cc_test(
         "//metal_pjrt/blas:mps_gemm",
         "//metal_pjrt/blas:steel_gemm",
         "//metal_pjrt/conv:conv_kernels",
+        "//metal_pjrt/fft",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",

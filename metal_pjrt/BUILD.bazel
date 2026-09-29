@@ -7,20 +7,26 @@ load("@rules_python//python:defs.bzl", "py_test")
 #   compiler/          MetalCompiler : xla::gpu::GpuCompiler, HLO passes
 #   codegen/           MLIR -> EmitC -> MSL (MetalKernelCompiler)
 #   blas/, linalg/     GEMM (MPS, steel) and linear algebra
+#   conv/, fft/        convolutions and FFTs (MLX's kernels)
 #   ffi/               FFI custom-call handlers
 #                      (ffi:scan, ffi:radix_sort, linalg:small_linalg and
 #                      linalg:lapack_host are the XLA-free work behind them)
 #   kernels/           hand-written MSL (.metal), embedded in the dylib
 #   pjrt/              the plugin dylib (XLA's GPU C API shim, own GetPjrtApi)
 
-# The dispatch libraries' tests link no XLA and lapack_host_test no Metal
+# The dispatch libraries' tests link no XLA and the host tests no Metal
 # (xla_free_test.py). genquery takes no wildcards, so the test filters the
 # transitive deps by repository.
-DISPATCH_TESTS = [
+HOST_TESTS = [
+    "//metal_pjrt/fft:fft_plan_test",
+    "//metal_pjrt/linalg:lapack_host_test",
+]
+
+DISPATCH_TESTS = HOST_TESTS + [
     "//metal_pjrt/conv:conv_test",
     "//metal_pjrt/ffi:radix_sort_test",
     "//metal_pjrt/ffi:scan_test",
-    "//metal_pjrt/linalg:lapack_host_test",
+    "//metal_pjrt/fft:fft_test",
     "//metal_pjrt/linalg:small_linalg_test",
 ]
 
@@ -31,16 +37,16 @@ genquery(
 )
 
 genquery(
-    name = "lapack_host_test_deps",
-    expression = "deps(//metal_pjrt/linalg:lapack_host_test)",
-    scope = ["//metal_pjrt/linalg:lapack_host_test"],
+    name = "host_test_deps",
+    expression = "deps(" + " + ".join(HOST_TESTS) + ")",
+    scope = HOST_TESTS,
 )
 
 genquery(
-    name = "lapack_host_test_metal_linkopts",
+    name = "host_test_metal_linkopts",
     expression = "attr(linkopts, 'framework (Metal|QuartzCore)', " +
-                 "deps(//metal_pjrt/linalg:lapack_host_test))",
-    scope = ["//metal_pjrt/linalg:lapack_host_test"],
+                 "deps(" + " + ".join(HOST_TESTS) + "))",
+    scope = HOST_TESTS,
 )
 
 # Control: the pattern must still match XLA labels.
@@ -55,14 +61,14 @@ py_test(
     srcs = ["xla_free_test.py"],
     args = [
         "$(rootpath :dispatch_test_deps)",
-        "$(rootpath :lapack_host_test_deps)",
-        "$(rootpath :lapack_host_test_metal_linkopts)",
+        "$(rootpath :host_test_deps)",
+        "$(rootpath :host_test_metal_linkopts)",
         "$(rootpath :metal_ffi_direct_deps)",
     ],
     data = [
         ":dispatch_test_deps",
-        ":lapack_host_test_deps",
-        ":lapack_host_test_metal_linkopts",
+        ":host_test_deps",
+        ":host_test_metal_linkopts",
         ":metal_ffi_direct_deps",
     ],
 )
@@ -81,6 +87,7 @@ test_suite(
         "//metal_pjrt/conv:conv_test",
         "//metal_pjrt/ffi:radix_sort_test",
         "//metal_pjrt/ffi:scan_test",
+        "//metal_pjrt/fft:fft_test",
         "//metal_pjrt/kernels:kernels_test",
         "//metal_pjrt/linalg:small_linalg_test",
         "//metal_pjrt/runtime:metal_runtime_test",
