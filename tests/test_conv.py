@@ -89,6 +89,10 @@ def test_gradients(name, lhs, rhs, kw, dtype):
 
     metal_testing.check(grads, x, w, g, ulps=GRAD_ULPS[dtype], normwise=True,
                         name=f"conv grads {name} {dtype}")
+    text = _compiled(grads, x, w, g)
+    assert text.count('custom_call_target="metal$conv"') == 2, text
+    assert text.count('kind = \\"wgrad\\"') == 1, text
+    assert " convolution(" not in text
 
 
 def _compiled(fn, *args):
