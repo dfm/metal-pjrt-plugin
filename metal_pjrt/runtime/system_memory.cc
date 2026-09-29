@@ -4,10 +4,11 @@
 #include <mach/mach_host.h>
 #include <sys/sysctl.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdint>
 
 #include "absl/strings/str_format.h"
-#include "metal_pjrt/runtime/env.h"
 
 namespace metal_pjrt {
 namespace rt {
@@ -39,19 +40,23 @@ uint64_t ReclaimableMemoryBytes() {
   return pages * page;
 }
 
-uint64_t SystemMemoryReserve() {
-  static const uint64_t reserve = [] {
-    return EnvMegabytes("METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB", 512);
-  }();
-  return reserve;
+namespace {
+std::atomic<int> g_test_pressure{0};
+}  // namespace
+
+int MemoryPressureLevel() {
+  int level = 0;
+  size_t len = sizeof(level);
+  int system = 0;
+  if (sysctlbyname("kern.memorystatus_vm_pressure_level", &level, &len,
+                   nullptr, 0) == 0) {
+    system = level >= 4 ? 2 : level >= 2 ? 1 : 0;  // 1, 2, 4 in the kernel
+  }
+  return std::max(system, g_test_pressure.load(std::memory_order_relaxed));
 }
 
-bool FitsInSystemMemory(uint64_t size, uint64_t* reclaimable) {
-  if (size < (1u << 20)) return true;
-  const uint64_t r = ReclaimableMemoryBytes();
-  if (reclaimable != nullptr) *reclaimable = r;
-  const uint64_t reserve = SystemMemoryReserve();
-  return r >= reserve && size <= r - reserve;
+void SetMemoryPressureForTesting(int level) {
+  g_test_pressure.store(level, std::memory_order_relaxed);
 }
 
 std::string FormatBytes(uint64_t bytes) {

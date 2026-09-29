@@ -32,8 +32,8 @@ in `docs/design.md`, "Runtime".
   are computed at the best wall time.
 - Run `bazel shutdown` first (or set `BENCH_BAZEL_SHUTDOWN=1`; `run_all.sh`
   does not do it by default, as it would stop a build running elsewhere).
-  The Bazel server's memory makes the system memory guard refuse large
-  allocations (see "Runtime" in `docs/design.md`).
+  The Bazel server's memory makes macOS compress and swap, which skews
+  timings.
 - A/Bs of sub-millisecond programs interleave the arms and report p10 /
   median / p90. Tiny kernels run in one of two GPU performance states
   (~4.2 vs ~2.3 us of GPU time per dispatch), which macOS picks from the
@@ -124,7 +124,7 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
 
   airbench94 end to end (M3 8 GB, nothing else on the GPU): mtl bf16
   94.03% in 228.8 s and 93.93% in 259.1 s (2 seeds; the system memory
-  guard refused the other three, at 1.1-1.4 GB free), peak footprint 3.3
+  guard, since removed, refused the other three, at 1.1-1.4 GB free), peak footprint 3.3
   GB; before, a steady-state step of 545 ms, ~259 s per run. PyTorch 2.14
   MPS fp16 in the same window: 93.93% +/- 0.11%, 253.9 +/- 20.0 s (5
   seeds), peak 5.9 GB. Not built: an implicit-GEMM weight gradient (the

@@ -286,17 +286,23 @@ class Device {
   // fresh MTL::Buffer costs ~60 us/MB of page faults on first touch. A miss
   // allocates a new buffer if live + cached + size stays within
   // memory_budget() (evicting least recently freed buffers to make room) and
-  // the system memory guard passes (dropping the cache and retrying; see
-  // FitsAfterReleasingCache); otherwise RESOURCE_EXHAUSTED. Cached buffers are released when unused
-  // for kCacheIdleRelease, and all at once on a system memory-pressure
-  // warning (while the level is not normal, frees are released as soon as
-  // allowed), so an idle process gives its memory back.
+  // CheckSystemMemory passes; otherwise RESOURCE_EXHAUSTED. Cached buffers
+  // are released when unused for kCacheIdleRelease, and all at once on a
+  // system memory-pressure warning (while the level is not normal, frees are
+  // released as soon as allowed), so an idle process gives its memory back.
   // A cached buffer is only released (evicted, trimmed or dropped) once all
   // work that existed when it was freed has finished (see BeginWork): host
   // tasks hold raw pointers, and a command buffer may use it through an
   // argument buffer. Until then it stays cached (and may briefly push live +
   // cached over the budget); reuse needs no wait, being stream-ordered.
   absl::StatusOr<Allocation> Allocate(uint64_t size);
+  // The one system-level limit, for Allocate and buffers made outside it:
+  // an allocation of 1 MB or more is refused (RESOURCE_EXHAUSTED) while the
+  // system is at critical memory pressure after dropping the cache (see
+  // CriticalAfterReleasingCache). Below that macOS pages as for any process
+  // (as PyTorch MPS allows); the first allocation at warning or worse logs
+  // a warning.
+  absl::Status CheckSystemMemory(uint64_t size);
   absl::Status Deallocate(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
@@ -314,7 +320,7 @@ class Device {
   };
   MemoryStats memory_stats() const;
   // What the DISPATCH_SOURCE_TYPE_MEMORYPRESSURE handler calls (level as
-  // above); tests call it through metal_pjrt_memory_pressure().
+  // above); tests call it through metal_pjrt_testing_memory_pressure().
   void OnMemoryPressure(int level);
   // Releases cached buffers freed at least `min_idle` ago (all with 0) whose
   // work has finished.
@@ -429,12 +435,12 @@ class Device {
   // Every ticket below this has ended.
   uint64_t EndedBelow();
   std::condition_variable tickets_cv_;  // notified by EndWork
-  // After the system memory guard refused `length`: drops the cache and
-  // checks again. Buffers freed while work was in flight (e.g. the previous
-  // step's) stay cached until that work ends, so if some remain, waits
-  // (bounded by kRefusalWait, not after a device error) for the work
-  // outstanding now, drops the cache and checks once more.
-  bool FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable);
+  // At critical pressure: drops the cache and reads the level again.
+  // Buffers freed while work was in flight (e.g. the previous step's) stay
+  // cached until that work ends, so if some remain, waits (bounded by
+  // kRefusalWait, not after a device error) for the work outstanding now,
+  // drops the cache and reads once more. Returns whether still critical.
+  bool CriticalAfterReleasingCache();
   static constexpr std::chrono::seconds kRefusalWait{1};
   // libdispatch sources on memory_queue_: the memory-pressure source and a
   // timer running TrimCache(kCacheIdleRelease), resumed only while the cache

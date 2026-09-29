@@ -185,9 +185,11 @@ y = step(x, 1.0).block_until_ready()
 assert x.is_deleted()
 others = [fill(float(i)).block_until_ready() for i in range(4)]
 del others; gc.collect()
-lib.metal_pjrt_memory_pressure(1)
-more = [fill(-1.0).block_until_ready() for _ in range(4)]
-lib.metal_pjrt_memory_pressure(0)
+lib.metal_pjrt_testing_memory_pressure(1)
+try:
+    more = [fill(-1.0).block_until_ready() for _ in range(4)]
+finally:
+    lib.metal_pjrt_testing_memory_pressure(0)
 more += [fill(-2.0).block_until_ready() for _ in range(4)]
 assert np.all(np.asarray(y) == 2.0), np.unique(np.asarray(y))[:4]
 del more, y; gc.collect()

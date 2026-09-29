@@ -8,6 +8,17 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-29
 
+- Memory limits work like PyTorch MPS: the per-process budget (half of
+  RAM, capped by the GPU's recommended working set) is the limit, and
+  within it macOS compresses and swaps as for any program. The system
+  memory guard, which refused allocations leaving less than 512 MB of
+  free pages (25 of 28 airbench94 runs on an 8 GB Mac at 50-70% free), is
+  gone; an allocation is now refused only while the system is at critical
+  memory pressure, and the first allocation at warning logs a warning.
+  `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` is no longer read. The test
+  hook `metal_pjrt_memory_pressure` is now
+  `metal_pjrt_testing_memory_pressure` and also fakes the level
+  allocations see.
 - Convolution weight gradients are 1.6-3x faster at CNN-training sizes
   (bf16, batch 1024: 31x31 24->64 53.8 -> 18.2 ms): the patch unfold is
   vectorized and the split-K GEMM's tile and part count are chosen

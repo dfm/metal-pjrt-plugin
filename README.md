@@ -43,7 +43,7 @@ From source, as an editable install into `.venv`:
 git clone https://github.com/dfm/metal-pjrt-plugin.git
 cd metal-pjrt-plugin
 scripts/install_dev.sh     # creates .venv with uv, builds, installs (editable, with pytest)
-bazel shutdown             # frees the Bazel server's memory, or the plugin's memory guard may refuse allocations
+bazel shutdown             # frees the Bazel server's memory (several GB) for your programs
 ```
 
 To use the plugin in another environment, build a wheel from that
@@ -202,14 +202,13 @@ has timings).
   Python; the machine does not need a reboot.
 - **Memory.** GPU memory is system RAM. A process may hold up to half of
   RAM (capped by the GPU's recommended working set;
-  `METAL_PJRT_MEMORY_FRACTION` scales it), and the plugin refuses any
-  allocation that would push the machine into swap. Both fail with
-  RESOURCE_EXHAUSTED and the numbers: "refused: this process already
-  holds ... of its ... memory budget" is this process; "refused by the
-  system memory guard: only ... of system memory is free or reclaimable"
-  is the machine. On an 8 GB Mac a nanoGPT-sized training step (a 1.2 GB
-  allocation) can hit the guard with a browser open: close other programs
-  or use a smaller batch.
+  `METAL_PJRT_MEMORY_FRACTION` scales it); within that, macOS compresses
+  and swaps as for any program (as with PyTorch MPS). Allocations are also
+  refused while the whole system is at critical memory pressure. Both fail
+  with RESOURCE_EXHAUSTED and the numbers: "refused: this process already
+  holds ... of its ... memory budget" is this process; "refused: the
+  system is under critical memory pressure" is the machine: close other
+  programs or use a smaller batch.
   `device_put` copies the array or waits until it is copied, so changing
   a NumPy array afterwards does not change what the device gets.
 - **Small dense linear algebra is slow.** Above 32x32 it runs in Accelerate

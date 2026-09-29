@@ -1,7 +1,7 @@
 """Memory policy (runtime Device::Allocate behind XLA's platform allocator):
 a workload that outgrows the budget gets RESOURCE_EXHAUSTED and the process
 keeps working; memory goes back to the system after a computation; a
-memory-pressure warning drops the cache.
+memory-pressure warning drops the cache; critical pressure refuses.
 
 Each test runs in a fresh process, so the budget can be made artificially
 small (METAL_PJRT_MEMORY_FRACTION) and nothing here gets near physical
@@ -83,20 +83,29 @@ print("after: OK")
     assert "after: OK" in out, out
 
 
-def test_system_memory_guard_says_why():
-    # A reserve larger than any Mac's RAM: every allocation of 1 MB or more is
-    # refused by the system memory guard, smaller ones still work.
+def test_critical_memory_pressure_refuses():
+    # The only system-level limit. Critical pressure is faked with the test
+    # hook (never provoked for real): allocations of 1 MB or more are refused
+    # after the cache is dropped, smaller ones still work, and allocating
+    # resumes once the level is back to normal.
     out = run_child(r"""
+lib.metal_pjrt_testing_memory_pressure(2)
 try:
-    jnp.ones((16 * MB,), jnp.float32).block_until_ready()
-    raise SystemExit("no error")
-except jax.errors.JaxRuntimeError as e:
-    assert "RESOURCE_EXHAUSTED" in str(e) and "system memory guard" in str(e), e
-    assert "Close other memory-heavy applications" in str(e), e
-    print(str(e).splitlines()[0])
-assert float(jnp.sum(jnp.ones(1000))) == 1000.0
+    try:
+        jnp.ones((16 * MB,), jnp.float32).block_until_ready()
+        raise SystemExit("no error")
+    except jax.errors.JaxRuntimeError as e:
+        assert "RESOURCE_EXHAUSTED" in str(e), e
+        assert "metal-pjrt-plugin: in jit_broadcast_in_dim: Metal: allocating" in str(e), e
+        assert "refused: the system is under critical memory pressure" in str(e), e
+        assert "not this process's budget" in str(e), e
+        print(str(e).splitlines()[0])
+    assert float(jnp.sum(jnp.ones(1000))) == 1000.0
+finally:
+    lib.metal_pjrt_testing_memory_pressure(0)
+assert float(jnp.ones((16 * MB,), jnp.float32)[123]) == 1.0
 print("OK")
-""", METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB=str(1 << 30))
+""")
     assert "OK" in out, out
 
 
@@ -205,12 +214,14 @@ def test_memory_pressure_drops_the_cache():
 x = jnp.ones((16 * MB,)); y = (x * 2).block_until_ready()
 del x, y
 assert stats()["cached"] >= 64 * MB, stats()
-lib.metal_pjrt_memory_pressure(1)
-s = stats()
-assert s["cached"] == 0 and s["pressure"] == 1, s
-z = (jnp.ones((16 * MB,)) + 1).block_until_ready(); del z
-assert stats()["cached"] == 0, stats()  # frees release while under pressure
-lib.metal_pjrt_memory_pressure(0)
+lib.metal_pjrt_testing_memory_pressure(1)
+try:
+    s = stats()
+    assert s["cached"] == 0 and s["pressure"] == 1, s
+    z = (jnp.ones((16 * MB,)) + 1).block_until_ready(); del z
+    assert stats()["cached"] == 0, stats()  # frees release while under pressure
+finally:
+    lib.metal_pjrt_testing_memory_pressure(0)
 z = (jnp.ones((16 * MB,)) + 1).block_until_ready(); del z
 assert stats()["cached"] >= 64 * MB, stats()
 print("OK")
@@ -221,20 +232,16 @@ print("OK")
 @pytest.mark.parametrize("fraction", ["abc", "0", "0.5x", "1.5"])
 def test_bad_settings_warn_and_keep_defaults(fraction):
     # A value that does not parse is ignored with a warning (strtoull/atof
-    # read a typo as 0, which silently turned the swap guard off); a
-    # fraction above 1 is allowed, with a warning.
+    # would read a typo as 0); a fraction above 1 is allowed, with a warning.
     out = run_python(PRELUDE + r"""
 print("budget", stats()["budget"])
 print(jax.jit(lambda x: x + 1)(1.0))
-jnp.zeros(MB).block_until_ready()  # 4 MB: consults the system guard
 """, dict(os.environ, JAX_PLATFORMS="mtl", METAL_PJRT_MEMORY_FRACTION=fraction,
-          METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB="512MB",
           METAL_PJRT_QUARANTINE_STRIKES="two",
           METAL_PJRT_DISABLE_REWRITES="scan,bogus"))
     assert out.returncode == 0, out.stderr[-3000:]
     assert "2.0" in out.stdout, out.stdout
-    for want in ("Ignoring METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB=512MB",
-                 "Ignoring METAL_PJRT_QUARANTINE_STRIKES=two",
+    for want in ("Ignoring METAL_PJRT_QUARANTINE_STRIKES=two",
                  'Ignoring "bogus" in METAL_PJRT_DISABLE_REWRITES'):
         assert want in out.stderr, (want, out.stderr[-3000:])
     budget = int(out.stdout.split("budget ")[1].split()[0])

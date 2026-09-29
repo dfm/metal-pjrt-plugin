@@ -16,6 +16,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
+#include "absl/strings/strip.h"
 #include "metal_pjrt/kernels/mps_staging.metal.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/runtime/system_memory.h"
@@ -326,16 +327,11 @@ absl::Status RunMpsGemmImpl(rt::Device* rt_device, void* mtl_command_buffer,
     }
     const int64_t tmp_bytes = required * es;
     // Staging buffers come straight from the device, not the pool; they
-    // still obey the allocation guard.
-    uint64_t reclaimable = 0;
-    if (!rt::FitsInSystemMemory(tmp_bytes, &reclaimable)) {
-      return absl::ResourceExhaustedError(Describe(
-          absl::StrFormat("a %s staging buffer was refused: only %s of "
-                          "system memory is reclaimable. Close other "
-                          "memory-heavy applications or use smaller arrays",
-                          rt::FormatBytes(tmp_bytes),
-                          rt::FormatBytes(reclaimable)),
-          p));
+    // still obey the system memory limit.
+    if (absl::Status mem = rt_device->CheckSystemMemory(tmp_bytes);
+        !mem.ok()) {
+      return absl::ResourceExhaustedError(
+          Describe(absl::StripPrefix(mem.message(), "Metal: "), p));
     }
     id<MTLBuffer> tmp =
         [device newBufferWithLength:static_cast<NSUInteger>(tmp_bytes)

@@ -208,14 +208,22 @@ sizes.
   miss evicts least recently freed buffers first, then fails with
   RESOURCE_EXHAUSTED. The compiler sees the recommended working set as the
   device size, so compiled programs do not vary with load.
-- System guard: an allocation of 1 MB or more is refused if it would leave
-  less than 512 MB free, inactive, speculative or purgeable
-  (`METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB`), because a GPU touching swapped-out
-  pages stalls until the watchdog resets it. On a refusal the cache is
-  dropped and the guard asked again; if cached buffers are still held by
-  work in flight, the allocation waits (at most 1 s, not after a device
-  error) for that work, drops the cache and asks once more. MPS's internal
-  staging copies bypass the cache but pass the guard.
+- System memory: the budget is the limit, as PyTorch MPS caps its own
+  allocations and otherwise lets macOS page. The only system-level refusal
+  is at critical memory pressure (`kern.memorystatus_vm_pressure_level`,
+  read per allocation of 1 MB or more; critical is where jetsam starts
+  killing processes): the cache is dropped and the level read again; if
+  cached buffers are still held by work in flight, the allocation waits
+  (at most 1 s, not after a device error) for that work, drops the cache
+  and reads once more, then fails with RESOURCE_EXHAUSTED. MPS's internal
+  staging copies bypass the cache but get the same check. The first
+  allocation at warning or worse logs a warning. A stricter guard (refuse
+  below 512 MB of free pages) existed because swapping wedged the GPU on
+  2026-09-25 (two processes each allowed 70% of the working set, ~100 MB
+  free, workers killed mid-GPU-work); low free pages are macOS's normal
+  state, and it refused 25 of 28 airbench94 runs at 50-70% free. That
+  wedge is now covered by the half-of-RAM budget, bounded waits instead
+  of kills, and the GPU reset log.
 - Release tickets: every command buffer holds a work ticket from creation
   to completion, every host task from enqueue to its end. A cached buffer
   is released (evicted, trimmed or dropped) only once all work that existed
@@ -227,7 +235,7 @@ sizes.
   them all, and frees release directly until the level is normal.
 - XLA reports every refusal as "Out of memory while trying to allocate N";
   the plugin's `PJRT_Error_Message` appends the runtime's reason (budget or
-  system guard, with the numbers) so it reaches Python, with the executable
+  critical system memory pressure, with the numbers) so it reaches Python, with the executable
   whose allocation was refused (its wrapped `PJRT_LoadedExecutable_Execute`
   names refusals made during the call; XLA allocates an execution's
   buffers on the calling thread). XLA's own `executable_name` payload names

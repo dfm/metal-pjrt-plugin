@@ -1204,19 +1204,25 @@ namespace metal_pjrt::rt {
 namespace {
 using ::absl_testing::StatusIs;
 
-TEST_F(MetalRuntimeTest, MemoryBudgetAndAllocationGuard) {
-  // The budget is derived from free system memory and capped by the working
-  // set; it must be usable but never the whole machine.
+TEST_F(MetalRuntimeTest, MemoryBudgetAndCriticalPressure) {
+  // Half of RAM, capped by the working set: usable, never the whole machine.
   EXPECT_GE(dev_->memory_budget(), 256ull << 20);
   EXPECT_LE(dev_->memory_budget(), dev_->info().recommended_working_set);
   EXPECT_LE(dev_->memory_budget(), PhysicalMemoryBytes() / 2);
-  // Asking for more than the machine can hand out without swapping is
-  // refused cleanly (RESOURCE_EXHAUSTED), not attempted.
-  uint64_t too_much = std::min<uint64_t>(dev_->info().max_buffer_length,
-                                         PhysicalMemoryBytes());
-  EXPECT_THAT(dev_->Allocate(too_much),
+  // Past the budget: refused cleanly, not attempted.
+  EXPECT_THAT(dev_->Allocate(dev_->memory_budget() + (1 << 20)),
               StatusIs(absl::StatusCode::kResourceExhausted));
   EXPECT_EQ(dev_->allocated_bytes(), 0);
+  // At (faked) critical system pressure: 1 MB or more is refused, less is
+  // not.
+  SetMemoryPressureForTesting(2);
+  const absl::StatusOr<Allocation> big = dev_->Allocate(16 << 20);
+  const absl::StatusOr<Allocation> small = dev_->Allocate(4096);
+  SetMemoryPressureForTesting(0);
+  EXPECT_THAT(big, StatusIs(absl::StatusCode::kResourceExhausted,
+                            HasSubstr("critical memory pressure")));
+  ASSERT_THAT(small, IsOk());
+  EXPECT_THAT(dev_->Deallocate(small->ptr), IsOk());
 }
 
 }  // namespace

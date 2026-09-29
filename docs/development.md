@@ -100,8 +100,8 @@ venv and running `tests/test_smoke.py`, `test_sort.py` and
 
 A fresh clone builds with `scripts/install_dev.sh` alone (73 s from the
 shared disk cache; ~2 hours without it). Run `bazel shutdown` after a
-build: the Bazel server's memory can make the plugin's memory guard refuse
-allocations. Before deleting a scratch clone, run `bazel clean --expunge`
+build: the Bazel server holds several GB that programs then have to swap
+for. Before deleting a scratch clone, run `bazel clean --expunge`
 in it: its output base is separate (~8.5 GB).
 
 `scripts/install_dev.sh` installs the `metal-pjrt-plugin` dist (editable,
@@ -136,7 +136,7 @@ so a second clone rebuilds from the cache in minutes instead of hours.
 `--config=public_cache` reads JAX's public Bazel cache; hits are
 opportunistic and depend on matching action keys. Shut the Bazel server
 down (`bazel shutdown`) before measuring or running large workloads: its JVM
-holds memory the allocation guard then refuses to hand out.
+holds memory that workloads then swap for.
 
 ## Environment variables
 
@@ -163,7 +163,6 @@ ignored with a warning and the default kept.
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
 | `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel, default 2; 0 disables | runtime, `scripts/gpu_health.py` |
-| `METAL_PJRT_SYSTEM_MEMORY_RESERVE_MB` | run | test | memory the system guard keeps free, default 512 | runtime |
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | run | test | `n` fails the n-th committed command buffer, default 0 (never) | runtime |
 | `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |

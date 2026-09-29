@@ -57,15 +57,16 @@ Two different limits:
   batches, free arrays you no longer need, or raise the budget with the
   value the message names (the last clause is left out when the budget
   already equals the GPU's working set).
-- `Metal: allocating ... refused by the system memory guard: only ... of
-  system memory is free or reclaimable and ... is kept for the OS (device
-  0; this process holds ..., budget ...). Close other memory-heavy
-  applications or use smaller arrays or batches` The machine is short of
-  memory, not this process: the plugin refuses allocations that would push
-  the system into swap, because a GPU waiting on swapped-out memory trips
-  the watchdog. Close other programs (a browser, an idle Bazel server:
-  `bazel shutdown`) or use smaller batches. On an 8 GB Mac a nanoGPT-sized
-  training step can hit this with a browser open.
+- `Metal: allocating ... refused: the system is under critical memory
+  pressure (system-wide, not this process's budget: it holds ... of its
+  ... budget; device 0). Close other memory-heavy applications or use
+  smaller arrays or batches` The whole machine is at critical memory
+  pressure (`memory_pressure` in a terminal shows the level), where macOS
+  starts killing processes; the plugin had already dropped its cache.
+  Close other programs (a browser, an idle Bazel server: `bazel
+  shutdown`) or use smaller batches. Below critical nothing is refused;
+  at the warning level the plugin logs once that GPU work may slow down
+  while macOS compresses or swaps memory.
 
 ## "accepts no further GPU work in this process"
 

@@ -40,11 +40,10 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
   were a size-capped elemental fallback (watchdog risk above the cap) or
   an int8 steel GEMM; int8 through the f32 GEMM is exact only for
   K < ~1040.
-- The system memory guard stays strict: it counts only free + inactive +
-  speculative + purgeable pages, minus a 512 MB reserve, not compressible
-  memory, because swapping is what wedged the GPU. The cost: on an 8 GB
-  Mac with a browser open it refused nanoGPT's 1.17 GiB step allocation
-  with 1.36 GB free (the README says so).
+- Memory limits as in PyTorch MPS (2026-09-29): the per-process budget is
+  the limit and macOS pages below it; the only system-level refusal is at
+  critical memory pressure. The free-pages guard it replaced refused 25 of
+  28 airbench94 runs on an 8 GB Mac at 50-70% free (`docs/design.md`).
 - Metal's biased `exp` / `sin` / `cos` / `log` are accepted as documented
   in `docs/accuracy.md`; the prelude's polynomials for |x| < 0.125 stay,
   and nothing further is planned.
@@ -133,9 +132,9 @@ Conv weight gradient: done (be3f9e7 vectorized unfold, f0aca7b GEMM tile
 and split-K sized together). bf16 N=1024 31x31 24->64: 53.8 -> 18.2 ms;
 airbench94 to 94% in 229-259 s vs torch-MPS 254 +/- 20 s, at 3.3 vs 5.9 GB
 peak (`docs/performance.md`). Deferred: an implicit-GEMM weight gradient
-(saves only the unfold, at most a third on 31x31). Still open from the same
-case study: the system memory guard refused 3 of 5 airbench94 runs at
-1.1-1.4 GB free, where torch-MPS runs by swapping; kept strict for now.
+(saves only the unfold, at most a third on 31x31). The system memory
+guard that refused 3 of 5 airbench94 runs at 1.1-1.4 GB free is gone:
+done, only critical memory pressure refuses now (see Decisions).
 
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
@@ -162,9 +161,10 @@ CUDA too). The plugin refuses such GEMMs at compile time
   fault or watchdog timeout, jax-metal side by side, other Macs). Beyond
   that: whether every work ticket ends after a sticky error is untested
   (if not, cached buffers stay until the process exits).
-- The out-of-memory retry (drop the cache, wait for in-flight work, retry)
-  and the real memory-pressure notification (`sudo memory_pressure -S -l
-  warn`) are untested; the pressure handler runs through a test hook.
+- The critical-pressure refusal and its retry (drop the cache, wait for
+  in-flight work, read the level again) and the real memory-pressure
+  notification (`sudo memory_pressure -S -l warn`) are untested at a real
+  level; tests fake the level through a test hook.
 - MLX comparison numbers not re-run on an idle, freshly booted machine.
 - Patches 0002 and 0003 not sent upstream.
 - The wheel is untested elsewhere and not stripped (236 MB dylib; `strip

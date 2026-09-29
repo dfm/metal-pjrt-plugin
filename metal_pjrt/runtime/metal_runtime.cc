@@ -604,12 +604,12 @@ void NameAllocationRefusal(uint64_t refusal, std::string executable) {
   if (refusal == g_refusal_count) g_refusal_executable = std::move(executable);
 }
 
-bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
+bool Device::CriticalAfterReleasingCache() {
   TrimCache(std::chrono::steady_clock::duration::zero());
-  if (FitsInSystemMemory(length, reclaimable)) return true;
+  if (MemoryPressureLevel() < 2) return false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    if (cached_bytes_ == 0 || !error_.ok()) return false;
+    if (cached_bytes_ == 0 || !error_.ok()) return true;
   }
   {
     std::unique_lock<std::mutex> lock(tickets_mu_);
@@ -619,7 +619,27 @@ bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
     });
   }
   TrimCache(std::chrono::steady_clock::duration::zero());
-  return FitsInSystemMemory(length, reclaimable);
+  return MemoryPressureLevel() >= 2;
+}
+
+absl::Status Device::CheckSystemMemory(uint64_t size) {
+  if (size < (uint64_t{1} << 20)) return absl::OkStatus();
+  const int level = MemoryPressureLevel();
+  if (level == 0) return absl::OkStatus();
+  static std::once_flag warned;
+  std::call_once(warned, [] {
+    LOG(WARNING) << "Metal: the system is short of memory (macOS memory "
+                    "pressure is not normal); GPU work may slow down while "
+                    "macOS compresses or swaps memory";
+  });
+  if (level < 2 || !CriticalAfterReleasingCache()) return absl::OkStatus();
+  return absl::ResourceExhaustedError(absl::StrFormat(
+      "Metal: allocating %s refused: the system is under critical memory "
+      "pressure (system-wide, not this process's budget: it holds %s of "
+      "its %s budget; device %d). Close other memory-heavy applications "
+      "or use smaller arrays or batches",
+      FormatBytes(size), FormatBytes(allocated_bytes()),
+      FormatBytes(memory_budget_), ordinal_));
 }
 
 absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
@@ -676,20 +696,12 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
         RaiseBudgetHint(memory_budget_, info_.recommended_working_set))));
   }
   if (buf == nullptr) {
-    // Refuse allocations that would push the system into swap (that is how
-    // the machine got wedged once). Our own cache goes first.
-    uint64_t reclaimable = 0;
-    if (!FitsInSystemMemory(length, &reclaimable) &&
-        !FitsAfterReleasingCache(length, &reclaimable)) {
+    // Within the budget macOS pages as it would for any process; only at
+    // critical pressure (where jetsam starts killing) is the allocation
+    // refused. Our own cache goes first.
+    if (absl::Status s = CheckSystemMemory(length); !s.ok()) {
       unreserve();
-      return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
-          "Metal: allocating %s refused by the system memory guard: only %s "
-          "of system memory is free or reclaimable and %s is kept for the "
-          "OS (device %d; this process holds %s, budget %s). Close other "
-          "memory-heavy applications or use smaller arrays or batches",
-          FormatBytes(requested), FormatBytes(reclaimable),
-          FormatBytes(SystemMemoryReserve()), ordinal_,
-          FormatBytes(allocated_bytes()), FormatBytes(memory_budget_))));
+      return RecordRefusal(requested, std::move(s));
     }
     // Default (tracked) hazard mode: Metal orders dispatches touching the
     // same buffer for us.
@@ -2096,11 +2108,13 @@ absl::Status Stream::WaitForStream(Stream* other) {
 // pjrt/BUILD.bazel) for ctypes.
 extern "C" {
 
-// Runs every device's memory-pressure handler as the dispatch source would
-// (0 normal, 1 warning, 2 critical).
-__attribute__((visibility("default"))) void metal_pjrt_memory_pressure(
-    int level) {
+// Test only: fakes the system memory-pressure level (0 normal, 1 warning,
+// 2 critical) for allocations and runs every device's pressure handler as
+// the dispatch source would. 0 turns the fake off; tests reset it.
+__attribute__((visibility("default"))) void
+metal_pjrt_testing_memory_pressure(int level) {
   using namespace metal_pjrt::rt;
+  SetMemoryPressureForTesting(level);
   std::lock_guard<std::mutex> lock(g_devices_mu);
   for (Device* d : g_devices) d->OnMemoryPressure(level);
 }
