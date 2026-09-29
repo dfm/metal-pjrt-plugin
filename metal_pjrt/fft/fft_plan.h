@@ -97,7 +97,9 @@ FftLaunchGeometry LaunchGeometry(const FftPlan& plan, bool real,
 // device, the offsets (256-byte aligned) of each table in it. Empty for
 // Stockham and power-of-two four-step plans.
 struct FftConstants {
+  // The host copy (a caller may release it once uploaded) and its size.
   std::vector<uint8_t> bytes;
+  uint64_t size = 0;
   uint64_t w_q = 0;        // Bluestein: complex64[bluestein_n]
   uint64_t w_k = 0;        // Bluestein: complex64[n]
   uint64_t b_q = 0;        // Rader: complex64[rader_n - 1]

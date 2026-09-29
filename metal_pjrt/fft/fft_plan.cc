@@ -382,6 +382,7 @@ FftConstants MakeFftConstants(const FftPlan& plan) {
     c.w_k = size;
     size = Align256(size + 8 * n);
     c.bytes.resize(size);
+    c.size = size;
     PutComplex(c.bytes, c.w_q, w_q);
     PutComplex(c.bytes, c.w_k, w_k);
   } else if (plan.rader_n > 1) {
@@ -413,6 +414,7 @@ FftConstants MakeFftConstants(const FftPlan& plan) {
     c.g_minus_q = size;
     size = Align256(size + 2 * m);
     c.bytes.resize(size);
+    c.size = size;
     PutComplex(c.bytes, c.b_q, b_q_fft);
     PutShort(c.bytes, c.g_q, g_q);
     PutShort(c.bytes, c.g_minus_q, g_minus_q);

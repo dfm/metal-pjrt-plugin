@@ -58,8 +58,9 @@ FftKernelSource FftMiscKernel(const std::string& function);
 std::vector<FftKernelSource> AllFftKernels();
 
 // Enqueues the transform on the stream. `plan` is PlanFft(n); `constants`
-// is MakeFftConstants(plan) and `constants_device` a device copy of its
-// bytes (unused when empty); `workspace` holds at least
+// is MakeFftConstants(plan) (InvalidArgument if they do not match; the host
+// bytes are not read) and `constants_device` a device copy of its bytes
+// (unused when empty); `workspace` holds at least
 // FftWorkspaceBytes(plan, rows, max_chunk_elements) bytes (InvalidArgument
 // otherwise; unused when 0). Nothing is launched for rows == 0.
 // `max_chunk_elements`: tests pass small values to force several chunks.

@@ -340,6 +340,12 @@ TEST(FftPlanTest, BluesteinChirpLargeN) {
 TEST(FftPlanTest, NoConstantsForStockhamAndFourStep) {
   EXPECT_TRUE(MakeFftConstants(Plan(1024)).bytes.empty());
   EXPECT_TRUE(MakeFftConstants(Plan(1 << 20)).bytes.empty());
+  EXPECT_EQ(MakeFftConstants(Plan(1024)).size, 0);
+  for (int64_t n : {17, 47, 2053}) {
+    const FftConstants c = MakeFftConstants(Plan(n));
+    EXPECT_EQ(c.size, c.bytes.size()) << n;
+    EXPECT_GT(c.size, 0) << n;
+  }
 }
 
 TEST(FftPlanTest, Workspace) {

@@ -42,6 +42,8 @@ constexpr FftType kTypes[] = {FftType::kFft, FftType::kIfft, FftType::kRfft,
                               FftType::kIrfft};
 constexpr int kGuardBytes = 256;
 constexpr uint8_t kGuard = 0xab;
+// NaNs on both sides of the input: a read outside it shows as a NaN.
+constexpr int kInputGuardBytes = 64 << 10;
 
 enum class Path { kLength1, kStockham, kRader, kBluestein, kFourStep,
                   kMultiBluestein };
@@ -205,7 +207,11 @@ class FftTest : public ::testing::Test {
         FftWorkspaceBytes(plan, rows, max_chunk_elements);
     void* ws = ws_bytes > 0 ? Alloc(ws_bytes) : nullptr;
     if (ws != nullptr) std::memset(ws, 0x7f, ws_bytes);  // stale values show
-    void* in = Alloc(x.size() * 4);
+    auto* in_base =
+        static_cast<uint8_t*>(Alloc(x.size() * 4 + 2 * kInputGuardBytes));
+    if (in_base == nullptr) return 0;
+    std::memset(in_base, 0xff, x.size() * 4 + 2 * kInputGuardBytes);
+    void* in = in_base + kInputGuardBytes;
     const uint64_t out_bytes = rows * out_len * out_item;
     auto* out = static_cast<uint8_t*>(Alloc(out_bytes + kGuardBytes));
     if (in == nullptr || out == nullptr) return 0;
@@ -344,9 +350,10 @@ TEST_F(FftTest, FourStep) {
     CheckAllTypes(n, Path::kFourStep, {1, 3});
   }
   // The largest: n1 = 4096 and n2 = 2048 / 4096.
-  Check(1 << 23, FftType::kFft, 1);
-  Check(1 << 24, FftType::kFft, 1);
-  Check(1 << 24, FftType::kIrfft, 1);
+  for (FftType type : kTypes) {
+    Check(1 << 23, type, 1);
+    Check(1 << 24, type, 1);
+  }
 }
 
 TEST_F(FftTest, MultiUploadBluestein) {
@@ -355,7 +362,7 @@ TEST_F(FftTest, MultiUploadBluestein) {
     CheckAllTypes(n, Path::kMultiBluestein, {1, 3});
   }
   // bluestein_n = 2^24.
-  Check((1 << 22) + 1, FftType::kFft, 1);
+  for (FftType type : kTypes) Check((1 << 22) + 1, type, 1);
 }
 
 // Several chunks of rows, the last one partial.
@@ -384,6 +391,41 @@ TEST_F(FftTest, EmptyAndShortWorkspace) {
   const FftPlan rader = *PlanFft(17);
   EXPECT_THAT(RunFft(dev_.get(), stream_.get(), rader, FftType::kFft, 1,
                      MakeFftConstants(rader), nullptr, buf, buf, nullptr, 0),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(stream_->Synchronize(), IsOk());
+}
+
+// Constants that do not match the plan are refused before anything is
+// encoded (the kernels would read outside them, or from a null base).
+TEST_F(FftTest, ConstantsMustMatchThePlan) {
+  void* buf = Alloc(4096 * 8 * 2);
+  const FftPlan stockham = *PlanFft(64);
+  const FftPlan rader = *PlanFft(17);
+  const FftPlan bluestein = *PlanFft(47);
+  const FftPlan multi = *PlanFft(2053);
+  const FftConstants rader_c = MakeFftConstants(rader);
+  const FftConstants bluestein_c = MakeFftConstants(bluestein);
+  void* dev_c = Alloc(4096 * 8 * 4);
+  void* ws = Alloc(FftWorkspaceBytes(multi, 1));
+  auto run = [&](const FftPlan& plan, const FftConstants& c, const void* cd) {
+    return RunFft(dev_.get(), stream_.get(), plan, FftType::kFft, 1, c, cd,
+                  buf, buf, ws, FftWorkspaceBytes(plan, 1));
+  };
+  const FftConstants none;
+  EXPECT_THAT(run(rader, none, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(bluestein, none, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(multi, none, nullptr),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(bluestein, rader_c, dev_c),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(rader, bluestein_c, dev_c),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  // A shorter Bluestein length's tables.
+  EXPECT_THAT(run(multi, bluestein_c, dev_c),
+              StatusIs(absl::StatusCode::kInvalidArgument));
+  EXPECT_THAT(run(stockham, rader_c, dev_c),
               StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(stream_->Synchronize(), IsOk());
 }

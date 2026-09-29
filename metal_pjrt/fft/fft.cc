@@ -2,8 +2,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <initializer_list>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/status/status.h"
@@ -54,6 +56,33 @@ FftFunction SingleKernelFunction(const FftPlan& plan) {
 rt::KernelArg Int(int64_t v) {
   const int32_t i = static_cast<int32_t>(v);
   return rt::KernelArg::Bytes(&i, sizeof(i));
+}
+
+// Whether `c` has the tables `plan` reads, in MakeFftConstants(plan)'s
+// order, one after the other within the bytes; no bytes for a plan without
+// tables.
+bool ConstantsMatch(const FftPlan& plan, const FftConstants& c) {
+  // Tables of these sizes at these offsets, in order, without overlap.
+  auto laid_out = [&](std::initializer_list<std::pair<uint64_t, uint64_t>>
+                          tables) {
+    uint64_t end = 0;
+    for (auto [offset, bytes] : tables) {
+      if (offset < end || bytes > c.size || offset > c.size - bytes) {
+        return false;
+      }
+      end = offset + bytes;
+    }
+    return true;
+  };
+  if (plan.bluestein_n > 0) {
+    return laid_out({{c.w_q, uint64_t(plan.bluestein_n) * 8},
+                     {c.w_k, uint64_t(plan.n) * 8}});
+  }
+  if (plan.rader_n > 1) {
+    const uint64_t m = plan.rader_n - 1;
+    return laid_out({{c.b_q, m * 8}, {c.g_q, m * 2}, {c.g_minus_q, m * 2}});
+  }
+  return c.size == 0;
 }
 
 const void* Offset(const void* p, uint64_t bytes) {
@@ -326,7 +355,14 @@ absl::Status RunFft(rt::Device* device, rt::Stream* stream,
         absl::StrCat("FFT of length ", plan.n, " x ", rows, " rows needs ",
                      need, " bytes of workspace, got ", workspace_bytes));
   }
-  if (!constants.bytes.empty() && constants_device == nullptr) {
+  // Constants of another plan (or none for a Rader or Bluestein plan) would
+  // make the kernels read outside them, or from a null base: a GPU fault.
+  if (!ConstantsMatch(plan, constants)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "FFT: ", constants.size,
+        " bytes of constants do not match the plan of length ", plan.n));
+  }
+  if (constants.size > 0 && constants_device == nullptr) {
     return absl::InvalidArgumentError("FFT: constants not on the device");
   }
   const int64_t in_row = InputLength(type, plan.n) *
