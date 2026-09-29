@@ -27,19 +27,23 @@ the reply (mlx-lm's `--mask-prompt`).
 ## Run it
 
 ```sh
-uv pip install --python .venv/bin/python -e '.[examples]' optax pyarrow
+uv pip install --python .venv/bin/python -e '.[examples]'   # tokenizers, huggingface_hub, optax, pyarrow
 export JAX_PLATFORMS=mtl,cpu
-scripts/device_lock.py -- .venv/bin/python examples/lora/train.py \
+.venv/bin/python examples/lora/train.py \
     --iters 200 --save adapters.npz --test 100 --test-base [--grad-checkpoint]
-scripts/device_lock.py -- .venv/bin/python examples/lora/gradcheck.py
+.venv/bin/python examples/lora/gradcheck.py
 # mlx-lm, in its own environment (not a dependency of this repo)
-.venv/bin/python examples/lora/lora.py export /tmp/wikisql
-uv venv /tmp/mlxenv && uv pip install --python /tmp/mlxenv/bin/python mlx-lm
-scripts/device_lock.py -- /tmp/mlxenv/bin/python examples/lora/mlx_baseline.py \
-    --data /tmp/wikisql --iters 200 --test 100
-.venv/bin/python examples/lora/compare.py --data /tmp/wikisql \
-    --mlx-python /tmp/mlxenv/bin/python --wrap "scripts/device_lock.py --" --grad-checkpoint
+.venv/bin/python examples/lora/lora.py export ~/.cache/metal-pjrt-examples/wikisql
+uv venv ~/.venvs/mlx && uv pip install --python ~/.venvs/mlx/bin/python mlx-lm
+~/.venvs/mlx/bin/python examples/lora/mlx_baseline.py \
+    --data ~/.cache/metal-pjrt-examples/wikisql --iters 200 --test 100
+.venv/bin/python examples/lora/compare.py --data ~/.cache/metal-pjrt-examples/wikisql \
+    --mlx-python ~/.venvs/mlx/bin/python --grad-checkpoint
 ```
+
+Prefix the GPU commands with `scripts/device_lock.py --` (and give
+`compare.py` `--wrap "scripts/device_lock.py --"`) when other GPU jobs may
+run on the machine. The exported dataset is a cache; any directory works.
 
 Settings (both sides): `mlx_lm.lora`'s defaults, i.e. rank 8, scale 20, all
 seven projections (q, k, v, o, gate, up, down) of the last 16 of 28
@@ -66,7 +70,12 @@ validation examples, and exact-match SQL on the first 100 test questions
 The training losses agree window by window as well (last window 0.069 vs
 0.068). `gradcheck.py`: the adapters' gradients on the GPU differ from a
 float32 CPU run by 9.7% (relative norm; random nonzero B on two examples),
-the same bf16 CPU run by 10.7%: both are bf16 rounding.
+the same bf16 CPU run by 10.7%: both are bf16 rounding, which happens in
+different places on the two backends over 28 layers, so bf16 on the GPU
+need not be closer to bf16 on CPU than to float32. With a float32 base
+model on the GPU the gradients match CPU float32 to better than 1e-4 in
+relative norm, and the loss to 1e-5 (6.67105 vs 6.67106; `gradcheck.py`),
+which isolates the plugin's own error.
 
 **Speed**, step time with gradient checkpointing, 60-step runs,
 median of 3 interleaved rounds (`compare.py`): JAX 760 ms, mlx-lm 781 ms

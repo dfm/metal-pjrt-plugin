@@ -1,7 +1,7 @@
 """Interleaved rounds of train.py and mlx_baseline.py; prints a markdown table.
 
-  .venv/bin/python examples/lora/compare.py --data /tmp/wikisql \\
-      --mlx-python /tmp/mlxenv/bin/python --wrap "scripts/device_lock.py --"
+  .venv/bin/python examples/lora/compare.py --data ~/.cache/metal-pjrt-examples/wikisql \\
+      --mlx-python ~/.venvs/mlx/bin/python --wrap "scripts/device_lock.py --"
 
 Each round runs a short fine-tune (`--iters` steps, no validation after
 the first) with each implementation in turn, so drift of the machine's

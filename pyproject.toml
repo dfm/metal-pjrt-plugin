@@ -12,8 +12,8 @@ dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
 
 [project.optional-dependencies]
 test = ["pytest"]
-# examples/llm (not part of the wheel, which holds only the package).
-examples = ["tokenizers", "huggingface_hub"]
+# examples/ (not part of the wheel, which holds only the package).
+examples = ["tokenizers", "huggingface_hub", "optax", "pyarrow"]
 
 [project.entry-points.jax_plugins]
 mtl = "metal_pjrt_plugin"

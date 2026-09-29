@@ -1,7 +1,6 @@
 """LoRA fine-tuning of Qwen3 on WikiSQL (text to SQL), in pure JAX.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu \\
-      .venv/bin/python examples/lora/train.py --iters 200 --save adapters.npz --test 100
+  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/train.py --iters 200 --save adapters.npz --test 100
 
 Defaults are mlx_lm.lora's (Qwen3-0.6B, rank 8, scale 20, the last 16
 layers, all seven projections, batch 4, learning rate 1e-5), with AdamW

@@ -1,14 +1,17 @@
 """Check the LoRA gradients on the default backend against float32 on CPU.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu \\
-      .venv/bin/python examples/lora/gradcheck.py
+  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/gradcheck.py
+
+(prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 
 One batch of two training examples; adapters with random (nonzero) B so
 that both A and B get gradients. Prints the loss and the relative error
 ||g - g_ref|| / ||g_ref|| of the gradient, over all adapters and per
 projection, for the bf16 base model on the default backend and, as the
-control, the same bf16 model on CPU; exit status 1 if the default backend
-is more than 3x further from float32 than CPU bf16 is.
+control, the same bf16 model on CPU, and the float32 model on the default
+backend; exit status 1 if bf16 on the default backend is more than 3x
+further from float32 than CPU bf16 is, or float32 on it differs from CPU
+float32 by more than 1e-3.
 """
 import os, sys
 
@@ -57,12 +60,20 @@ def main():
                             cfg, lcfg, cpu)
     loss_dev, g_dev = grads(qwen3.load_params(path, cfg, jnp.bfloat16, dev), adapters, batch,
                             cfg, lcfg, dev)
+    # The same computation in float32 on the device: bf16 on the two
+    # backends rounds in different places over 28 layers, so bf16 vs bf16
+    # need not be closer than bf16 vs float32; float32 vs float32 isolates
+    # the plugin's own error.
+    loss_d32, g_d32 = grads(qwen3.load_params(path, cfg, jnp.float32, dev), adapters, batch,
+                            cfg, lcfg, dev)
     print(f"loss: cpu float32 {loss_ref:.5f}, cpu bf16 {loss_cpu:.5f}, "
-          f"{dev.platform} bf16 {loss_dev:.5f}")
-    for name, g in (("cpu bf16", g_cpu), (f"{dev.platform} bf16", g_dev)):
-        per = {p: round(rel(g, ref, lambda s, p=p: f"['{p}']" in s), 4) for p in lora.PROJECTIONS}
-        print(f"{name:>9}: gradient rel. error vs float32 {rel(g, ref):.4f}, by projection {per}")
-    ok = rel(g_dev, ref) <= 3 * rel(g_cpu, ref)
+          f"{dev.platform} bf16 {loss_dev:.5f}, {dev.platform} float32 {loss_d32:.5f}")
+    for name, g in (("cpu bf16", g_cpu), (f"{dev.platform} bf16", g_dev),
+                    (f"{dev.platform} f32", g_d32)):
+        per = {p: rel(g, ref, lambda s, p=p: f"['{p}']" in s) for p in lora.PROJECTIONS}
+        per = {p: f"{e:.1e}" for p, e in per.items()}
+        print(f"{name:>9}: gradient rel. error vs float32 {rel(g, ref):.2e}, by projection {per}")
+    ok = rel(g_dev, ref) <= 3 * rel(g_cpu, ref) and rel(g_d32, ref) <= 1e-3
     print("OK" if ok else "MISMATCH")
     sys.exit(0 if ok else 1)
 

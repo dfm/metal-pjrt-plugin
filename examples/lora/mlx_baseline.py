@@ -4,9 +4,9 @@ Needs mlx-lm, which is not a dependency of this repo; run it from its own
 environment. The data comes from lora.py (this repo's environment has the
 parquet reader):
 
-  .venv/bin/python examples/lora/lora.py export /tmp/wikisql
-  scripts/device_lock.py -- /tmp/mlxenv/bin/python examples/lora/mlx_baseline.py \\
-      --data /tmp/wikisql --iters 200
+  .venv/bin/python examples/lora/lora.py export ~/.cache/metal-pjrt-examples/wikisql
+  scripts/device_lock.py -- ~/.venvs/mlx/bin/python examples/lora/mlx_baseline.py \\
+      --data ~/.cache/metal-pjrt-examples/wikisql --iters 200
 
 Runs `python -m mlx_lm lora` with train.py's settings (a YAML config:
 AdamW with bias correction as optax's, --mask-prompt, rank 8, scale 20,
