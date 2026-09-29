@@ -106,6 +106,15 @@ XLA:CPU" as the rule for cases like this.
 
 ## Other changes that moved errors
 
+- Convolutions on `metal$conv` (MLX's steel kernels) accumulate f16/bf16
+  in f32 and round once, as MLX does: <= 0.5 ulps normwise in
+  `tests/test_conv.py` (forward and both gradients, the same as CPU). f32
+  is within CPU float32's accumulation error (forward <= 5.7 ulps normwise,
+  CPU <= 6.0; gradients <= 10.7, CPU up to 38.7: the weight gradient sums
+  N * oH * oW products). The loop emitter, which still takes small,
+  grouped and 3-D convolutions, is less accurate in f16: an f16 weight
+  gradient it ran measured 2.6 ulps against CPU's 0.47.
+
 - softmax in f16 runs as XLA's fusions since the `metal$softmax` rewriter
   was deleted (fcbf5ce): 9.5 ulps max over `tests/test_scan.py`'s shapes,
   the same as CPU, against 5.0 with the rewriter (which accumulated in

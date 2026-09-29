@@ -8,6 +8,11 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-28
 
+- Convolutions run on MLX's steel convolution kernels (`metal$conv`,
+  MetalConvRewriter): 1-D and 2-D, f32/f16/bf16 (f16/bf16 accumulate in
+  f32), forward, input and weight gradients, of 4 Mflop and more. The cnn
+  fwd+bwd bench went from 5.5 to 1.56 ms (MLX 1.42).
+  `METAL_PJRT_DISABLE_REWRITES=conv` restores the loop emitter.
 - Buffer donation works on mtl: JAX lowers `donate_argnums` only for the
   platforms in a private list (`mlir._platforms_with_donation`) and before
   this silently copied donated inputs on mtl; the plugin now adds "mtl" to

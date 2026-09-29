@@ -135,7 +135,7 @@ def gpt_step(p, opt, idx, tgt):
 run("nanoGPT fwd (loss)", gpt_loss, gp, idx, tgt, iters=5)
 run("nanoGPT train step", gpt_step, gp, opt, idx, tgt, iters=5)
 
-# --- small CNN step (conv heavy; naive conv on metal today) ---
+# --- small CNN step (conv heavy: metal$conv, MLX's steel kernels) ---
 xc = jax.random.normal(key, (32, 32, 32, 3), f32)
 wc1 = 0.1 * jax.random.normal(key, (3, 3, 3, 32), f32); wc2 = 0.1 * jax.random.normal(key, (3, 3, 32, 64), f32)
 def cnn(x, w1, w2):

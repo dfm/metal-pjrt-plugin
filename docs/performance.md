@@ -88,15 +88,33 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   new process takes ~0.42 s from the cache instead of ~0.75 s (MLP train
   step: 41 ms instead of ~66 ms).
 
-- Convolutions run in XLA's loop emitter, ~97-100% of the cnn fwd+bwd
-  step's 5.4 ms of GPU time (p10). The steel convolution library
-  (`metal_pjrt/conv`, MLX's kernels; not yet used by the compiler) runs the
-  cnn bench's layers at MLX's speed: `bench/conv_bench` against
-  `bench/conv_bench_mlx.py`, f32, batch 32, bursts of 30, interleaved, p10
-  per call: conv1 (3->32) 0.141 vs MLX 0.147 ms, conv2 (32->64, stride 2)
-  0.222 vs 0.206 ms, conv2's input gradient (input dilation 2, flipped)
-  0.344 vs 0.347 ms; in the step, the loop emitter spends 0.30, 1.49 and
-  1.70 ms on them. f16: 0.84-1.10x MLX.
+- Convolutions run on MLX's steel kernels (`metal$conv`, `metal_pjrt/conv`;
+  docs/integration-notes.md). The cnn bench (f32, batch 32; bursts of 30
+  calls, 6 interleaved rounds, p10 / median / p90 ms; "loop" is the same
+  build with `METAL_PJRT_DISABLE_REWRITES=conv`, i.e. XLA's loop emitter as
+  before):
+
+  | case | metal$conv | loop emitter | MLX |
+  |---|---|---|---|
+  | cnn fwd+bwd | 1.555 / 1.562 / 1.631 | 5.509 / 5.552 / 5.593 | 1.416 / 1.581 / 2.191 |
+  | cnn fwd 32x32x32 | 0.274 / 0.275 / 0.278 | 1.643 / 1.648 / 1.696 | 0.384 / 0.386 / 0.396 |
+  | cnn fwd+bwd, NCHW | 1.573 / 1.575 / 1.582 | 30.5 / 30.7 / 30.7 | - |
+  | cnn fwd, NCHW | 0.280 / 0.281 / 0.292 | 6.74 / 6.74 / 6.75 | - |
+
+  NCHW programs pay only the rewriter's transposes to NHWC (~0.01-0.02
+  ms here). The loop emitter spent ~97-100% of the step's GPU time in the
+  convolutions. Per kernel (`bench/conv_bench` vs `bench/conv_bench_mlx.py`,
+  same method, p10 ms): conv1 (3->32) 0.092 vs MLX 0.098, conv2 (32->64,
+  stride 2) 0.134 vs 0.128, conv2's input gradient (input dilation 2,
+  flipped) 0.220 vs 0.218, the weight gradients (patches x dY, split-K)
+  0.322 vs 0.252 and 0.576 vs 0.525. f16: 0.84-1.10x MLX (forward).
+- Small convolutions stay on the loop emitter: under 4 Mflop a custom call
+  plus a separate relu kernel lost to the loop emitter's one fused kernel
+  (forward + relu, bursts of 30, p10 ms, two interleaved runs: 0.3-2.4
+  Mflop 0.030-0.058 vs 0.029-0.037; C = 1 at 3.6 Mflop 0.121 vs 0.084),
+  from ~4.7 Mflop metal$conv wins (0.038 vs 0.046; 19 Mflop 0.036-0.087 vs
+  0.121-0.199). MLX runs these in 0.01-0.03 ms: the fixed cost of a
+  dispatch-bound program, not the kernels.
 
 - Buffer donation: JAX dropped `donate_argnums` on mtl (copying the
   donated input) until the plugin added "mtl" to JAX's list of platforms
@@ -107,7 +125,8 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
 Where the time goes, in brief: memory-bound kernels run at memory bandwidth
 (the emitted `x*2` kernel reaches the same ~81 GB/s as hand-written MSL);
 fused reductions and optimizer updates are where XLA beats MLX; the gaps are
-convolutions (naive loop emitter, no library path), standalone softmax
+grouped / depthwise and 3-D convolutions (still on the loop emitter),
+standalone softmax
 (XLA's two fusions vs MLX's one kernel) and anything bound by per-dispatch
 latency.
 

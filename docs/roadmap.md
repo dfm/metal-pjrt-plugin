@@ -102,6 +102,13 @@ Still on hold:
 - Full third-party notices for the statically linked XLA dependencies:
   before a release, alongside CI.
 
+Small-M bf16/f16 GEMM: M=2..64 runs at ~23 GB/s regardless of M, 3.7-4x
+slower than MLX. Example: 28 GEMMs of [M,1024]x[1024,6144] take 15.1 ms at
+M=2 vs MLX's 3.9 ms, and 15.7 vs 8.4 at M=64; M=1 is fine, as a reduction
+fusion at 85 GB/s. It makes batched LLM decode ~2x slower at batch 2 than
+at batch 1. MLX uses its gemv/small-M kernels for these shapes: a port
+candidate like steel. (Found by the LLM case study.)
+
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
@@ -150,8 +157,10 @@ Unscheduled directions, with enough context to pick one up cold.
 - **Triton IR -> MSL** (`CompileTritonToLlvm` already reaches
   `MetalKernelCompiler`): reductions/elementwise tiles first, then `tt.dot`
   -> `simdgroup_matrix`. Multi-week; only if fusion quality matters.
-- **Convolutions**, the largest workload gap (cnn fwd+bwd 6.2 vs MLX
-  2.3 ms): no library path today.
+- **Convolutions**: 1-D/2-D f32/f16/bf16 on MLX's steel kernels
+  (`metal$conv`; cnn fwd+bwd 5.5 -> 1.56 ms p10, MLX 1.42). Not yet:
+  grouped / depthwise, Winograd, 3-D, negative low padding (sliced), and
+  small convolutions under 4 Mflop (loop emitter).
 - **Upstream: donation for plugin platforms.** JAX hard-codes the
   platforms that get buffer donation (`mlir._platforms_with_donation`); the
   plugin appends "mtl" to the private list at initialization (pinned by
@@ -169,8 +178,8 @@ Unscheduled directions, with enough context to pick one up cold.
      `MPSCommandBuffer` over ours and an on-disk executable cache. Targets:
      conv and its grads, SDPA (macOS 15+), FFT. Days, not weeks.
   2. More MLX steel kernels (MIT; the f16/bf16 GEMM port 31a9623 shows the
-     process): quantized matmul, decode-shaped attention, steel conv as a
-     fallback, gather-matmul and segmented reductions.
+     process): quantized matmul, decode-shaped attention, gather-matmul
+     and segmented reductions (steel conv is done: `metal$conv`).
   3. Metal 4 MetalPerformancePrimitives (`matmul2d` / `conv2d` in-shader,
      macOS 26) inside generated fusions: the only route to a tuned GEMM with
      an arbitrary XLA epilogue fused in.
