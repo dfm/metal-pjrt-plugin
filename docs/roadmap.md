@@ -136,6 +136,11 @@ peak (`docs/performance.md`). Deferred: an implicit-GEMM weight gradient
 guard that refused 3 of 5 airbench94 runs at 1.1-1.4 GB free is gone:
 done, only critical memory pressure refuses now (see Decisions).
 
+Memory cache at warn pressure: the pressure handler releases every cached
+buffer on each free while pressure is at warn, so the cache is off. Consider
+trimming to a fraction instead (airbench94 run 2 spent most of its time at
+warn: 257 vs 218 s for run 1).
+
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
