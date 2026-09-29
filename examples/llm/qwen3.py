@@ -89,15 +89,18 @@ def load_params(path, cfg, dtype=jnp.bfloat16, device=None, quant=None):
 
     def mat(*names):
         w = np.concatenate([t[n] for n in names]) if len(names) > 1 else t[names[0]]
-        if quant == "int8":
-            q, s = quantize_int8(w)
-            return {"q": jax.device_put(q, device), "s": put(s)}
-        if quant == "int4":
-            q, s, b = quantize_int4(w)
-            return {"q4": jax.device_put(q, device), "s": put(s), "b": put(b)}
-        if quant is not None:
+        if quant is None:
+            return put(w)
+        fn = {"int8": quantize_int8, "int4": quantize_int4}.get(quant)
+        if fn is None:
             raise ValueError(f"unknown quant {quant!r}")
-        return put(w)
+        # In blocks of rows: the float32 temporaries of a whole embedding
+        # would take several GB.
+        parts = [fn(w[i:i + 8192]) for i in range(0, w.shape[0], 8192)]
+        parts = [np.concatenate(a) for a in zip(*parts)]
+        names = ("q", "s") if quant == "int8" else ("q4", "s", "b")
+        return {n: jax.device_put(a, device) if a.dtype.kind in "iu" else put(a)
+                for n, a in zip(names, parts)}
 
     layers = []
     for i in range(cfg.num_hidden_layers):
@@ -177,22 +180,41 @@ def dequantize(w, dtype):
     return wd.reshape(wd.shape[0], -1)
 
 
-def linear(x, w):
-    """x @ w.T for a [out, in] matrix `w`, bf16 or int8-quantized.
+# Up to this many rows (a decode step of up to this many sequences), a
+# quantized product is a reduction over the stored weights; beyond it the
+# weights are dequantized for a GEMM. A reduction reads the weights once
+# per row, a dequantization writes and reads them at bf16 size: on
+# Qwen3-0.6B int4, 2 rows took 8.2 ms against 40.9, 16 rows 42 against 33.
+ROWS_MAX = 4
 
-    For one token (decode) XLA turns this into a multiply-reduce kernel
-    rather than a GEMM, so the dequantization happens inside that kernel
-    and the weights are read at one byte (int8) or half a byte (int4) each.
+
+def linear(x, w):
+    """x @ w.T for a [out, in] matrix `w`, bf16 or quantized.
+
+    For one row (a decode step) XLA turns a product into a multiply-reduce
+    kernel rather than a GEMM. Quantized weights up to ROWS_MAX rows take
+    explicit reductions (`_matvec_int8`, `_matvec_int4`) that dequantize
+    inside the kernel, so the weights are read at their stored size.
     """
     if isinstance(w, dict):
-        if "q4" in w and np.prod(x.shape[:-1]) == 1:
-            return _matvec_int4(x, w)
+        if np.prod(x.shape[:-1]) <= ROWS_MAX:
+            return (_matvec_int4 if "q4" in w else _matvec_int8)(x, w)
         w = dequantize(w, x.dtype)
     return jnp.einsum("...i,oi->...o", x, w)
 
 
+def _matvec_int8(x, w):
+    """x @ w.T for a few rows x and int8 weights (scale per group), one
+    reduction kernel per product."""
+    q = w["q"]
+    O, G, g = q.shape
+    xg = x.reshape(-1, 1, G, g).astype(jnp.float32)                          # [N, 1, G, g]
+    t = xg * q.astype(jnp.float32) * w["s"].astype(jnp.float32)            # [N, O, G, g]
+    return jnp.sum(t, axis=(2, 3)).reshape(*x.shape[:-1], O).astype(x.dtype)
+
+
 def _matvec_int4(x, w):
-    """x @ w.T for one row x and int4 weights, without unpacking to a matrix.
+    """x @ w.T for a few rows x and int4 weights, without unpacking to a matrix.
 
     With w = q * s + b per group: sum_i x_i w_oi = sum_g s_og (sum_j x_gj q_ogj)
     + sum_g b_og (sum_j x_gj). Splitting x by half-group matches the packing
@@ -204,18 +226,18 @@ def _matvec_int4(x, w):
     """
     p = w["q4"]
     O, G, half = p.shape
-    xg = x.reshape(G, 2, half).astype(jnp.float32)
+    lead = x.shape[:-1]
+    xg = x.reshape(-1, 1, G, 2, half).astype(jnp.float32)                  # [N, 1, G, 2, half]
     lo = (p & 0xF).astype(jnp.float32)
     hi = (p >> 4).astype(jnp.float32)
     # Everything, the offset term b_og * sum_j x_gj included, is one
     # reduction over (group, byte): one kernel per product (as separate
     # reductions it was three).
-    xlo, xhi = xg[None, :, 0], xg[None, :, 1]                               # [1, G, half]
+    xlo, xhi = xg[:, :, :, 0], xg[:, :, :, 1]                               # [N, 1, G, half]
     s = w["s"].astype(jnp.float32)
     b = w["b"].astype(jnp.float32)
-    t = (xlo * lo + xhi * hi) * s + (xlo + xhi) * b                        # [O, G, half]
-    y = jnp.sum(t, axis=(1, 2))
-    return y.reshape(*x.shape[:-1], O).astype(x.dtype)
+    t = (xlo * lo + xhi * hi) * s + (xlo + xhi) * b                        # [N, O, G, half]
+    return jnp.sum(t, axis=(2, 3)).reshape(*lead, O).astype(x.dtype)
 
 
 def embed(w, tokens):

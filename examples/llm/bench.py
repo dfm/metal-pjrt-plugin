@@ -17,6 +17,7 @@ Every timed region ends with `jax.block_until_ready` on all outputs.
   decode_sync   the same without the lookahead: dispatch, then read back.
                 The difference to `decode` is the host round trip.
   decode_fused  all steps in one jitted while loop: the device-only cost.
+With --batch B, tok_s counts all B sequences.
 
 Decode starts after a `--context`-token prompt (prefilled outside the
 timing). Attention reads a power-of-two window of the `--max-len` cache
@@ -63,15 +64,20 @@ def main():
     ap.add_argument("--steps", type=int, default=64)
     ap.add_argument("--iters", type=int, default=10)
     ap.add_argument("--quant", choices=["int8", "int4"], default=None)
+    ap.add_argument("--batch", type=int, default=1,
+                    help="sequences decoded together (the same prompt in each row)")
     ap.add_argument("--cases", default="prefill,decode,decode_sync,decode_fused")
     args = ap.parse_args()
     cases = set(args.cases.split(","))
 
-    eng = generate.Engine(args.model, max_len=args.max_len, quant=args.quant)
+    eng = generate.Engine(args.model, max_len=args.max_len, quant=args.quant,
+                          batch=args.batch)
     backend = jax.devices()[0].platform
     rng = np.random.default_rng(0)
     key = jax.random.key(0)
     extra = {"model": args.model, "max_len": args.max_len, "quant": args.quant or "bf16"}
+    if args.batch > 1:
+        extra["batch"] = args.batch
 
     def emit(case, ts, scale=1.0, **more):
         ts = ts / scale
@@ -84,7 +90,7 @@ def main():
             if T > args.max_len:
                 continue
             ids = rng.integers(0, 150000, T).tolist()
-            tokens = np.zeros((1, generate.bucket(T)), np.int32)
+            tokens = np.zeros((args.batch, generate.bucket(T)), np.int32)
             c = compile_s(eng._prefill, eng.params, tokens, np.int32(T), key)
             fn = lambda _: int(np.asarray(eng.prefill(ids, key)[0])[0])
             ts = timed(fn, warmup=2, iters=args.iters)
@@ -121,7 +127,8 @@ def main():
              if case == "decode_fused"
              else compile_s(eng._step, eng.params, *fresh(), eng.window(n0 + 1)))
         ts = timed(fn, warmup=1, iters=max(3, args.iters // 2), setup=fresh)
-        emit(case, ts, S, tok_s=round(S / np.median(ts) * 1e3, 1), compile_s=c, **more)
+        emit(case, ts, S, tok_s=round(args.batch * S / np.median(ts) * 1e3, 1),
+             compile_s=c, **more)
 
     mem = jax.devices()[0].memory_stats() or {}
     if "peak_bytes_in_use" in mem:
