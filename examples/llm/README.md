@@ -119,7 +119,7 @@ Known gaps:
   cost about as much per step as one (the weights are read once); here
   bf16 goes 13.4 -> 26.8 ms per step at B = 2 (41 at B = 8), because the
   plugin's GEMMs with 2-64 rows run at ~23 GB/s where MLX's reach ~90
-  (reported; a plugin fix is planned). int8/int4 up to 4 sequences avoid
+  (reported, with a standalone repro). int8/int4 up to 4 sequences avoid
   the GEMM (`ROWS_MAX` in `qwen3.py`): int4 does 234 tokens/s at B = 2.
 - One prompt at a time: no continuous batching, no paged cache, no
   prompt caching across calls. The KV cache is allocated at `--max-len`
@@ -215,8 +215,8 @@ across a night of benchmarking. Along the way:
   kernels (not the BlasLt GEMM path) and together read at about the rate
   of a plain streaming sum. Some shapes read slower: products with few
   output rows (1024 x 3072 int4: ~24 GB/s) and mid-size int4 products
-  (60-80 GB/s), where MLX's hand-written kernels get ~90. That is most of
-  the int4 gap on the larger model.
+  (60-80 GB/s), where MLX's hand-written kernels get ~90. Tuning the
+  reduction emitter for these would speed up every quantized model.
 - **GEMMs with 2-64 rows run at ~23 GB/s** regardless of the row count
   (MLX: ~90 up to 8 rows), which makes batched bf16 decode slow (see
   Known gaps). Reported with a standalone repro.
