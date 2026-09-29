@@ -108,6 +108,29 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   stride 2) 0.134 vs 0.128, conv2's input gradient (input dilation 2,
   flipped) 0.220 vs 0.218, the weight gradients (patches x dY, split-K)
   0.322 vs 0.252 and 0.576 vs 0.525. f16: 0.84-1.10x MLX (forward).
+- Weight gradients at CNN-training size (bf16, N = 1024, 3x3 SAME; the
+  CIFAR case study's airbench94 layers, `examples/cifar/conv_jax.py`,
+  median ms): a vectorized unfold (be3f9e7) and the GEMM tile and split-K
+  sized together (f0aca7b: 64 x 64 tiles, >= 512 threadgroups, f32
+  partials capped at 8 MiB). Forward and input gradients unchanged.
+
+  | layer | before | after |
+  |---|---|---|
+  | 31x31, 24->64 | 53.8 | 18.2 |
+  | 15x15, 64->64 | 28.3 | 10.3 |
+  | 15x15, 64->256 | 53.0 | 26.3 |
+  | 7x7, 256->256 | 38.9 | 23.3 |
+  | 3x3, 256->256 | 7.3 | 4.5 |
+
+  airbench94 end to end (M3 8 GB, nothing else on the GPU): mtl bf16
+  94.03% in 228.8 s and 93.93% in 259.1 s (2 seeds; the system memory
+  guard refused the other three, at 1.1-1.4 GB free), peak footprint 3.3
+  GB; before, a steady-state step of 545 ms, ~259 s per run. PyTorch 2.14
+  MPS fp16 in the same window: 93.93% +/- 0.11%, 253.9 +/- 20.0 s (5
+  seeds), peak 5.9 GB. Not built: an implicit-GEMM weight gradient (the
+  GEMM loads patches straight from the input); it would save only the
+  unfold, at most a third of the 31x31 layer's time and under 17%
+  elsewhere, for a new loader and kernel variant (~200 lines).
 - Small convolutions stay on the loop emitter: under 4 Mflop a custom call
   plus a separate relu kernel lost to the loop emitter's one fused kernel
   (forward + relu, bursts of 30, p10 ms, two interleaved runs: 0.3-2.4

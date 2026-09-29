@@ -125,16 +125,17 @@ on CPU). Left open: an upstream change so thunks share one kernel binary
 (and the serialized copy is made on demand); examples/lora could use
 coarser length buckets (`--pad-to`; each length is an executable).
 
-OOM diagnostics: a memory-guard RESOURCE_EXHAUSTED can name the wrong
-executable. Seen: 'jit__reduce_sum', the next eager op, while the failing
-allocation was jit_predict's 1.8 GB temp. Found by the CIFAR case study.
+OOM diagnostics: done (cad915f). A refused allocation's RESOURCE_EXHAUSTED
+now names the executable that asked for it, also when the error surfaces in
+a later eager op.
 
-Conv weight gradient is the CNN-training bottleneck: 2.5-5x the forward.
-Example: bf16 N=1024 31x31 24->64 3x3, wgrad 53.8 ms vs torch-MPS' whole
-backward 25.0 ms. airbench94 takes 242-289 s to 94% vs torch-MPS 225 s.
-Profile unfold vs split-K GEMM vs sum_splits, and check MLX's wgrad path
-for these shapes (possibly the swapped-axes conv rather than
-patches+GEMM). Found by the CIFAR case study.
+Conv weight gradient: done (be3f9e7 vectorized unfold, f0aca7b GEMM tile
+and split-K sized together). bf16 N=1024 31x31 24->64: 53.8 -> 18.2 ms;
+airbench94 to 94% in 229-259 s vs torch-MPS 254 +/- 20 s, at 3.3 vs 5.9 GB
+peak (`docs/performance.md`). Deferred: an implicit-GEMM weight gradient
+(saves only the unfold, at most a third on 31x31). Still open from the same
+case study: the system memory guard refused 3 of 5 airbench94 runs at
+1.1-1.4 GB free, where torch-MPS runs by swapping; kept strict for now.
 
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).

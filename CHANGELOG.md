@@ -8,6 +8,16 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-29
 
+- Convolution weight gradients are 1.6-3x faster at CNN-training sizes
+  (bf16, batch 1024: 31x31 24->64 53.8 -> 18.2 ms): the patch unfold is
+  vectorized and the split-K GEMM's tile and part count are chosen
+  together. airbench94 (CIFAR-10 to 94%) now runs in 229-259 s, on par
+  with PyTorch MPS (254 s) at 3.3 vs 5.9 GB peak. docs/performance.md has
+  the per-layer numbers.
+- Out-of-memory errors name the computation whose allocation was refused
+  (`in jit_f: ...`), also when the error surfaces in a later operation
+  that consumed its result; before, XLA's message named that later
+  operation.
 - Kernels the compiler emitted now go with their executables: dropping
   an executable releases its Metal pipelines, libraries and the MSL text
   the kernel cache kept (~40 KB per kernel; before, they stayed until the
