@@ -58,7 +58,7 @@ struct GeneralBaseInfo {
 
 // Must match UnfoldRows / PadRows / SumSplits in conv_misc.metal.
 struct UnfoldRows {
-  int32_t row_offset, rows;
+  int32_t row_offset, rows, vecs;
 };
 struct PadRows {
   uint32_t rows, cols, out_cols;
@@ -96,9 +96,9 @@ ConvKernelSource ImplicitConvKernel(ConvType t, const ConvTile& tile,
 // implicit_gemm_conv_2d_general; align_c = C % bk == 0.
 ConvKernelSource GeneralConvKernel(ConvType t, const ConvTile& tile,
                                    bool align_c);
-// naive_unfold_2d_<type> / pad_cols_<type> / sum_splits_<type> of
-// conv_misc.metal.
-ConvKernelSource UnfoldKernel(ConvType t);
+// unfold_2d_<vector_bytes> (2, 4, 8 or 16; a bit copy, so any type) /
+// pad_cols_<type> / sum_splits_<type> of conv_misc.metal.
+ConvKernelSource UnfoldKernel(int vector_bytes);
 ConvKernelSource PadColsKernel(ConvType t);
 ConvKernelSource SumSplitsKernel(ConvType t);
 

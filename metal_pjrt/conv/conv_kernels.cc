@@ -73,9 +73,8 @@ ConvKernelSource GeneralConvKernel(ConvType t, const ConvTile& tile,
           {rt::FunctionConstant::Bool(0, align_c)}};
 }
 
-ConvKernelSource UnfoldKernel(ConvType t) {
-  return {kernels::kConvMiscMsl,
-          absl::StrCat("naive_unfold_2d_", MslTypeName(t)),
+ConvKernelSource UnfoldKernel(int vector_bytes) {
+  return {kernels::kConvMiscMsl, absl::StrCat("unfold_2d_", vector_bytes),
           {}};
 }
 
@@ -119,10 +118,10 @@ std::vector<ConvKernelSource> AllConvKernels() {
         }
       }
     }
-    add(UnfoldKernel(t));
     add(PadColsKernel(t));
     add(SumSplitsKernel(t));
   }
+  for (int bytes : {2, 4, 8, 16}) add(UnfoldKernel(bytes));
   return out;
 }
 

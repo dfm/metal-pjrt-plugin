@@ -123,6 +123,14 @@ absl::Status RunConv(rt::Device* device, rt::Stream* stream,
                      const void* in, const void* b, void* out,
                      void* workspace);
 
+// Unfolds patch rows [row, row + rows) of the input `in` of `p` into `dst`
+// ([rows, kH * kW * C], row-major), zero where a tap falls on padding or
+// between dilated input elements: the explicit and weight-gradient paths'
+// im2col, one launch (the paths bound `rows`; conv_test calls it directly).
+absl::Status Unfold(rt::Device* device, rt::Stream* stream,
+                    const ConvParams& p, const void* in, void* dst,
+                    int64_t row, int64_t rows);
+
 }  // namespace conv
 }  // namespace metal_pjrt
 

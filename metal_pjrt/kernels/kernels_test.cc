@@ -260,15 +260,16 @@ TEST_F(KernelsTest, Gemv) {
 
 // Every convolution variant the dispatch can select (conv::AllConvKernels:
 // the tile rules across their branch points, both ALIGN_C values of the
-// general kernel), plus conv_misc's three kernels per type. The weight
-// gradient's GEMMs are steel variants (SteelGemm above: T x T -> f32, A
-// transposed).
+// general kernel), plus conv_misc's kernels: the unfold per vector width,
+// pad and sum per type. The weight gradient's GEMMs are steel variants
+// (SteelGemm above: T x T -> f32, A transposed).
 TEST_F(KernelsTest, SteelConv) {
-  EXPECT_EQ(FunctionNames(kConvMiscMsl).size(), 3 * 3);
+  EXPECT_EQ(FunctionNames(kConvMiscMsl).size(), 4 + 2 * 3);
   const std::vector<conv::ConvKernelSource> all = conv::AllConvKernels();
   // Per type: implicit c1..c4 on the 3 bm-32 tiles, small/large filter on
-  // all 5 implicit tiles; general 3 tiles x ALIGN_C; unfold, pad, sum.
-  EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 3));
+  // all 5 implicit tiles; general 3 tiles x ALIGN_C; pad, sum. Then the
+  // unfold's 4 vector widths.
+  EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 2) + 4);
   for (const conv::ConvKernelSource& k : all) {
     ExpectKernel(k.msl.c_str(), k.function, k.constants);
   }

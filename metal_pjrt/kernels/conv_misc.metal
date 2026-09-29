@@ -1,9 +1,7 @@
-// Helper kernels of the convolutions (conv/conv.h): the explicit path's
-// unfold (im2col; MLX's naive_unfold_Nd for 2-D, from mlx/backend/metal/
-// kernels/conv.metal, Copyright (c) 2023-2024 Apple Inc., MIT License, see
-// the full notice in steel_conv.metal), the zero padding of the channel
-// dimension for the pad-channels path and the weight gradient's sum of its
-// split-K partial products.
+// Helper kernels of the convolutions (conv/conv.h): the explicit and
+// weight-gradient paths' unfold (im2col, in place of MLX's naive_unfold_Nd),
+// the zero padding of the channel dimension for the pad-channels path and
+// the weight gradient's sum of its split-K partial products.
 #include <metal_stdlib>
 using namespace metal;
 
@@ -29,52 +27,55 @@ struct SteelConvParams {
 // Must match UnfoldRows in conv/conv_kernels.cc.
 struct UnfoldRows {
   int row_offset;  // first output pixel (row of the unfolded matrix)
-  int rows;        // rows in this tile
+  int rows;        // rows in this chunk
+  int vecs;        // vectors (of U) per input pixel: C * sizeof(T) / sizeof(U)
 };
 
 // Unfolds rows [row_offset, row_offset + rows) of the [N * oH * oW,
-// kH * kW * C] patch matrix of an NHWC input into `out` (tile-local rows),
-// zero where a tap falls on padding or between dilated input elements.
-// Grid: x over the kH * kW * C columns, y over rows. (MLX's grid has x over
-// C and y over the taps, mostly idle threads for small C.)
-template <typename T>
-[[kernel]] void naive_unfold_2d(const device T* in [[buffer(0)]],
-                                device T* out [[buffer(1)]],
-                                const constant SteelConvParams* params
-                                [[buffer(2)]],
-                                const constant UnfoldRows* tile [[buffer(3)]],
-                                uint2 gid [[thread_position_in_grid]]) {
-  const int filter_size = params->C * params->wS[0] * params->wS[1];
-  if (int(gid.x) >= filter_size || int(gid.y) >= tile->rows) return;
-  const int c = int(gid.x) % params->C;
+// kH * kW * C] patch matrix of a dense NHWC input into `out` (chunk-local
+// rows), zero where a tap falls on padding or between dilated input
+// elements. A bit copy in vectors U of 2-16 bytes (whole channels' worth;
+// zero is all-zero bits in every type), one thread per (row, tap, vector)
+// on a 1-D grid, so the pixel and tap index math is done once per vector.
+// (MLX's naive_unfold_Nd copies one element per thread, with about eight
+// integer divisions each: ALU-bound at ~12 GB/s on an M3.)
+template <typename U>
+[[kernel]] void unfold_2d(const device U* in [[buffer(0)]],
+                          device U* out [[buffer(1)]],
+                          const constant SteelConvParams* params [[buffer(2)]],
+                          const constant UnfoldRows* chunk [[buffer(3)]],
+                          uint gid [[thread_position_in_grid]]) {
+  const int cv = chunk->vecs;
+  const int cols = params->wS[0] * params->wS[1] * cv;
+  if (gid >= uint(cols) * uint(chunk->rows)) return;
+  const int local_row = int(gid) / cols;
+  const int col = int(gid) - local_row * cols;
   const int out_pixels = params->oS[0] * params->oS[1];
-  out += size_t(gid.y) * filter_size + (gid.x - c);
-
-  int is[2] = {0, 0};
-  const int global_row = tile->row_offset + int(gid.y);
-  const int n = global_row / out_pixels;
-  int oS = global_row % out_pixels;
-  int wS = int(gid.x) / params->C;
-  bool valid = n < params->N;
-  for (int i = 1; i >= 0; --i) {
-    const int os_ = oS % params->oS[i];
-    int ws_ = wS % params->wS[i];
-    ws_ = params->flip ? params->wS[i] - ws_ - 1 : ws_;
-    const int is_ = os_ * params->str[i] - params->pad[i] + ws_ * params->kdil[i];
-    const int is_max = 1 + params->idil[i] * (params->iS[i] - 1);
-    valid &= is_ >= 0 && is_ < is_max && (is_ % params->idil[i] == 0);
-    is[i] = is_ / params->idil[i];
-    oS /= params->oS[i];
-    wS /= params->wS[i];
+  const int row = chunk->row_offset + local_row;
+  const int n = row / out_pixels;
+  const int r = row - n * out_pixels;
+  const int oh = r / params->oS[1];
+  const int ow = r - oh * params->oS[1];
+  const int tap = col / cv;
+  const int c = col - tap * cv;
+  int kh = tap / params->wS[1];
+  int kw = tap - kh * params->wS[1];
+  if (params->flip) {
+    kh = params->wS[0] - 1 - kh;
+    kw = params->wS[1] - 1 - kw;
   }
-  if (valid) {
-    const size_t in_offset = size_t(n) * params->in_strides[0] +
-                             size_t(is[0]) * params->in_strides[1] +
-                             size_t(is[1]) * params->in_strides[2];
-    out[c] = in[in_offset + c];
-  } else {
-    out[c] = T(0);
+  // Positions in the dilated input, then in the input.
+  const int hd = oh * params->str[0] - params->pad[0] + kh * params->kdil[0];
+  const int wd = ow * params->str[1] - params->pad[1] + kw * params->kdil[1];
+  const bool on_grid = hd >= 0 && wd >= 0 && hd % params->idil[0] == 0 &&
+                       wd % params->idil[1] == 0;
+  const int ih = hd / params->idil[0];
+  const int iw = wd / params->idil[1];
+  U v = U(0);
+  if (on_grid && ih < params->iS[0] && iw < params->iS[1] && n < params->N) {
+    v = in[((size_t(n) * params->iS[0] + ih) * params->iS[1] + iw) * cv + c];
   }
+  out[size_t(local_row) * cols + col] = v;
 }
 
 // Must match PadRows in conv/conv_kernels.cc.
@@ -118,12 +119,19 @@ template <typename T>
 }
 
 #define instantiate_conv_misc(tname, T)                                      \
-  template [[host_name("naive_unfold_2d_" #tname)]] [[kernel]] decltype(     \
-      naive_unfold_2d<T>) naive_unfold_2d<T>;                                \
   template [[host_name("pad_cols_" #tname)]] [[kernel]] decltype(pad_cols<T>) \
       pad_cols<T>;                                                           \
   template [[host_name("sum_splits_" #tname)]] [[kernel]] decltype(          \
       sum_splits<T>) sum_splits<T>;
+
+#define instantiate_unfold(bytes, U)                                          \
+  template [[host_name("unfold_2d_" #bytes)]] [[kernel]] decltype(            \
+      unfold_2d<U>) unfold_2d<U>;
+
+instantiate_unfold(2, ushort)
+instantiate_unfold(4, uint)
+instantiate_unfold(8, uint2)
+instantiate_unfold(16, uint4)
 
 instantiate_conv_misc(float, float)
 instantiate_conv_misc(half, half)

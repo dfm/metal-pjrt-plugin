@@ -291,24 +291,20 @@ absl::StatusOr<blas::MpsOperand> Operand(rt::Device* device, const void* ptr,
   return op;
 }
 
-// Unfolds patch rows [row, row + rows) of `in` into `dst` ([rows, kH * kW *
-// C]).
-absl::Status Unfold(rt::Stream* stream, const rt::Kernel& unfold,
-                    const ConvParams& p, const SteelConvParams& sp,
-                    const void* in, void* dst, int64_t row, int64_t rows) {
-  // 256 threads: the columns (at least 32 wide) times rows.
-  const int64_t cols = p.kh * p.kw * p.c;
-  uint32_t tx = 32;
-  while (tx < 256 && tx < cols) tx *= 2;
-  const rt::Dim3 threads{tx, 256 / tx, 1};
-  const UnfoldRows ur{static_cast<int32_t>(row), static_cast<int32_t>(rows)};
-  const rt::Dim3 groups{static_cast<uint32_t>(CeilDiv(cols, threads.x)),
-                        static_cast<uint32_t>(CeilDiv(rows, threads.y)), 1};
-  return stream->Launch(
-      unfold, groups, threads,
-      {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(dst),
-       rt::KernelArg::Bytes(&sp, sizeof(sp)),
-       rt::KernelArg::Bytes(&ur, sizeof(ur))});
+// The widest vector the unfold copies in, 16, 8, 4 or 2 bytes (at least
+// one element): it divides a pixel's channels and both buffer offsets.
+absl::StatusOr<int> UnfoldVectorBytes(rt::Device* device, const ConvParams& p,
+                                      const void* in, const void* dst) {
+  ABSL_ASSIGN_OR_RETURN(rt::BufferRef in_ref, device->Resolve(in));
+  ABSL_ASSIGN_OR_RETURN(rt::BufferRef dst_ref, device->Resolve(dst));
+  const int64_t item = ItemSize(p.type);
+  const uint64_t offsets = in_ref.offset | dst_ref.offset;
+  int64_t bytes = 16;
+  while (bytes > item &&
+         ((p.c * item) % bytes != 0 || offsets % bytes != 0)) {
+    bytes /= 2;
+  }
+  return static_cast<int>(bytes);
 }
 
 // MLX explicit_gemm_conv_ND_gpu: per tile of unfold_rows output pixels,
@@ -318,18 +314,14 @@ absl::Status RunExplicit(rt::Device* device, rt::Stream* stream,
                          const ConvParams& p, const ConvPlan& plan,
                          const void* in, const void* weight, void* out,
                          void* workspace) {
-  const SteelConvParams sp = MakeSteelParams(p, p.c);
   const int64_t m = OutPixels(p);
   const int64_t k = p.kh * p.kw * p.c;
-  const ConvKernelSource uk = UnfoldKernel(p.type);
-  ABSL_ASSIGN_OR_RETURN(const rt::Kernel* unfold,
-                        device->GetKernel(uk.msl, uk.function, uk.constants));
   ABSL_ASSIGN_OR_RETURN(blas::MpsOperand b,
                         Operand(device, weight, p.type, k, true));
   for (int64_t row = 0; row < m; row += plan.unfold_rows) {
     const int64_t rows = std::min(plan.unfold_rows, m - row);
     ABSL_RETURN_IF_ERROR(
-        Unfold(stream, *unfold, p, sp, in, workspace, row, rows));
+        Unfold(device, stream, p, in, workspace, row, rows));
     blas::GemmParams g;
     g.m = rows;
     g.n = p.o;
@@ -359,10 +351,6 @@ absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
   const int64_t k = p.kh * p.kw * p.c;
   const int64_t item = ItemSize(p.type);
   if (m == 0) return stream->Memset8(dw, 0, p.o * k * item);
-  const SteelConvParams sp = MakeSteelParams(p, p.c);
-  const ConvKernelSource uk = UnfoldKernel(p.type);
-  ABSL_ASSIGN_OR_RETURN(const rt::Kernel* unfold,
-                        device->GetKernel(uk.msl, uk.function, uk.constants));
   char* patches = static_cast<char*>(workspace);
   const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
   void* partials =
@@ -371,8 +359,7 @@ absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
       direct ? GemmType(p.type) : blas::MpsDType::kF32;
   for (int64_t row = 0; row < m; row += plan.unfold_rows) {
     const int64_t rows = std::min(plan.unfold_rows, m - row);
-    ABSL_RETURN_IF_ERROR(
-        Unfold(stream, *unfold, p, sp, in, patches, row, rows));
+    ABSL_RETURN_IF_ERROR(Unfold(device, stream, p, in, patches, row, rows));
     // Parts [0, full) of split_rows rows, then the rest into part `full`,
     // which the first chunk (as long as any later one) also wrote.
     const int64_t full = rows / plan.split_rows;
@@ -612,6 +599,26 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
         std::max<int64_t>(tiles_m, 1));
   }
   return plan;
+}
+
+absl::Status Unfold(rt::Device* device, rt::Stream* stream,
+                    const ConvParams& p, const void* in, void* dst,
+                    int64_t row, int64_t rows) {
+  ABSL_ASSIGN_OR_RETURN(const int bytes,
+                        UnfoldVectorBytes(device, p, in, dst));
+  const ConvKernelSource uk = UnfoldKernel(bytes);
+  ABSL_ASSIGN_OR_RETURN(const rt::Kernel* unfold,
+                        device->GetKernel(uk.msl, uk.function, uk.constants));
+  const SteelConvParams sp = MakeSteelParams(p, p.c);
+  const UnfoldRows ur{static_cast<int32_t>(row), static_cast<int32_t>(rows),
+                      static_cast<int32_t>(p.c * ItemSize(p.type) / bytes)};
+  const int64_t vecs = rows * p.kh * p.kw * ur.vecs;
+  return stream->Launch(
+      *unfold, {static_cast<uint32_t>(CeilDiv(vecs, 256)), 1, 1},
+      {256, 1, 1},
+      {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(dst),
+       rt::KernelArg::Bytes(&sp, sizeof(sp)),
+       rt::KernelArg::Bytes(&ur, sizeof(ur))});
 }
 
 absl::Status RunConv(rt::Device* device, rt::Stream* stream,

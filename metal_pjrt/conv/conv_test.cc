@@ -9,7 +9,8 @@
 // the f32 accumulation error of the reference on the rounded inputs, plus
 // the output rounding. The weight gradient (kWeightGrad) likewise, over its
 // chunks and split-K parts; and every path split over several launches.
-// Needs a Metal device.
+// The unfold matches the naive kernel it replaced byte for byte. Needs a
+// Metal device.
 #include "metal_pjrt/conv/conv.h"
 
 #include <algorithm>
@@ -98,6 +99,62 @@ void Store(std::vector<uint8_t>& buf, int64_t i, ConvType t, double v) {
     }
   }
 }
+
+// The unfold before the vectorized one (MLX's naive_unfold_Nd for 2-D, one
+// element per thread), the reference Unfold must match byte for byte. A
+// bit copy: T is ushort or uint.
+constexpr char kNaiveUnfoldMsl[] = R"MSL(
+#include <metal_stdlib>
+using namespace metal;
+struct SteelConvParams {
+  int N; int C; int O; int iS[2]; int wS[2]; int oS[2]; int str[2];
+  int pad[2]; int kdil[2]; int idil[2]; long in_strides[4];
+  long wt_strides[4]; long out_strides[4]; int groups; bool flip;
+};
+struct UnfoldRows { int row_offset; int rows; int vecs; };
+template <typename T>
+[[kernel]] void naive_unfold_2d(const device T* in [[buffer(0)]],
+                                device T* out [[buffer(1)]],
+                                const constant SteelConvParams* params
+                                [[buffer(2)]],
+                                const constant UnfoldRows* tile [[buffer(3)]],
+                                uint2 gid [[thread_position_in_grid]]) {
+  const int filter_size = params->C * params->wS[0] * params->wS[1];
+  if (int(gid.x) >= filter_size || int(gid.y) >= tile->rows) return;
+  const int c = int(gid.x) % params->C;
+  const int out_pixels = params->oS[0] * params->oS[1];
+  out += size_t(gid.y) * filter_size + (gid.x - c);
+  int is[2] = {0, 0};
+  const int global_row = tile->row_offset + int(gid.y);
+  const int n = global_row / out_pixels;
+  int oS = global_row % out_pixels;
+  int wS = int(gid.x) / params->C;
+  bool valid = n < params->N;
+  for (int i = 1; i >= 0; --i) {
+    const int os_ = oS % params->oS[i];
+    int ws_ = wS % params->wS[i];
+    ws_ = params->flip ? params->wS[i] - ws_ - 1 : ws_;
+    const int is_ = os_ * params->str[i] - params->pad[i] + ws_ * params->kdil[i];
+    const int is_max = 1 + params->idil[i] * (params->iS[i] - 1);
+    valid &= is_ >= 0 && is_ < is_max && (is_ % params->idil[i] == 0);
+    is[i] = is_ / params->idil[i];
+    oS /= params->oS[i];
+    wS /= params->wS[i];
+  }
+  if (valid) {
+    const size_t in_offset = size_t(n) * params->in_strides[0] +
+                             size_t(is[0]) * params->in_strides[1] +
+                             size_t(is[1]) * params->in_strides[2];
+    out[c] = in[in_offset + c];
+  } else {
+    out[c] = T(0);
+  }
+}
+template [[host_name("naive_unfold_2d_2")]] [[kernel]] decltype(
+    naive_unfold_2d<ushort>) naive_unfold_2d<ushort>;
+template [[host_name("naive_unfold_2d_4")]] [[kernel]] decltype(
+    naive_unfold_2d<uint>) naive_unfold_2d<uint>;
+)MSL";
 
 // A case in terms of both paddings; the output size follows.
 struct Case {
@@ -241,6 +298,76 @@ class ConvTest : public ::testing::Test {
           }
         }
       }
+    }
+  }
+
+  // Unfold of patch rows [row, row + rows) against the naive kernel, byte
+  // for byte, with the input `in_shift` elements into its buffer (a
+  // misaligned offset steps the vector width down).
+  void CheckUnfold(const ConvParams& p, int64_t row, int64_t rows,
+                   int64_t in_shift) {
+    SCOPED_TRACE(absl::StrCat("unfold ", ConvParamsDebugString(p), " rows ",
+                              row, "+", rows, " shift ", in_shift));
+    const int64_t item = Bytes(p.type);
+    const int64_t n_in = p.n * p.h * p.w * p.c;
+    const int64_t out_bytes = rows * p.kh * p.kw * p.c * item;
+    std::vector<uint8_t> x = Random(p.type, n_in, 7 + n_in);
+    absl::StatusOr<rt::Allocation> in =
+        dev_->Allocate((n_in + in_shift) * item);
+    absl::StatusOr<rt::Allocation> got = dev_->Allocate(out_bytes);
+    absl::StatusOr<rt::Allocation> want = dev_->Allocate(out_bytes);
+    ASSERT_THAT(in, IsOk());
+    ASSERT_THAT(got, IsOk());
+    ASSERT_THAT(want, IsOk());
+    char* x_dev = static_cast<char*>(in->ptr) + in_shift * item;
+    std::memcpy(x_dev, x.data(), x.size());
+    std::memset(got->ptr, 0x7f, out_bytes);
+    std::memset(want->ptr, 0x3c, out_bytes);
+    ASSERT_THAT(Unfold(dev_.get(), stream_.get(), p, x_dev, got->ptr, row,
+                       rows),
+                IsOk());
+    absl::StatusOr<const rt::Kernel*> naive = dev_->GetKernel(
+        kNaiveUnfoldMsl, absl::StrCat("naive_unfold_2d_", item));
+    ASSERT_THAT(naive, IsOk());
+    SteelConvParams sp = {};
+    sp.N = p.n;
+    sp.C = p.c;
+    sp.O = p.o;
+    sp.iS[0] = p.h;
+    sp.iS[1] = p.w;
+    sp.wS[0] = p.kh;
+    sp.wS[1] = p.kw;
+    sp.oS[0] = p.out_h;
+    sp.oS[1] = p.out_w;
+    for (int i = 0; i < 2; ++i) {
+      sp.str[i] = p.stride[i];
+      sp.pad[i] = p.pad_lo[i];
+      sp.kdil[i] = p.kdil[i];
+      sp.idil[i] = p.idil[i];
+    }
+    sp.in_strides[0] = p.h * p.w * p.c;
+    sp.in_strides[1] = p.w * p.c;
+    sp.in_strides[2] = p.c;
+    sp.in_strides[3] = 1;
+    sp.groups = 1;
+    sp.flip = p.flip;
+    const UnfoldRows ur{static_cast<int32_t>(row), static_cast<int32_t>(rows),
+                        0};
+    const int64_t cols = p.kh * p.kw * p.c;
+    ASSERT_THAT(
+        stream_->Launch(**naive,
+                        {static_cast<uint32_t>((cols + 31) / 32),
+                         static_cast<uint32_t>((rows + 7) / 8), 1},
+                        {32, 8, 1},
+                        {rt::KernelArg::Buffer(x_dev),
+                         rt::KernelArg::Buffer(want->ptr),
+                         rt::KernelArg::Bytes(&sp, sizeof(sp)),
+                         rt::KernelArg::Bytes(&ur, sizeof(ur))}),
+        IsOk());
+    ASSERT_THAT(stream_->Synchronize(), IsOk());
+    EXPECT_EQ(std::memcmp(got->ptr, want->ptr, out_bytes), 0);
+    for (void* ptr : {in->ptr, got->ptr, want->ptr}) {
+      ASSERT_THAT(dev_->Deallocate(ptr), IsOk());
     }
   }
 
@@ -667,6 +794,50 @@ TEST_F(ConvTest, ExplicitTiles) {
     plan->unfold_rows = 29;  // 189 output pixels -> 7 tiles
     plan->workspace_bytes = 29 * p.kh * p.kw * p.c * Bytes(t);
     Check(p, *plan);
+  }
+}
+
+// The vectorized unfold is the naive one, byte for byte: channel counts
+// for every vector width (16 bytes down to one element: C 1, 3, 5, 6, 12,
+// 24 in 2- and 4-byte types), input offsets that step the width down, odd
+// widths, strides, kernel and input dilation, flip, asymmetric padding; the
+// whole patch matrix and a chunk from a row offset.
+TEST_F(ConvTest, Unfold) {
+  std::vector<Case> cases;
+  for (int64_t c : {1, 3, 5, 6, 12, 24}) {
+    Case k{2, 7, 9, c, 4, 3, 3};
+    k.pad_lo[0] = k.pad_lo[1] = k.pad_hi[0] = k.pad_hi[1] = 1;
+    cases.push_back(k);
+  }
+  Case geo{3, 13, 11, 24, 4, 3, 2};
+  geo.stride[0] = 2;
+  geo.stride[1] = 3;
+  geo.kdil[1] = 2;
+  geo.pad_lo[0] = 1;
+  geo.pad_hi[0] = 2;
+  geo.pad_hi[1] = 3;
+  cases.push_back(geo);
+  for (bool flip : {false, true}) {
+    Case idil{2, 7, 5, 12, 4, 3, 3};
+    idil.idil[0] = 2;
+    idil.idil[1] = 3;
+    idil.pad_lo[0] = 2;
+    idil.pad_hi[0] = 1;
+    idil.pad_lo[1] = 1;
+    idil.pad_hi[1] = 2;
+    idil.stride[1] = 2;
+    idil.flip = flip;
+    cases.push_back(idil);
+  }
+  for (const Case& k : cases) {
+    for (ConvType t : kTypes) {
+      const ConvParams p = Params(k, t);
+      const int64_t m = p.n * p.out_h * p.out_w;
+      for (int64_t shift : {0, 1, 2, 4}) {
+        CheckUnfold(p, 0, m, shift);
+      }
+      CheckUnfold(p, m / 3, m - m / 3 - 1, 0);
+    }
   }
 }
 
