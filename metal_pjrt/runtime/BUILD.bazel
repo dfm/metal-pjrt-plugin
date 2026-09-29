@@ -57,6 +57,16 @@ cc_library(
     ],
 )
 
+# Header only, no XLA.
+cc_library(
+    name = "kernel_launch",
+    hdrs = ["kernel_launch.h"],
+    deps = [
+        ":metal_runtime",
+        "@com_google_absl//absl/status",
+    ],
+)
+
 cc_library(
     name = "constants_container",
     hdrs = ["constants_container.h"],

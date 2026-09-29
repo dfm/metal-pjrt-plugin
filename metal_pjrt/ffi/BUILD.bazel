@@ -18,6 +18,7 @@ cc_library(
         "//metal_pjrt/compiler:report_bug",
         "//metal_pjrt/kernels:cub_sort",
         "//metal_pjrt/kernels:scan",
+        "//metal_pjrt/runtime:kernel_launch",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
         "//metal_pjrt/stream_executor:metal_platform_id",

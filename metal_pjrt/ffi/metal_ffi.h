@@ -23,14 +23,13 @@
 #ifndef METAL_PJRT_FFI_METAL_FFI_H_
 #define METAL_PJRT_FFI_METAL_FFI_H_
 
-#include <algorithm>
 #include <cstdint>
 #include <string>
-#include <type_traits>
 #include <vector>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
+#include "metal_pjrt/runtime/kernel_launch.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "xla/stream_executor/stream.h"
 #include "xla/xla_data.pb.h"
@@ -63,35 +62,11 @@ absl::StatusOr<rt::Device*> DefaultMetalDevice();
 // "int"), or an error for unsupported types.
 absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type);
 
-// Launches `function` from `msl_source` on the stream with the given buffers
-// in [[buffer(0..n-1)]] followed by `params` as setBytes in [[buffer(n)]].
-// `Params` must be trivially copyable (a plain struct matching the MSL one).
-// A 1-D threadgroup (threads.y == threads.z == 1) larger than the pipeline's
-// maxTotalThreadsPerThreadgroup is clamped to it, rounded down to a multiple
-// of the SIMD width, so kernels must loop with a threadgroup-size stride.
-// LaunchKernel is the same for an already compiled kernel.
-template <typename Params>
-absl::Status LaunchKernel(rt::Stream* stream, const rt::Kernel& kernel,
-                          const std::vector<const void*>& buffers,
-                          const Params& params, rt::Dim3 threadgroups,
-                          rt::Dim3 threads,
-                          uint32_t threadgroup_memory_bytes = 0) {
-  static_assert(std::is_trivially_copyable_v<Params>);
-  if (threads.y == 1 && threads.z == 1) {
-    uint32_t max_threads = kernel.max_total_threads_per_threadgroup();
-    uint32_t width = std::max<uint32_t>(kernel.thread_execution_width(), 1);
-    if (max_threads > 0 && threads.x > max_threads) {
-      threads.x = std::max(width, max_threads / width * width);
-    }
-  }
-  std::vector<rt::KernelArg> args;
-  args.reserve(buffers.size() + 1);
-  for (const void* b : buffers) args.push_back(rt::KernelArg::Buffer(b));
-  args.push_back(rt::KernelArg::Bytes(&params, sizeof(Params)));
-  return stream->Launch(kernel, threadgroups, threads, args,
-                        threadgroup_memory_bytes);
-}
+// Buffers + params launch of a compiled kernel (runtime/kernel_launch.h).
+using rt::LaunchKernel;
 
+// LaunchKernel of `function` from `msl_source`, compiled for the stream's
+// device (cached there).
 template <typename Params>
 absl::Status LaunchMsl(stream_executor::Stream* stream,
                        const std::string& msl_source,
