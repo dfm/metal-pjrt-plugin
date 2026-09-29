@@ -98,6 +98,12 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   0.344 vs 0.347 ms; in the step, the loop emitter spends 0.30, 1.49 and
   1.70 ms on them. f16: 0.84-1.10x MLX.
 
+- Buffer donation: JAX dropped `donate_argnums` on mtl (copying the
+  donated input) until the plugin added "mtl" to JAX's list of platforms
+  with donation. Qwen3-0.6B decode with a 4096-slot KV cache donated each
+  step: 39.8 -> 27.2 ms/token (measured in the "metal: case studies"
+  work, which found it).
+
 Where the time goes, in brief: memory-bound kernels run at memory bandwidth
 (the emitted `x*2` kernel reaches the same ~81 GB/s as hand-written MSL);
 fused reductions and optimizer updates are where XLA beats MLX; the gaps are

@@ -8,6 +8,11 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-28
 
+- Buffer donation works on mtl: JAX lowers `donate_argnums` only for the
+  platforms in a private list (`mlir._platforms_with_donation`) and before
+  this silently copied donated inputs on mtl; the plugin now adds "mtl" to
+  it at initialization. Qwen3-0.6B decode with a 4096-slot KV cache: 39.8
+  -> 27.2 ms/token.
 - Renamed for release (c652306): JAX platform `"mtl"` (was `"openmetal"`),
   Python package `metal_pjrt_plugin` (was `jax_plugins/openmetal`), PyPI
   dist `metal-pjrt-plugin` (was `openmetal_pjrt_plugin`), plugin library

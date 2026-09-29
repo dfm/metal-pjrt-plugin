@@ -152,6 +152,16 @@ def test_backend_init_failure_is_quiet_unless_selected():
     assert xb._backend_factories["mtl"].fail_quietly is True
 
 
+def test_platforms_with_donation():
+    # __init__.py appends "mtl" to this list: lower_jaxpr_to_module lowers
+    # donate_argnums only for the platforms in it and drops the donation
+    # (copying) on any other.
+    assert isinstance(mlir._platforms_with_donation, list)
+    assert {"cpu", "cuda"} <= set(mlir._platforms_with_donation)
+    src = inspect.getsource(mlir.lower_jaxpr_to_module)
+    assert "if p in _platforms_with_donation" in src, src
+
+
 # A child whose mtl client creation fails (simulated before plugin
 # discovery; no Metal device is created).
 FAILING_CLIENT = r"""

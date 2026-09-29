@@ -162,6 +162,7 @@ translator ("MSL emitter: unsupported ..."); see
 | float64 | no | Apple GPUs have no double type. Transfers of f64 arrays work, and inside `jit` so do copies (reshapes, contiguous slices); f64 arithmetic and other f64 data movement are refused at compile time (a strided f64 slice fails in the kernel translator instead). With `jax_enable_x64` on, keep f64 work on CPU |
 | complex64 | partly | values inside one fused kernel work (`abs(x + 1j * x)`, `test_lax.py`); complex arrays in device memory fail in the kernel translator |
 | int4 / uint4 | no | fail in the kernel translator (expected failure in `test_lax.py`) |
+| Buffer donation (`donate_argnums`) | yes | the donated input's memory becomes the output, as on CUDA (`test_donation.py`; JAX's own donation tests in `api_test.py` pass) |
 | JAX's persistent compilation cache | yes, opt-in | below (`test_callbacks.py`, `test_compilation_cache.py`) |
 
 `docs/op-coverage.md` maps every XLA operation to the path it takes;

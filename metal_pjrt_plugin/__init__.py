@@ -181,6 +181,17 @@ def initialize():
     if registration is not None:
         xb._backend_factories[PLATFORM] = dataclasses.replace(
             registration, fail_quietly=True)
+    # Buffer donation: JAX lowers donate_argnums only for the platforms in
+    # mlir._platforms_with_donation and silently drops it (copying the
+    # input) on any other. XLA's GPU client, which this plugin is, aliases
+    # donated inputs to outputs; tests/test_donation.py checks it on mtl and
+    # tests/test_jax_private_api.py pins the list.
+    try:
+        from jax._src.interpreters import mlir
+        if PLATFORM not in mlir._platforms_with_donation:
+            mlir._platforms_with_donation.append(PLATFORM)
+    except Exception as e:  # noqa: BLE001 - never break plugin init
+        logger.warning("metal-pjrt-plugin: buffer donation unavailable: %s", e)
     # Only makes the cache usable for mtl. The cache directory is
     # process-wide JAX config (it would turn caching on for CPU too, and this
     # runs whenever the plugin is installed), so it is left to the user.

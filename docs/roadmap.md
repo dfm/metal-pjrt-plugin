@@ -152,6 +152,11 @@ Unscheduled directions, with enough context to pick one up cold.
   -> `simdgroup_matrix`. Multi-week; only if fusion quality matters.
 - **Convolutions**, the largest workload gap (cnn fwd+bwd 6.2 vs MLX
   2.3 ms): no library path today.
+- **Upstream: donation for plugin platforms.** JAX hard-codes the
+  platforms that get buffer donation (`mlir._platforms_with_donation`); the
+  plugin appends "mtl" to the private list at initialization (pinned by
+  `tests/test_jax_private_api.py`). A JAX PR letting a PJRT plugin declare
+  donation support (e.g. a `register_plugin` option) would remove that.
 - **A native FFT** (the dense-DFT lowering is O(n^2) per axis; MPS has no
   FFT for arbitrary sizes). **c64** in the emitter (`complex<f32>` as
   `float2`).
