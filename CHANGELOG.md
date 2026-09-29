@@ -19,7 +19,12 @@ describe the present only. Commit hashes point at the change.
 - Every environment variable the plugin defines is `METAL_PJRT_*`:
   `JAX_MTL_MEMORY_FRACTION` and `JAX_MTL_DEVICE_LOCK_HELD` are now
   `METAL_PJRT_MEMORY_FRACTION` and `METAL_PJRT_DEVICE_LOCK_HELD`, with no
-  alias (the old names are ignored).
+  alias (the old names are ignored) (6d28c62).
+- Decisions (`docs/roadmap.md`): a jax/jaxlib version mismatch warns and
+  loads; the softmax rewriter stays deleted; int8 GEMM stays refused; the
+  system memory guard stays strict; Metal's transcendental bias is
+  accepted as documented; quarantine stays per boot. The no-wait
+  `CheckInFlight` is deferred until a profile shows it matters.
 - The hand-written MSL moved out of C++ string literals into `.metal` files
   under `metal_pjrt/kernels/` (f59719c), with a device test that compiles
   every kernel (318c2ba).

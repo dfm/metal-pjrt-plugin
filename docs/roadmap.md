@@ -28,10 +28,26 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
   to turn the cache on.
 - Land the minimum viable product before numerical side quests; known
   accuracy gaps are listed in `docs/accuracy.md`, not chased.
-- Quarantine strikes are not keyed by plugin build: the build changes on
-  every rebuild and would unquarantine an unchanged buggy kernel (the
-  kernel key, MSL hash + name, already tracks real changes). The build is
-  recorded for diagnostics only.
+- Quarantine strikes count per boot, so an unchanged buggy kernel gets two
+  more resets after each reboot (not counted across boots until
+  `gpu_health.py --clear`). They are not keyed by plugin build: the build
+  changes on every rebuild and would unquarantine an unchanged buggy
+  kernel (the kernel key, MSL hash + name, already tracks real changes).
+  The build is recorded for diagnostics only.
+- A jax/jaxlib version other than the one the plugin was built for gets a
+  warning naming the versions to install, and the plugin loads anyway.
+- int8 GEMM (s8 x s8 -> s32) stays refused at compile time. The ways out
+  were a size-capped elemental fallback (watchdog risk above the cap) or
+  an int8 steel GEMM; int8 through the f32 GEMM is exact only for
+  K < ~1040.
+- The system memory guard stays strict: it counts only free + inactive +
+  speculative + purgeable pages, minus a 512 MB reserve, not compressible
+  memory, because swapping is what wedged the GPU. The cost: on an 8 GB
+  Mac with a browser open it refused nanoGPT's 1.17 GiB step allocation
+  with 1.36 GB free (the README says so).
+- Metal's biased `exp` / `sin` / `cos` / `log` are accepted as documented
+  in `docs/accuracy.md`; the prelude's polynomials for |x| < 0.125 stay,
+  and nothing further is planned.
 - A/Bs of sub-millisecond programs interleave the arms and report
   p10/median/p90 (GPU performance states make single medians bimodal).
 - The size-class cache is the only device allocator (no BFC option).
@@ -74,27 +90,17 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 ## Next
 
-Open decisions for the maintainer:
+Open decision for the maintainer:
 
-- **The 6-9 us no-wait variant**: drop `waitUntilCompleted` in
-  `CheckInFlight` and save 6-9 us per synchronizing round trip. Sound only
-  if an aborted command buffer never runs its own trailing signals, which
-  is unverified.
-- **int8 GEMM**: s8 x s8 -> s32 is refused today. Options: a size-capped
-  elemental fallback (watchdog risk above the cap), or an int8 steel GEMM.
-  int8 through the f32 GEMM is exact only for K < ~1040.
 - **Accuracy policy**: match numpy/IEEE on valid inputs, or XLA:CPU?
   `docs/accuracy.md`, "Policy", has the question and the cases it decides.
-- **Per-boot quarantine**: strikes count per boot, so an unchanged buggy
-  kernel gets two more resets after each reboot. The other choice is
-  counting across boots until `gpu_health.py --clear`.
-- **System memory guard strictness**: it counts only free + inactive +
-  speculative + purgeable pages, minus a 512 MB reserve. On an 8 GB Mac
-  with a browser open it refused nanoGPT's 1.17 GiB step allocation with
-  1.36 GB free. Keep it strict (swapping is what wedged the GPU),
-  or also count compressible memory?
-- **Softmax**: keep the rewriter deleted, or revert fcbf5ce for
-  standalone/inference softmax (1.91 -> 1.24 ms).
+
+Still on hold:
+
+- macOS CI (and a remote cache).
+- The minimum macOS version the wheel declares.
+- Full third-party notices for the statically linked XLA dependencies:
+  before a release, alongside CI.
 
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
@@ -127,7 +133,11 @@ CUDA too). The plugin refuses such GEMMs at compile time
 - MLX comparison numbers not re-run on an idle, freshly booted machine.
 - Patches 0002 and 0003 not sent upstream.
 - The wheel is untested elsewhere and not stripped (236 MB dylib; `strip
-  -x` would save ~90 MB). No macOS CI or remote cache.
+  -x` would save ~90 MB).
+- **The 6-9 us no-wait variant**, until a profile shows it matters: drop
+  `waitUntilCompleted` in `CheckInFlight` and save 6-9 us per
+  synchronizing round trip. Sound only if an aborted command buffer never
+  runs its own trailing signals, which is unverified.
 
 ## Deferred / ideas
 
