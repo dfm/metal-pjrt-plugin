@@ -74,6 +74,8 @@ compiling: XLA keeps two copies of every kernel thunk's binary for the
 executable's life (the thunk's and its serialized form, one per thunk even
 where thunks share a kernel), so a full prelude in each was ~40 MB of a
 Qwen3-0.6B train step's ~270 MB (`docs/performance.md`, host memory).
+MSL dumps (`--xla_dump_to`) have the prelude expanded, so a dumped `.metal`
+file compiles on its own with `xcrun metal`.
 Details and the exact contract are in `docs/integration-notes.md`.
 
 Runtime shader compilation works with command-line tools only (verified:

@@ -154,7 +154,9 @@ def test_dropped_executables_release_their_kernels():
     # Compiled kernels belong to their executables: once the executables are
     # gone (jax.clear_caches: JAX's own caches hold every executable a
     # jitted function compiled), their pipelines, libraries and MSL go too,
-    # and malloc'd memory comes back to where it was.
+    # and malloc'd memory stops growing with the programs run. Measured over
+    # a second round of programs (the first grows ~110 KB per program of
+    # one-time state, the second ~50, later ones ~10; kept kernels ~470).
     out = run_child(r"""
 class MStats(ctypes.Structure):
     _fields_ = [(n, ctypes.c_size_t) for n in
@@ -172,21 +174,24 @@ def run(p):  # a distinct shape: distinct kernels (8 or more)
     g = jax.jit(f)
     g(jnp.ones((16, 16 + p))).block_until_ready()
     return g
+n = 32
 run(-1)  # one-time state (Metal's shader cache)
 jax.clear_caches(); gc.collect()
-base, base_used = stats(), libc.mstats().used
-n = 32
-held = [run(p) for p in range(n)]
-grown = stats()
-del held
-jax.clear_caches(); gc.collect()
-s, used = stats(), libc.mstats().used
-print(f"kernels {base['kernels']} -> {grown['kernels']} -> {s['kernels']}; "
-      f"malloc used MB {base_used / MB:.1f} -> {used / MB:.1f}")
-assert grown["kernels"] >= base["kernels"] + n * 8, (base, grown)
-assert s["kernels"] == base["kernels"], (base, s)
-assert s["kernel_msl_bytes"] == base["kernel_msl_bytes"], (base, s)
-assert used < base_used + 8 * MB, (base_used / MB, used / MB)  # 15 if kept
+base = stats()
+for r in range(2):
+    base_used = libc.mstats().used
+    held = [run(p) for p in range(r * n, (r + 1) * n)]
+    grown = stats()
+    del held
+    jax.clear_caches(); gc.collect()
+    s, used = stats(), libc.mstats().used
+    print(f"kernels {base['kernels']} -> {grown['kernels']} -> {s['kernels']}; "
+          f"malloc used MB {base_used / MB:.1f} -> {used / MB:.1f}")
+    assert grown["kernels"] >= base["kernels"] + n * 8, (base, grown)
+    assert s["kernels"] == base["kernels"], (base, s)
+    assert s["kernel_msl_bytes"] == base["kernel_msl_bytes"], (base, s)
+per_program = (used - base_used) / n
+assert per_program < 200 * 1024, per_program / 1024  # ~470 KB if kept
 print("OK")
 """)
     print(out)

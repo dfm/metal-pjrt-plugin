@@ -22,6 +22,7 @@
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Module.h"
 #include "metal_pjrt/codegen/metal_kernel_compiler.h"
+#include "metal_pjrt/codegen/msl_kernel.h"
 #include "metal_pjrt/codegen/msl_llvm_bridge.h"
 #include "metal_pjrt/compiler/compile_settings.h"
 #include "metal_pjrt/compiler/report_bug.h"
@@ -280,6 +281,10 @@ MetalCompiler::CompileTargetBinary(
   std::optional<std::string> msl =
       metal_pjrt::codegen::ExtractMslFromLlvmModule(*llvm_module);
   if (msl.has_value()) {
+    // The binary keeps the prelude line (the runtime expands it); dumps and
+    // asm_text (XLA only hands it to a user hook, then drops it) get the
+    // prelude, so a dumped .metal file compiles on its own.
+    std::string text = metal_pjrt::codegen::ExpandMslPrelude(*msl);
     if (DumpingEnabledForHloModule(debug_module ? debug_module->name() : "",
                                    module_config.debug_options()) &&
         debug_module) {
@@ -287,10 +292,10 @@ MetalCompiler::CompileTargetBinary(
                               shard_number.has_value()
                                   ? (std::to_string(*shard_number) + ".metal")
                                   : "metal",
-                              *msl);
+                              text);
     }
     std::vector<uint8_t> bytes(msl->begin(), msl->end());
-    return BackendCompileResult{/*asm_text=*/*msl, std::move(bytes)};
+    return BackendCompileResult{/*asm_text=*/std::move(text), std::move(bytes)};
   }
 
   bool has_kernel = false;

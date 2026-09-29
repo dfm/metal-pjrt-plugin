@@ -22,6 +22,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/str_cat.h"
 
 namespace metal_pjrt {
 namespace rt {
@@ -152,6 +153,80 @@ TEST_F(MetalRuntimeTest, AcquiredKernelsGoWithTheirLastReference) {
               IsOk());
   ASSERT_THAT(stream->Synchronize(), IsOk());
   for (int i = 0; i < 1024; ++i) ASSERT_EQ(y[i], 1) << i;
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// Threads acquiring and releasing kernels of one shared source (the library
+// dropped and recompiled as its last kernel comes and goes, other threads'
+// acquires waiting on it) and of their own: every acquire gets the kernel
+// asked for, and the cache ends where it started.
+TEST_F(MetalRuntimeTest, ConcurrentAcquireAndRelease) {
+  const Device::KernelCacheStats base = dev_->kernel_cache_stats();
+  const std::string shared =
+      "#include <metal_stdlib>\nusing namespace metal;\n"
+      "kernel void one(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) { y[i] = 1; }\n"
+      "kernel void two(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) { y[i] = 2; }\n";
+  constexpr int kThreads = 4;
+  constexpr int kIterations = 12;
+  std::atomic<int> failures{0};
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t) {
+    threads.emplace_back([&, t] {
+      const std::string own = absl::StrCat(
+          "#include <metal_stdlib>\nusing namespace metal;\n"
+          "kernel void mine(device int* y [[buffer(0)]],\n"
+          "    uint i [[thread_position_in_grid]]) { y[i] = ",
+          t, "; }\n");
+      for (int i = 0; i < kIterations; ++i) {
+        const char* name = (i + t) % 2 == 0 ? "one" : "two";
+        absl::StatusOr<const Kernel*> a = dev_->AcquireKernel(shared, name);
+        absl::StatusOr<const Kernel*> b = dev_->AcquireKernel(own, "mine");
+        if (!a.ok() || !b.ok() || (*a)->name() != name ||
+            (*b)->name() != "mine") {
+          ++failures;
+        }
+        if (a.ok()) dev_->ReleaseKernel(*a);
+        if (b.ok()) dev_->ReleaseKernel(*b);
+      }
+    });
+  }
+  for (std::thread& t : threads) t.join();
+  EXPECT_EQ(failures.load(), 0);
+  const Device::KernelCacheStats s = dev_->kernel_cache_stats();
+  EXPECT_EQ(s.libraries, base.libraries);
+  EXPECT_EQ(s.kernels, base.kernels);
+  EXPECT_EQ(s.source_bytes, base.source_bytes);
+}
+
+// Releasing a library's last kernel while a launch of it is queued drops the
+// library from the cache; the command buffer keeps the pipeline, so the
+// launch still runs.
+TEST_F(MetalRuntimeTest, LibraryDroppedWhileLaunchQueued) {
+  const Device::KernelCacheStats base = dev_->kernel_cache_stats();
+  const std::string msl =
+      "#include <metal_stdlib>\nusing namespace metal;\n"
+      "kernel void slow(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) {\n"
+      "  int v = 0;\n"
+      "  for (int k = 0; k < 4096; ++k) v += (int(i) + k) & 1;\n"
+      "  y[i] = v;\n}\n";
+  absl::StatusOr<const Kernel*> k = dev_->AcquireKernel(msl, "slow");
+  ASSERT_THAT(k, IsOk());
+  EXPECT_EQ(dev_->kernel_cache_stats().libraries, base.libraries + 1);
+  constexpr int kN = 1 << 18;
+  std::unique_ptr<Stream> stream = NewStream();
+  auto* y = static_cast<int32_t*>(Alloc(kN * sizeof(int32_t)));
+  ASSERT_THAT(stream->Launch(**k, Dim3{kN / 256, 1, 1}, Dim3{256, 1, 1},
+                             {KernelArg::Buffer(y)}),
+              IsOk());
+  dev_->ReleaseKernel(*k);
+  const Device::KernelCacheStats s = dev_->kernel_cache_stats();
+  EXPECT_EQ(s.libraries, base.libraries);
+  EXPECT_EQ(s.kernels, base.kernels);
+  ASSERT_THAT(stream->Synchronize(), IsOk());
+  for (int i = 0; i < kN; ++i) ASSERT_EQ(y[i], 2048) << i;
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 

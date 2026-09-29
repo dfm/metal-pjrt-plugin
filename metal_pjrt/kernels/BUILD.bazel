@@ -44,7 +44,7 @@ embed_msl(
 )
 
 # Prepended to every kernel the MSL emitter generates (codegen/), by the
-# runtime (rt::kMslPreludeLine).
+# runtime (codegen::ExpandMslPrelude, codegen/msl_kernel.h).
 embed_msl(
     name = "msl_prelude",
     src = "msl_prelude.metal",

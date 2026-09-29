@@ -2,6 +2,9 @@
 #define METAL_PJRT_CODEGEN_MSL_KERNEL_H_
 
 #include <string>
+#include <string_view>
+
+#include "metal_pjrt/kernels/msl_prelude.metal.h"
 
 namespace metal_pjrt::codegen {
 
@@ -9,7 +12,7 @@ namespace metal_pjrt::codegen {
 // [[buffer(i)]] (Metal's argument table has 31 slots). Larger kernels use the
 // argument-buffer convention: [[buffer(0)]] is `constant ulong*`, one GPU
 // address per argument, and the source starts the kernel with
-// kArgumentBufferMarker. Must match metal_pjrt::rt::kArgumentBufferMarker /
+// kArgumentBufferMarker (the runtime uses the same constant). Must match
 // rt::Stream::kMaxBufferArgs (runtime/metal_runtime.h).
 inline constexpr int kMaxDirectBufferArgs = 31;
 inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
@@ -18,10 +21,21 @@ inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
 // (kernels/msl_prelude.metal, ~9 KB): the runtime puts the prelude back
 // before compiling. XLA keeps each kernel thunk's source twice (the thunk and
 // the executable's serialized thunks), one copy per thunk even when kernels
-// are shared, so the prelude would be most of an executable's MSL. Must match
-// metal_pjrt::rt::kMslPreludeLine (runtime/metal_runtime.h).
+// are shared, so the prelude would be most of an executable's MSL. The
+// runtime (rt::Device::GetKernel) and the compiler's dumps use the same
+// constant, through ExpandMslPrelude.
 inline constexpr char kMslPreludeLine[] =
     "#include <metal_pjrt/msl_prelude.metal>\n";
+
+// `msl_source` with a leading kMslPreludeLine replaced by the prelude: the
+// source Metal compiles, and a standalone file for `xcrun metal`.
+inline std::string ExpandMslPrelude(std::string_view msl_source) {
+  constexpr std::string_view line(kMslPreludeLine);
+  if (msl_source.substr(0, line.size()) != line) return std::string(msl_source);
+  std::string out(kernels::kMslPrelude);
+  out.append(msl_source.substr(line.size()));
+  return out;
+}
 
 struct MslKernel {
   // Name of the `kernel` function in `msl_source` (== the XLA entry function).

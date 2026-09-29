@@ -101,6 +101,12 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_EQ(kernel->num_buffer_args, 3);
   const std::string& msl = kernel->msl_source;
   EXPECT_THAT(msl, StartsWith(kMslPreludeLine));  // the runtime expands it
+  // As the runtime compiles it and dumps write it: standalone MSL.
+  const std::string full = ExpandMslPrelude(msl);
+  EXPECT_THAT(full, StartsWith("#include <metal_stdlib>"));
+  EXPECT_THAT(full, Not(HasSubstr(kMslPreludeLine)));
+  EXPECT_EQ(full.size(), msl.size() - std::string(kMslPreludeLine).size() +
+                             std::string(kernels::kMslPrelude).size());
   EXPECT_THAT(msl, HasSubstr("kernel void fusion("));
   EXPECT_THAT(msl, HasSubstr("device char* xla_arg0 [[buffer(0)]]"));
   EXPECT_THAT(msl, HasSubstr("device char* xla_arg2 [[buffer(2)]]"));

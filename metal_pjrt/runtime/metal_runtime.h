@@ -62,6 +62,7 @@
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
 #include "absl/types/span.h"
+#include "metal_pjrt/codegen/msl_kernel.h"
 
 namespace MTL {
 class Device;
@@ -127,16 +128,14 @@ struct KernelArg {
 // MSL kernels whose source contains this marker take their buffer arguments
 // through an argument buffer: [[buffer(0)]] is `constant ulong*`, one 64-bit
 // GPU address (MTLBuffer.gpuAddress + offset) per argument. Used for kernels
-// with more buffer arguments than Metal's argument table holds. Must match
-// codegen::kArgumentBufferMarker (codegen/msl_kernel.h).
-inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
+// with more buffer arguments than Metal's argument table holds.
+using codegen::kArgumentBufferMarker;
 
 // An MSL source starting with this line stands for the same source with the
 // line replaced by kernels/msl_prelude.metal; GetKernel/AcquireKernel compile
 // that (the cache keeps the short form). The MSL emitter's kernels start with
-// it. Must match codegen::kMslPreludeLine (codegen/msl_kernel.h).
-inline constexpr char kMslPreludeLine[] =
-    "#include <metal_pjrt/msl_prelude.metal>\n";
+// it.
+using codegen::kMslPreludeLine;
 
 // True when kernel `kernel_name` in `msl_source` uses the argument-buffer
 // convention (the marker line immediately precedes `kernel void <name>(`).
