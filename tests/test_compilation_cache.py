@@ -77,12 +77,13 @@ def test_plugin_sets_no_cache_dir():
 @pytest.mark.metal  # creates the mtl client (no GPU work)
 def test_cache_key_fingerprints_parsed_settings():
     # platform_version carries the compile-time settings as the passes read
-    # them: METAL_PJRT_DISABLE_LAPACK unset and "0" mean the same (one key),
-    # "1" does not; likewise the REWRITES list by its effect.
+    # them: METAL_PJRT_DISABLE_LAPACK (and _FFT) unset and "0" mean the same
+    # (one key), "1" does not; likewise the REWRITES list by its effect.
     def version(**env):
         base = {k: v for k, v in os.environ.items()
                 if k not in ("METAL_PJRT_DISABLE_LAPACK",
-                             "METAL_PJRT_DISABLE_REWRITES")}
+                             "METAL_PJRT_DISABLE_REWRITES",
+                             "METAL_PJRT_DISABLE_FFT")}
         out = run_python("import jax\n"
                          "print(jax.devices('mtl')[0].client.platform_version)\n",
                          dict(base, JAX_PLATFORMS="mtl", **env))
@@ -100,3 +101,8 @@ def test_cache_key_fingerprints_parsed_settings():
     assert version(METAL_PJRT_DISABLE_REWRITES="conv") not in (
         unset, version(METAL_PJRT_DISABLE_REWRITES="scan"))
     assert version(METAL_PJRT_DISABLE_REWRITES="bogus") == unset
+    # METAL_PJRT_DISABLE_FFT acts in the lowering (so the HLO differs too),
+    # and is in the key as well.
+    assert version(METAL_PJRT_DISABLE_FFT="0") == unset
+    assert version(METAL_PJRT_DISABLE_FFT="1") not in (
+        unset, version(METAL_PJRT_DISABLE_LAPACK="1"))

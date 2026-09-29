@@ -9,7 +9,8 @@ bench/linalg_bench.py.
 
 Decompositions are compared through invariants (reconstruction, orthogonality,
 sorted spectra) rather than raw factors, which are only unique up to signs /
-phases. FFT checks reduce to real outputs (abs / real / imag), which the
+phases. FFT (metal$fft; tests/test_fft.py covers it per path) checks
+reduce to real outputs (abs / real / imag), which the
 f64 reference compares in ulps.
 """
 import os
@@ -151,10 +152,10 @@ ULPS = {
     'eigh 300 (QDWH path)': 5.9, 'eigvalsh batched': 4.2, 'svd 12x8': 6,
     'svd 8x12': 5.6, 'svd vals 40x40': 6.9, 'qr 12x8': 2.2, 'qr 8x12': 4.6,
     'lu 16': 7.1, 'solve 16': 6.2, 'inv 16': 12, 'det/slogdet 16': 1.7,
-    'cho_solve 16': 8.1, 'fft abs': 2.5, 'fft re/im odd n': 3.8,
-    'ifft(fft) roundtrip': 2.4, 'rfft': 4.3, 'irfft(rfft) even/odd': 4,
-    'irfft of arbitrary spectrum': 5.6, 'fft2 / ifftn': 4,
-    'rfft2 / irfft2': 6.5, 'cholesky batched 3x40': 1.2,
+    'cho_solve 16': 8.1, 'fft abs': 3.4, 'fft re/im odd n': 5,
+    'ifft(fft) roundtrip': 4, 'rfft': 4.3, 'irfft(rfft) even/odd': 6,
+    'irfft of arbitrary spectrum': 5.4, 'fft2 / ifftn': 4,
+    'rfft2 / irfft2': 4, 'cholesky batched 3x40': 1.2,
     'triangular_solve left=True lower=True trans=False unit=False': 1.6,
     'triangular_solve left=True lower=True trans=False unit=True': 2.7,
     'triangular_solve left=True lower=True trans=True unit=False': 1,
@@ -197,8 +198,8 @@ ULPS = {
     'triangular_solve 3x3 left=False lower=False trans=True unit=True': 1.1,
     'grad cholesky': 9, 'grad solve': 7.4, 'grad cho_solve/logdet': 13,
     'grad eigh': 12, 'grad slogdet': 2.7,
-    'fft2 * 2 / ifftn (complex buffers)': 4.9,
-    'fft grad (complex buffers)': 3.4,
+    'fft2 * 2 / ifftn (complex buffers)': 4,
+    'fft grad (complex buffers)': 2.6,
 }
 
 

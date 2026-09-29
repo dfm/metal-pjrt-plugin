@@ -155,7 +155,7 @@ translator ("MSL emitter: unsupported ..."); see
 | Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`) |
 | Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the shared memory (`test_linalg.py`). f16/bf16 linear algebra is untested |
 | `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering on mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") |
-| FFT | yes, slow | a dense DFT, O(n^2) per axis, complex64 results and gradients included (`test_linalg.py`) |
+| FFT | yes | `jnp.fft` (fft, rfft, irfft, fftn, ...) on MLX's FFT kernels, complex64 / float32, any length up to 2^24 (powers of two) or 2^23 - 1, with gradients and vmap; 0.6-1.3x MLX's time (`test_fft.py`, `bench/fft_bench.py`). Longer lengths fall back to a slow dense DFT; complex128 is refused like float64 |
 | `pure_callback`, `io_callback`, `jax.debug.print`, `jax.debug.callback` | yes | synchronous (below); sub-byte dtypes such as int4 are refused (`test_callbacks.py`) |
 | `checkify` | partly, untested | functionalized checks (`checkify.checkify`) use JAX's generic path; `debug=True` checks are dropped, as on TPU |
 | Several devices (`pmap`, sharding) | no | the plugin exposes one device |

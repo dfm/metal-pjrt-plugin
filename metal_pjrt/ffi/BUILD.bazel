@@ -4,6 +4,7 @@ package(default_visibility = ["//visibility:public"])
 
 # XLA FFI support for the Metal platform: helpers plus the handlers the Metal
 # compiler's scan and convolution rewriters target (metal$scan, metal$conv),
+# the FFT handler the Python fft lowering targets (metal$fft),
 # XLA's SortRewriter targets (xla.gpu.ext.cub_sort_keys/pairs) and the Python
 # callback handler. Handlers register statically, so this is alwayslink.
 cc_library(
@@ -11,6 +12,7 @@ cc_library(
     srcs = [
         "conv_ffi.cc",
         "cub_sort_ffi.cc",
+        "fft_ffi.cc",
         "metal_ffi.cc",
         "python_callback_ffi.cc",
         "scan_ffi.cc",
@@ -20,13 +22,19 @@ cc_library(
         ":radix_sort",
         ":scan",
         "//metal_pjrt/conv",
+        "//metal_pjrt/fft",
+        "//metal_pjrt/fft:fft_plan",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
         "//metal_pjrt/stream_executor:metal_platform_id",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/log",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
         "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:string_view",
+        "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:shape_util",

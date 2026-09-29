@@ -24,6 +24,10 @@ struct CompileSettings {
   bool scan_rewrite = true;
   bool cub_sort = true;
   bool conv_rewrite = true;
+  // METAL_PJRT_DISABLE_FFT, a boolean: jax's fft lowers to the dense DFT
+  // instead of metal$fft. The switch acts in metal_pjrt_plugin/_lowerings.py
+  // (so it shows in the HLO); it is read here only for the cache key.
+  bool fft = true;
 
   // The parsed values, for the cache key.
   std::string Fingerprint() const;

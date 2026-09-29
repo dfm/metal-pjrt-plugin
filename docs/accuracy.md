@@ -115,6 +115,19 @@ XLA:CPU" as the rule for cases like this.
   grouped and 3-D convolutions, is less accurate in f16: an f16 weight
   gradient it ran measured 2.6 ulps against CPU's 0.47.
 
+- FFTs run on `metal$fft` (MLX's kernels) instead of the dense DFT: in
+  `tests/test_fft.py`, max |error| / max |numpy float64| is at most 1.2 x
+  2^-24 log2 n over every plan (Stockham, Rader, fused and multi-upload
+  Bluestein, four-step; fft, ifft, rfft, non-Hermitian irfft, n = 1 to 2^20)
+  and 0.94 x for the multi-dimensional transforms; the per-plan device test
+  (`fft:fft_test`, double reference) measures <= 5.4 x 2^-24 log2 n
+  normwise to the RMS up to 2^24. The Rader and Bluestein constants are
+  computed in double with exact angle reduction, which fixes two MLX
+  inaccuracies (an unreduced chirp angle, ~1e-2 off near 2^23, and bin 0's
+  imaginary part leaking into a fused-Bluestein irfft of non-Hermitian
+  input, 4-13% of RMS off in MLX itself at n = 47). `tests/test_linalg.py`'s
+  FFT cases measure 1.3-3.0 ulps normwise (CPU float32 0.8-1.5).
+
 - softmax in f16 runs as XLA's fusions since the `metal$softmax` rewriter
   was deleted (fcbf5ce): 9.5 ulps max over `tests/test_scan.py`'s shapes,
   the same as CPU, against 5.0 with the rewriter (which accumulated in

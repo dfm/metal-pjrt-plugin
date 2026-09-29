@@ -119,6 +119,10 @@ operation and its source line:
   `Metal: sort of complex values is not supported; ...`: split into real
   and imaginary parts (a complex matmul is four real ones), or run it on
   the CPU backend.
+- `Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT only);
+  ...`: the program was lowered for another platform (e.g. exported with
+  `jax.export` for cuda). Lower it for mtl: `jnp.fft` / `lax.fft` lower to
+  the plugin's `metal$fft` there.
 - `Metal: bf16 matmul too large: ... Split the matmul or use float32` and
   `Metal: matmul operand ... has a batch, row or column group of ...
   elements; XLA's matmul config counts them in 32 bits. Split the batch

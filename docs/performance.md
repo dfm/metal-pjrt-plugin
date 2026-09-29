@@ -116,6 +116,30 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   0.121-0.199). MLX runs these in 0.01-0.03 ms: the fixed cost of a
   dispatch-bound program, not the kernels.
 
+- FFTs run on MLX's FFT kernels (`metal$fft`, `metal_pjrt/fft`).
+  `bench/fft_bench.py` (one process; bursts of 10 calls, 15 interleaved
+  rounds; p10 ms per call; "DFT" is the `METAL_PJRT_DISABLE_FFT=1`
+  lowering, the dense DFT used before):
+
+  | case | metal$fft | DFT | MLX |
+  |---|---|---|---|
+  | fft 17 x 4096 rows (Rader) | 0.062 | 0.157 | 0.065 |
+  | fft 1000 x 256 (Stockham) | 0.059 | 1.265 | 0.051 |
+  | fft 1024 x 256 | 0.057 | 1.300 | 0.049 |
+  | fft 1021 x 256 (fused Bluestein) | 0.099 | 1.319 | 0.128 |
+  | rfft 4096 x 64 | 0.054 | 1.831 | 0.042 |
+  | irfft 4096 x 64 | 0.056 | 1.953 | 0.044 |
+  | fft 2053 x 16 (multi-upload Bluestein) | 0.128 | 2.193 | 0.209 |
+  | fft2 512 x 512 | 0.131 | 1.174 | 0.113 |
+  | fft 2^16 x 16 (four-step) | 0.473 | - | 0.447 |
+  | fft 2^20 (four-step) | 0.461 | - | 0.451 |
+  | rfft 2^20 (four-step) | 0.372 | - | 0.360 |
+
+  0.6-1.3x MLX's time: the small transforms (~0.05 ms) are
+  dispatch-bound, and the Bluestein ones beat MLX (its multi-upload path
+  chains ~8 elementwise ops, fused here into 3). The DFT (O(n^2), n x n
+  twiddles, so not run above 4096) was 2.5-44x slower.
+
 - Buffer donation: JAX dropped `donate_argnums` on mtl (copying the
   donated input) until the plugin added "mtl" to JAX's list of platforms
   with donation. Qwen3-0.6B decode with a 4096-slot KV cache donated each

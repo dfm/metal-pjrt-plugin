@@ -259,7 +259,7 @@ ULPS = {
     'matvec / outer': 1.5, 'conv 2d NHWC': 3.2, 'conv 2d strided NCHW': 2.3,
     'conv grad': 3.3, 'cholesky': 1.7, 'triangular_solve': 1.2,
     'lu / solve': 2.9, 'qr': 2.3, 'eigh': 6.9, 'svd': 1.7, 'inv / det': 21,
-    'fft': 2.4, 'rfft2': 3.3, 'lax.cond': 1, 'lax.switch': 1,
+    'fft': 2.8, 'rfft2': 3.9, 'lax.cond': 1, 'lax.switch': 1,
     'lax.while_loop': 2.9, 'lax.fori_loop': 1.2, 'lax.scan 100 steps': 4.5,
     'lax.map': 2.1, 'vmap': 1.6, 'grad through while': 8.2,
     'checkpoint/remat': 4, 'lax.erf_inv grad / custom_jvp': 2.2,

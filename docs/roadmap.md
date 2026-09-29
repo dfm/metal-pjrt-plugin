@@ -109,6 +109,9 @@ fusion at 85 GB/s. It makes batched LLM decode ~2x slower at batch 2 than
 at batch 1. MLX uses its gemv/small-M kernels for these shapes: a port
 candidate like steel. (Found by the LLM case study.)
 
+Complex dot / sort: a probe matched CPU; ~5 lines in
+`CheckBeforeOptimization` to enable, plus tests (kept refused for now).
+
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
@@ -166,9 +169,11 @@ Unscheduled directions, with enough context to pick one up cold.
   plugin appends "mtl" to the private list at initialization (pinned by
   `tests/test_jax_private_api.py`). A JAX PR letting a PJRT plugin declare
   donation support (e.g. a `register_plugin` option) would remove that.
-- **A native FFT** (the dense-DFT lowering is O(n^2) per axis; MPS has no
-  FFT for arbitrary sizes). **c64** in the emitter (`complex<f32>` as
-  `float2`).
+- **FFT**: native on MLX's FFT kernels (`metal$fft`, one call per axis;
+  0.6-1.3x MLX's time, 2.5-44x faster than the dense DFT it replaces).
+  Not yet: MLX's Bluestein twiddle-table path for n = 4096 with many rows
+  (not ported, unmeasured); lengths above 2^24 (powers of two) or 2^23 - 1
+  fall back to the O(n^2) DFT; no complex128.
 - **Tuned library kernels.** Apple's jax-metal hands whole programs to
   MPSGraph; the one thing it gets that we do not is Apple's tuned
   convolution and attention kernels. In the order worth trying:
@@ -176,7 +181,7 @@ Unscheduled directions, with enough context to pick one up cold.
      running a fixed-shape `MPSGraphExecutable` on our `MTLBuffer`s (no
      copies; the bug reputation is about whole-program use). Needs an
      `MPSCommandBuffer` over ours and an on-disk executable cache. Targets:
-     conv and its grads, SDPA (macOS 15+), FFT. Days, not weeks.
+     conv and its grads, SDPA (macOS 15+). Days, not weeks.
   2. More MLX steel kernels (MIT; the f16/bf16 GEMM port 31a9623 shows the
      process): quantized matmul, decode-shaped attention, gather-matmul
      and segmented reductions (steel conv is done: `metal$conv`).

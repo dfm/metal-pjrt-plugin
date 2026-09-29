@@ -36,7 +36,7 @@ the plugin.
   so is `metal_pjrt/fft/` (`fft:fft_plan`, MLX's FFT plan and its Rader and
   Bluestein constants in double, host only; `fft:fft`, the Stockham, Rader,
   Bluestein and four-step kernels over contiguous complex64/float32 rows,
-  in row chunks; not yet behind a handler). Their tests, `conv_test`,
+  in row chunks; behind `metal$fft`). Their tests, `conv_test`,
   `fft_test`, `scan_test`, `radix_sort_test`, `small_linalg_test` (device
   tests), `lapack_host_test` and `fft_plan_test` (host), link no XLA, so
   they build quickly and test a kernel in isolation;
@@ -158,6 +158,7 @@ ignored with a warning and the default kept.
 | `METAL_PJRT_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
 | `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `conv` (the `metal$conv` rewriter; every convolution then takes the loop emitter), `all`; other names are ignored with a warning | compiler |
 | `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
+| `METAL_PJRT_DISABLE_FFT` | compile | dev | boolean, default off; on: every FFT axis lowers to the dense DFT instead of `metal$fft` | `_lowerings.py` (the compiler reads it only for the cache key) |
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
 | `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel, default 2; 0 disables | runtime, `scripts/gpu_health.py` |

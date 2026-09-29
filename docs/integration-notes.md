@@ -248,6 +248,20 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   f32/f16/bf16, and convolutions under 4 Mflop (the loop emitter's single
   fused kernel is faster there, docs/performance.md).
   `METAL_PJRT_DISABLE_REWRITES=conv` turns the rewriter off.
+- `metal$fft` (`ffi/fft_ffi.cc` over `fft/fft.h`, MLX's FFT kernels): the
+  target of the `fft` lowering in `metal_pjrt_plugin/_lowerings.py`, one
+  1-D transform per axis on complex64 rows (float32 on the real side of
+  rfft / irfft; other axes moved last by a transpose), with a u8 workspace
+  result that the Python rule sizes as `FftWorkspaceBytes` does (the
+  handler refuses any other size, so the two cannot drift silently).
+  XLA's FftThunk is cuFFT-only, so `CheckBeforeOptimization` refuses the
+  HLO `fft` op instead of letting it reach the thunk emitter. The plan and
+  the Rader / Bluestein constants are made at instantiation and shared by
+  every call site of a length while one uses them (up to ~0.6 GB of
+  transient host work and 160 MB on the device near n = 2^23). Lengths the
+  kernels do not cover (powers of two above 2^24, other n above 2^23 - 1),
+  and complex128, take the dense DFT. `METAL_PJRT_DISABLE_FFT=1` sends
+  every axis to the DFT.
   (A `metal$softmax` rewriter was removed after an end-to-end A/B,
   docs/performance.md, "Measured and rejected".)
 - Dense linear algebra (`metal_pjrt/linalg/`): handlers
@@ -290,8 +304,8 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   so `MetalExecutor` sets `runtime_version` to `{1, fingerprint(LC_UUID of
   the plugin image), fingerprint(compile settings)}`: a rebuilt plugin or a
   different compile-time setting gets a different key. The settings
-  (`compiler/compile_settings.h`: METAL_PJRT_DISABLE_LAPACK and
-  METAL_PJRT_DISABLE_REWRITES) are read once and the key hashes their parsed
+  (`compiler/compile_settings.h`: METAL_PJRT_DISABLE_LAPACK,
+  METAL_PJRT_DISABLE_REWRITES and METAL_PJRT_DISABLE_FFT) are read once and the key hashes their parsed
   values, the ones the passes use: unset and `DISABLE_LAPACK=0` share a
   key, and changing the environment after the first compile changes
   neither.

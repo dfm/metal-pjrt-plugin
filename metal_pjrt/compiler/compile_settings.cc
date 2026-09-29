@@ -14,13 +14,15 @@ namespace metal_pjrt {
 
 std::string CompileSettings::Fingerprint() const {
   return absl::StrCat("lapack=", lapack, ";scan=", scan_rewrite,
-                      ";cubsort=", cub_sort, ";conv=", conv_rewrite);
+                      ";cubsort=", cub_sort, ";conv=", conv_rewrite,
+                      ";fft=", fft);
 }
 
 const CompileSettings& GetCompileSettings() {
   static const CompileSettings settings = [] {
     CompileSettings s;
     s.lapack = !EnvFlag("METAL_PJRT_DISABLE_LAPACK");
+    s.fft = !EnvFlag("METAL_PJRT_DISABLE_FFT");
     if (const char* v = std::getenv("METAL_PJRT_DISABLE_REWRITES")) {
       for (absl::string_view name :
            absl::StrSplit(v, ',', absl::SkipWhitespace())) {

@@ -6,6 +6,18 @@ describe the present only. Commit hashes point at the change.
 
 ## Unreleased
 
+### 2026-09-29
+
+- FFTs run on MLX's FFT kernels (`metal$fft`, one call per transformed
+  axis) instead of the dense O(n^2) DFT: every length up to 2^24 (powers
+  of two) or 2^23 - 1, complex64 / float32, 0.6-1.3x MLX's time and 2.5-44x
+  faster than the DFT on `bench/fft_bench.py`. Longer lengths still take
+  the DFT, and `METAL_PJRT_DISABLE_FFT=1` sends every axis to it. The HLO
+  `fft` op (from programs lowered for another platform) is refused at
+  compile time instead of reaching XLA's cuFFT-only thunk.
+- Clearer messages for a complex scatter without `unique_indices` and for
+  complex128 data movement.
+
 ### 2026-09-28
 
 - complex64 works: the MSL emitter carries it as `float2` in buffers,

@@ -10,9 +10,12 @@ EighExpander, TriangularSolveExpander).
 
 Registered for platform "mtl":
 
-* ``fft``: a pure-JAX dense DFT (real matmuls against in-graph twiddle
-  matrices). O(n^2) per transformed axis -- correct but slow; a stopgap until
-  there is a native FFT (XLA's FftThunk is cuFFT/hipFFT-only).
+* ``fft``: one 1-D transform per axis, each a ``metal$fft`` FFI call (MLX's
+  FFT kernels, metal_pjrt/fft/fft.h; XLA's FftThunk is cuFFT/hipFFT-only)
+  on complex64 (float32 on the real side of rfft / irfft) where the length
+  is supported, else a pure-JAX dense DFT (real matmuls against in-graph
+  twiddle matrices, O(n^2) per axis). ``METAL_PJRT_DISABLE_FFT=1`` sends
+  every axis to the DFT (for A/B comparisons).
 * ``check`` (checkify): the TPU rule, i.e. a no-op for ``debug=True`` checks
   and the usual "functionalize with checkify" error otherwise. The cpu/gpu
   rule, which raises from a host callback, is not wired up (host callbacks
@@ -41,11 +44,13 @@ pbroadcast) are also out of scope.
 
 from __future__ import annotations
 
+import functools
+from functools import partial
 import logging
 
 import numpy as np
 
-from metal_pjrt_plugin import PLATFORM  # "mtl"
+from metal_pjrt_plugin import PLATFORM, _env_flag  # "mtl"
 
 logger = logging.getLogger(__name__)
 
@@ -116,27 +121,127 @@ def _on_axis(fn, axis, *xs):
   return tuple(jnp.moveaxis(o, -1, axis) for o in outs)
 
 
-def _fft_dft(x, *, fft_type, fft_lengths):
-  from functools import partial
+# --------------------------------------------------------------------------
+# FFT: metal$fft per axis, the DFT where it does not apply
+# --------------------------------------------------------------------------
+
+_MAX_FFT = 1 << 24  # fft_plan.h kMaxFftSize (four-step of 4096 x 4096)
+_MAX_CHUNK_ELEMENTS = 1 << 24  # fft_plan.h kMaxChunkElements
+
+
+@functools.cache
+def fft_disabled() -> bool:
+  return _env_flag("METAL_PJRT_DISABLE_FFT")
+
+
+def _is_pow2(n):
+  return n > 0 and n & (n - 1) == 0
+
+
+def _next_pow2(n):
+  return 1 << (n - 1).bit_length()
+
+
+def _smooth13(n):
+  for p in (2, 3, 5, 7, 11, 13):
+    while n % p == 0:
+      n //= p
+  return n == 1
+
+
+def fft_supported(n: int) -> bool:
+  """Whether PlanFft (metal_pjrt/fft/fft_plan.h) has a plan for length n: up
+  to 2^24 for powers of two, else up to a Bluestein length of 2^24 above
+  4096 (n <= 2^23 - 1)."""
+  if n < 1 or n > _MAX_FFT:
+    return False
+  return n <= 4096 or _is_pow2(n) or _next_pow2(2 * n - 1) <= _MAX_FFT
+
+
+def fft_workspace_bytes(n: int, rows: int) -> int:
+  """FftWorkspaceBytes(PlanFft(n), rows) (fft_plan.h) with the default chunk:
+  the multi-pass plans need a complex64 row of n per chunk row (four-step:
+  powers of two above 4096) or two of the Bluestein length (every other n
+  above 4096, and n above 2048 with a prime factor above 13, the Rader and
+  fused Bluestein limit). metal$fft refuses any other size."""
+  if rows == 0:
+    return 0
+  if n > 4096 and _is_pow2(n):
+    width, per_row = n, 8 * n
+  elif n > 4096 or (n > 2048 and not _smooth13(n)):
+    width = _next_pow2(2 * n - 1)
+    per_row = 2 * 8 * width
+  else:
+    return 0
+  chunk = min(max(_MAX_CHUNK_ELEMENTS // width, 1), rows)
+  return chunk * per_row
+
+
+def _metal_fft_last(x, kind, n):
+  """metal$fft over the last axis: kind "fft" / "ifft" / "rfft" / "irfft"."""
+  import jax
+  import jax.numpy as jnp
+  out_len = n // 2 + 1 if kind == "rfft" else n
+  out_dtype = jnp.float32 if kind == "irfft" else jnp.complex64
+  rows = int(np.prod(x.shape[:-1], dtype=np.int64))
+  out, _ = jax.ffi.ffi_call(
+      "metal$fft",
+      (jax.ShapeDtypeStruct(x.shape[:-1] + (out_len,), out_dtype),
+       jax.ShapeDtypeStruct((fft_workspace_bytes(n, rows),), jnp.uint8)),
+  )(x, fft_type=kind, n=np.int64(n))
+  return out
+
+
+def _fft_per_axis(x, *, fft_type, fft_lengths):
+  """lax.fft_p as one 1-D transform per axis, like numpy: rfft on the last
+  axis then forward transforms of the outer axes; irfft after inverse
+  transforms of the outer axes. Each axis is metal$fft where the length and
+  dtype allow (complex64 / float32), else the DFT."""
   from jax import lax
   from jax._src.lax.fft import FftType
 
+  native_dtype = x.dtype in (np.complex64, np.float32)
+
+  def native(n):
+    return native_dtype and not fft_disabled() and fft_supported(n)
+
+  def c2c(z, axis, inverse):
+    n = z.shape[axis]
+    if native(n):
+      return _on_axis(
+          lambda v: _metal_fft_last(v, "ifft" if inverse else "fft", n),
+          axis, z)
+    re, im = _on_axis(partial(_c2c_last, inverse=inverse), axis,
+                      lax.real(z), lax.imag(z))
+    return lax.complex(re, im)
+
   nd = len(fft_lengths)
   axes = list(range(x.ndim - nd, x.ndim))
+  n = fft_lengths[-1]
+  if 0 in fft_lengths:  # an empty sum: zeros (the DFT would divide by 0)
+    import jax.numpy as jnp
+    if fft_type == FftType.RFFT:
+      return jnp.zeros(x.shape[:-1] + (n // 2 + 1,),
+                       jnp.result_type(x.dtype, jnp.complex64))
+    if fft_type == FftType.IRFFT:
+      return jnp.zeros(x.shape[:-nd] + tuple(fft_lengths),
+                       jnp.finfo(x.dtype).dtype)
+    return jnp.zeros(x.shape, x.dtype)
   if fft_type == FftType.RFFT:
-    re, im = _r2c_last(x)
+    z = (_metal_fft_last(x, "rfft", n) if native(n)
+         else lax.complex(*_r2c_last(x)))
     for a in axes[:-1]:
-      re, im = _on_axis(partial(_c2c_last, inverse=False), a, re, im)
-    return lax.complex(re, im)
-  re, im = lax.real(x), lax.imag(x)
+      z = c2c(z, a, inverse=False)
+    return z
   if fft_type == FftType.IRFFT:
     for a in axes[:-1]:
-      re, im = _on_axis(partial(_c2c_last, inverse=True), a, re, im)
-    return _c2r_last(re, im, fft_lengths[-1])
-  inverse = fft_type == FftType.IFFT
+      x = c2c(x, a, inverse=True)
+    if native(n):
+      return _metal_fft_last(x, "irfft", n)
+    return _c2r_last(lax.real(x), lax.imag(x), n)
   for a in axes:
-    re, im = _on_axis(partial(_c2c_last, inverse=inverse), a, re, im)
-  return lax.complex(re, im)
+    x = c2c(x, a, inverse=fft_type == FftType.IFFT)
+  return x
 
 
 # --------------------------------------------------------------------------
@@ -163,7 +268,7 @@ def register() -> None:
   def _fft():
     from jax._src.lax import fft as lax_fft
     mlir.register_lowering(
-        lax_fft.fft_p, mlir.lower_fun(_fft_dft, multiple_results=False),
+        lax_fft.fft_p, mlir.lower_fun(_fft_per_axis, multiple_results=False),
         platform=PLATFORM)
 
   def _check():

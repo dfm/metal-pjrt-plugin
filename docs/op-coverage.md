@@ -10,8 +10,8 @@ handler (an FFI handler not registered for Metal).
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
 works. "Verified" means observed in `tests/test_lax.py` (against a float64
 CPU reference, with tolerances in ulps; int4 is an expected failure). File
-references are into the XLA tree. Missing pieces worth building (a native
-FFT, int8 GEMM) are in `docs/roadmap.md`.
+references are into the XLA tree. Missing pieces worth building (int8
+GEMM, complex dots) are in `docs/roadmap.md`.
 
 ## Execution paths the backend implements
 
@@ -60,7 +60,7 @@ emitter's default case ("Unsupported instruction opcode").
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
 | triangular-solve | `MetalLinalgRewriter` -> `metal$triangular_solve` FFI (Accelerate `cblas_strsm`, f32); `TriangularSolveExpander` otherwise | OK | all side/uplo/transpose/unit-diagonal variants, batched, checked vs CPU |
 | lu / geqrf / householder_product / eigh / svd | JAX lowerings in `metal_pjrt_plugin/_linalg_lowerings.py` -> `metal$lapack_{getrf,geqrf,orgqr,syevd,gesdd}` FFI (f32) | OK | column-major operand/result layouts requested from XLA (like jaxlib CPU); other dtypes/options fall back to the pure-JAX / Qr / Eigh expander paths |
-| fft | `metal_pjrt_plugin/_lowerings.py` lowers `fft` to a dense DFT (real matmuls against in-graph twiddles), so XLA's FftThunk (cuFFT) is never reached | OK, O(n^2) per axis | the lowering returns `lax.complex(re, im)`; complex64 results, intermediates and gradients work (`tests/test_linalg.py`); a native FFT is still missing |
+| fft | `metal_pjrt_plugin/_lowerings.py` lowers `fft` to one `metal$fft` FFI call per axis (MLX's FFT kernels, `metal_pjrt/fft`: Stockham, Rader, Bluestein and four-step plans, complex64 / float32), or, for lengths above the kernels' limits (2^24 for powers of two, else 2^23 - 1), complex128 and `METAL_PJRT_DISABLE_FFT=1`, to a dense DFT (real matmuls against in-graph twiddles, O(n^2) per axis). The HLO `fft` op itself is refused (`CheckBeforeOptimization`): XLA's FftThunk is cuFFT-only | OK | against numpy per plan, multi-dimensional, vmap, non-last axes, gradients (`tests/test_fft.py`); each plan against a double reference in `fft:fft_test` |
 | eig, schur, hessenberg, tridiagonal, geqp3 | no lowering registered for mtl (none is platform-independent in JAX; TPU lacks them too) | NO | JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl" |
 | cuDNN conv / norm / attention | DNN thunks | not produced | XLA's conv rewriter is not run (`MetalConvRewriter` targets an FFI handler instead) |
 | Triton fusions | Triton | not produced | gated to CUDA/ROCm |
@@ -74,7 +74,7 @@ emitter's default case ("Unsupported instruction opcode").
 | send/recv (device) | collective P2P | NO | |
 | host send/recv, infeed/outfeed, host-execute | host transfer thunks | NO | need PjRt callbacks and SE infeed/outfeed |
 | copy-start/done | async copy thunks | OK | memcpy + events |
-| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt/ffi` (`metal$scan`, the radix sort, the Python callback handler) and `metal_pjrt/linalg`; `tests/test_scan.py` calls `metal$scan` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
+| FFI custom calls | CustomCallThunk, handler looked up for platform "METAL" (canonical "metal") | OK for handlers in the plugin | `metal_pjrt/ffi` (`metal$scan`, `metal$conv`, `metal$fft`, the radix sort, the Python callback handler) and `metal_pjrt/linalg`; `tests/test_scan.py` calls `metal$scan` through `jax.ffi.ffi_call`; jaxlib's GPU handlers are cuda/rocm only and live in another binary; XLA's assert/debug-print intrinsics register under "cuda" |
 
 ## Element types
 

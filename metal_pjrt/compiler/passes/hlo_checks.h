@@ -35,8 +35,9 @@ std::string DescribeOp(const HloInstruction& instr);
 absl::Status CheckPostGemmRewriter(const HloModule& module);
 
 // What the Metal backend refuses up front (first thing in RunHloPasses,
-// before sorts are expanded): dots and sorts of complex values. Returns an
-// error naming the first offending op.
+// before sorts are expanded): dots and sorts of complex values, and the fft
+// op (XLA's FftThunk is cuFFT-only; JAX's fft lowers to metal$fft on mtl).
+// Returns an error naming the first offending op.
 absl::Status CheckBeforeOptimization(const HloModule& module);
 
 
