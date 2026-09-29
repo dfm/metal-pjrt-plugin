@@ -25,6 +25,13 @@ describe the present only. Commit hashes point at the change.
   system memory guard stays strict; Metal's transcendental bias is
   accepted as documented; quarantine stays per boot. The no-wait
   `CheckInFlight` is deferred until a profile shows it matters.
+- The FFI handlers' work moved into libraries with no XLA
+  (`ffi:scan`, `ffi:radix_sort`, `linalg:small_linalg`,
+  `linalg:lapack_host`, over `runtime:kernel_launch`), each with its own
+  test: `scan_test`, `radix_sort_test` (replaces `cub_sort_test`, which
+  drove the handlers through XLA's FFI), `small_linalg_test` and the host
+  `lapack_host_test`. `xla_free_test` keeps them XLA-free (88be444 to
+  3a80152).
 - The hand-written MSL moved out of C++ string literals into `.metal` files
   under `metal_pjrt/kernels/` (f59719c), with a device test that compiles
   every kernel (318c2ba).

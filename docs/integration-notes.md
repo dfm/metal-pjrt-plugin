@@ -195,21 +195,29 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   the `se::Stream*`. `MetalStream::platform_specific_handle().stream` is the
   `metal_pjrt::rt::Stream*` (so `PlatformStream<rt::Stream*>` also works) and
   `stream->parent()` is the `MetalExecutor` owning the `rt::Device`.
-  `metal_pjrt::ffi::GetMetalContext` / `LaunchMsl` wrap this, with a kernel
-  cache keyed by (device, MSL source, function). `metal$scan` gets its
-  pipeline once per call site in an FFI instantiate handler
+  `metal_pjrt::ffi::GetMetalContext` wraps this; the handlers pass its
+  device and stream to XLA-free dispatch code (`ffi/scan.h`,
+  `ffi/radix_sort.h`, `linalg/small_linalg.h`, which launch through
+  `rt::LaunchKernel`, `runtime/kernel_launch.h`), with kernels from the
+  device's cache keyed by (MSL source, function, constants). `metal$scan`
+  gets its pipeline once per call site in an FFI instantiate handler
   (state held by the thunk; no stream there, so it uses executor 0's device,
-  `DefaultMetalDevice`) and only encodes the dispatch per execution
-  (`LaunchKernel`). The state is not serializable, so a deserialized
-  executable re-runs instantiate (checked: persistent-cache hit, same result).
+  `DefaultMetalDevice`) and only encodes the dispatch per execution; a
+  stream of another device looks the kernel up again. The state is not
+  serializable, so a deserialized executable re-runs instantiate (checked:
+  persistent-cache hit, same result).
 - The backend config must be an MLIR dictionary (JAX writes it raw; our
   rewriters put it in `GpuBackendConfig.custom_call_backend_config.attributes`).
 - Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_scan.py`
-  also calls it through `jax.ffi.ffi_call`); `//metal_pjrt/ffi:cub_sort_test`
-  looks handlers up in the static registry and invokes them as XLA does.
+  also calls it through `jax.ffi.ffi_call`). The kernels behind the
+  handlers are tested without XLA (`ffi:scan_test`, `ffi:radix_sort_test`,
+  `linalg:small_linalg_test`, `linalg:lapack_host_test`); the handlers
+  themselves end to end through JAX (`tests/test_scan.py`, `test_sort.py`,
+  `test_linalg.py`).
   `METAL_PJRT_DISABLE_REWRITES=scan|all` turns the scan rewriter off.
 - XLA's SortRewriter targets `xla.gpu.ext.cub_sort_keys` / `cub_sort_pairs`
-  (`ffi/cub_sort_ffi.cc`, mirroring `cub_sort_kernel_cuda.cc`): the
+  (`ffi/cub_sort_ffi.cc` over `ffi/radix_sort.h`, mirroring
+  `cub_sort_kernel_cuda.cc`): the
   instantiate stage returns the scratch size as `int64_t` state, which
   `EstimateCubSortScratchSize` reads at compile time (it calls the handler
   with null buffers and a zero-sized scratch); execute recomputes the layout

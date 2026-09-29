@@ -26,6 +26,14 @@ the plugin.
   matrices).
 - `metal_pjrt/ffi/`: FFI helpers and the scan, radix sort and Python
   callback handlers.
+- The handlers are thin adapters (XLA types, attributes, the stream's
+  device) over libraries with no XLA: `ffi:scan`, `ffi:radix_sort`,
+  `linalg:small_linalg` (GPU, on `rt::Device`/`rt::Stream`) and
+  `linalg:lapack_host` (Accelerate on host pointers). Their tests,
+  `scan_test`, `radix_sort_test`, `small_linalg_test` (device tests) and
+  `lapack_host_test` (host), link no XLA, so they build quickly and test a
+  kernel in isolation; `//metal_pjrt:xla_free_test` fails if an XLA
+  dependency creeps back in.
 - `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,
   radix sort, scan, small linear algebra, MPS staging, the runtime's
   fill/copy kernels, the emitter's prelude). A genrule (`embed_msl.bzl`)
