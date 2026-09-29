@@ -52,9 +52,9 @@ for op in ["abs","neg","sign","floor","ceil","round","exp","exp2","expm1","log",
     case(f"lax.{op}")(mk(op))
 @case("lax.cbrt wide range")
 def _():
-    # Subnormals (flushed to 0 before the prelude handled them) to near
-    # FLT_MAX (pow(|x|, 1/3) alone was 7-12 ulps off there).
-    m = np.geomspace(1e-44, 3e38, 512).astype(np.float32)
+    # FLT_MIN to near FLT_MAX (pow(|x|, 1/3) alone was 7-12 ulps off there);
+    # subnormals are in test_subnormals_match_cpu.
+    m = np.geomspace(1.2e-38, 3e38, 512).astype(np.float32)
     ref(lax.cbrt, np.concatenate([m, -m]))
 for op in ["bessel_i0e","bessel_i1e","igamma","igammac","polygamma","zeta","random_gamma_grad","betainc"]:
     def mk(op):
@@ -333,26 +333,30 @@ def test_small_arguments(op):
     assert abs(err.mean()) < 0.02  # Metal's own: -0.3 (exp), +0.2 (cos)
 
 
-# Metal flushes subnormal float arithmetic, so its log saw log(1e-40) = -inf;
-# the prelude's xla_log / log2 / log10 scale subnormals first
-# (docs/accuracy.md). (XLA CPU flushes them too: -inf there.)
-@pytest.mark.parametrize("op", ["log", "log2", "log10"])
-def test_log_subnormal(op):
-    rng = np.random.default_rng(0)
-    x = np.exp(rng.uniform(np.log(1.4e-45), np.log(1.1754942e-38), 1 << 14))
-    x = x.astype(np.float32)
-    x = x[x > 0]
-    special = np.array([0.0, -0.0, -1e-40, 1.1754944e-38, 1.0], np.float32)
+# Subnormal inputs follow XLA:CPU, which flushes them (docs/accuracy.md):
+# log(1e-40) = -inf and cbrt(1e-40) = 1e-40 on both. (Odd functions that
+# return x for tiny x, e.g. sin / tan / log1p, keep a subnormal on mtl where
+# CPU gives +-0: a known gap.)
+@pytest.mark.parametrize("op", ["log", "log2", "log10", "cbrt"])
+def test_subnormals_match_cpu(op):
+    x = np.array([1.4e-45, 1e-42, 1e-40, 1.1754942e-38, -1e-40, -1.4e-45,
+                  0.0, -0.0, 1.1754944e-38, 1.0, np.inf, np.nan], np.float32)
     fn = getattr(jnp, op)
-    got = metal_testing.run_on(metal_testing.metal(), fn, np.concatenate([special, x]))
-    with np.errstate(all="ignore"):
-        want = getattr(np, op)(np.concatenate([special, x]).astype(np.float64))
-    n = special.size
-    np.testing.assert_array_equal(got[:3], [-np.inf, -np.inf, np.nan])
-    ulp = np.spacing(np.abs(want[3:]).astype(np.float32)).astype(np.float64)
-    err = (got[3:].astype(np.float64) - want[3:]) / ulp
-    assert np.abs(err).max() <= 2.0, np.abs(err).max()
-    assert np.all(np.isfinite(got[n:]))  # not the flushed -inf
+    got = metal_testing.run_on(metal_testing.metal(), fn, x)
+    want = metal_testing.run_on(metal_testing.cpu(), fn, x)
+    np.testing.assert_array_equal(got[:8], want[:8])
+    np.testing.assert_array_equal(np.signbit(got[:8]), np.signbit(want[:8]))
+    np.testing.assert_allclose(got[8:], want[8:], rtol=3e-7)
+
+
+# pow of -inf: the prelude's xla_powf gave NaN for a non-integer exponent.
+def test_pow_of_minus_inf_matches_cpu():
+    x = np.full(7, -np.inf, np.float32)
+    y = np.array([0.5, -0.5, 2.5, 3.0, -3.0, 2.0, 0.0], np.float32)
+    got = metal_testing.run_on(metal_testing.metal(), lax.pow, x, y)
+    want = metal_testing.run_on(metal_testing.cpu(), lax.pow, x, y)
+    np.testing.assert_array_equal(got, want)
+    np.testing.assert_array_equal(np.signbit(got), np.signbit(want))
 
 
 # Small dots (below the GEMM threshold, loop-emitted) with a bf16 dot

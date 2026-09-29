@@ -149,35 +149,6 @@ inline float xla_cos(float x) {
   float x2 = x * x;
   return fma(x2, fma(x2, fma(x2, -1.0f / 720, 1.0f / 24), -0.5f), 1.0f);
 }
-// Metal's float arithmetic flushes subnormals, so its log/log2/log10 treat
-// them as 0 (log(1e-40) = -inf, not -92.1). A subnormal is m * 2^-149 with
-// the integer m = its bits, so log(x) = log(m) - 149 ln 2; a negative one
-// has a negative int(bits), so log gives NaN. Selects: a branch (either on
-// the input or on a -inf result) cost twice as much in an ALU-bound loop.
-inline bool xla_subnormal(float x) {
-  return (as_type<uint>(x) & 0x7fffffffu) - 1u < 0x7fffffu;
-}
-inline float xla_log(float x) {
-  bool s = xla_subnormal(x);
-  float y = log(s ? float(as_type<int>(x)) : x);
-  return s ? y - 103.278930f : y;  // 149 ln 2
-}
-inline float xla_log2(float x) {
-  bool s = xla_subnormal(x);
-  float y = log2(s ? float(as_type<int>(x)) : x);
-  return s ? y - 149.0f : y;
-}
-inline float xla_log10(float x) {
-  bool s = xla_subnormal(x);
-  float y = log10(s ? float(as_type<int>(x)) : x);
-  return s ? y - 44.8534694f : y;  // 149 log10(2)
-}
-template <typename T>
-inline T xla_log(T x) { return log(x); }
-template <typename T>
-inline T xla_log2(T x) { return log2(x); }
-template <typename T>
-inline T xla_log10(T x) { return log10(x); }
 template <typename T>
 inline T xla_exp(T x) { return exp(x); }
 template <typename T>
@@ -218,16 +189,17 @@ inline T xla_erfc(T x) {
   return T(xf < 0.0f ? 2.0f - r : r);
 }
 // pow(|x|, 1/3) alone is 7-12 ulps off away from 1 (1/3 rounds up in float,
-// an error that grows with |log x|) and 0 for subnormals (flushed). One
-// Newton step, (2r + a / r^2) / 3, which cannot overflow near FLT_MAX,
-// fixes the first; a subnormal m * 2^-149 is cbrt(2m) * 2^-50.
+// an error that grows with |log x|); one Newton step, (2r + a / r^2) / 3,
+// which cannot overflow near FLT_MAX, fixes it. Zeros, subnormals,
+// infinities and NaN are returned as they are, as XLA:CPU does (it flushes
+// subnormal inputs, so cbrt(1e-40) = 1e-40 there, not 4.6e-14).
 inline float xla_cbrt(float x) {
-  bool s = xla_subnormal(x);
-  float a = s ? 2.0f * float(as_type<int>(x) & 0x7fffffff) : fabs(x);
-  if (a == 0.0f || !isfinite(a)) return x;
+  uint e = as_type<uint>(x) & 0x7f800000u;
+  if (e == 0u || e == 0x7f800000u) return x;
+  float a = fabs(x);
   float r = pow(a, 1.0f / 3.0f);
   r = (2.0f * r + a / (r * r)) / 3.0f;
-  return copysign(s ? r * 8.8817841970012523e-16f : r, x);  // 2^-50
+  return copysign(r, x);
 }
 template <typename T>
 inline T xla_cbrt(T x) { return T(xla_cbrt(float(x))); }
@@ -236,8 +208,9 @@ inline T xla_powf(T x, T y) {
   float xf = float(x);
   float yf = float(y);
   if (xf < 0.0f) {
-    if (yf != trunc(yf)) return T(NAN);
     float r = pow(-xf, yf);
+    // pow(-inf, y) = pow(inf, y) for y not an odd integer, as on XLA:CPU.
+    if (yf != trunc(yf)) return T(isinf(xf) ? r : NAN);
     return T(fmod(fabs(yf), 2.0f) == 1.0f ? -r : r);
   }
   return T(pow(xf, yf));

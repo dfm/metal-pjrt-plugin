@@ -192,7 +192,8 @@ has timings).
   for these two). Metal's `exp`, `sin` and `cos` are biased for |x| >= 0.125 (below
   that the plugin uses its own polynomials), `log` is biased everywhere
   (about +-0.5 ulp), `tanh`, `sinh`, `cosh`, `expm1` and `erf` inherit
-  `exp`'s bias, and subnormal outputs flush to zero.
+  `exp`'s bias, and subnormal inputs and outputs flush, as on XLA:CPU
+  (`log(1e-40)` is `-inf`).
   [`docs/accuracy.md`](docs/accuracy.md) has the numbers.
 - **A GPU error ends GPU work for the process.** After the first failed GPU
   command (a fault or a watchdog timeout), every later GPU operation in that

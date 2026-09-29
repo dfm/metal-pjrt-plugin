@@ -48,6 +48,11 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 - Metal's biased `exp` / `sin` / `cos` / `log` are accepted as documented
   in `docs/accuracy.md`; the prelude's polynomials for |x| < 0.125 stay,
   and nothing further is planned.
+- Accuracy policy: match XLA:CPU. Where Metal's math and XLA:CPU
+  disagree, follow CPU, including its flushing of subnormal inputs and
+  outputs (the subnormal `log` fix was reverted); a prelude special case
+  stays only when it brings mtl closer to CPU. The rest are known gaps in
+  `docs/accuracy.md`.
 - A/Bs of sub-millisecond programs interleave the arms and report
   p10/median/p90 (GPU performance states make single medians bimodal).
 - The size-class cache is the only device allocator (no BFC option).
@@ -89,11 +94,6 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
   cached buffers (not built: the 2 s idle release does the job).
 
 ## Next
-
-Open decision for the maintainer:
-
-- **Accuracy policy**: match numpy/IEEE on valid inputs, or XLA:CPU?
-  `docs/accuracy.md`, "Policy", has the question and the cases it decides.
 
 Still on hold:
 

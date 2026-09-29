@@ -5,6 +5,16 @@ For users: most functions agree with CPU float32 to a few ulps, a few
 Metal's `exp`, `sin`, `cos` and `log` carry a small bias; the known gaps are
 listed below.
 
+## Policy
+
+mtl matches XLA:CPU. Where Metal's math library and XLA:CPU disagree, the
+plugin follows CPU, unless its own result is simply closer to CPU than
+Metal's builtin would be (the small-argument `exp` / `sin` / `cos`
+polynomials and `cbrt`'s Newton step, below). Subnormal inputs and outputs
+follow CPU's flushing: `log(1e-40) = -inf`, `cbrt(1e-40) = 1e-40` and
+`exp(-100) = 0`, as on CPU (and as with CUDA's ftz), not numpy's values.
+The remaining differences are known gaps, listed next.
+
 How accuracy is measured: `tests/metal_testing.py` (f64 CPU reference, ulps
 of the output dtype, `METAL_TEST_REPORT_ULPS=1` prints every comparison with
 the CPU float32 error next to it). Tolerances are about twice the measured
@@ -31,8 +41,18 @@ Open, not being fixed right now:
   `lgamma` 580 and `digamma` 1600 ulps (CPU float32 536 / 770: the inputs
   straddle digamma's root, where the error is relative to a tiny result),
   `reduce_prod` 93, `betainc` 38.
-- Subnormal outputs flush to zero, as with CUDA's ftz (`exp(-100)`,
-  `1e-10 * 1e-30`); XLA:CPU flushes them too.
+- Subnormals where CPU and Metal flush differently (`tests/test_lax.py`
+  `test_subnormals_match_cpu` pins the ones that agree):
+  - `sin`, `tan`, `sinh`, `asinh` and `log1p` of a subnormal return it
+    unchanged on mtl; CPU gives +-0.
+  - `pow` flushes a subnormal exponent on mtl (`pow(0, 1e-40) = 1`,
+    `pow(inf, 1e-40) = 1`, `pow(-0.5, 1e-40) = 1`; CPU 0, inf, NaN) and a
+    subnormal base (`pow(1e-40, 0.5) = 0`, CPU 1e-20; `pow(1e-40, 1) =
+    1e-40`, CPU 0).
+  - `rem(x, 1e-40)` is NaN on mtl (a flushed divisor), +-0 on CPU.
+  - `atan2(1e-40, 0)` is 0 on mtl, 1e-40 on CPU.
+- `atan2(+-0, negative)` is float32(pi) = 3.1415927 on mtl (correctly
+  rounded), one ulp below on CPU (3.1415925).
 
 ## Metal's biased math functions
 
@@ -82,27 +102,13 @@ Repro:
   ALU-bound code (8 rounds of exp+sin+cos over 4M: 1.81 -> 1.22-1.25 ms)
   and costs nothing measurable elsewhere.
 - **cbrt** (ce2475b). `pow(|x|, 1/3)` was 7-12 ulps off away from 1 (1/3
-  rounds up in float) and 0 for subnormal inputs. The prelude's `xla_cbrt`
-  adds one Newton step and handles a subnormal as cbrt(2m) * 2^-50: max
-  1.38 ulps against float64 over 1e-45..3e38 (`lax.cbrt wide range` in
-  `tests/test_lax.py`).
-- **log of subnormal inputs** (70bf680). Metal's float32 arithmetic flushes
-  subnormals even with fast math off, so `log(1e-40)` was -inf (true
-  -92.10) and `log(-1e-40)` -inf (true NaN). The prelude's `xla_log` /
-  `xla_log2` / `xla_log10` (float overloads) read the bits: a subnormal is
-  m * 2^-149, so `log(x) = log(float(m)) - 149 ln 2`, and a negative one
-  gives NaN. Error on [1.4e-45, FLT_MIN): log -0.16 / 0.29 / 0.83, log2
-  +0.01 / 0.26 / 1.25, log10 -0.38 / 0.44 / 1.43. Written with selects: +19%
-  on an ALU-bound chain of 16 logs (a branch was worse), no change on
-  memory-bound kernels or real programs. XLA:CPU returns -inf here.
-
-### Policy (open question)
-
-Fix clearly wrong values on valid inputs when the fix is cheap. The
-subnormal `log` fix makes mtl closer to numpy / IEEE than JAX's CPU
-backend; subnormal *outputs* still flush, as with CUDA's ftz, and are
-deliberately not fixed. Open question: "match numpy / IEEE" or "match
-XLA:CPU" as the rule for cases like this.
+  rounds up in float). The prelude's `xla_cbrt` adds one Newton step: max
+  1.28 ulps against float64 over FLT_MIN..3e38 (CPU 0.5; `lax.cbrt wide
+  range` in `tests/test_lax.py`). Zeros, subnormals, infinities and NaN
+  are returned unchanged, as XLA:CPU does (`cbrt(1e-40) = 1e-40` on both).
+- **pow of -inf**. `xla_powf` (which gives NaN for a negative base and a
+  non-integer exponent) returned NaN for `pow(-inf, 0.5)`; it now gives
+  `pow(inf, y)` there (inf, or 0 for a negative exponent), as CPU.
 
 ## Other changes that moved errors
 

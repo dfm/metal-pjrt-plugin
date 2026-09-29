@@ -8,6 +8,15 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-29
 
+- Accuracy policy decided: mtl matches XLA:CPU, including its flushing of
+  subnormal inputs and outputs. The subnormal `log` / `log2` / `log10`
+  fix (70bf680) is reverted: `log(1e-40)` is `-inf` again, as on CPU, and
+  an ALU-bound chain of 16 logs is back to 0.79 ms p10 from 0.95.
+  `cbrt` of a subnormal returns it unchanged, as CPU does (it gave the
+  true cube root, 4.6e-14 for 1e-40), and `pow(-inf, 0.5)` is inf, as on
+  CPU (NaN before). The small-argument exp / sin / cos polynomials and
+  cbrt's Newton step stay: they bring mtl closer to CPU.
+  `docs/accuracy.md` lists the remaining differences.
 - Few-row f16/bf16 matmuls (small-batch LLM decode) are 1.8-3.4x faster,
   at or above MLX's speed. x W^T with 2..8 rows runs on MLX's wide gemv,
   9..48 rows on a 16-row steel tile, and XLA's DotMerger is off: it
