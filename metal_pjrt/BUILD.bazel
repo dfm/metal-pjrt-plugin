@@ -20,7 +20,7 @@ test_suite(
         "//metal_pjrt/blas:metal_blas_lt_test",
         "//metal_pjrt/blas:mps_gemm_test",
         "//metal_pjrt/blas:steel_gemm_test",
-        "//metal_pjrt/ffi:cub_sort_test",
+        "//metal_pjrt/ffi:radix_sort_test",
         "//metal_pjrt/ffi:scan_test",
         "//metal_pjrt/kernels:kernels_test",
         "//metal_pjrt/runtime:metal_runtime_test",

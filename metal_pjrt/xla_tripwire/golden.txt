@@ -243,7 +243,7 @@ is_deviceless, is_early_exit_with_layouts);
 }
 
 ### xla/backends/gpu/transforms/sort_rewriter.cc @ bool AreOperandTypesSupportedByCub(
-# why: The key/value types SortRewriter hands to the CUB custom call: ffi/cub_sort_ffi.cc must handle a superset (cub_sort_test sweeps them).
+# why: The key/value types SortRewriter hands to the CUB custom call: ffi/cub_sort_ffi.cc must handle a superset (radix_sort_test sweeps the kernels, tests/test_sort.py the handler's type mapping).
 bool AreOperandTypesSupportedByCub(
 const SortComputationAnalysis& sort_analysis) {
 PrimitiveType key_type = sort_analysis.key_type;

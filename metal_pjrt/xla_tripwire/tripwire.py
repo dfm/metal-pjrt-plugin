@@ -91,7 +91,7 @@ SITES = [
     Site(GC, "pipeline.AddPass<PermutationSortExpander>();", before=0, after=5,
          why="SortRewriter's first call site (RunOptimizationPasses); metal-small-sorts runs before it, so rows <= 64 never reach it."),
     Site("xla/backends/gpu/transforms/sort_rewriter.cc", "bool AreOperandTypesSupportedByCub(", before=0, after=36,
-         why="The key/value types SortRewriter hands to the CUB custom call: ffi/cub_sort_ffi.cc must handle a superset (cub_sort_test sweeps them)."),
+         why="The key/value types SortRewriter hands to the CUB custom call: ffi/cub_sort_ffi.cc must handle a superset (radix_sort_test sweeps the kernels, tests/test_sort.py the handler's type mapping)."),
     Site("xla/hlo/transforms/expanders/cholesky_expander.cc", "/*block_size=*/128,", before=2, after=1,
          why="metal_compiler.cc assumes block size 128 (Cholesky of n <= 128 emits no triangular solve) when LAPACK is disabled."),
     Site("xla/stream_executor/integrations/tf_allocator_adapter.cc", "absl::Status MemoryAllocationError(", before=0, after=16,

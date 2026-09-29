@@ -15,8 +15,8 @@ cc_library(
     ],
     hdrs = ["metal_ffi.h"],
     deps = [
+        ":radix_sort",
         ":scan",
-        "//metal_pjrt/kernels:cub_sort",
         "//metal_pjrt/runtime:kernel_launch",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
@@ -74,35 +74,38 @@ cc_test(
     ],
 )
 
-# The radix sort handlers (cub_sort_ffi.cc) against a CPU stable sort.
+# The radix sort's plan and dispatch (the xla.gpu.ext.cub_sort_* handlers
+# are cub_sort_ffi.cc). No XLA.
+cc_library(
+    name = "radix_sort",
+    srcs = ["radix_sort.cc"],
+    hdrs = ["radix_sort.h"],
+    deps = [
+        "//metal_pjrt/kernels:cub_sort",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
+)
+
+# RunRadixSort against a CPU stable sort, bit for bit, on rt::Device alone.
 # Needs a Metal device.
 cc_test(
-    name = "cub_sort_test",
-    srcs = ["cub_sort_test.cc"],
+    name = "radix_sort_test",
+    srcs = ["radix_sort_test.cc"],
     tags = DEVICE_TEST_TAGS,
     timeout = "eternal",
     deps = [
-        ":metal_ffi",
-        "//metal_pjrt/stream_executor:metal_platform",
+        ":radix_sort",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/cleanup",
         "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
         "@com_google_absl//absl/strings",
-        "@com_google_googletest//:gtest",
-        "@xla//xla:shape_util",
-        "@xla//xla:xla_data_proto_cc",
-        "@xla//xla/ffi:attribute_map",
-        "@xla//xla/ffi:call_frame",
-        "@xla//xla/ffi:execution_state",
-        "@xla//xla/ffi",
-        "@xla//xla/ffi:ffi_api",
-        "@xla//xla/ffi:ffi_registry",
-        "@xla//xla/ffi:invoke",
-        "@xla//xla/stream_executor:device_address",
-        "@xla//xla/stream_executor:platform_manager",
-        "@xla//xla/stream_executor:stream",
-        "@xla//xla/stream_executor:stream_executor_h",
-        "@xla//xla/tsl/lib/core:status_test_util",
-        "@xla//xla/tsl/platform:statusor",
-        "@xla//xla/tsl/platform:test",
-        "@xla//xla/tsl/platform:test_main",
+        "@com_google_googletest//:gtest_main",
     ],
 )

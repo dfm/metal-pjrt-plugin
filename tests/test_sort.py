@@ -1,7 +1,8 @@
 """Sorts on metal against CPU, bit for bit. Sorts of more than 16384
 elements with a simple comparator go through XLA's SortRewriter to the MSL
-radix sort (metal_pjrt/ffi/cub_sort_ffi.cc; exhaustive type sweep in
-//metal_pjrt/ffi:cub_sort_test); rows of <= 64 and smaller sorts stay
+radix sort (metal_pjrt/ffi/cub_sort_ffi.cc; exhaustive type sweep of the
+kernels in //metal_pjrt/ffi:radix_sort_test, every key type JAX can make
+here through the handler below); rows of <= 64 and smaller sorts stay
 with MetalSortExpander. The inputs carry duplicates, +-0 and NaNs, so
 stability and the NaN/zero order are checked too.
 """
@@ -62,6 +63,31 @@ def test_radix_sort_matches_cpu(name, n):
     args = make(n)
     assert any(t.startswith("xla.gpu.ext.cub_sort_") for t in targets(fn, *args))
     same_bits(run_on(metal(), fn, *args), run_on(cpu(), fn, *args))
+
+
+def key_bits(dtype, n, seed=3):
+    # Random bits: NaNs (with payloads), infinities, +-0 and denormals come
+    # up among the float keys, the extremes among the integer ones.
+    bits = np.random.default_rng(seed).integers(
+        0, 256, n * jnp.dtype(dtype).itemsize, dtype=np.uint8)
+    return bits.view(jnp.dtype(dtype))
+
+
+# The handler maps each XLA key type to the kernels' key order: every key
+# type JAX makes with x64 off, keys only and (integer keys SortRewriter
+# pairs) with 16-bit values.
+@pytest.mark.parametrize("dtype", ["int8", "uint8", "int16", "uint16",
+                                   "float16", "bfloat16", "int32", "uint32",
+                                   "float32"])
+def test_radix_sort_key_types(dtype):
+    x = key_bits(dtype, 20000)
+    assert any(t.startswith("xla.gpu.ext.cub_sort_") for t in targets(jnp.sort, x))
+    same_bits(run_on(metal(), jnp.sort, x), run_on(cpu(), jnp.sort, x))
+    if dtype in ("uint8", "uint16", "int32", "uint32"):
+        v = key_bits("float16", 20000, seed=4)
+        fn = lambda k, v: lax.sort((k, v), num_keys=1, is_stable=True)
+        assert any(t == "xla.gpu.ext.cub_sort_pairs" for t in targets(fn, x, v))
+        same_bits(run_on(metal(), fn, x, v), run_on(cpu(), fn, x, v))
 
 
 def test_tiny_rows_stay_bitonic():
