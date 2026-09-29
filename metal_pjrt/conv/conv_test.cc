@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
 #include <random>
 #include <string>
@@ -26,6 +27,8 @@
 #include "absl/status/status_matchers.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "metal_pjrt/blas/mps_gemm.h"
+#include "metal_pjrt/blas/steel_gemm.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 
 namespace metal_pjrt {
@@ -595,6 +598,63 @@ TEST_F(ConvTest, WeightGradPlan) {
   ASSERT_THAT(dev_->Deallocate(dw->ptr), IsOk());
 }
 
+// f16/bf16 weight gradients whose patch rows * kH * kW * C is odd (an odd
+// number of 2-byte elements before the f32 partials): the partials must
+// still be 4-byte aligned for the GEMM's stores, sum_splits' loads and the
+// buffer offset. 61 x 61 = 3721 output pixels, k = 27; in one chunk and in
+// chunks of 1001 rows.
+TEST_F(ConvTest, WeightGradOddPatchBytes) {
+  const Case k{1, 63, 63, 3, 32, 3, 3};
+  for (ConvType t : kTypes) {
+    ConvParams p = Params(k, t);
+    p.kind = ConvKind::kWeightGrad;
+    for (uint64_t max_flops : {kMaxLaunchFlops, 2ull * 32 * 27 * 1001}) {
+      absl::StatusOr<ConvPlan> plan = PlanConv(p, nullptr, max_flops);
+      ASSERT_THAT(plan, IsOk());
+      EXPECT_EQ(plan->unfold_rows % 2, 1);
+      EXPECT_GT(plan->splits, 1);  // not direct: the partials are used
+      EXPECT_GE(plan->workspace_bytes,
+                (plan->unfold_rows * 27 * Bytes(t) + 255) / 256 * 256 +
+                    plan->splits * 32 * 27 * 4);
+      CheckWeightGrad(p, *plan);
+    }
+  }
+}
+
+// PlanConv refuses what the explicit and weight-gradient GEMMs cannot run,
+// so the rewriter leaves those convolutions to the loop emitter instead of
+// failing at run time: SteelGemmSupports' leading-dimension limit (kH * kW *
+// C, and O), checked here to agree with the steel GEMM's own.
+TEST_F(ConvTest, SteelLeadingDimensionLimit) {
+  constexpr int64_t kMaxLd = std::numeric_limits<int32_t>::max() / 256;
+  blas::GemmParams g;
+  g.m = g.n = g.k = 1;
+  g.a.ld = g.b.ld = g.c.ld = kMaxLd;
+  EXPECT_TRUE(blas::SteelGemmSupports(g));
+  g.b.ld = kMaxLd + 1;
+  EXPECT_FALSE(blas::SteelGemmSupports(g));
+
+  const ConvPath explicit_path = ConvPath::kExplicit;
+  for (int64_t n : {kMaxLd, kMaxLd + 1}) {
+    const bool ok = n <= kMaxLd;
+    // A 1-D filter over n taps (one output pixel), and n output channels.
+    for (const Case& k : {Case{1, 1, n, 1, 1, 1, n}, Case{1, 1, 1, 1, n, 1, 1}}) {
+      ConvParams fwd = Params(k, ConvType::kF32);
+      ConvParams wgrad = fwd;
+      wgrad.kind = ConvKind::kWeightGrad;
+      SCOPED_TRACE(ConvParamsDebugString(fwd));
+      for (absl::StatusOr<ConvPlan> plan :
+           {PlanConv(wgrad), PlanConv(fwd, &explicit_path)}) {
+        if (ok) {
+          EXPECT_THAT(plan, IsOk());
+        } else {
+          EXPECT_THAT(plan, StatusIs(absl::StatusCode::kUnimplemented));
+        }
+      }
+    }
+  }
+}
+
 // The explicit path over several unfold tiles (the last one partial).
 TEST_F(ConvTest, ExplicitTiles) {
   Case k{3, 9, 7, 5, 17, 3, 3};
@@ -642,6 +702,13 @@ TEST_F(ConvTest, Plan) {
   Case pad{2, 16, 16, 5, 16, 3, 3};
   pad.pad_lo[0] = pad.pad_lo[1] = pad.pad_hi[0] = pad.pad_hi[1] = 1;
   EXPECT_EQ(path_of(pad), ConvPath::kPadChannels);
+  // Its kernels run over the padded channels (5 -> 16, 3.2x the flops), and
+  // its launches are bounded by those.
+  const ConvParams pp = Params(pad, ConvType::kF32);
+  absl::StatusOr<ConvPlan> pad_plan = PlanConv(pp, nullptr, ConvFlops(pp));
+  ASSERT_THAT(pad_plan, IsOk());
+  EXPECT_EQ(pad_plan->path, ConvPath::kPadChannels);
+  EXPECT_LE(pad_plan->launch_tiles_m * 3, pad_plan->tiles_m);
   // O % 16 == 0 but not a whole number of 32-wide tiles: general (MLX's
   // specialized kernel would read weight rows past the buffer).
   Case o48{2, 16, 16, 16, 48, 3, 3};

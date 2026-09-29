@@ -44,6 +44,8 @@ cc_test(
     timeout = "eternal",
     deps = [
         ":conv",
+        "//metal_pjrt/blas:mps_gemm",
+        "//metal_pjrt/blas:steel_gemm",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:status_matchers",

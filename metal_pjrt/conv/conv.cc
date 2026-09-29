@@ -30,6 +30,11 @@ constexpr int64_t kMinSplitRows = 256;
 
 constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
 
+// SteelGemmSupports' leading-dimension limit (steel_gemm.cc; conv_test
+// checks the two agree): the explicit and weight-gradient GEMMs have
+// leading dimensions kH * kW * C and O.
+constexpr int64_t kSteelMaxLd = kInt32Max / 256;
+
 int64_t ItemSize(ConvType t) { return t == ConvType::kF32 ? 4 : 2; }
 
 blas::MpsDType GemmType(ConvType t) {
@@ -41,6 +46,23 @@ blas::MpsDType GemmType(ConvType t) {
 int64_t CeilDiv(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
 int64_t OutPixels(const ConvParams& p) { return p.n * p.out_h * p.out_w; }
+
+// The weight gradient's f32 partials follow the patches in the workspace
+// (patch rows * k 16- or 32-bit elements), at a 256-byte boundary: an odd
+// number of f16/bf16 elements would leave them 2-byte aligned.
+uint64_t WgradPartialsOffset(int64_t unfold_rows, int64_t k, int64_t item) {
+  const uint64_t bytes = static_cast<uint64_t>(unfold_rows * k * item);
+  return (bytes + 255) / 256 * 256;
+}
+
+// The flops a path's kernels execute: kPadChannels runs over the padded
+// channels.
+uint64_t PlannedFlops(const ConvParams& p, const ConvPlan& plan) {
+  if (plan.path != ConvPath::kPadChannels) return ConvFlops(p);
+  ConvParams padded = p;
+  padded.c = plan.padded_c;
+  return ConvFlops(padded);
+}
 
 bool Stride1(const ConvParams& p) {
   return p.stride[0] == 1 && p.stride[1] == 1;
@@ -112,7 +134,7 @@ absl::Status LaunchRowTiles(rt::Stream* stream, const rt::Kernel& kernel,
                             std::vector<rt::KernelArg> args) {
   const int64_t tiles_m = gp.tiles_m;
   const uint64_t tile_flops =
-      (ConvFlops(p) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
+      (PlannedFlops(p, plan) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
   const int64_t step = plan.launch_tiles_m > 0 ? plan.launch_tiles_m : tiles_m;
   for (int64_t first = 0; first < tiles_m; first += step) {
     const int64_t tiles = std::min(step, tiles_m - first);
@@ -344,7 +366,7 @@ absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
   char* patches = static_cast<char*>(workspace);
   const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
   void* partials =
-      direct ? dw : patches + plan.unfold_rows * k * item;
+      direct ? dw : patches + WgradPartialsOffset(plan.unfold_rows, k, item);
   const blas::MpsDType partial_type =
       direct ? GemmType(p.type) : blas::MpsDType::kF32;
   for (int64_t row = 0; row < m; row += plan.unfold_rows) {
@@ -472,6 +494,9 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
     if (force != nullptr && *force != ConvPath::kWeightGrad) {
       return Unsupported(p, absl::StrCat("path ", ConvPathName(*force)));
     }
+    if (k > kSteelMaxLd || p.o > kSteelMaxLd) {
+      return Unsupported(p, "a steel GEMM leading dimension over INT32_MAX/256");
+    }
     ConvPlan plan;
     plan.path = ConvPath::kWeightGrad;
     if (m == 0 || p.o == 0 || k == 0) return plan;
@@ -490,8 +515,9 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
     plan.splits = CeilDiv(plan.unfold_rows, plan.split_rows);
     const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
     plan.workspace_bytes =
-        plan.unfold_rows * row_bytes +
-        (direct ? 0 : static_cast<uint64_t>(plan.splits * p.o * k) * 4);
+        direct ? plan.unfold_rows * row_bytes
+               : WgradPartialsOffset(plan.unfold_rows, k, item) +
+                     static_cast<uint64_t>(plan.splits * p.o * k) * 4;
     if (plan.splits * p.o * k > kInt32Max) {
       return Unsupported(p, "exceeds 32-bit indexing");
     }
@@ -557,6 +583,10 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
       break;
     }
     case ConvPath::kExplicit: {
+      if (k > kSteelMaxLd || p.o > kSteelMaxLd) {
+        return Unsupported(p,
+                           "a steel GEMM leading dimension over INT32_MAX/256");
+      }
       const uint64_t row_bytes = static_cast<uint64_t>(k * item);
       const uint64_t row_flops = 2ull * static_cast<uint64_t>(p.o * k);
       plan.unfold_rows = std::clamp<int64_t>(
@@ -575,7 +605,7 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
       return Unsupported(p, "exceeds 32-bit indexing");
     }
     const uint64_t tile_flops =
-        (ConvFlops(p) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
+        (PlannedFlops(p, plan) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
     plan.tiles_m = tiles_m;
     plan.launch_tiles_m = std::clamp<int64_t>(
         max_flops / std::max<uint64_t>(tile_flops, 1), 1,
