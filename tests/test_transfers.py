@@ -53,7 +53,14 @@ def mutate_right_after_device_put(busy, may_alias, mb):
         buf[:] = -1
         del pending
     for i, x in enumerate(xs):
-        assert np.all(np.asarray(x) == i), (i, np.unique(np.asarray(x))[:4])
+        h = np.asarray(x)
+        bad = np.flatnonzero(h != i)
+        # On a failure, what the device got says what went wrong: a later
+        # put's value (staging reused / freed early), -1 (the caller's
+        # buffer read after device_put returned) or anything else (read
+        # before the copy).
+        assert bad.size == 0, dict(put=i, wrong=bad.size, first=bad[:3],
+                                   last=bad[-3:], values=np.unique(h[bad])[:8])
 
 
 # Snapshot path: below min(256 MB, max(16 MB, reclaimable memory / 8)).

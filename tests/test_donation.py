@@ -11,7 +11,6 @@ callback that still read the donated buffer; donating a fresh device_put on
 both of its paths; partial and pytree donation; a donation with no
 matching output (copied, still correct).
 """
-import ctypes
 import os
 import warnings
 
@@ -20,7 +19,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-import metal_pjrt_plugin
 from metal_testing import run_python
 
 pytestmark = pytest.mark.metal
@@ -202,8 +200,9 @@ for i in range(50):
     x = step(x, 1.0)
 x.block_until_ready()
 s = stats()
-assert s["live"] == live0, (live0 // MB, s["live"] // MB, s)
-assert s["live"] < live0 + 2 * MB
+# (Within a small tolerance: each step's Python-float argument is a
+# device_put that is freed asynchronously.)
+assert abs(s["live"] - live0) < 2 * MB, (live0, s)
 # x_{k+1} = x_k / 2 + 1 from 1 approaches 2.
 assert np.allclose(np.asarray(x), 2.0), np.unique(np.asarray(x))[:4]
 del x; gc.collect()
