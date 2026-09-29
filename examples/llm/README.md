@@ -64,10 +64,14 @@ ms per token (tokens/s) after a 128-token prompt:
 | decode, streaming | 13.5 (74) | 14.6 (69) | 7.6 (132) | 8.0 (124) | 5.0 (202) | 4.8 (209) |
 | decode, fused loop | 13.4 (75) | | 7.5 (134) | | 4.8 (209) | |
 
-Qwen3-1.7B (3.4 GB in bf16), decode in ms per token: JAX bf16 39.1,
-mlx-lm 42.1; int8 21.0 vs 22.9 (3 interleaved rounds); int4 12.1-13.6
-(single runs) vs 13.2. Prefill of 128 tokens: bf16 134 vs 160 ms, int4 171
-vs 201; short quantized prompts are 2.3x slower than mlx-lm's (below).
+Qwen3-1.7B, 2 interleaved rounds of the quantized arms: decode int8
+19.4 ms/token (mlx-lm 21.5), int4 11.3 (11.8); prefill of 128 tokens
+int8 175 ms (168), int4 168 (174); of 16 tokens 109-115 (45-46). In
+bf16 (3.4 GB, ~40 ms/token at the bandwidth limit) both land at 40-47
+ms/token, prefill 128 tokens 134 ms (158). On the 8 GB machine, rounds
+that include the bf16 arms slow the arms after them (quantized decode
+up to ~18 ms for JAX, ~13 for mlx-lm): measure large models one
+precision at a time.
 
 Qwen3-4B, which needs 8 GB in bf16, runs in int4 on the 8 GB machine
 (peak footprint 3.7 GB): decode 26.9-28.5 ms/token (mlx-lm with
