@@ -149,10 +149,21 @@ def quantize_int4(w, group=GROUP):
     w = np.asarray(w, np.float32)
     w = w.reshape(w.shape[0], -1, group)
     lo, hi = w.min(axis=-1, keepdims=True), w.max(axis=-1, keepdims=True)
+    # MLX's choice of grid: anchor it at the group's largest-magnitude
+    # weight (the offset b) and stretch the step so that zero also falls on
+    # the grid. A plain min..max grid has the same RMS error but loses more
+    # accuracy (on 512 tokens: KL 0.33 against float32, where this gives
+    # MLX's 0.24).
+    neg = np.abs(lo) > np.abs(hi)
     s = np.maximum(hi - lo, 1e-12) / 15.0
-    q = np.clip(np.rint((w - lo) / s), 0, 15).astype(np.uint8)
+    s = np.where(neg, s, -s)
+    edge = np.where(neg, lo, hi)
+    q0 = np.rint(edge / s)
+    s = np.where(q0 != 0, edge / np.where(q0 != 0, q0, 1), s)
+    b = np.where(q0 == 0, 0.0, edge)
+    q = np.clip(np.rint((w - b) / s), 0, 15).astype(np.uint8)
     half = group // 2
-    return q[..., :half] | (q[..., half:] << 4), s, lo
+    return q[..., :half] | (q[..., half:] << 4), s, b
 
 
 def dequantize(w, dtype):
