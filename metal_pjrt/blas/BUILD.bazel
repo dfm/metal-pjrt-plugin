@@ -57,6 +57,7 @@ cc_library(
         "@xla//xla:shape_util",
         "//metal_pjrt/compiler:report_bug",
         ":blas_lt_support",
+        ":gemv",
         ":mps_gemm",
         ":steel_gemm",
         "//metal_pjrt/runtime:metal_runtime",
@@ -146,6 +147,42 @@ cc_test(
     tags = DEVICE_TEST_TAGS,
     timeout = "eternal",
     deps = [
+        ":mps_gemm",
+        ":steel_gemm",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+# Small-M f16/bf16 GEMM (MLX's wide gemv, kernels/gemv.metal): x W^T for
+# 2..15 vectors, taken ahead of steel by MetalBlasLt. Plain C++ (metal-cpp),
+# no XLA.
+cc_library(
+    name = "gemv",
+    srcs = ["gemv.cc"],
+    hdrs = ["gemv.h"],
+    deps = [
+        ":mps_gemm",
+        ":steel_gemm",
+        "//metal_pjrt/kernels:gemv",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/strings",
+        "@metal_cpp",
+    ],
+)
+
+# The wide gemv against a CPU reference; needs a Metal device.
+cc_test(
+    name = "gemv_test",
+    srcs = ["gemv_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":gemv",
         ":mps_gemm",
         ":steel_gemm",
         "//metal_pjrt/runtime:metal_runtime",

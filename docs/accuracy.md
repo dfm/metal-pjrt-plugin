@@ -133,6 +133,10 @@ XLA:CPU" as the rule for cases like this.
   the same as CPU, against 5.0 with the rewriter (which accumulated in
   f32); f16 log_softmax 1.0 vs 0.55. f32 (30.6, CPU 30.3) and bf16 (0.5)
   are unchanged.
+- f16/bf16 GEMMs with 2..8 rows on the wide gemv (f32 accumulation, one
+  rounding like steel): <= 0.5 ulps normwise on test_steel_gemm's few-row
+  cases (bias + gelu <= 0.5, CPU 0.45-0.97); f32 output 0.5-1.5 ulps of f32
+  (CPU 1-7).
 - GEMM epilogues fused into steel (7704d02) round once: f16/bf16 bias and
   activation lose the intermediate rounding of D (normwise ulps f16 bias
   0.74 -> 0.50, bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm "+bias relu"

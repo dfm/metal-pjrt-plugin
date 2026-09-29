@@ -116,6 +116,42 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   0.121-0.199). MLX runs these in 0.01-0.03 ms: the fixed cost of a
   dispatch-bound program, not the kernels.
 
+- Few-row f16/bf16 GEMMs (small-batch LLM decode). Three changes:
+  x W^T with 2..8 rows (either side) runs on MLX's wide gemv
+  (`blas:gemv`), 9..48 rows on a 16-row steel tile, and XLA's DotMerger
+  is off. Before, 28 bf16 GEMMs of [M, 1024] x [1024, 6144] ran at ~23
+  GB/s for every M from 2 to 64. Half of that was DotMerger: the GEMMs
+  share x, so it concatenated the 28 weights into one operand, a 336 MB
+  copy on every call. The other half was steel's 64-row tile. p10 ms per
+  call, 3 interleaved rounds of 3 bursts of 10 (the case study's
+  `skinny_jax.py` / `skinny_mlx.py`; "chained" feeds each GEMM's output to
+  the next, so neither side can overlap or merge them):
+
+  | M | before | after | MLX | chained: before | after | MLX |
+  |---|---|---|---|---|---|---|
+  | 1 | 4.16 | 4.31 | 4.11 | 3.91 | 3.91 | 4.32 |
+  | 2 | 15.03 | 4.47 | 4.07 | 8.13 | 4.03 | 4.49 |
+  | 4 | 15.06 | 4.56 | 4.54 | 8.15 | 4.39 | 4.83 |
+  | 8 | 15.11 | 4.91 | 4.86 | 8.12 | 4.30 | 5.46 |
+  | 16 | 15.14 | 4.95 | 7.83 | 8.19 | 4.67 | 8.60 |
+  | 32 | 15.36 | 4.98 | 7.54 | 8.22 | 5.49 | 8.40 |
+  | 64 | 15.71 | 8.33 | 7.64 | 8.41 | 8.54 | 8.49 |
+
+  M = 1 is a reduction fusion, unchanged; M = 64 keeps its 64-row tile.
+  MLX runs 2..15 rows on the gemv and uses its 64-row tile from 16. Per
+  kernel (`bench/gemm_bench`, 28 cycled weights), the 16-row tile is
+  1.3-1.9x faster than the 64-row one up to M = 48, for NT and NN, and for
+  [N, 1024], [1024, 3072], [4096, 4096] and [288, 32768] weights. The gemv
+  beats it by 6-40% up to 8 rows, and loses from 12 rows on: by 23% on a
+  151936-row vocabulary matrix, and by 5% there already at 8. Hence the
+  8-row limit, not MLX's 15.
+  Qwen3-0.6B bf16 decode (`examples/llm/bench.py --max-len 256 --cases
+  decode_fused`, p10 ms per step, 3 interleaved rounds), batch 1 / 2 / 4
+  / 8: before 13.26 / 26.71 / 27.47 / 28.96, after 13.20 / 13.88 / 15.11 /
+  17.11. DotMerger does not touch that model (no difference with it off),
+  and `bench/jax_bench.py` did not move with DotMerger off (4 interleaved
+  rounds, every case within noise).
+
 - FFTs run on MLX's FFT kernels (`metal$fft`, `metal_pjrt/fft`).
   `bench/fft_bench.py` (one process; bursts of 10 calls, 15 interleaved
   rounds; p10 ms per call; "DFT" is the `METAL_PJRT_DISABLE_FFT=1`

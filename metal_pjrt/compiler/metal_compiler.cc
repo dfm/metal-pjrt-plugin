@@ -119,6 +119,12 @@ const metal_pjrt::CompileSettings& Settings() {
 void ApplyMetalDefaults(DebugOptions& debug_options) {
   debug_options.set_xla_gpu_enable_cub_radix_sort(Settings().cub_sort);
   debug_options.set_xla_gpu_enable_triton_gemm(false);
+  // No DotMerger: it turns dots that share an operand (x @ Wq.T, x @ Wk.T)
+  // into one dot against a concatenation of the others, which copies every
+  // weight on each call when the weights are parameters. 28 bf16 [8, 1024] x
+  // [1024, 6144] GEMMs sharing x: 12.2 -> 4.9 ms (the copy is twice the
+  // GEMMs' own traffic); bench/jax_bench.py unchanged (docs/performance.md).
+  debug_options.set_xla_gpu_dot_merger_threshold_mb(0);
   // No command buffers: XLA's conversion pass already clears the command
   // types for OneAPI-capability devices, and a software-replay
   // implementation was measured (docs/performance.md) to be a wash once the

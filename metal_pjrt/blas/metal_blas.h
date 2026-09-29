@@ -1,5 +1,7 @@
 // BLAS support for the Metal StreamExecutor: f32 GEMMs on Metal Performance
-// Shaders (mps_gemm.h), f16/bf16 on the steel kernels (steel_gemm.h).
+// Shaders (mps_gemm.h), f16/bf16 on the steel kernels (steel_gemm.h), or,
+// with 2..8 rows (or columns) in the x W^T layout, on the wide gemv
+// (gemv.h).
 //
 // GEMMs reach it through gpu::BlasLt (CublasLtMatmulThunk,
 // "__cublas$lt$matmul"): GemmRewriter routes *every* GEMM there when the
@@ -51,9 +53,9 @@ class MetalBlasLt : public gpu::BlasLt {
    public:
     // `params` holds everything but buffers, in row-major form; operands
     // bind from MemoryArgs with a/b swapped when `swap_operands`. A
-    // non-trivial `epilogue` runs in steel's store when `epilogue_kernel`
-    // is null, else `epilogue_kernel` applies it to D after an MPS GEMM
-    // (f32); see metal_blas.cc.
+    // non-trivial `epilogue` runs in steel's (or the gemv's) store when
+    // `epilogue_kernel` is null, else `epilogue_kernel` applies it to D
+    // after an MPS GEMM (f32); see metal_blas.cc.
     MatmulPlan(metal_pjrt::rt::Device* device,
                metal_pjrt::blas::GemmParams params, bool swap_operands,
                EpilogueSpec epilogue = {},

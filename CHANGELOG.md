@@ -8,6 +8,12 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-29
 
+- Few-row f16/bf16 matmuls (small-batch LLM decode) are 1.8-3.4x faster,
+  at or above MLX's speed. x W^T with 2..8 rows runs on MLX's wide gemv,
+  9..48 rows on a 16-row steel tile, and XLA's DotMerger is off: it
+  copied the weights of dots sharing an input into one operand on every
+  call. Qwen3-0.6B bf16 decode at batch 2: 26.7 -> 13.9 ms per step
+  (batch 1: 13.3). docs/performance.md has the numbers.
 - FFTs run on MLX's FFT kernels (`metal$fft`, one call per transformed
   axis) instead of the dense O(n^2) DFT: every length up to 2^24 (powers
   of two) or 2^23 - 1, complex64 / float32, 0.6-1.3x MLX's time and 2.5-44x

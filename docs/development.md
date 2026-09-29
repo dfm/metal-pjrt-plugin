@@ -20,7 +20,8 @@ the plugin.
   `MetalKernelCompiler`, the `KernelCompiler` that `MetalCompiler` hands to
   XLA's emitters.
 - `metal_pjrt/blas/`: GEMM via Metal Performance Shaders (f32) and
-  MSL "steel" kernels (f16/bf16, applying BlasLt epilogues in their store).
+  MSL "steel" kernels (f16/bf16, applying BlasLt epilogues in their store),
+  with MLX's wide gemv (`blas:gemv`, no XLA) for 2..8 rows of x W^T.
 - `metal_pjrt/linalg/`: Cholesky, triangular solve and LAPACK-backed
   decompositions as FFI custom calls (Accelerate, or GPU kernels for small
   matrices).

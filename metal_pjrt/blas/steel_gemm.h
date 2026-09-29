@@ -7,9 +7,10 @@
 // like any other kernel. C is read from (and written to) params.c in place
 // when beta != 0; with beta == 0 it is never read.
 //
-// Backend policy (metal_blas.cc): f16/bf16 GEMMs run only here (a BlasLt
-// epilogue is applied in its store, SteelEpilogue); f32 goes to MPS (plus a
-// second pass for an epilogue).
+// Backend policy (metal_blas.cc): f16/bf16 GEMMs run here (a BlasLt
+// epilogue is applied in its store, SteelEpilogue) unless the wide gemv
+// (gemv.h) takes them (2..8 rows in the x W^T layout); f32 goes to MPS
+// (plus a second pass for an epilogue).
 #ifndef METAL_PJRT_BLAS_STEEL_GEMM_H_
 #define METAL_PJRT_BLAS_STEEL_GEMM_H_
 

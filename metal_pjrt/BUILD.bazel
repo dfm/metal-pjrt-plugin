@@ -23,6 +23,7 @@ HOST_TESTS = [
 ]
 
 DISPATCH_TESTS = HOST_TESTS + [
+    "//metal_pjrt/blas:gemv_test",
     "//metal_pjrt/conv:conv_test",
     "//metal_pjrt/ffi:radix_sort_test",
     "//metal_pjrt/ffi:scan_test",
@@ -81,6 +82,7 @@ test_suite(
     name = "device_tests",
     tags = ["manual"],
     tests = [
+        "//metal_pjrt/blas:gemv_test",
         "//metal_pjrt/blas:metal_blas_lt_test",
         "//metal_pjrt/blas:mps_gemm_test",
         "//metal_pjrt/blas:steel_gemm_test",

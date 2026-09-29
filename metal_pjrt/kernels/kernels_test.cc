@@ -6,6 +6,7 @@
 #include <Metal/Metal.hpp>
 
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -16,6 +17,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/types/span.h"
 #include "metal_pjrt/blas/mps_gemm.h"
+#include "metal_pjrt/blas/gemv.h"
 #include "metal_pjrt/blas/steel_gemm.h"
 #include "metal_pjrt/conv/conv_kernels.h"
 #include "metal_pjrt/fft/fft.h"
@@ -28,6 +30,7 @@
 #include "metal_pjrt/kernels/runtime_builtins.metal.h"
 #include "metal_pjrt/kernels/scan.metal.h"
 #include "metal_pjrt/kernels/small_linalg.metal.h"
+#include "metal_pjrt/kernels/gemv.metal.h"
 #include "metal_pjrt/kernels/steel_conv.metal.h"
 #include "metal_pjrt/kernels/steel_gemm.metal.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
@@ -88,7 +91,7 @@ TEST_F(KernelsTest, EverySourceCompiles) {
   for (const char* source :
        {kConvMiscMsl, kCubSortMsl, kFftMsl, kFftMiscMsl, kMpsStagingMsl,
         kMslPrelude, kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl,
-        kSteelConvMsl, kSteelGemmMsl}) {
+        kSteelConvMsl, kSteelGemmMsl, kGemvMsl}) {
     FunctionNames(source);
   }
 }
@@ -187,7 +190,7 @@ TEST_F(KernelsTest, SteelGemm) {
   for (auto [in, out] : types) {
     for (bool ta : {false, true}) {
       for (bool tb : {false, true}) {
-        for (int64_t size : {64, 4096}) {  // few tiles, many tiles
+        for (int64_t size : {16, 64, 4096}) {  // few rows, few tiles, many
           blas::GemmParams p;
           p.m = p.n = p.k = size;
           p.batch_count = 1;
@@ -212,7 +215,47 @@ TEST_F(KernelsTest, SteelGemm) {
       }
     }
   }
-  EXPECT_EQ(seen.size(), 5 * 4 * 2);
+  EXPECT_EQ(seen.size(), 5 * 4 * 2 + 4 * 4);  // f32 has no few-rows tile
+}
+
+// Every wide gemv variant (gemv.h: 2..kGemvMaxVectors vectors per pass,
+// both K-lane counts, f16/bf16 to themselves and f32), switches off and on.
+TEST_F(KernelsTest, Gemv) {
+  using blas::MpsDType;
+  const std::pair<MpsDType, MpsDType> types[] = {
+      {MpsDType::kF16, MpsDType::kF16}, {MpsDType::kF16, MpsDType::kF32},
+      {MpsDType::kBF16, MpsDType::kBF16}, {MpsDType::kBF16, MpsDType::kF32}};
+  std::set<std::string> seen;
+  for (auto [in, out] : types) {
+    for (int vecs = 2; vecs <= blas::kGemvMaxVectors; ++vecs) {
+      for (int64_t rows : {64, 4096}) {  // 32 and 16 K lanes past one pass
+        blas::GemmParams p;
+        p.m = vecs;
+        p.n = rows;
+        p.k = 64;
+        p.a.dtype = p.b.dtype = in;
+        p.c.dtype = out;
+        p.a.ld = p.b.ld = 64;
+        p.c.ld = rows;
+        p.b.transpose = true;
+        std::optional<blas::GemvPlan> plan = blas::ChooseGemv(p, 9);
+        ASSERT_TRUE(plan.has_value());
+        const blas::GemvKernelSource source =
+            blas::GemvKernel(in, out, plan->vecs_per_tg, plan->k_lanes);
+        if (!seen.insert(source.function).second) continue;
+        ExpectKernel(source.msl.c_str(), source.function,
+                     blas::GemvConstants(false, blas::SteelEpilogue{}));
+        int dummy;
+        for (int act : {1, 2, 3}) {
+          blas::SteelEpilogue on{act, &dummy, &dummy};
+          ExpectKernel(source.msl.c_str(), source.function,
+                       blas::GemvConstants(true, on));
+        }
+      }
+    }
+  }
+  // (vectors per pass, K lanes): (2..5, 32) and (3, 16), (4, 16).
+  EXPECT_EQ(seen.size(), 4 * 6);
 }
 
 // Every convolution variant the dispatch can select (conv::AllConvKernels:

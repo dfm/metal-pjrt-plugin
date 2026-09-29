@@ -16,6 +16,9 @@ MLX (https://github.com/ml-explore/mlx)
 
 The f16/bf16 "steel" GEMM kernels (metal_pjrt/kernels/steel_gemm.metal) are
 ported from mlx/backend/metal/kernels/steel/gemm/{loader,mma,gemm}.h; the
+small-M "wide gemv" kernel (metal_pjrt/kernels/gemv.metal) from
+mlx/backend/metal/kernels/gemv.h and its plan (metal_pjrt/blas/gemv.cc) from
+mlx/backend/metal/matmul.cpp (MLX 0.32.2); the
 convolution kernels (metal_pjrt/kernels/steel_conv.metal, conv_misc.metal)
 from mlx/backend/metal/kernels/steel/conv/ and kernels/conv.metal (MLX
 0.32.2); the FFT kernels (metal_pjrt/kernels/fft.metal) from

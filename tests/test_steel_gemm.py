@@ -21,6 +21,18 @@ for dt in (jnp.bfloat16, jnp.float16):
         CASES[f"{d} {m}x{k}x{n} A.T B.T"] = ("matmul", lambda x, y: y.T @ x.T, (a, b))
         CASES[f"{d} {m}x{k}x{n} f32 out"] = ("f32 out", lambda x, y: jnp.matmul(x, y, preferred_element_type=jnp.float32), (a, b))
         CASES[f"{d} {m}x{k}x{n} +bias relu"] = ("matmul", lambda x, y, c: jax.nn.relu(x @ y + c), (a, b, bias))
+    # Few rows in the x @ W.T layout (W stored [n, k]): MetalBlasLt runs
+    # these on the wide gemv (metal_pjrt/blas/gemv.h, 2..8 rows, either side)
+    # or steel's 16-row tile (9..48 rows).
+    for (m, k, n) in ((2, 256, 300), (5, 1024, 96), (8, 64, 1030), (13, 512, 200), (40, 128, 70)):
+        x, w, bias = host(m, k), host(n, k), host(n)
+        CASES[f"{d} few rows {m}x{k}x{n}"] = ("matmul", lambda x, w: x @ w.T, (x, w))
+        CASES[f"{d} few cols {n}x{k}x{m}"] = ("matmul", lambda x, w: w @ x.T, (x, w))
+        CASES[f"{d} few rows {m}x{k}x{n} f32 out"] = ("f32 out", lambda x, w: jnp.matmul(x, w.T, preferred_element_type=jnp.float32), (x, w))
+        CASES[f"{d} few rows {m}x{k}x{n} +bias gelu"] = ("matmul", lambda x, w, c: jax.nn.gelu(x @ w.T + c), (x, w, bias))
+    x, w = host(3, 4, 128), host(3, 96, 128)
+    CASES[f"{d} few rows batched"] = ("matmul", lambda x, w: jnp.einsum("bmk,bnk->bmn", x, w), (x, w))
+    CASES[f"{d} few rows batched bcast"] = ("matmul", lambda x, w: jnp.einsum("bmk,nk->bmn", x, w[0]), (x, w))
     x, y = host(6, 33, 70), host(6, 70, 45)
     CASES[f"{d} batched"] = ("matmul", lambda x, y: jnp.einsum("bij,bjk->bik", x, y), (x, y))
     CASES[f"{d} batched bcast"] = ("matmul", lambda x, y: jnp.einsum("bij,jk->bik", x, y[0]), (x, y))
@@ -70,6 +82,17 @@ def test_mixed_precision_dot_routing(dt, hlo_dt):
     hlo = f.lower(*small).compile().as_text()
     assert "__cublas" not in hlo
     assert re.search(r"f32\[4,3\]\S* convert\(", hlo), hlo
+
+
+def test_no_dot_merger():
+    """Dots sharing an operand stay separate GEMMs (xla_gpu_dot_merger_
+    threshold_mb = 0 in ApplyMetalDefaults): XLA's DotMerger would copy the
+    weights into one concatenated operand on every call."""
+    x = jnp.ones((4, 256), jnp.bfloat16)
+    ws = [jnp.ones((512, 256), jnp.bfloat16) for _ in range(3)]
+    hlo = jax.jit(lambda x, ws: [x @ w.T for w in ws]).lower(x, ws).compile().as_text()
+    assert len(_gemm_operand_types(hlo)) == 3, hlo
+    assert "concatenate" not in hlo, hlo
 
 
 def test_unsupported_gemm_fails_at_compile_time():

@@ -110,7 +110,14 @@ SteelTile ChooseSteelTile(const GemmParams& p) {
   const bool nt = !p.a.transpose && p.b.transpose;
   const int64_t tiles64 = ((p.m + 63) / 64) * ((p.n + 63) / 64) *
                           std::max<int64_t>(p.batch_count, 1);
-  if (tiles64 < 32) {
+  if (p.m <= 48 && p.a.dtype != MpsDType::kF32) {
+    // Few rows (small-batch decode, x W^T past the wide gemv): a 16-row tile
+    // wastes less of each simdgroup MMA and streams B from 3-4x as many
+    // threadgroups. bench/gemm_bench.cc (M3, bf16, [N, 1024] and [1024,
+    // 3072] weights, NT and NN): 1.3-1.9x faster than the tiles below up to
+    // m = 48 (m = 64 ~2% slower on 6144 x 1024). MLX keeps its 64-row tiles.
+    t = {16, 32, 32, 1, 2};
+  } else if (tiles64 < 32) {
     // Too few 64x64 tiles to fill the GPU: smaller tiles, more threadgroups.
     t = {32, 32, 16, 2, 2};
   } else if (nt) {

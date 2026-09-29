@@ -32,6 +32,12 @@ embed_msl(
 )
 
 embed_msl(
+    name = "gemv",
+    src = "gemv.metal",
+    symbol = "kGemvMsl",
+)
+
+embed_msl(
     name = "mps_staging",
     src = "mps_staging.metal",
     symbol = "kMpsStagingMsl",
@@ -86,6 +92,7 @@ cc_test(
         ":cub_sort",
         ":fft",
         ":fft_misc",
+        ":gemv",
         ":mps_staging",
         ":msl_prelude",
         ":runtime_builtins",
@@ -93,6 +100,7 @@ cc_test(
         ":small_linalg",
         ":steel_conv",
         ":steel_gemm",
+        "//metal_pjrt/blas:gemv",
         "//metal_pjrt/blas:mps_gemm",
         "//metal_pjrt/blas:steel_gemm",
         "//metal_pjrt/conv:conv_kernels",

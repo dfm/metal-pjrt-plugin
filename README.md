@@ -146,7 +146,7 @@ translator ("MSL emitter: unsupported ..."); see
 | `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | `test_lax.py`, `test_smoke.py` |
 | Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | `test_lax.py`, `test_scan.py`. A scatter-add/min/max on 64-bit elements, and any scatter on complex64, without `unique_indices=True` is refused (Metal has 32-bit atomics only) |
 | `jax.random` | yes | `test_lax.py` |
-| Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused (`test_steel_gemm.py`, `test_epilogue.py`) |
+| Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused, including few-row (small-batch decode) shapes at or above MLX's speed (`test_steel_gemm.py`, `test_epilogue.py`) |
 | Matmul, integer GEMMs (int8 x int8 -> int32) and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops run (`test_lax.py`, "dot int32") |
 | Matmul, dot precision algorithms (`TF32_TF32_F32`, `F16_F16_F16`, `BF16_BF16_BF16`) | no | XLA refuses them ("Unsupported algorithm on the current device(s)"). The `BF16_BF16_F32` family works |
 | Matmul, fp8 | untested | fp8 conversions work (`test_lax.py`) |
@@ -265,7 +265,7 @@ please run the GPU tests under `scripts/device_lock.py`.
 ## License
 
 Apache-2.0 (`LICENSE`). The plugin also contains third-party code: the
-f16/bf16 matmul ("steel") kernels are ported from
+f16/bf16 matmul ("steel" and wide gemv) kernels are ported from
 [MLX](https://github.com/ml-explore/mlx) (MIT), and Apple's metal-cpp headers
 (Apache-2.0) are compiled in. Their notices are in `THIRD_PARTY_NOTICES`,
 which the wheel ships next to `LICENSE`.

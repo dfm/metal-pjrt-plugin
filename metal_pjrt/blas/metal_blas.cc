@@ -6,6 +6,7 @@
 #include <complex>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -17,8 +18,9 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "metal_pjrt/blas/blas_lt_support.h"
+#include "metal_pjrt/blas/gemv.h"
 #include "metal_pjrt/blas/mps_gemm.h"
-#include "metal_pjrt/blas/steel_gemm.h"  // steel GEMM dispatch
+#include "metal_pjrt/blas/steel_gemm.h"
 #include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "xla/primitive_util.h"
@@ -80,6 +82,20 @@ rt::Stream* RtStream(Stream* stream) {
   return static_cast<rt::Stream*>(stream->platform_specific_handle().stream);
 }
 
+// f16/bf16: the wide gemv (gemv.h) when one side has 2..8 rows in the NT
+// layout, else steel (steel_gemm.h). Buffers must be bound (the gemv checks
+// their alignment).
+absl::Status RunHalfGemm(rt::Device* device, rt::Stream* stream,
+                         const mps::GemmParams& p,
+                         const mps::SteelEpilogue* epi) {
+  if (std::optional<mps::GemvPlan> plan =
+          mps::ChooseGemv(p, device->info().gpu_family)) {
+    VLOG(3) << "Metal BLAS: wide gemv";
+    return mps::RunGemv(device, stream, p, *plan, epi);
+  }
+  return mps::RunSteelGemm(device, stream, p, /*tile=*/nullptr, epi);
+}
+
 absl::Status Encode(rt::Device* device, Stream* stream,
                     const mps::GemmParams& params) {
   rt::Stream* rs = RtStream(stream);
@@ -88,9 +104,9 @@ absl::Status Encode(rt::Device* device, Stream* stream,
         "Metal BLAS: stream has no Metal handle (not a Metal stream?)");
   }
   VLOG(3) << "Metal BLAS: " << mps::GemmParamsDebugString(params);
-  // f16/bf16 run on the steel kernels (steel_gemm.h), f32 on MPS.
+  // f16/bf16 run on the wide gemv or steel, f32 on MPS.
   if (params.a.dtype != mps::MpsDType::kF32) {
-    return mps::RunSteelGemm(device, rs, params);
+    return RunHalfGemm(device, rs, params, /*epi=*/nullptr);
   }
   return rs->EncodeExternal(
       [&](void* cmd) {
@@ -250,7 +266,8 @@ absl::StatusOr<gpu::BlasLt::MatmulPlanPtr> MetalBlasLt::GetMatmulPlan(
   p.a = operand(v.lhs, ta);
   p.b = operand(v.rhs, tb);
   p.c = operand(v.out, tout);  // row-major after the swap
-  // f16/bf16 run only on steel, which applies any epilogue in its store
+  // f16/bf16 run only on the wide gemv or steel, which apply any epilogue in
+  // their store
   // (bias index = column of the row-major view of D, i.e. the stored minor
   // dimension).
   if (ta != mps::MpsDType::kF32) {
@@ -369,8 +386,8 @@ absl::Status MetalBlasLt::MatmulPlan::RunSteelWithEpilogue(
   e.act = static_cast<int>(epilogue_.act);
   if (epilogue_.bias) e.bias = buffers.first;
   if (epilogue_.aux) e.aux = buffers.second;
-  VLOG(3) << "Metal BLAS: steel + epilogue: " << mps::GemmParamsDebugString(p);
-  return mps::RunSteelGemm(device_, rs, p, /*tile=*/nullptr, &e);
+  VLOG(3) << "Metal BLAS: epilogue: " << mps::GemmParamsDebugString(p);
+  return RunHalfGemm(device_, rs, p, &e);
 }
 
 absl::Status MetalBlasLt::MatmulPlan::RunEpilogue(

@@ -27,3 +27,19 @@ cc_binary(
         "@com_google_absl//absl/status:statusor",
     ],
 )
+
+# Small-M f16/bf16 GEMMs on the wide gemv and steel tiles (gemm_bench.cc);
+# needs a Metal device, run locally under scripts/device_lock.py.
+cc_binary(
+    name = "gemm_bench",
+    srcs = ["gemm_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        "//metal_pjrt/blas:gemv",
+        "//metal_pjrt/blas:mps_gemm",
+        "//metal_pjrt/blas:steel_gemm",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
