@@ -110,6 +110,16 @@ rows and K: below that the 16-row tile wins by up to 2.8x), so batched
 decode attention, 1024 x [4..8, 128] x [128, 128]^T, is 1.9-2.0x faster
 (6.9 -> 3.5 ms per 8 GEMMs; `docs/performance.md`).
 
+Host memory grows per compiled executable and isn't freed when it's
+dropped: a Qwen3-0.6B LoRA train step (~3150 kernels) adds 160-570 MB of
+host footprint per executable (1714 -> 2623 MB after 3 compiles; unchanged
+after del + gc). 5 batch shapes reach 4.1 GB vs mlx-lm 2.3 GB, and the
+system guard then refuses a 707 MB scratch. Suspects to attribute first
+(footprint/vmmap before and after drop + gc): Device::GetKernel's
+never-evicted pipeline/library cache; retained MSL source/library blobs;
+XLA-side state outliving the executable; the persistent compilation
+cache. Found by the LoRA case study.
+
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 
