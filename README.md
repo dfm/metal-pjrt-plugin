@@ -249,6 +249,8 @@ Language; it does not re-interpret StableHLO op by op.
   source-verified contract with XLA.
 - [`docs/roadmap.md`](docs/roadmap.md): decisions and what is next;
   [`CHANGELOG.md`](CHANGELOG.md): renames and dated decisions.
+- [`examples/llm`](examples/llm): Qwen3 inference in pure JAX (bf16,
+  int8, int4), benchmarked against mlx-lm; a case study in fast decoding.
 - [`docs/development.md`](docs/development.md): layout, building, tests,
   benchmarks, environment variables; `docs/archive/` keeps the dated
   performance log and the review roadmap as history.
