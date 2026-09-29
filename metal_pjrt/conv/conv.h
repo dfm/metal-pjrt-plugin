@@ -30,7 +30,9 @@
 // each chunk's rows are split into `splits` equal parts, one batched steel
 // GEMM accumulates the parts into f32 partial products in the workspace,
 // and sum_splits adds them into dW (with one part and one chunk the GEMM
-// writes dW directly).
+// writes dW directly). The plan sizes the GEMM tile and the parts together
+// (>= 512 threadgroups), the partials capped at 8 MiB and, with the
+// patches, within the 64 MiB chunk bound.
 //
 // Every launch is charged its flops (rt::Stream::Launch) and none exceeds
 // max_launch_flops: implicit and general split their row tiles over several
@@ -83,7 +85,7 @@ const char* ConvPathName(ConvPath path);
 
 struct ConvPlan {
   ConvPath path = ConvPath::kImplicit;
-  ConvTile tile;             // kImplicit / kPadChannels / kGeneral
+  ConvTile tile;             // kImplicit..kGeneral; kWeightGrad: its GEMM's
   int n_channels = 0;        // kImplicit: C when C <= 4, else 0
   bool small_filter = false; // kImplicit: kH, kW <= 16
   bool align_c = false;      // kGeneral: C % tile.bk == 0
@@ -127,6 +129,7 @@ absl::Status RunConv(rt::Device* device, rt::Stream* stream,
 // ([rows, kH * kW * C], row-major), zero where a tap falls on padding or
 // between dilated input elements: the explicit and weight-gradient paths'
 // im2col, one launch (the paths bound `rows`; conv_test calls it directly).
+// InvalidArgument past 2^31 - 1 elements in one launch.
 absl::Status Unfold(rt::Device* device, rt::Stream* stream,
                     const ConvParams& p, const void* in, void* dst,
                     int64_t row, int64_t rows);

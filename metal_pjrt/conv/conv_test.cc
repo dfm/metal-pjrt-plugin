@@ -302,28 +302,31 @@ class ConvTest : public ::testing::Test {
   }
 
   // Unfold of patch rows [row, row + rows) against the naive kernel, byte
-  // for byte, with the input `in_shift` elements into its buffer (a
-  // misaligned offset steps the vector width down).
+  // for byte, with the input `in_shift` and the output `dst_shift` elements
+  // into their buffers (a misaligned offset steps the vector width down).
   void CheckUnfold(const ConvParams& p, int64_t row, int64_t rows,
-                   int64_t in_shift) {
+                   int64_t in_shift, int64_t dst_shift = 0) {
     SCOPED_TRACE(absl::StrCat("unfold ", ConvParamsDebugString(p), " rows ",
-                              row, "+", rows, " shift ", in_shift));
+                              row, "+", rows, " shift ", in_shift, " dst ",
+                              dst_shift));
     const int64_t item = Bytes(p.type);
     const int64_t n_in = p.n * p.h * p.w * p.c;
     const int64_t out_bytes = rows * p.kh * p.kw * p.c * item;
     std::vector<uint8_t> x = Random(p.type, n_in, 7 + n_in);
     absl::StatusOr<rt::Allocation> in =
         dev_->Allocate((n_in + in_shift) * item);
-    absl::StatusOr<rt::Allocation> got = dev_->Allocate(out_bytes);
+    absl::StatusOr<rt::Allocation> got =
+        dev_->Allocate(out_bytes + dst_shift * item);
     absl::StatusOr<rt::Allocation> want = dev_->Allocate(out_bytes);
     ASSERT_THAT(in, IsOk());
     ASSERT_THAT(got, IsOk());
     ASSERT_THAT(want, IsOk());
     char* x_dev = static_cast<char*>(in->ptr) + in_shift * item;
+    char* got_dev = static_cast<char*>(got->ptr) + dst_shift * item;
     std::memcpy(x_dev, x.data(), x.size());
-    std::memset(got->ptr, 0x7f, out_bytes);
+    std::memset(got_dev, 0x7f, out_bytes);
     std::memset(want->ptr, 0x3c, out_bytes);
-    ASSERT_THAT(Unfold(dev_.get(), stream_.get(), p, x_dev, got->ptr, row,
+    ASSERT_THAT(Unfold(dev_.get(), stream_.get(), p, x_dev, got_dev, row,
                        rows),
                 IsOk());
     absl::StatusOr<const rt::Kernel*> naive = dev_->GetKernel(
@@ -365,7 +368,7 @@ class ConvTest : public ::testing::Test {
                          rt::KernelArg::Bytes(&ur, sizeof(ur))}),
         IsOk());
     ASSERT_THAT(stream_->Synchronize(), IsOk());
-    EXPECT_EQ(std::memcmp(got->ptr, want->ptr, out_bytes), 0);
+    EXPECT_EQ(std::memcmp(got_dev, want->ptr, out_bytes), 0);
     for (void* ptr : {in->ptr, got->ptr, want->ptr}) {
       ASSERT_THAT(dev_->Deallocate(ptr), IsOk());
     }
@@ -701,6 +704,28 @@ TEST_F(ConvTest, WeightGradPlan) {
   EXPECT_EQ(plan->unfold_rows, 32 * 32 * 32);
   EXPECT_GT(plan->splits, 1);
   EXPECT_GE(plan->split_rows, 256);
+  EXPECT_EQ(plan->tile, (ConvTile{32, 32, 16, 2, 2}));  // O = 32, K = 27
+  // The airbench94 CIFAR-10 layers (bf16, batch 1024, 3x3 SAME): 64 x 64
+  // tiles, >= 512 threadgroups unless the partials cap (8 MiB) binds, and
+  // the patches plus partials within the 64 MiB chunk bound.
+  struct Layer {
+    int64_t hw, c, o, splits;
+  };
+  for (const Layer& l : {Layer{31, 24, 64, 128}, Layer{15, 64, 64, 56},
+                         Layer{15, 64, 256, 14}, Layer{7, 256, 256, 3},
+                         Layer{3, 256, 256, 3}}) {
+    Case k{1024, l.hw, l.hw, l.c, l.o, 3, 3};
+    k.pad_lo[0] = k.pad_lo[1] = k.pad_hi[0] = k.pad_hi[1] = 1;
+    ConvParams lp = Params(k, ConvType::kBF16);
+    lp.kind = ConvKind::kWeightGrad;
+    SCOPED_TRACE(ConvParamsDebugString(lp));
+    absl::StatusOr<ConvPlan> lplan = PlanConv(lp);
+    ASSERT_THAT(lplan, IsOk());
+    EXPECT_EQ(lplan->tile, (ConvTile{64, 64, 16, 2, 2}));
+    EXPECT_EQ(lplan->splits, l.splits);
+    EXPECT_LE(lplan->splits * l.o * 9 * l.c * 4, 8 << 20);
+    EXPECT_LE(lplan->workspace_bytes, 64u << 20);
+  }
   const ConvPath implicit = ConvPath::kImplicit;
   EXPECT_THAT(PlanConv(p, &implicit),
               StatusIs(absl::StatusCode::kUnimplemented));
@@ -799,9 +824,10 @@ TEST_F(ConvTest, ExplicitTiles) {
 
 // The vectorized unfold is the naive one, byte for byte: channel counts
 // for every vector width (16 bytes down to one element: C 1, 3, 5, 6, 12,
-// 24 in 2- and 4-byte types), input offsets that step the width down, odd
-// widths, strides, kernel and input dilation, flip, asymmetric padding; the
-// whole patch matrix and a chunk from a row offset.
+// 24 in 2- and 4-byte types), input and output offsets that step the width
+// down, odd widths, strides, kernel and input dilation, flip, asymmetric
+// and negative (cropping) padding, a single tap; the whole patch matrix and
+// a chunk from a row offset.
 TEST_F(ConvTest, Unfold) {
   std::vector<Case> cases;
   for (int64_t c : {1, 3, 5, 6, 12, 24}) {
@@ -829,16 +855,32 @@ TEST_F(ConvTest, Unfold) {
     idil.flip = flip;
     cases.push_back(idil);
   }
+  Case crop{2, 9, 8, 12, 4, 3, 3};  // negative high padding
+  crop.pad_lo[1] = 1;
+  crop.pad_hi[0] = -2;
+  crop.pad_hi[1] = -1;
+  cases.push_back(crop);
+  Case one_tap{2, 9, 7, 24, 4, 1, 1};
+  one_tap.stride[0] = 2;
+  cases.push_back(one_tap);
   for (const Case& k : cases) {
     for (ConvType t : kTypes) {
       const ConvParams p = Params(k, t);
       const int64_t m = p.n * p.out_h * p.out_w;
       for (int64_t shift : {0, 1, 2, 4}) {
         CheckUnfold(p, 0, m, shift);
+        CheckUnfold(p, 0, m, 0, shift);
       }
       CheckUnfold(p, m / 3, m - m / 3 - 1, 0);
     }
   }
+  // One launch past 32-bit indexing is refused (the kernel's index would
+  // wrap), before any buffer is touched.
+  const ConvParams big = Params(cases[0], ConvType::kF32);
+  const int64_t too_many = (int64_t{1} << 31) / (9 * big.c) + 1;
+  EXPECT_THAT(Unfold(dev_.get(), stream_.get(), big, nullptr, nullptr, 0,
+                     too_many),
+              StatusIs(absl::StatusCode::kInvalidArgument));
 }
 
 // What PlanConv picks (MLX's decision tree without Winograd), and refuses.

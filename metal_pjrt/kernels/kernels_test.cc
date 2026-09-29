@@ -261,8 +261,8 @@ TEST_F(KernelsTest, Gemv) {
 // Every convolution variant the dispatch can select (conv::AllConvKernels:
 // the tile rules across their branch points, both ALIGN_C values of the
 // general kernel), plus conv_misc's kernels: the unfold per vector width,
-// pad and sum per type. The weight gradient's GEMMs are steel variants
-// (SteelGemm above: T x T -> f32, A transposed).
+// pad and sum per type; and the weight gradient's steel GEMMs (T x T -> f32
+// or T, A transposed) on its two tiles.
 TEST_F(KernelsTest, SteelConv) {
   EXPECT_EQ(FunctionNames(kConvMiscMsl).size(), 4 + 2 * 3);
   const std::vector<conv::ConvKernelSource> all = conv::AllConvKernels();
@@ -272,6 +272,21 @@ TEST_F(KernelsTest, SteelConv) {
   EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 2) + 4);
   for (const conv::ConvKernelSource& k : all) {
     ExpectKernel(k.msl.c_str(), k.function, k.constants);
+  }
+  // The weight gradient's GEMM tiles (PlanConv), dY^T x patches into f32
+  // partials or (one part, one chunk) dW itself.
+  using blas::MpsDType;
+  for (MpsDType in : {MpsDType::kF32, MpsDType::kF16, MpsDType::kBF16}) {
+    for (MpsDType out : {in, MpsDType::kF32}) {
+      for (blas::SteelTile tile : {blas::SteelTile{32, 32, 16, 2, 2},
+                                   blas::SteelTile{64, 64, 16, 2, 2}}) {
+        const blas::SteelKernelSource source =
+            blas::SteelGemmKernel(in, out, tile, true, false);
+        ExpectKernel(source.msl.c_str(), source.function,
+                     blas::SteelGemmConstants(false, false, true,
+                                              blas::SteelEpilogue{}));
+      }
+    }
   }
 }
 

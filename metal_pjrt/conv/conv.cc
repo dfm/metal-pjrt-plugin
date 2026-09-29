@@ -24,9 +24,12 @@ namespace {
 constexpr uint64_t kUnfoldMaxBytes = 64ull << 20;
 
 // Weight gradient split-K: enough threadgroups for the GPU (the M3 has 10
-// cores), each part at least kMinSplitRows long.
-constexpr int64_t kWgradTargetGroups = 128;
+// cores; 512 beat 256 by 2-5% and 128 by up to 1.6x on the CIFAR layers),
+// each part at least kMinSplitRows long, the f32 partial products at most
+// kWgradMaxPartialsBytes (more parts only when they fit).
+constexpr int64_t kWgradTargetGroups = 512;
 constexpr int64_t kMinSplitRows = 256;
+constexpr uint64_t kWgradMaxPartialsBytes = 8ull << 20;
 
 constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
 
@@ -291,8 +294,9 @@ absl::StatusOr<blas::MpsOperand> Operand(rt::Device* device, const void* ptr,
   return op;
 }
 
-// The widest vector the unfold copies in, 16, 8, 4 or 2 bytes (at least
-// one element): it divides a pixel's channels and both buffer offsets.
+// The widest vector the unfold copies in, 16, 8, 4 or 2 bytes: it divides
+// a pixel's channels and both buffer offsets. Never below one element (the
+// loop stops there), which divides both as the operands are arrays of it.
 absl::StatusOr<int> UnfoldVectorBytes(rt::Device* device, const ConvParams& p,
                                       const void* in, const void* dst) {
   ABSL_ASSIGN_OR_RETURN(rt::BufferRef in_ref, device->Resolve(in));
@@ -351,6 +355,8 @@ absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
   const int64_t k = p.kh * p.kw * p.c;
   const int64_t item = ItemSize(p.type);
   if (m == 0) return stream->Memset8(dw, 0, p.o * k * item);
+  const blas::SteelTile tile{plan.tile.bm, plan.tile.bn, plan.tile.bk,
+                             plan.tile.wm, plan.tile.wn};
   char* patches = static_cast<char*>(workspace);
   const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
   void* partials =
@@ -390,7 +396,7 @@ absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
                        p.type, k, false));
       g.c.dtype = partial_type;
       g.c.batch_stride = p.o * k;
-      ABSL_RETURN_IF_ERROR(blas::RunSteelGemm(device, stream, g));
+      ABSL_RETURN_IF_ERROR(blas::RunSteelGemm(device, stream, g, &tile));
     }
   }
   if (direct) return absl::OkStatus();
@@ -487,24 +493,42 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
     ConvPlan plan;
     plan.path = ConvPath::kWeightGrad;
     if (m == 0 || p.o == 0 || k == 0) return plan;
+    // The GEMM tile: 64 x 64 with 2 x 2 simdgroups (1.3-1.5x faster than
+    // 32 x 32 on the CIFAR layers), 32 x 32 when O or K is small.
+    plan.tile = p.o <= 32 || k <= 32 ? ConvTile{32, 32, 16, 2, 2}
+                                     : ConvTile{64, 64, 16, 2, 2};
     // Chunks bounded in bytes and in flops (2 * O * K per row).
     const uint64_t row_bytes = static_cast<uint64_t>(k * item);
     const uint64_t row_flops = 2ull * static_cast<uint64_t>(p.o * k);
-    plan.unfold_rows = std::clamp<int64_t>(
-        std::min(kUnfoldMaxBytes / row_bytes, max_flops / row_flops), 1, m);
-    // Parts: enough threadgroups over the GEMM's (O x K) tiles (32 x 32 when
-    // few), each part at least kMinSplitRows long.
-    const int64_t tiles = CeilDiv(p.o, 32) * CeilDiv(k, 32);
+    const uint64_t max_rows =
+        std::min(kUnfoldMaxBytes / row_bytes, max_flops / row_flops);
+    plan.unfold_rows = std::clamp<int64_t>(max_rows, 1, m);
+    // Parts: enough threadgroups over the GEMM's (O x K) tiles, each part
+    // at least kMinSplitRows long, the partials within their cap.
+    const uint64_t part_bytes = static_cast<uint64_t>(p.o * k) * 4;
+    const int64_t tiles =
+        CeilDiv(p.o, plan.tile.bm) * CeilDiv(k, plan.tile.bn);
     plan.splits = std::clamp<int64_t>(
         CeilDiv(kWgradTargetGroups, tiles), 1,
         std::max<int64_t>(plan.unfold_rows / kMinSplitRows, 1));
+    plan.splits = std::clamp<int64_t>(kWgradMaxPartialsBytes / part_bytes, 1,
+                                      plan.splits);
+    // The patches and the partials together within kUnfoldMaxBytes when
+    // the chunk alone reached it: the parts do not grow the workspace.
+    if (plan.splits > 1) {
+      const uint64_t partials = static_cast<uint64_t>(plan.splits) * part_bytes;
+      plan.unfold_rows = std::clamp<int64_t>(
+          std::min<uint64_t>(max_rows,
+                             (kUnfoldMaxBytes - partials) / row_bytes),
+          1, m);
+    }
     plan.split_rows = CeilDiv(plan.unfold_rows, plan.splits);
     plan.splits = CeilDiv(plan.unfold_rows, plan.split_rows);
     const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
     plan.workspace_bytes =
         direct ? plan.unfold_rows * row_bytes
                : WgradPartialsOffset(plan.unfold_rows, k, item) +
-                     static_cast<uint64_t>(plan.splits * p.o * k) * 4;
+                     static_cast<uint64_t>(plan.splits) * part_bytes;
     if (plan.splits * p.o * k > kInt32Max) {
       return Unsupported(p, "exceeds 32-bit indexing");
     }
@@ -604,6 +628,13 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
 absl::Status Unfold(rt::Device* device, rt::Stream* stream,
                     const ConvParams& p, const void* in, void* dst,
                     int64_t row, int64_t rows) {
+  // The kernel's thread index (one per vector, at most one per element) is
+  // a 32-bit int; the paths' chunks are far below it.
+  if (rows * p.kh * p.kw * p.c > kInt32Max) {
+    return absl::InvalidArgumentError(
+        absl::StrCat("Unfold: ", rows, " rows exceed 32-bit indexing: ",
+                     ConvParamsDebugString(p)));
+  }
   ABSL_ASSIGN_OR_RETURN(const int bytes,
                         UnfoldVectorBytes(device, p, in, dst));
   const ConvKernelSource uk = UnfoldKernel(bytes);
