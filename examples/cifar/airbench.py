@@ -168,6 +168,7 @@ def whitening(x, eps=5e-4):
 
 # --- Training --------------------------------------------------------------
 
+@functools.lru_cache
 def make_optimizer(total_steps):
     h = HYP
     kilostep_scale = 1024 * (1 + 1 / (1 - h["momentum"]))
@@ -206,7 +207,10 @@ def loss_fn(params, stats, x, y, dtype=jnp.bfloat16):
     return optax.softmax_cross_entropy(logits, labels).sum(), new_stats
 
 
+@functools.lru_cache
 def make_train_step(tx, dtype=jnp.bfloat16):
+    """One jitted step per (optimizer, dtype), shared by every run: the
+    warmup run then compiles exactly the programs the timed runs use."""
     # No donation: after a lookahead the net and the ema share buffers
     # (and the parameters are only a few MB).
     @jax.jit
@@ -254,14 +258,18 @@ def evaluate(params, stats, test_x, test_y, tta_level, dtype=jnp.bfloat16, batch
     return correct / test_x.shape[0]
 
 
-def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None):
-    """One airbench94 run. Returns a dict of accuracy and timings."""
+def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_steps=None):
+    """One airbench94 run. Returns a dict of accuracy and timings.
+
+    `max_steps` stops early (the warmup run) while keeping the full run's
+    schedule, so that every program is the one the full run uses."""
     train_x, train_y, test_x, test_y = data
     bs = HYP["batch_size"]
     steps_per_epoch = train_x.shape[0] // bs                        # drop_last
     total = math.ceil(steps_per_epoch * epochs)
     tx = make_optimizer(total)
-    step = make_train_step(tx, dtype)
+    step = make_train_step(tx, jnp.dtype(dtype))
+    stop = total if max_steps is None else min(total, max_steps)
     alpha = 0.95 ** 5 * (np.arange(total + 1) / total) ** 3
     key = jax.random.key(seed)
 
@@ -282,7 +290,7 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None):
         order = jax.random.permutation(k2, train_x.shape[0])
         wb = jnp.float32(epoch < HYP["whiten_bias_epochs"])
         for i in range(steps_per_epoch):
-            if n >= total:
+            if n >= stop:
                 break
             idx = order[i * bs:(i + 1) * bs]
             params, stats, opt_state, loss = step(params, stats, opt_state, imgs[idx],
@@ -320,10 +328,14 @@ def main():
     data = tuple(jnp.asarray(a) for a in (tx_, ty_, vx_, vy_))
     log = (lambda e, l: print(f"  epoch {e}: loss {l:.4f}", file=sys.stderr)) if args.verbose else None
 
-    # Warmup run: compiles every program (airbench does the same).
+    # Warmup: the first epoch of a full-length run, which compiles every
+    # program the timed runs use (the same schedule, the same jitted step).
+    steps_per_epoch = data[0].shape[0] // HYP["batch_size"]
     t0 = time.perf_counter()
-    train(0, data, epochs=min(args.epochs, 1.0), dtype=dtype)
+    train(0, data, args.epochs, dtype, max_steps=steps_per_epoch)
     warm = time.perf_counter() - t0
+    step = make_train_step(make_optimizer(math.ceil(steps_per_epoch * args.epochs)), dtype)
+    compiled = step._cache_size()
     print(json.dumps({"backend": jax.devices()[0].platform, "warmup_run_s": round(warm, 2)}),
           flush=True)
     rows = []
@@ -332,13 +344,16 @@ def main():
         row["backend"] = jax.devices()[0].platform
         rows.append(row)
         print(json.dumps(row), flush=True)
+    # The timed runs must not have compiled anything new.
+    assert step._cache_size() == compiled, "the train step recompiled during a timed run"
     accs = np.array([r["acc"] for r in rows])
     times = np.array([r["train_s"] for r in rows])
     print(json.dumps({"summary": True, "runs": len(rows), "acc_mean": round(float(accs.mean()), 4),
-                      "acc_std": round(float(accs.std()), 4),
+                      "acc_std": round(float(accs.std(ddof=1)), 4) if len(rows) > 1 else 0.0,
                       "runs_at_94": int((accs >= 0.94).sum()),
                       "train_s_mean": round(float(times.mean()), 2),
-                      "train_s_std": round(float(times.std()), 2)}))
+                      "train_s_std": round(float(times.std(ddof=1)), 2) if len(rows) > 1 else 0.0,
+                      "std": "sample (ddof=1)"}))
 
 
 if __name__ == "__main__":

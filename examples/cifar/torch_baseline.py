@@ -11,10 +11,26 @@ environment (it reads the same CIFAR-10 cache as airbench.py):
 an 8 GB machine's memory over a run.)
 
 This is airbench94 (https://github.com/KellerJordan/cifar10-airbench, MIT,
-Keller Jordan) with the CUDA specifics replaced: device "mps", no CUDA
-events (wall time with torch.mps.synchronize), the same data loading as
-airbench.py. Model, hyperparameters, augmentation, lookahead and TTA are
-airbench's, so the two scripts run the same algorithm.
+Keller Jordan) on MPS, timed with wall time and torch.mps.synchronize.
+Differences from airbench94 (the same list as in README.md):
+
+- Both: a one-epoch warmup run before the timed runs (airbench warms up
+  with a full-length run on random labels); float32 eigendecomposition
+  for the whitening layer (JAX through the plugin, PyTorch on the CPU, as MPS
+  has no eigh).
+- JAX: bfloat16 compute with float32 master weights and momentum
+  (airbench and the PyTorch script keep the network in fp16, BatchNorm in
+  float32); images kept as uint8 and normalized inside the jitted step;
+  conv groups rematerialized in the backward pass (default; --no-remat).
+- PyTorch on MPS: BatchNorm casts its input to float32 (MPS's kernel
+  rejects fp16 input with float32 parameters); NCHW instead of
+  channels-last (channels-last grew the footprint past 9 GB);
+  normalization done once on the CPU before the timed region;
+  torch.mps.empty_cache() at every epoch, inside the timed region, and an
+  allocator cap (PYTORCH_MPS_*_WATERMARK_RATIO), both to stay within 8 GB.
+- Unchanged in both: the model, hyperparameters, schedule, lookahead,
+  flip/translate augmentation (the crop by masks is airbench's own
+  batch_crop) and test-time augmentation.
 """
 import argparse, json, math, os, sys, time
 
@@ -247,11 +263,12 @@ def main():
         print(json.dumps(row), flush=True)
     accs = np.array([r["acc"] for r in rows])
     times = np.array([r["train_s"] for r in rows])
-    print(json.dumps({**info, "summary": True, "runs": len(rows),
-                      "acc_mean": round(float(accs.mean()), 4), "acc_std": round(float(accs.std()), 4),
+    sd = lambda a: round(float(a.std(ddof=1)), 4) if len(a) > 1 else 0.0
+    print(json.dumps({**info, "summary": True, "runs": len(rows), "std": "sample (ddof=1)",
+                      "acc_mean": round(float(accs.mean()), 4), "acc_std": sd(accs),
                       "runs_at_94": int((accs >= 0.94).sum()),
                       "train_s_mean": round(float(times.mean()), 2),
-                      "train_s_std": round(float(times.std()), 2)}))
+                      "train_s_std": sd(times)}))
 
 
 if __name__ == "__main__":

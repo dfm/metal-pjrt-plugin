@@ -34,7 +34,9 @@ jobs may run. The first run downloads CIFAR-10 (163 MB; Krizhevsky,
 "Learning Multiple Layers of Features from Tiny Images", 2009) from the
 authors' site into `~/.cache/metal-pjrt-examples`; the data is not part of
 this repository. Each script first does a one-epoch warmup run, which
-compiles every program; its time is reported separately (`warmup_run_s`).
+compiles every program the timed runs use; its time is reported
+separately (`warmup_run_s`). Accuracy and time spreads are sample
+standard deviations (ddof=1).
 
 ## Results
 
@@ -45,13 +47,19 @@ algorithm (`torch_baseline.py`, float16, as airbench runs).
 | | JAX (mtl), bf16 | PyTorch MPS, fp16 |
 |---|---|---|
 | test accuracy | 94.01% (1 run) | 93.93% ± 0.10% (5 seeds; 1 of 5 reached 94%) |
-| time to train (airbench's measure) | 289 s | 251 ± 19 s (225 s in an earlier single run) |
-| train step at batch 1024, steady state | 509 ms (545 with rematerialization) | ~460-500 ms (train time / 476 steps) |
+| time to train (airbench's measure) | 289 s, including ~30 s of recompilation (see below) | 251 ± 19 s (225 s in an earlier single run) |
+| train step at batch 1024 | 545 ms steady state (509 without rematerialization); x 476 steps = 259 s | 527 ms (train time / 476 steps) |
 | compile / warmup (1 epoch incl. compiling everything) | 36 s | 27-38 s (no compile; MPS graph setup) |
 | peak memory footprint | 2.7-3.4 GB | 3.9-5.9 GB |
 
-The JAX run above used rematerialization (the default, see below) and
-synchronized once per epoch to log the loss. The planned 5-seed JAX
+The JAX time above is flawed: that version compiled a separate train step
+for the warmup (its schedule baked in 48 total steps) and another for the
+timed run, so the timed run included ~30 s of compilation (and it synced
+once per epoch to log the loss). Fixed since: every run shares one jitted
+step and the warmup uses the full run's schedule, and `airbench.py`
+asserts that nothing recompiles during a timed run. Re-timing, and the
+5-seed JAX measurement, wait for a window with enough free memory (next
+paragraph); the steady-state step time implies ~260 s. The planned 5-seed JAX
 measurement did not complete: the plugin's memory guard refused the
 training step on 13 attempts over two hours, whenever the machine
 (with other applications open) had less than ~1.4 GB free; see "What it
@@ -86,27 +94,38 @@ allocation that would leave less than 512 MB for the system.
 - **Rematerialize the conv groups** (`jax.checkpoint`): the step's scratch
   at batch 1024 goes from 1.17 to 0.94 GB for 7% more time per step
   (`--no-remat` turns it off). Finer checkpoints did not lower it further.
-- **Run the seeds in one process.** Once the first run's buffers are
-  allocated, the plugin's buffer cache serves the later runs; separate
-  processes each have to get past the memory guard again.
 
 Measured and not adopted: exact GELU vs the tanh approximation (no
 measurable difference), float16 instead of bfloat16 (12% slower), and
 computing the conv weight gradients as 9 shifted GEMMs (faster only for
 the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
 
-The PyTorch baseline needed four changes from airbench's CUDA code to run
-on MPS on this machine: BatchNorm computes in float32 (MPS's kernel
-rejects fp16 input with float32 parameters), NCHW instead of
-channels-last (with channels-last its footprint grew past 9 GB), a cap on
-the MPS allocator's cache (`PYTORCH_MPS_HIGH_WATERMARK_RATIO`), and
-airbench's crop by masks rather than a first attempt with advanced
-indexing (whose int64 index tensors took 5 GB).
+### Differences from airbench94
+
+- Both: a one-epoch warmup run before the timed runs (airbench warms up
+  with a full-length run on random labels); float32 eigendecomposition
+  for the whitening layer (JAX through the plugin, PyTorch on the CPU, as MPS
+  has no eigh).
+- JAX: bfloat16 compute with float32 master weights and momentum
+  (airbench and the PyTorch script keep the network in fp16, BatchNorm in
+  float32); images kept as uint8 and normalized inside the jitted step;
+  conv groups rematerialized in the backward pass (default; --no-remat).
+- PyTorch on MPS: BatchNorm casts its input to float32 (MPS's kernel
+  rejects fp16 input with float32 parameters); NCHW instead of
+  channels-last (channels-last grew the footprint past 9 GB);
+  normalization done once on the CPU before the timed region;
+  torch.mps.empty_cache() at every epoch, inside the timed region, and an
+  allocator cap (PYTORCH_MPS_*_WATERMARK_RATIO), both to stay within 8 GB.
+- Unchanged in both: the model, hyperparameters, schedule, lookahead,
+  flip/translate augmentation (the crop by masks is airbench's own
+  batch_crop) and test-time augmentation.
 
 ## What it found in the plugin
 
 - **The convolutions are correct.** One training step's gradients in
-  float32 match CPU float32 to ~1e-5 for every parameter (`check.py`); in
+  float32 match CPU float32 to within 6e-5, except two ill-conditioned
+  weight gradients (2e-4, 1e-3; CPU float32 itself is 1.3e-4 and 5.3e-4
+  from float64 there) (`check.py`); in
   bfloat16 they are as far from float32 as CPU bfloat16 is.
 - **Conv weight gradients are the bottleneck of CNN training.** Per layer
   at batch 1024 (bf16), the forward and input-gradient convolutions run
