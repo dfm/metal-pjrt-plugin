@@ -24,6 +24,8 @@ import numpy as np
 from mlx_lm.generate import generate_step
 from mlx_lm.models.cache import make_prompt_cache
 
+PREFILL_STEP = 2048   # mlx_lm.generate's default prefill_step_size
+
 
 def median_best(fn, warmup=2, iters=5):
     for _ in range(warmup):
@@ -82,8 +84,13 @@ def main():
         ids = mx.array(rng.integers(0, 150000, T))[None]
 
         def prefill():
+            # In chunks of PREFILL_STEP, as mlx-lm's generate does.
             cache = make_prompt_cache(model)
-            mx.eval(mx.argmax(model(ids, cache=cache)[:, -1], -1))
+            for i in range(0, T - PREFILL_STEP, PREFILL_STEP):
+                model(ids[:, i:i + PREFILL_STEP], cache=cache)
+                mx.eval([c.state for c in cache])
+            start = max(0, (T - 1) // PREFILL_STEP * PREFILL_STEP)
+            mx.eval(mx.argmax(model(ids[:, start:], cache=cache)[:, -1], -1))
 
         ms, best = median_best(prefill)
         print(json.dumps({**info, "case": f"prefill_{T}", "ms": round(ms, 3),

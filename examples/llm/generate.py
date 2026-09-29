@@ -17,6 +17,7 @@ import qwen3  # noqa: E402
 
 EOS = (151645, 151643)  # <|im_end|>, <|endoftext|>
 MIN_WINDOW = 256
+PREFILL_CHUNK = 512
 
 
 def chat_prompt(text, think=False):
@@ -85,7 +86,20 @@ class Engine:
                 cond, body, (jnp.int32(0), tok, cache, pos, key, out))
             return out, n, (tok, cache, pos, key)
 
+        # Prompts longer than PREFILL_CHUNK go through the cache in chunks:
+        # attention materializes [heads, T, window] scores, 1 GB per layer
+        # for a single 4096-token chunk.
+        @functools.partial(jax.jit, static_argnums=(6,), donate_argnums=(2,))
+        def chunk(params, tokens, cache, pos, last, key, window):
+            logits, cache = qwen3.forward(params, tokens, cache, pos, cfg, last=last,
+                                          window=window)
+            key, sub = jax.random.split(key)
+            return qwen3.sample(logits, sub, **smp), cache, pos + last + 1, key
+
+        new_cache = jax.jit(lambda: qwen3.init_cache(cfg, batch, max_len, dtype))
+
         self._prefill, self._step, self._fused = prefill, step, fused
+        self._chunk, self._new_cache = chunk, new_cache
 
     def encode(self, text, think=False):
         return self.tok.encode(chat_prompt(text, think)).ids
@@ -101,13 +115,31 @@ class Engine:
 
     def prefill(self, ids, key):
         """Decode state (tok, cache, pos, key) after the prompt `ids`."""
-        return self._prefill(self.params, *self._prompt(ids), key)
+        if len(ids) <= PREFILL_CHUNK:
+            return self._prefill(self.params, *self._prompt(ids), key)
+        if len(ids) > self.max_len:
+            raise ValueError(f"prompt of {len(ids)} tokens exceeds max_len {self.max_len}")
+        cache, pos = self._new_cache(), 0
+        while pos < len(ids):
+            part = ids[pos:pos + PREFILL_CHUNK]
+            T = min(bucket(len(part)), self.max_len - pos)
+            tokens = np.zeros((self.batch, T), np.int32)
+            tokens[:, :len(part)] = part
+            tok, cache, _, key = self._chunk(self.params, tokens, cache, np.int32(pos),
+                                             np.int32(len(part) - 1), key,
+                                             self.window(pos + T))
+            pos += len(part)
+        return tok, cache, jnp.int32(pos), key
 
     def window(self, n):
-        """Cache slots attention reads when the context is n tokens: a power
-        of two >= n (at least MIN_WINDOW), capped at max_len. Reading all of
-        a long cache for a short context would cost more than the weights."""
-        return min(self.max_len, max(MIN_WINDOW, 1 << (n - 1).bit_length()))
+        """Cache slots attention reads when the context is n tokens: n
+        rounded up to a multiple of an eighth of the next power of two (at
+        least MIN_WINDOW), capped at max_len. Reading all of a long cache
+        for a short context would cost more than the weights; plain powers
+        of two over-read by up to 2x (context 1025 read 2048 slots: 7.5 ms
+        per int4 token against mlx-lm's 6.0). Each window compiles once."""
+        step = max(MIN_WINDOW, 1 << max((n - 1).bit_length() - 3, 0))
+        return min(self.max_len, -(-n // step) * step)
 
     def step(self, state, pos):
         """One decode step from `state` whose token sits at position `pos`."""
