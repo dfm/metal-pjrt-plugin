@@ -69,6 +69,12 @@ mlx-lm 42.1; int8 21.0 vs 22.9 (3 interleaved rounds); int4 12.1-13.6
 (single runs) vs 13.2. Prefill of 128 tokens: bf16 134 vs 160 ms, int4 171
 vs 201; short quantized prompts are 2.3x slower than mlx-lm's (below).
 
+Qwen3-4B, which needs 8 GB in bf16, runs in int4 on the 8 GB machine
+(peak footprint 3.7 GB): decode 26.9-28.5 ms/token (mlx-lm with
+`mlx-community/Qwen3-4B-4bit`, the same format: 26.8), prefill of 128
+tokens 434 ms (394-427), of 16 tokens 273 ms (99). Its float32 reference
+does not fit in memory, so `check.py` cannot score it here.
+
 Long contexts (Qwen3-0.6B, max_len 4096, single runs): decode after a
 1024-token prompt, int4, 6.4 ms/token (mlx-lm 6.0); after 3072 tokens
 10.1 (8.6). Prefill of a 3072-token prompt: bf16 1.89 s (mlx-lm 1.87),
@@ -94,7 +100,9 @@ Decode is bound by memory bandwidth: every token reads all the weights
 M3's streaming bandwidth; what is left is ~570 small kernels per token
 (~1 ms at int4). Prefill is bound by the GEMMs. Short quantized prompts
 are the one place mlx-lm is clearly ahead: prefill dequantizes every
-matrix to bf16 for its GEMMs, a fixed 6-10 ms per call.
+matrix to bf16 for its GEMMs, a fixed cost per call that grows with the
+model (6-10 ms at 0.6B, ~175 ms at 4B). mlx-lm's GEMMs read the packed
+weights directly; the plugin has no such kernel.
 
 Memory (peak footprint of `generate.py`, 64 new tokens, max_len 1024):
 Qwen3-0.6B 1.9 GB in bf16, 1.1 GB in int4; Qwen3-1.7B 4.5 GB in bf16,
