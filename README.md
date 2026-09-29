@@ -144,23 +144,24 @@ translator ("MSL emitter: unsupported ..."); see
 | Feature | Works | Notes |
 |---|---|---|
 | `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | `test_lax.py`, `test_smoke.py` |
-| Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | `test_lax.py`, `test_scan.py`. A scatter-add/min/max on 64-bit elements without `unique_indices=True` is refused (Metal has 32-bit atomics only) |
+| Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | `test_lax.py`, `test_scan.py`. A scatter-add/min/max on 64-bit elements, and any scatter on complex64, without `unique_indices=True` is refused (Metal has 32-bit atomics only) |
 | `jax.random` | yes | `test_lax.py` |
 | Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused (`test_steel_gemm.py`, `test_epilogue.py`) |
 | Matmul, integer GEMMs (int8 x int8 -> int32) and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops run (`test_lax.py`, "dot int32") |
 | Matmul, dot precision algorithms (`TF32_TF32_F32`, `F16_F16_F16`, `BF16_BF16_BF16`) | no | XLA refuses them ("Unsupported algorithm on the current device(s)"). The `BF16_BF16_F32` family works |
 | Matmul, fp8 | untested | fp8 conversions work (`test_lax.py`) |
-| Convolutions | yes | 1-D and 2-D f32/f16/bf16 (forward and gradients) on MLX's steel convolution kernels, near MLX's speed (`test_conv.py`); grouped, 3-D, other types and tiny ones on XLA's slow loop emitter. 3 of JAX's convolution test cases fail: two with complex values, one in the kernel translator |
+| Matmul and sort of complex values | no | refused at compile time, naming the op; split into real and imaginary parts |
+| Convolutions | yes | 1-D and 2-D f32/f16/bf16 (forward and gradients) on MLX's steel convolution kernels, near MLX's speed (`test_conv.py`); grouped, 3-D, other types and tiny ones on XLA's slow loop emitter. One of JAX's convolution test cases fails (a complex one, which is a complex matmul) |
 | Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`) |
 | Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the shared memory (`test_linalg.py`). f16/bf16 linear algebra is untested |
 | `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering on mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") |
-| FFT | partly | a dense DFT, O(n^2) per axis. Works when the result is made real inside the same `jit` (`abs`, `.real`, `irfft`; `test_linalg.py`). Returning a complex array, a complex intermediate between kernels, and `grad` through an FFT fail (expected failures in `test_linalg.py`) |
-| `pure_callback`, `io_callback`, `jax.debug.print`, `jax.debug.callback` | yes | synchronous (below); sub-byte dtypes such as int4 are refused, and complex operands fail as complex arrays do (`test_callbacks.py`) |
+| FFT | yes, slow | a dense DFT, O(n^2) per axis, complex64 results and gradients included (`test_linalg.py`) |
+| `pure_callback`, `io_callback`, `jax.debug.print`, `jax.debug.callback` | yes | synchronous (below); sub-byte dtypes such as int4 are refused (`test_callbacks.py`) |
 | `checkify` | partly, untested | functionalized checks (`checkify.checkify`) use JAX's generic path; `debug=True` checks are dropped, as on TPU |
 | Several devices (`pmap`, sharding) | no | the plugin exposes one device |
 | f32, f16, bf16, integer and bool types | yes | `test_lax.py` |
 | float64 | no | Apple GPUs have no double type. Transfers of f64 arrays work, and inside `jit` so do copies (reshapes, contiguous slices); f64 arithmetic and other f64 data movement are refused at compile time (a strided f64 slice fails in the kernel translator instead). With `jax_enable_x64` on, keep f64 work on CPU |
-| complex64 | partly | values inside one fused kernel work (`abs(x + 1j * x)`, `test_lax.py`); complex arrays in device memory fail in the kernel translator |
+| complex64 | yes | arithmetic, math, data movement, reductions and transfers (`test_lax.py`), except matmul, sort and scatter without unique indices (above). complex128 is refused like float64 |
 | int4 / uint4 | no | fail in the kernel translator (expected failure in `test_lax.py`) |
 | Buffer donation (`donate_argnums`) | yes | the donated input's memory becomes the output, as on CUDA (`test_donation.py`; JAX's own donation tests in `api_test.py` pass) |
 | JAX's persistent compilation cache | yes, opt-in | below (`test_callbacks.py`, `test_compilation_cache.py`) |

@@ -1,6 +1,6 @@
 # Known failures of JAX's tests/lax_test.py on mtl, as run by
 # scripts/run_jax_tests.sh. One test id per line (without the file), '#'
-# comments. Baseline: 947 pass, 62 fail, 63 skipped.
+# comments. Baseline: 993 pass, 16 fail, 63 skipped.
 #
 # Test ids depend on the generated-case count and x64, so
 # scripts/jax_tests_plugin.py only compares against this list when the run
@@ -8,62 +8,21 @@
 # that starts failing for a different reason stays hidden.
 # config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0
 
-# UNSUPPORTED: complex values, and int4 converts (MSL emitter: unsupported
-# non-trivial unrealized_conversion_cast)
-FunctionAccuracyTest::testSincInfinities
-LaxTest::testConvGeneralDilated0D2
+# UNSUPPORTED: dots and sorts of complex values, refused at compile time
+# ("Metal: matmul (dot) of complex values is not supported", "Metal: sort
+# of complex values ...")
 LaxTest::testConvGeneralDilatedLocal2
-LaxTest::testConvertElementTypeNanToInt
-LaxTest::testOp132
-LaxTest::testOp133
-LaxTest::testOp134
-LaxTest::testOp135
-LaxTest::testOp136
-LaxTest::testOp137
-LaxTest::testOp138
-LaxTest::testOp139
-LaxTest::testOp140
-LaxTest::testOp141
-LaxTest::testOp142
-LaxTest::testOp143
-LaxTest::testOp57
-LaxTest::testOp58
-LaxTest::testOp59
-LaxTest::testOp63
-LaxTest::testOp64
-LaxTest::testOp65
-LaxTest::testOpAgainstNumpy132
-LaxTest::testOpAgainstNumpy133
-LaxTest::testOpAgainstNumpy134
-LaxTest::testOpAgainstNumpy135
-LaxTest::testOpAgainstNumpy136
-LaxTest::testOpAgainstNumpy137
-LaxTest::testOpAgainstNumpy138
-LaxTest::testOpAgainstNumpy139
-LaxTest::testOpAgainstNumpy140
-LaxTest::testOpAgainstNumpy141
-LaxTest::testOpAgainstNumpy142
-LaxTest::testOpAgainstNumpy143
-LaxTest::testOpAgainstNumpy57
-LaxTest::testOpAgainstNumpy58
-LaxTest::testOpAgainstNumpy59
-LaxTest::testOpAgainstNumpy63
-LaxTest::testOpAgainstNumpy64
-LaxTest::testOpAgainstNumpy65
 LaxTest::testSortKeyVal2
-LaxTest::test_constant_folding_complex_to_real_scan_regression
+LaxTest::test_no_complex_to_real_cast_warning_in_transpose
+
+# UNSUPPORTED: int4 converts (MSL emitter: unsupported non-trivial
+# unrealized_conversion_cast)
 LaxTest::test_int4_binary_ops2
 LaxTest::test_int4_non_support_errors0
 LaxTest::test_int4_non_support_errors1
 LaxTest::test_int4_unary_ops0
 LaxTest::test_int4_unary_ops1
 LaxTest::test_int4_unary_ops2
-LaxTest::test_no_complex_to_real_cast_warning_in_transpose
-LazyConstantTest::testConvertElementTypeAvoidsCopies1
-LazyConstantTest::testLog1pNearOne
-LazyConstantTest::testUnaryWeakTypes_conj
-LazyConstantTest::testUnaryWeakTypes_imag
-LazyConstantTest::testUnaryWeakTypes_real
 
 # UNSUPPORTED: int4 arithmetic (MSL emitter: sub-byte integer type)
 LaxTest::test_int4_binary_ops0
@@ -78,6 +37,3 @@ LaxTest::testDotAlgorithm8
 
 # UNSUPPORTED: dce_sink FFI handler not registered for METAL
 LaxTest::test_dce_sink_prevents_xla_dce
-
-# UNSUPPORTED: MSL emitter: conversion to EmitC failed (conv)
-LaxTest::testConvGeneralDilated0

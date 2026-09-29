@@ -90,6 +90,30 @@ TEST_F(KernelsTest, EverySourceCompiles) {
   }
 }
 
+// complex64 as the MSL emitter emits it (msl_emitter_test Complex64AsFloat2):
+// a float2 aggregate constant, a constant table of 64-bit words loaded as
+// float2, float2 through threadgroup memory and device buffers.
+TEST_F(KernelsTest, EmitterComplex64Constructs) {
+  const std::string source = absl::StrCat(kMslPrelude, R"(
+constant uint64_t cplx_table[2] = {4611686019492741120ul, 4647714818650800128ul};
+kernel void cplx(device char* in [[buffer(0)]], device char* out [[buffer(1)]],
+                 uint3 tid [[thread_position_in_threadgroup]]) {
+  threadgroup uint4 xla_shared_0[16];
+  threadgroup char* tile = (threadgroup char*)xla_shared_0;
+  float2 zero = {0.0e+00f, 0.0e+00f};
+  float2 v = xla_load<float2>(xla_gep(in, (long)tid.x * 8));
+  float2 t = xla_load<float2>(xla_gep(((constant char*)cplx_table), 8));
+  float r = xla_vext<float>(v, 0) > 0.0f ? xla_vext<float>(t, 1) : 0.0f;
+  float2 w = xla_vins(zero, r, 0);
+  xla_store(xla_gep(tile, (long)tid.x * 8), w);
+  xla_barrier();
+  xla_store(xla_gep(out, (long)tid.x * 8),
+            xla_load<float2>(xla_gep(tile, (long)tid.x * 8)));
+}
+)");
+  ExpectKernel(source.c_str(), "cplx");
+}
+
 TEST_F(KernelsTest, RuntimeBuiltins) {
   using B = rt::Device::Builtin;
   for (B b : {B::kFill32, B::kFill8, B::kCopy16, B::kCopy8}) {

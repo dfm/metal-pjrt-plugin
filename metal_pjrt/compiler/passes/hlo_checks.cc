@@ -181,19 +181,22 @@ bool MovesF64InAKernel(const HloInstruction& instr) {
     case HloOpcode::kPad:
     case HloOpcode::kReverse:
     case HloOpcode::kSelect:
-      return TouchesType(instr, {F64});
+      return TouchesType(instr, {F64, C128});
     default:
       return false;
   }
 }
 
 // A scatter whose combiner does more than overwrite needs atomics on the
-// element type (read-modify-write when indices collide).
+// element type (read-modify-write when indices collide). XLA overwrites
+// complex elements with a compare-and-swap loop too (no atomic store of a
+// complex, atomic_rmw_utils.cc), a 64-bit one for complex64.
 bool NeedsWideAtomics(const HloInstruction& instr) {
   if (instr.opcode() != HloOpcode::kScatter ||
       Cast<HloScatterInstruction>(&instr)->unique_indices()) {
     return false;
   }
+  if (TouchesType(instr, {C64, C128})) return true;
   const HloInstruction* root = instr.to_apply()->root_instruction();
   const int n = instr.operand_count() / 2;  // operands, indices, updates
   bool overwrite = root->opcode() == HloOpcode::kParameter &&
@@ -218,13 +221,32 @@ bool NeedsWideAtomics(const HloInstruction& instr) {
 
 }  // namespace
 
+absl::Status CheckBeforeOptimization(const HloModule& module) {
+  for (const HloComputation* comp : module.computations()) {
+    for (const HloInstruction* instr : comp->instructions()) {
+      const HloOpcode op = instr->opcode();
+      if ((op == HloOpcode::kDot || op == HloOpcode::kRaggedDot ||
+           op == HloOpcode::kSort) &&
+          TouchesType(*instr, {C64, C128})) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: ", op == HloOpcode::kSort ? "sort" : "matmul (dot)",
+            " of complex values is not supported; split into real and "
+            "imaginary parts, or run it on the CPU backend: ",
+            DescribeOp(*instr)));
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status CheckPostGemmRewriter(const HloModule& module) {
   for (const HloComputation* comp : module.computations()) {
     for (const HloInstruction* instr : comp->instructions()) {
-      if (Computes(*instr) && TouchesType(*instr, {F64})) {
+      if (Computes(*instr) && TouchesType(*instr, {F64, C128})) {
         return absl::UnimplementedError(absl::StrCat(
-            "Metal: f64 arithmetic is not supported (Apple GPUs have no "
-            "double precision; use float32, or run it on the CPU backend): ",
+            "Metal: f64 / complex128 arithmetic is not supported (Apple GPUs "
+            "have no double precision; use float32 / complex64, or run it on "
+            "the CPU backend): ",
             DescribeOp(*instr)));
       }
       if (MovesF64InAKernel(*instr)) {

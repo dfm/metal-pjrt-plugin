@@ -66,8 +66,8 @@ its own table.
 ## Limitations
 
 - One device only. Sub-byte dtypes are refused ("host callbacks do not
-  support dtype int4 on platform mtl"); complex operands never get there,
-  since complex arrays fail in the MSL emitter first.
+  support dtype int4 on platform mtl"). complex64 operands and results
+  work.
 - Only modules lowered for mtl alone get the mtl callback. A module lowered
   for several platforms (e.g. `jax.export` with `platforms=("mtl", "cpu")`)
   takes upstream's lowering, which refuses that for every platform

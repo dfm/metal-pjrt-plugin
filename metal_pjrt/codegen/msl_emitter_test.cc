@@ -15,6 +15,7 @@
 #include "llvm/IR/Module.h"
 #include "metal_pjrt/codegen/msl_llvm_bridge.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -39,7 +40,8 @@ class MslEmitterTest : public ::testing::Test {
  protected:
   MslEmitterTest() {
     mlir::DialectRegistry registry;
-    registry.insert<mlir::arith::ArithDialect, mlir::func::FuncDialect,
+    registry.insert<mlir::arith::ArithDialect, mlir::complex::ComplexDialect,
+                    mlir::func::FuncDialect,
                     mlir::gpu::GPUDialect, mlir::LLVM::LLVMDialect,
                     mlir::math::MathDialect, mlir::scf::SCFDialect,
                     mlir::ub::UBDialect, mlir::vector::VectorDialect>();
@@ -363,6 +365,94 @@ TEST_F(MslEmitterTest, ThreeLaneVectorsUseFourLanesOfStorage) {
   EXPECT_THAT(msl, HasSubstr("xla_alloca_0[4];"));
   EXPECT_THAT(msl, HasSubstr(" = 16;"));
   EXPECT_THAT(msl, Not(HasSubstr(" = 12;")));
+}
+
+// complex64 as LowerTensors + ConvertComplexToStandard leave it: struct
+// loads/stores behind unrealized casts, complex.create/re/im/constant, a
+// complex loop accumulator, a helper taking and returning complex, select, a
+// threadgroup tile of complex and a constant global of complex.
+constexpr char kComplex[] = R"mlir(
+module {
+  llvm.mlir.global private @tile() {addr_space = 3 : i32} : !llvm.array<32 x struct<(f32, f32)>>
+  llvm.mlir.global private constant @table(dense<[(1.0, 2.0), (-0.5, 4.0)]> : tensor<2xcomplex<f32>>) {addr_space = 0 : i32} : !llvm.array<2 x struct<(f32, f32)>>
+  func.func private @cmul(%a: complex<f32>, %b: complex<f32>) -> complex<f32> {
+    %ar = complex.re %a : complex<f32>
+    %ai = complex.im %a : complex<f32>
+    %br = complex.re %b : complex<f32>
+    %bi = complex.im %b : complex<f32>
+    %rr = arith.mulf %ar, %br : f32
+    %ii = arith.mulf %ai, %bi : f32
+    %re = arith.subf %rr, %ii : f32
+    %ri = arith.mulf %ar, %bi : f32
+    %ir = arith.mulf %ai, %br : f32
+    %im = arith.addf %ri, %ir : f32
+    %r = complex.create %re, %im : complex<f32>
+    return %r : complex<f32>
+  }
+  func.func @cplx(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    %tid = gpu.thread_id x
+    %ti = arith.index_castui %tid : index to i32
+    %zero = complex.constant [0.000000e+00 : f32, 0.000000e+00 : f32] : complex<f32>
+    %acc = scf.for %j = %c0 to %c4 step %c1 iter_args(%a = %zero) -> (complex<f32>) {
+      %ji = arith.index_cast %j : index to i32
+      %p = llvm.getelementptr inbounds %arg0[0, %ji] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<4 x struct<(f32, f32)>>
+      %s = llvm.load %p : !llvm.ptr -> !llvm.struct<(f32, f32)>
+      %v = builtin.unrealized_conversion_cast %s : !llvm.struct<(f32, f32)> to complex<f32>
+      %m = func.call @cmul(%a, %v) : (complex<f32>, complex<f32>) -> complex<f32>
+      scf.yield %m : complex<f32>
+    }
+    %tp = llvm.mlir.addressof @table : !llvm.ptr
+    %tq = llvm.getelementptr inbounds %tp[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x struct<(f32, f32)>>
+    %ts = llvm.load %tq : !llvm.ptr -> !llvm.struct<(f32, f32)>
+    %tv = builtin.unrealized_conversion_cast %ts : !llvm.struct<(f32, f32)> to complex<f32>
+    %re = complex.re %acc : complex<f32>
+    %f0 = arith.constant 0.0 : f32
+    %pos = arith.cmpf ogt, %re, %f0 : f32
+    %sel = arith.select %pos, %acc, %tv : complex<f32>
+    %sh = llvm.mlir.addressof @tile : !llvm.ptr<3>
+    %shg = llvm.addrspacecast %sh : !llvm.ptr<3> to !llvm.ptr
+    %sp = llvm.getelementptr inbounds %shg[0, %ti] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<32 x struct<(f32, f32)>>
+    %sels = builtin.unrealized_conversion_cast %sel : complex<f32> to !llvm.struct<(f32, f32)>
+    llvm.store %sels, %sp : !llvm.struct<(f32, f32)>, !llvm.ptr
+    gpu.barrier
+    %back = llvm.load %sp : !llvm.ptr -> !llvm.struct<(f32, f32)>
+    %q = llvm.getelementptr inbounds %arg1[0, %ti] : (!llvm.ptr, i32) -> !llvm.ptr, !llvm.array<32 x struct<(f32, f32)>>
+    llvm.store %back, %q : !llvm.struct<(f32, f32)>, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, Complex64AsFloat2) {
+  absl::StatusOr<MslKernel> kernel = Emit(kComplex, "cplx");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  EXPECT_THAT(msl, HasSubstr("xla_load<float2>("));
+  EXPECT_THAT(msl, HasSubstr("inline float2 cplx_fn_cmul(float2 "));
+  EXPECT_THAT(msl, HasSubstr("xla_vext<float>("));
+  EXPECT_THAT(msl, HasSubstr("threadgroup uint4 xla_shared_0[16];"));
+  // (1, 2) and (-0.5, 4) as 64-bit words, real part in the low half.
+  EXPECT_THAT(msl, HasSubstr("constant uint64_t cplx_table[2] = "
+                             "{4611686019492741120ul, 4647714818650800128ul};"));
+  EXPECT_THAT(msl, Not(HasSubstr("complex")));
+}
+
+TEST_F(MslEmitterTest, RejectsComplex128) {
+  constexpr char kIr[] = R"mlir(
+module {
+  func.func @c128(%arg0: !llvm.ptr) {
+    %s = llvm.load %arg0 : !llvm.ptr -> !llvm.struct<(f64, f64)>
+    %v = builtin.unrealized_conversion_cast %s : !llvm.struct<(f64, f64)> to complex<f64>
+    %re = complex.re %v : complex<f64>
+    llvm.store %re, %arg0 : f64, !llvm.ptr
+    return
+  }
+})mlir";
+  absl::StatusOr<MslKernel> kernel = Emit(kIr, "c128");
+  ASSERT_FALSE(kernel.ok());
+  EXPECT_EQ(kernel.status().code(), absl::StatusCode::kUnimplemented);
 }
 
 TEST_F(MslEmitterTest, RejectsF64) {

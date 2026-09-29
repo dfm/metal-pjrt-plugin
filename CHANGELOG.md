@@ -8,6 +8,17 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-28
 
+- complex64 works: the MSL emitter carries it as `float2` in buffers,
+  constants, shared memory and loop-carried values, so complex arrays can
+  be returned from `jit`, passed between kernels, reduced and transferred,
+  and FFT results and gradients work. Complex matmuls and sorts are refused
+  at compile time naming the op (they used to fail in the kernel
+  translator), as is a complex scatter without `unique_indices`;
+  complex128 is refused with f64. 46 of JAX's 62 known `lax_test.py`
+  failures now pass.
+- f16/bf16 conv weight gradients could be wrong (off by up to 1e26) when
+  the f32 partials buffer was misaligned; fixed by aligning it to 256
+  bytes (ab3e2d0).
 - Convolutions run on MLX's steel convolution kernels (`metal$conv`,
   MetalConvRewriter): 1-D and 2-D, f32/f16/bf16 (f16/bf16 accumulate in
   f32), forward, input and weight gradients, of 4 Mflop and more. The cnn

@@ -9,8 +9,8 @@ bench/linalg_bench.py.
 
 Decompositions are compared through invariants (reconstruction, orthogonality,
 sorted spectra) rather than raw factors, which are only unique up to signs /
-phases. Complex values cannot currently live in metal buffers, so FFT checks
-reduce to real outputs (abs / real / imag) inside the jitted function.
+phases. FFT checks reduce to real outputs (abs / real / imag), which the
+f64 reference compares in ulps.
 """
 import os
 import re
@@ -139,15 +139,11 @@ CHECKS = {
     "grad cho_solve/logdet": (lambda a, y: jax.grad(gp_nll)(a, y), mat(30, 30), mat(30)),
     "grad eigh": (lambda a: jax.grad(lambda x: jnp.sum(jnp.linalg.eigh(x + x.T)[0] ** 3))(a), mat(10, 10)),
     "grad slogdet": (lambda a: jax.grad(lambda x: jnp.linalg.slogdet(x + 5 * jnp.eye(12))[1])(a), mat(12, 12)),
-    "[complex buffers] fft2 * 2 / ifftn": (lambda x: jnp.abs(jnp.fft.ifftn(jnp.fft.fft2(x) * 2)), mat(8, 12)),
-    "[complex buffers] fft grad": (lambda x: jax.grad(lambda v: jnp.sum(jnp.abs(jnp.fft.rfft(v)) ** 2))(x), mat(32)),
+    "fft2 * 2 / ifftn (complex buffers)": (lambda x: jnp.abs(jnp.fft.ifftn(jnp.fft.fft2(x) * 2)), mat(8, 12)),
+    "fft grad (complex buffers)": (lambda x: jax.grad(lambda v: jnp.sum(jnp.abs(jnp.fft.rfft(v)) ** 2))(x), mat(32)),
 }
 
 
-
-# Known failures: these materialize complex intermediates in device memory,
-# which the MSL emitter does not support yet (not a lowering issue).
-XFAIL = {n for n in CHECKS if n.startswith("[complex buffers]")}
 
 # Measured (METAL_TEST_REPORT_ULPS=1, M3) and doubled; normwise ulps.
 ULPS = {
@@ -201,13 +197,12 @@ ULPS = {
     'triangular_solve 3x3 left=False lower=False trans=True unit=True': 1.1,
     'grad cholesky': 9, 'grad solve': 7.4, 'grad cho_solve/logdet': 13,
     'grad eigh': 12, 'grad slogdet': 2.7,
+    'fft2 * 2 / ifftn (complex buffers)': 4.9,
+    'fft grad (complex buffers)': 3.4,
 }
 
 
-@pytest.mark.parametrize("name", [
-    pytest.param(n, marks=[pytest.mark.xfail(reason="complex buffers", strict=True,
-                                             raises=jax.errors.JaxRuntimeError)] if n in XFAIL else [])
-    for n in CHECKS])
+@pytest.mark.parametrize("name", list(CHECKS))
 def test_linalg(name):
   fn, *args = CHECKS[name]
   check(fn, *args, ulps=ULPS.get(name, 0), normwise=True, name=name)

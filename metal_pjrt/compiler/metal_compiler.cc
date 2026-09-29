@@ -159,6 +159,7 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
   ApplyMetalDefaults(module->mutable_config().mutable_debug_options());
+  TF_RETURN_IF_ERROR(CheckBeforeOptimization(*module));
   // --- begin linalg (Accelerate LAPACK) ---
   // kCholesky / kTriangularSolve -> metal$cholesky / metal$triangular_solve,
   // before CholeskyExpander / TriangularSolveExpander see them.

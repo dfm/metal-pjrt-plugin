@@ -65,6 +65,8 @@ def run_on(dev, fn, *args):
 
 def _upcast(a):
     a = np.asarray(a)
+    if np.issubdtype(a.dtype, np.complexfloating):
+        return a.astype(np.complex128)
     return a.astype(np.float64) if np.issubdtype(a.dtype, np.floating) or \
         a.dtype in (ml_dtypes.bfloat16, ml_dtypes.float8_e4m3fn) else a
 
@@ -107,6 +109,9 @@ def _check_dtype(got, want, name):
     g, w = np.dtype(got), np.dtype(want)
     if g == w:
         return
+    if w == np.complex128:
+        assert g == np.complex64, f"{name}: dtype {g}, want {w}"
+        return
     assert w.itemsize == 8 and g.itemsize < 8, f"{name}: dtype {g}, want {w}"
     same_kind = (_is_float(g) and _is_float(w)) or (
         not _is_float(g) and not _is_float(w) and g.kind == w.kind)
@@ -129,14 +134,19 @@ def assert_close(got, want, ulps, normwise=False, name="", cpu32=None):
         if cpu_leaves is not None:
             assert g.dtype == np.asarray(cpu_leaves[i]).dtype, (
                 f"{name}: dtype {g.dtype}, CPU gives {np.asarray(cpu_leaves[i]).dtype}")
+        c = np.asarray(cpu_leaves[i]) if cpu_leaves is not None else None
+        if np.issubdtype(g.dtype, np.complexfloating):
+            # Real and imaginary parts, each in ulps of float32.
+            parts = lambda a: np.stack([a.real, a.imag])
+            g, w = parts(g), parts(w)
+            c = parts(c) if c is not None else None
         if not _is_float(g.dtype):
             np.testing.assert_array_equal(g, w.astype(g.dtype), err_msg=name)
             continue
         err = ulp_error(g, w, g.dtype, normwise)
         worst = max(worst, err)
         if cpu_leaves is not None:
-            worst_cpu = max(worst_cpu, ulp_error(cpu_leaves[i], w, g.dtype,
-                                                 normwise))
+            worst_cpu = max(worst_cpu, ulp_error(c, w, g.dtype, normwise))
     if REPORT:
         cpu_note = f" cpu32={worst_cpu:.3g}" if cpu_leaves is not None else ""
         print(f"\nULPS {name!r} metal={worst:.3g}{cpu_note}"

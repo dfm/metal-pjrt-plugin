@@ -185,6 +185,31 @@ case("attention block")(lambda: ref(lambda q: jax.nn.softmax(q @ q.T / 8.0, -1) 
 case("int64 ops (x64 off -> i32)")(lambda: ref(lambda x: (x.astype(jnp.int64) * 3).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("f64 (x64 off -> f32)")(lambda: ref(lambda x: x.astype(jnp.float64) * 2, A(16)))
 case("complex64 intermediate (abs)")(lambda: ref(lambda x: jnp.abs(x + 1j * x), A(16)))
+# ---- complex64 (float2 in kernels; each part in ulps of float32) ----
+CX = lambda *s: (R(*s) + 1j * np.roll(R(*s), 1)).astype(np.complex64)
+@case("c64 device_put / get round trip")
+def _():
+    x = CX(8, 5)
+    y = jax.device_put(x, metal_testing.metal())
+    assert y.dtype == np.complex64
+    np.testing.assert_array_equal(np.asarray(y), x)
+case("c64 returned from jit")(lambda: ref(lambda x: x * 2, CX(64)))
+for op in ["add", "mul", "div"]:
+    case(f"c64 {op}")((lambda op: lambda: ref(getattr(lax, op), CX(64), CX(64)[::-1]))(op))
+for op in ["abs", "exp", "log", "conj", "real", "imag"]:
+    case(f"c64 {op}")((lambda op: lambda: ref(getattr(lax, op), CX(64)))(op))
+case("c64 convert f32 -> c64 / complex")(lambda: ref(lambda x: (x.astype(jnp.complex64), lax.complex(x, -x)), A(64)))
+case("c64 transpose")(lambda: ref(lambda x: x.T, CX(24, 40)))
+case("c64 concatenate")(lambda: ref(lambda x, y: jnp.concatenate([x, y], 1), CX(8, 5), CX(8, 3)))
+case("c64 slice")(lambda: ref(lambda x: x[1:7, ::3], CX(8, 12)))
+case("c64 pad")(lambda: ref(lambda x: jnp.pad(x, ((1, 2), (3, 0)), constant_values=1 - 2j), CX(8, 12)))
+case("c64 dynamic_update_slice")(lambda: ref(lambda x, u, i: lax.dynamic_update_slice(x, u, (i, i // 2)), CX(8, 12), CX(3, 4), np.int32(4)))
+case("c64 reduce sum")(lambda: ref(lambda x: (jnp.sum(x), jnp.sum(x, 0), jnp.sum(x, 1)), CX(256, 96)))
+case("c64 reduce sum 1M")(lambda: ref(jnp.sum, CX(1 << 20)))
+case("c64 fused")(lambda: ref(lambda x, y: jnp.abs(jnp.exp(x * y + 0.5j) / (y + 2)), CX(64), CX(64)[::-1]))
+case("c64 unfused (complex between kernels)")(lambda: ref(lambda x, y: (jnp.exp(x).T * jnp.sum(y, 0)).reshape(-1)[::3], CX(16, 8), CX(4, 16)))
+case("c64 constants")(lambda: ref(lambda x: (x * jnp.asarray(CX(64)[::-1]), x[:1] * jnp.asarray(CX(4096))), CX(64)))
+case("c64 pure_callback")(lambda: ref(lambda x: jax.pure_callback(lambda v: np.asarray(v).conj() * 2, jax.ShapeDtypeStruct((8,), jnp.complex64), x), CX(8), same=True))
 case("int8 / uint8 math")(lambda: ref(lambda x: (x.astype(jnp.int8) * 2 + x.astype(jnp.uint8)).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("int4 (expected unsupported)")(lambda: ref(lambda x: x.astype(jnp.int4).astype(f32), jnp.arange(16, dtype=jnp.int32) % 7))
 case("float8 e4m3")(lambda: ref(lambda x: x.astype(jnp.float8_e4m3fn), A(16)))
@@ -233,6 +258,10 @@ ULPS = {
     'jnp.linalg.norm': 1, 'softmax cross entropy': 2.7,
     'layernorm fwd+bwd': 5.2, 'attention block': 7.4,
     'complex64 intermediate (abs)': 1,
+    'c64 add': 1, 'c64 mul': 2.9, 'c64 div': 4.7, 'c64 abs': 2.3,
+    'c64 exp': 3.7, 'c64 log': 5.8, 'c64 reduce sum': 3.2,
+    'c64 reduce sum 1M': 1.5, 'c64 fused': 6.7,
+    'c64 unfused (complex between kernels)': 1.6, 'c64 constants': 1.9,
     'many-arg fusion (>31 buffers)': 6.1,
 }
 # Outputs of sums, dots and whole programs: ulps of the largest output.
@@ -246,7 +275,9 @@ NORMWISE = {
     "lax.scan 100 steps", "vmap", "grad through while", "checkpoint/remat",
     "lax.erf_inv grad / custom_jvp", "jnp.linalg.norm",
     "softmax cross entropy", "layernorm fwd+bwd", "attention block",
-    "bf16 reduce", "many-arg fusion (>31 buffers)",
+    "bf16 reduce", "many-arg fusion (>31 buffers)", "c64 reduce sum",
+    "c64 reduce sum 1M", "c64 unfused (complex between kernels)",
+    "c64 constants",
 }
 
 
@@ -257,6 +288,18 @@ NORMWISE = {
 def test_lax(name, fn):
     _current[0] = name
     fn()
+
+
+# Complex dots and sorts are refused up front (CheckBeforeOptimization),
+# naming the op, rather than failing in a kernel.
+@pytest.mark.parametrize("fn,what", [
+    (lambda x: x @ x.T, r"matmul \(dot\) of complex"),
+    (lambda x: jnp.sort(x, axis=1), "sort of complex"),
+])
+def test_complex_dot_and_sort_refused(fn, what):
+    x = jax.device_put(CX(8, 8), metal_testing.metal())
+    with pytest.raises(jax.errors.JaxRuntimeError, match=what):
+        jax.jit(fn)(x)
 
 
 # exp / sin / cos of small arguments use the prelude's Taylor polynomials

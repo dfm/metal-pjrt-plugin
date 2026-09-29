@@ -95,8 +95,9 @@ These are compile-time errors: the program never ran, and nothing is
 wrong with the device. Messages that start with `Metal:` name the JAX
 operation and its source line:
 
-- `Metal: f64 arithmetic is not supported (Apple GPUs have no double
-  precision; use float32, or run it on the CPU backend): ...` and
+- `Metal: f64 / complex128 arithmetic is not supported (Apple GPUs have
+  no double precision; use float32 / complex64, or run it on the CPU
+  backend): ...` and
   `Metal: f64 transpose inside jit is not supported (...; only transfers
   of f64 arrays work). Use float32, or run it on the CPU backend: ...`
   (also broadcast, concatenate, gather, iota, pad, reverse, select). Keep
@@ -107,7 +108,13 @@ operation and its source line:
   a supported type.
 - `Metal: scatter with a combiner on 64-bit elements needs 64-bit atomics,
   which Metal does not have: ...` Pass `unique_indices=True` if the
-  indices are unique, or use 32-bit elements.
+  indices are unique, or use 32-bit elements. A scatter on complex64
+  needs them even to overwrite (XLA writes complex elements with a
+  compare-and-swap loop).
+- `Metal: matmul (dot) of complex values is not supported; ...` and
+  `Metal: sort of complex values is not supported; ...`: split into real
+  and imaginary parts (a complex matmul is four real ones), or run it on
+  the CPU backend.
 - `Metal: bf16 matmul too large: ... Split the matmul or use float32` and
   `Metal: matmul operand ... has a batch, row or column group of ...
   elements; XLA's matmul config counts them in 32 bits. Split the batch
@@ -118,11 +125,8 @@ translator, which has no code for that type, and name an internal
 operation instead of yours:
 
 - `MSL emitter: unsupported non-trivial unrealized_conversion_cast in op
-  'builtin.unrealized_conversion_cast' at loc("loop_complex_fusion")`: a
-  complex array in device memory, for example `jnp.fft.fft(x)` returned
-  from `jit`, or a complex value passed between kernels. Complex values
-  work inside one fused kernel: make the result real in the same `jit`
-  (`jnp.abs(jnp.fft.fft(x))`, `.real`, `.imag`).
+  'builtin.unrealized_conversion_cast' at loc("loop_convert_fusion")`:
+  an int4/uint4 conversion.
 - `MSL emitter: unsupported sub-byte / odd-width integer type in op
   'arith.trunci' at ...`: int4/uint4.
 - `MSL emitter: unsupported f64 type (Metal has no double precision) in op

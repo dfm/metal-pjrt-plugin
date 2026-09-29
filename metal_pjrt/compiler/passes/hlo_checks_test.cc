@@ -284,13 +284,87 @@ ENTRY e {
   EXPECT_TRUE(legal("f32", op("f32", "add")).ok());
 }
 
-TEST_F(MetalHloChecksTest, ComplexArithmeticIsNotChecked) {
+TEST_F(MetalHloChecksTest, Complex64ArithmeticIsLegal) {
   EXPECT_TRUE(Check(R"(
 HloModule m
 ENTRY e {
   a = f32[4] parameter(0)
   c = c64[4] complex(a, a)
-  ROOT m = f32[4] abs(c)
+  e = c64[4] exponential(c)
+  ROOT t = c64[4,2] broadcast(e), dimensions={0}
+})").ok());
+  absl::Status s = Check(R"(
+HloModule m
+ENTRY e {
+  a = c128[4] parameter(0)
+  ROOT e = c128[4] exponential(a), metadata={op_name="jit(f)/exp"}
+})");
+  EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(s.message().find("complex128"), std::string::npos) << s;
+  EXPECT_NE(s.message().find("jit(f)/exp"), std::string::npos) << s;
+}
+
+TEST_F(MetalHloChecksTest, ComplexScatterNeedsAtomics) {
+  constexpr char kScatter[] = R"(
+HloModule m
+comb {
+  a = c64[] parameter(0)
+  ROOT b = c64[] parameter(1)
+}
+ENTRY e {
+  x = c64[4] parameter(0)
+  i = s32[3,1] parameter(1)
+  u = c64[3] parameter(2)
+  ROOT s = c64[4] scatter(x, i, u), update_window_dims={}, inserted_window_dims={0}, scatter_dims_to_operand_dims={0}, index_vector_dim=1, $UNIQUEto_apply=comb
+})";
+  // Even an overwrite: XLA compare-and-swaps complex elements.
+  EXPECT_EQ(Check(absl::StrReplaceAll(kScatter, {{"$UNIQUE", ""}})).code(),
+            absl::StatusCode::kUnimplemented);
+  EXPECT_TRUE(Check(absl::StrReplaceAll(kScatter,
+                                        {{"$UNIQUE", "unique_indices=true, "}}))
+                  .ok());
+}
+
+TEST_F(MetalHloChecksTest, ComplexDotAndSortAreRefused) {
+  auto check = [&](const std::string& hlo) {
+    auto module = ParseAndReturnUnverifiedModule(hlo);
+    EXPECT_TRUE(module.ok()) << module.status();
+    return module.ok() ? CheckBeforeOptimization(**module) : module.status();
+  };
+  absl::Status dot = check(R"(
+HloModule m
+ENTRY e {
+  a = c64[4,3] parameter(0)
+  b = c64[3,2] parameter(1)
+  ROOT d = c64[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(f)/dot_general"}
+})");
+  EXPECT_EQ(dot.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(dot.message().find("matmul (dot) of complex"), std::string::npos)
+      << dot;
+  EXPECT_NE(dot.message().find("jit(f)/dot_general"), std::string::npos)
+      << dot;
+  absl::Status sort = check(R"(
+HloModule m
+lt {
+  a = c64[] parameter(0)
+  b = c64[] parameter(1)
+  ra = f32[] real(a)
+  rb = f32[] real(b)
+  ROOT l = pred[] compare(ra, rb), direction=LT
+}
+ENTRY e {
+  x = c64[8] parameter(0)
+  ROOT s = c64[8] sort(x), dimensions={0}, to_apply=lt, metadata={op_name="jit(f)/sort"}
+})");
+  EXPECT_EQ(sort.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(sort.message().find("sort of complex"), std::string::npos) << sort;
+  EXPECT_NE(sort.message().find("jit(f)/sort"), std::string::npos) << sort;
+  EXPECT_TRUE(check(R"(
+HloModule m
+ENTRY e {
+  a = f32[4,3] parameter(0)
+  b = f32[3,2] parameter(1)
+  ROOT d = f32[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
 })").ok());
 }
 

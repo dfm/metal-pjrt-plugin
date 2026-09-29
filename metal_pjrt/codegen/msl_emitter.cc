@@ -34,6 +34,7 @@
 #include "mlir/Conversion/SCFToEmitC/SCFToEmitC.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Arith/Transforms/Passes.h"
+#include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -382,6 +383,81 @@ const llvm::StringSet<>& SupportedOps() {
 // ---------------------------------------------------------------------------
 // Pre-conversion rewrites on the MLIR module.
 // ---------------------------------------------------------------------------
+
+// complex<f32> values, and the !llvm.struct<(f32, f32)> LowerTensors loads,
+// stores and allocates them as, become vector<2xf32> (MSL float2: the same 8
+// bytes, real part first). ConvertComplexToStandard has already expanded the
+// arithmetic into complex.create/re/im over f32, so what is left is values
+// moving through memory, scf, calls and select. Memory types (GEP element
+// types, globals, allocas) keep the struct, whose layout is the same.
+bool IsComplexF32Struct(Type t) {
+  auto st = mlir::dyn_cast<ml::LLVMStructType>(t);
+  return st && !st.isIdentified() && !st.isPacked() &&
+         st.getBody().size() == 2 && st.getBody()[0].isF32() &&
+         st.getBody()[1].isF32();
+}
+
+bool IsComplexF32(Type t) {
+  auto c = mlir::dyn_cast<mlir::ComplexType>(t);
+  return (c && c.getElementType().isF32()) || IsComplexF32Struct(t);
+}
+
+void LowerComplexToFloat2(ModuleOp module) {
+  mlir::MLIRContext* ctx = module.getContext();
+  const Type float2 = mlir::VectorType::get({2}, mlir::Float32Type::get(ctx));
+  auto retype = [&](Value v) {
+    if (IsComplexF32(v.getType())) v.setType(float2);
+  };
+  auto map = [&](mlir::TypeRange types) {
+    llvm::SmallVector<Type> out;
+    for (Type t : types) out.push_back(IsComplexF32(t) ? float2 : t);
+    return out;
+  };
+  llvm::SmallVector<Operation*> complex_ops;
+  module.walk([&](Operation* op) {
+    for (Value r : op->getResults()) retype(r);
+    for (mlir::Region& region : op->getRegions()) {
+      for (mlir::Block& blk : region) {
+        for (mlir::BlockArgument a : blk.getArguments()) retype(a);
+      }
+    }
+    if (auto f = mlir::dyn_cast<mlir::func::FuncOp>(op)) {
+      f.setFunctionType(mlir::FunctionType::get(
+          ctx, map(f.getArgumentTypes()), map(f.getResultTypes())));
+    }
+  });
+  module.walk([&](Operation* op) {
+    // Those on complex64 (now float2); Validate refuses the rest.
+    if (mlir::isa<mlir::complex::CreateOp, mlir::complex::ConstantOp>(op) &&
+        op->getResult(0).getType() == float2) {
+      complex_ops.push_back(op);
+    } else if (mlir::isa<mlir::complex::ReOp, mlir::complex::ImOp>(op) &&
+               op->getOperand(0).getType() == float2) {
+      complex_ops.push_back(op);
+    }
+  });
+  for (Operation* op : complex_ops) {
+    OpBuilder b(op);
+    Location loc = op->getLoc();
+    Value repl;
+    if (auto create = mlir::dyn_cast<mlir::complex::CreateOp>(op)) {
+      repl = mlir::vector::FromElementsOp::create(
+          b, loc, float2, ValueRange{create.getReal(), create.getImaginary()});
+    } else if (auto re = mlir::dyn_cast<mlir::complex::ReOp>(op)) {
+      repl = mlir::vector::ExtractOp::create(b, loc, re.getComplex(), 0);
+    } else if (auto im = mlir::dyn_cast<mlir::complex::ImOp>(op)) {
+      repl = mlir::vector::ExtractOp::create(b, loc, im.getComplex(), 1);
+    } else {
+      auto cst = mlir::cast<mlir::complex::ConstantOp>(op);
+      repl = mlir::arith::ConstantOp::create(
+          b, loc,
+          mlir::DenseElementsAttr::get(mlir::cast<mlir::ShapedType>(float2),
+                                       cst.getValue().getValue()));
+    }
+    op->getResult(0).replaceAllUsesWith(repl);
+    op->erase();
+  }
+}
 
 // Removes unrealized_conversion_casts left behind by LowerTensors.
 absl::Status CleanUpUnrealizedCasts(ModuleOp module) {
@@ -747,6 +823,23 @@ absl::StatusOr<std::string> DefineConstantGlobal(ml::GlobalOp g,
   auto dense = mlir::dyn_cast_or_null<mlir::DenseElementsAttr>(g.getValueOrNull());
   if (!dense) return Unimplemented(g, "global initializer (need dense elements)");
   Type et = dense.getElementType();
+  if (auto ct = mlir::dyn_cast<mlir::ComplexType>(et)) {
+    // complex64: one 8-byte word per element (real part in the low half), so
+    // the array is 8-byte aligned for float2 loads.
+    if (!ct.getElementType().isF32()) {
+      return Unimplemented(g, "complex global element type");
+    }
+    std::vector<std::string> elems;
+    for (const mlir::Complex<llvm::APFloat>& c :
+         dense.getValues<mlir::Complex<llvm::APFloat>>()) {
+      uint64_t bits = c.real().bitcastToAPInt().getZExtValue() |
+                      (c.imag().bitcastToAPInt().getZExtValue() << 32);
+      elems.push_back(absl::StrCat(bits, "ul"));
+    }
+    if (elems.empty()) elems.push_back("0ul");
+    return absl::StrCat("constant uint64_t ", name, "[", elems.size(), "] = {",
+                        absl::StrJoin(elems, ", "), "};\n");
+  }
   if (!et.isIntOrFloat()) return Unimplemented(g, "global element type");
   int bits = et.getIntOrFloatBitWidth();
   int storage_bits = bits <= 8 ? 8 : bits <= 16 ? 16 : bits <= 32 ? 32 : 64;
@@ -934,8 +1027,16 @@ absl::Status Validate(ModuleOp module) {
       status = Unimplemented(op, "f64 type (Metal has no double precision)");
       return false;
     }
-    if (mlir::isa<mlir::ComplexType, mlir::TensorType, mlir::MemRefType>(t)) {
-      status = Unimplemented(op, "complex/tensor/memref-typed value");
+    if (auto c = mlir::dyn_cast<mlir::ComplexType>(t)) {
+      // complex<f32> became float2 (LowerComplexToFloat2).
+      status = Unimplemented(
+          op, c.getElementType().isF64()
+                  ? "complex128 type (Metal has no double precision)"
+                  : "complex type other than complex64");
+      return false;
+    }
+    if (mlir::isa<mlir::TensorType, mlir::MemRefType>(t)) {
+      status = Unimplemented(op, "tensor/memref-typed value");
       return false;
     }
     if (auto vt = mlir::dyn_cast<mlir::VectorType>(t)) {
@@ -2237,6 +2338,7 @@ absl::StatusOr<MslKernel> EmitMslKernel(
   info.max_threads_per_threadgroup = max_threads_per_threadgroup;
   info.body_name = absl::StrCat(info.kernel_name, "_impl");
 
+  LowerComplexToFloat2(module);
   if (absl::Status s = CleanUpUnrealizedCasts(module); !s.ok()) return s;
   if (absl::Status s = RewriteLlvmArithmetic(module); !s.ok()) return s;
   if (absl::Status s = ExpandArith(module); !s.ok()) return s;
