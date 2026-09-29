@@ -88,6 +88,16 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   new process takes ~0.42 s from the cache instead of ~0.75 s (MLP train
   step: 41 ms instead of ~66 ms).
 
+- Convolutions run in XLA's loop emitter, ~97-100% of the cnn fwd+bwd
+  step's 5.4 ms of GPU time (p10). The steel convolution library
+  (`metal_pjrt/conv`, MLX's kernels; not yet used by the compiler) runs the
+  cnn bench's layers at MLX's speed: `bench/conv_bench` against
+  `bench/conv_bench_mlx.py`, f32, batch 32, bursts of 30, interleaved, p10
+  per call: conv1 (3->32) 0.141 vs MLX 0.147 ms, conv2 (32->64, stride 2)
+  0.222 vs 0.206 ms, conv2's input gradient (input dilation 2, flipped)
+  0.344 vs 0.347 ms; in the step, the loop emitter spends 0.30, 1.49 and
+  1.70 ms on them. f16: 0.84-1.10x MLX.
+
 Where the time goes, in brief: memory-bound kernels run at memory bandwidth
 (the emitted `x*2` kernel reaches the same ~81 GB/s as hand-written MSL);
 fused reductions and optimizer updates are where XLA beats MLX; the gaps are

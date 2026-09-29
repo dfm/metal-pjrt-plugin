@@ -1,7 +1,7 @@
 """The dispatch libraries' tests link no XLA, and lapack_host_test no Metal.
 
-scan_test, radix_sort_test and small_linalg_test run the kernels on
-rt::Device alone, and lapack_host_test is a plain host test; a dependency
+conv_test, scan_test, radix_sort_test and small_linalg_test run the kernels
+on rt::Device alone, and lapack_host_test is a plain host test; a dependency
 on XLA (or, for lapack_host_test, on metal-cpp, the runtime or the Metal
 framework) creeping back in would undo that. Reads the genquery outputs
 named in argv: the new tests' transitive deps, lapack_host_test's deps, the

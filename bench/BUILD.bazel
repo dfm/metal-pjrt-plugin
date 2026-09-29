@@ -13,3 +13,17 @@ cc_binary(
         "@metal_cpp",
     ],
 )
+
+# The convolution library on the cnn benchmark's layers (conv_bench.cc);
+# needs a Metal device, run locally under scripts/device_lock.py.
+cc_binary(
+    name = "conv_bench",
+    srcs = ["conv_bench.cc"],
+    tags = ["manual"],
+    deps = [
+        "//metal_pjrt/conv",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)

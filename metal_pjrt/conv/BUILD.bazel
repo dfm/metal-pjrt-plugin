@@ -1,3 +1,5 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
+
 package(default_visibility = ["//visibility:public"])
 
 # The convolution kernels' host side: parameter structs, variant sources and
@@ -14,3 +16,39 @@ cc_library(
     ],
 )
 
+# The convolution plan and dispatch (conv.h): MLX's path choice, the steel
+# implicit-GEMM kernels, the explicit unfold + steel GEMM. No XLA.
+cc_library(
+    name = "conv",
+    srcs = ["conv.cc"],
+    hdrs = ["conv.h"],
+    deps = [
+        ":conv_kernels",
+        "//metal_pjrt/blas:mps_gemm",
+        "//metal_pjrt/blas:steel_gemm",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+# RunConv on every path against a double reference, on rt::Device alone.
+# Needs a Metal device.
+cc_test(
+    name = "conv_test",
+    srcs = ["conv_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":conv",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)

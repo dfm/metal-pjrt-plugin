@@ -29,8 +29,11 @@ the plugin.
 - The handlers are thin adapters (XLA types, attributes, the stream's
   device) over libraries with no XLA: `ffi:scan`, `ffi:radix_sort`,
   `linalg:small_linalg` (GPU, on `rt::Device`/`rt::Stream`) and
-  `linalg:lapack_host` (Accelerate on host pointers). Their tests,
-  `scan_test`, `radix_sort_test`, `small_linalg_test` (device tests) and
+  `linalg:lapack_host` (Accelerate on host pointers). `metal_pjrt/conv/`
+  (`conv:conv`, MLX's steel convolutions: path choice, implicit-GEMM
+  kernels, unfold + GEMM) is one too, not yet used by the compiler. Their
+  tests, `conv_test`, `scan_test`, `radix_sort_test`, `small_linalg_test`
+  (device tests) and
   `lapack_host_test` (host), link no XLA, so they build quickly and test a
   kernel in isolation; `//metal_pjrt:xla_free_test` fails if an XLA
   dependency creeps back in.
