@@ -1,8 +1,9 @@
 """Check the Qwen3 example on the default backend against a float32 CPU run.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu \\
-      .venv/bin/python examples/llm/check.py [--quant int8|int4]
+  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/check.py [--quant int8|int4]
       [--text-file FILE --tokens N] [--save-ref ref.npz]
+
+(prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 
 Runs a text through the model teacher-forced and compares the next-token
 distributions with the same code in float32 on CPU: top-1 agreement, KL

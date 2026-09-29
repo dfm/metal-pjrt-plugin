@@ -106,9 +106,9 @@ class Engine:
 
     def _prompt(self, ids):
         n = len(ids)
-        T = bucket(n)
-        if T > self.max_len:
+        if n > self.max_len:
             raise ValueError(f"prompt of {n} tokens exceeds max_len {self.max_len}")
+        T = min(bucket(n), self.max_len)
         tokens = np.zeros((self.batch, T), np.int32)
         tokens[:, :n] = ids
         return tokens, np.int32(n)
@@ -159,12 +159,15 @@ class Engine:
             jax.block_until_ready(self.fused(state, n, max_new - 1))
         else:
             for w in sorted({self.window(p + 1) for p in range(n, n + max_new)}):
-                state = self._prefill(self.params, *self._prompt(ids), jax.random.key(0))
+                state = self.prefill(ids, jax.random.key(0))
                 jax.block_until_ready(self._step(self.params, *state, w))
         return time.perf_counter() - t0
 
     def generate(self, ids, max_new=128, *, seed=0, stream=None, fused=False):
         """Token ids of the reply (batch row 0). Returns (ids, timings)."""
+        if len(ids) >= self.max_len:
+            raise ValueError(f"prompt of {len(ids)} tokens leaves no room to reply "
+                             f"within max_len {self.max_len}")
         max_new = min(max_new, self.max_len - len(ids))
         t0 = time.perf_counter()
         state = self.prefill(ids, jax.random.key(seed))
@@ -218,6 +221,8 @@ def main():
     eng = Engine(args.model, max_len=args.max_len, quant=args.quant, sampling=dict(
         temperature=args.temperature, top_k=args.top_k, top_p=args.top_p))
     ids = eng.encode(args.prompt, args.think)
+    if len(ids) >= args.max_len:
+        ap.error(f"the prompt is {len(ids)} tokens; --max-len {args.max_len} leaves no room")
     max_new = min(args.max_new, args.max_len - len(ids))
     t_compile = eng.warmup(ids, max_new, args.fused)
 

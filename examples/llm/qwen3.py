@@ -34,8 +34,17 @@ class Config:
 
     @classmethod
     def from_json(cls, path):
+        """A dense Qwen3 config. Refuses what this implementation lacks:
+        rope scaling (YaRN) and quantized (e.g. FP8) checkpoints."""
         with open(path) as f:
             d = json.load(f)
+        if d.get("model_type") != "qwen3":
+            raise ValueError(f"not a dense Qwen3 checkpoint: model_type {d.get('model_type')!r}")
+        if d.get("rope_scaling"):
+            raise ValueError(f"rope_scaling {d['rope_scaling']!r} is not supported")
+        if d.get("quantization_config"):
+            raise ValueError("quantized checkpoints (e.g. FP8) are not supported; "
+                             "use the bf16 one and --quant")
         return cls(**{k.name: d[k.name] for k in dataclasses.fields(cls)})
 
 
@@ -65,6 +74,9 @@ def read_safetensors(path):
     out = {}
     for name, info in header.items():
         start, end = info["data_offsets"]
+        if info["dtype"] not in _DTYPES:
+            raise ValueError(f"{path}: tensor {name} has dtype {info['dtype']}; "
+                             f"only {', '.join(_DTYPES)} checkpoints are supported")
         out[name] = np.frombuffer(buf, dtype=_DTYPES[info["dtype"]],
                                   count=int(np.prod(info["shape"])),
                                   offset=8 + n + start).reshape(info["shape"])
@@ -152,7 +164,8 @@ def quantize_int4(w, group=GROUP):
     w = np.asarray(w, np.float32)
     w = w.reshape(w.shape[0], -1, group)
     lo, hi = w.min(axis=-1, keepdims=True), w.max(axis=-1, keepdims=True)
-    # MLX's choice of grid: anchor it at the group's largest-magnitude
+    # The grid is ported from MLX's affine_quantize (mlx/ops.cpp, MIT,
+    # Apple): anchor it at the group's largest-magnitude
     # weight (the offset b) and stretch the step so that zero also falls on
     # the grid. A plain min..max grid has the same RMS error but loses more
     # accuracy (on 512 tokens: KL 0.33 against float32, where this gives
@@ -367,9 +380,15 @@ def forward(params, tokens, cache, pos, cfg, *, last=None, all_logits=False,
 
 def sample(logits, key, *, temperature=0.0, top_k=0, top_p=1.0):
     """Next token [B] from logits [B, V]; temperature 0 is greedy."""
+    if temperature < 0:
+        raise ValueError(f"temperature must be >= 0, got {temperature}")
+    if not 0 <= top_k <= logits.shape[-1]:
+        raise ValueError(f"top_k must be in [0, {logits.shape[-1]}], got {top_k}")
     if temperature == 0.0:
         return jnp.argmax(logits, axis=-1).astype(jnp.int32)
     logits = logits / temperature
+    if not top_k and top_p >= 1.0:
+        return jax.random.categorical(key, logits, axis=-1).astype(jnp.int32)
     if top_k:
         vals, idx = jax.lax.top_k(logits, top_k)
     else:

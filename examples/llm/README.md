@@ -24,8 +24,12 @@ JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/generate.py \
     "Give me three facts about Jupiter." --quant int4
 ```
 
-The first run downloads Qwen3-0.6B (1.2 GB) into the Hugging Face cache.
-Options: `--model Qwen/Qwen3-1.7B` (any dense Qwen3), `--quant int8|int4`,
+The first run downloads Qwen3-0.6B (1.4 GB) into the Hugging Face cache.
+The Qwen3 weights are Apache-2.0 (Qwen team); they are downloaded from the
+Hub, not redistributed here.
+Options: `--model Qwen/Qwen3-1.7B` (any dense Qwen3 checkpoint in
+bf16/f16/f32: no FP8 checkpoints, no YaRN `rope_scaling`; the loader
+refuses them), `--quant int8|int4`,
 `--temperature/--top-k/--top-p` (greedy by default), `--think` (Qwen3's
 reasoning mode, off by default), `--fused` (the whole decode loop as one
 jitted `while_loop`; no streaming).
@@ -41,10 +45,10 @@ scripts/device_lock.py -- .venv/bin/python examples/llm/check.py --text-file doc
 # throughput: prefill_T, decode (streaming), decode_sync, decode_fused
 scripts/device_lock.py -- .venv/bin/python examples/llm/bench.py [--quant int4] [--batch 2]
 # mlx-lm needs its own environment (it is not a dependency of this repo)
-uv venv /tmp/mlxenv && uv pip install --python /tmp/mlxenv/bin/python mlx-lm
-scripts/device_lock.py -- /tmp/mlxenv/bin/python examples/llm/mlx_baseline.py --q-bits 4
+uv venv ~/.venvs/mlx && uv pip install --python ~/.venvs/mlx/bin/python mlx-lm
+scripts/device_lock.py -- ~/.venvs/mlx/bin/python examples/llm/mlx_baseline.py --q-bits 4
 # both, interleaved, as a markdown table
-.venv/bin/python examples/llm/compare.py --mlx-python /tmp/mlxenv/bin/python \
+.venv/bin/python examples/llm/compare.py --mlx-python ~/.venvs/mlx/bin/python \
     --wrap "scripts/device_lock.py --"
 ```
 
@@ -83,7 +87,8 @@ Long contexts (Qwen3-0.6B, max_len 4096, single runs): decode after a
 1024-token prompt, int4, 6.4 ms/token (mlx-lm 6.0); after 3072 tokens
 10.1 (8.6). Prefill of a 3072-token prompt: bf16 1.89 s (mlx-lm 1.87),
 int4 1.96 s (2.31). Attention reads a window of the cache a little
-larger than the context (up to 1/8 more), where mlx-lm's cache is
+larger than the context (up to a quarter more, at least 256 slots),
+where mlx-lm's cache is
 exactly the context.
 
 Quality, on the first 512 tokens of `docs/design.md` (as of f4e2691)
@@ -208,7 +213,8 @@ across a night of benchmarking. Along the way:
 
 - **Buffer donation was off for `mtl`**, silently: JAX's hard-coded list
   of donation platforms did not include it, so every donated argument was
-  copied. Fixed in the plugin (6f15d92), which adds `mtl` at load time;
+  copied. Fixed in the plugin (CHANGELOG.md, "Unreleased": "Buffer
+  donation works on mtl"), which adds `mtl` at load time;
   a decode step at max_len 4096 went from 39.8 to 27.2 ms.
 - **Decode is bandwidth-bound, and at Qwen3-0.6B's shapes the plugin
   reaches the bandwidth.** The weight products are XLA's MLIR reduction

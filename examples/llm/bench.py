@@ -1,11 +1,14 @@
 """Prefill and decode throughput of the Qwen3 example on the current backend.
 
-  scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu \\
-      .venv/bin/python examples/llm/bench.py
+  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/bench.py
+
+(prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 
 Prints one JSON row per case (bench/common.py's format, with commit and
 versions), with the median and p10 / p90 of `--iters` timed runs after
-warmup; compile time is reported separately and never part of a timing.
+warmup; compile time is reported separately and never part of a timing
+(for prompts over generate.PREFILL_CHUNK tokens, which run as several
+chunk programs, `first_call_s` is the first call's time, compile included).
 Every timed region ends with `jax.block_until_ready` on all outputs.
 
   prefill_T     prompt of T random tokens -> first token on the host: time
@@ -20,8 +23,8 @@ Every timed region ends with `jax.block_until_ready` on all outputs.
 With --batch B, tok_s counts all B sequences.
 
 Decode starts after a `--context`-token prompt (prefilled outside the
-timing). Attention reads a power-of-two window of the `--max-len` cache
-that covers the context (generate.Engine.window).
+timing). Attention reads a window of the `--max-len` cache that covers the
+context (generate.Engine.window).
 """
 import argparse, os, sys, time
 
@@ -91,10 +94,15 @@ def main():
                 continue
             ids = rng.integers(0, 150000, T).tolist()
             tokens = np.zeros((args.batch, generate.bucket(T)), np.int32)
-            c = compile_s(eng._prefill, eng.params, tokens, np.int32(T), key)
             fn = lambda _: int(np.asarray(eng.prefill(ids, key)[0])[0])
+            if T <= generate.PREFILL_CHUNK:
+                c = {"compile_s": compile_s(eng._prefill, eng.params, tokens, np.int32(T), key)}
+            else:
+                t0 = time.perf_counter()
+                fn(None)
+                c = {"first_call_s": round(time.perf_counter() - t0, 2)}
             ts = timed(fn, warmup=2, iters=args.iters)
-            emit(f"prefill_{T}", ts, tok_s=round(T / np.median(ts) * 1e3, 1), compile_s=c)
+            emit(f"prefill_{T}", ts, tok_s=round(args.batch * T / np.median(ts) * 1e3, 1), **c)
 
     S = args.steps
     ids = rng.integers(0, 150000, args.context).tolist()

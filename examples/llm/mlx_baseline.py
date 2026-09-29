@@ -3,8 +3,8 @@
 Needs mlx-lm, which is not a dependency of this repo; run it from its own
 environment (it reads the same Hugging Face cache):
 
-  uv venv /tmp/mlxenv && uv pip install --python /tmp/mlxenv/bin/python mlx-lm
-  scripts/device_lock.py -- /tmp/mlxenv/bin/python examples/llm/mlx_baseline.py
+  uv venv ~/.venvs/mlx && uv pip install --python ~/.venvs/mlx/bin/python mlx-lm
+  scripts/device_lock.py -- ~/.venvs/mlx/bin/python examples/llm/mlx_baseline.py
 
 Prints rows shaped like bench.py's: prefill_T (one prefill of T random
 tokens) and decode (per-token time over `--steps` greedy tokens after a
