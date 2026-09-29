@@ -1,9 +1,9 @@
 """jax.numpy.fft on metal: the fft lowering (metal_pjrt_plugin/_lowerings.py)
 sends each transformed axis to metal$fft (MLX's kernels,
 metal_pjrt/fft/fft.h; the kernels themselves are tested per path in
-//metal_pjrt/fft:fft_test) or, where the length is not supported, to the
-dense DFT. Against numpy in float64; METAL_PJRT_DISABLE_FFT=1; the size
-limit; which calls end up in the HLO.
+//metal_pjrt/fft:fft_test) or, with METAL_PJRT_DISABLE_FFT=1 or a symbolic
+batch, to the dense DFT. Against numpy in float64; the size limit;
+jax.export; which calls end up in the HLO.
 
 Errors are normwise, max|got - want| / max|want|, in units of
 2^-24 log2(n) (the FFT's error growth).
@@ -208,24 +208,59 @@ def test_supported_lengths():
     assert ws(1 << 24, 5) == (1 << 24) * 8  # one row per chunk
 
 
-def test_size_limit_fallback(monkeypatch):
-    # Lengths metal$fft does not support take the DFT, per axis, never an
-    # error. Real ones are too large to run the O(n^2) DFT here, so lower
-    # the limit to 64: the 100-axis takes the DFT, the 16-axis metal$fft.
+def test_size_limit_error(monkeypatch):
+    # Lengths metal$fft does not support raise instead of taking the DFT,
+    # which would need an n x n matrix (>= 2^46 elements past the real
+    # limits). Lower the limit to 64 to check it: the 16-axis alone is fine.
     monkeypatch.setattr(_lowerings, "fft_supported", lambda n: n <= 64)
     jax.clear_caches()  # lax.fft is a jit: its lowering is cached
     x = cx(100, 16)
-    for name, fn, ref in [
-        ("fft2", lambda x: jnp.fft.fft2(x), np.fft.fft2),
-        ("rfft2", lambda x: jnp.fft.rfft2(x.real), lambda x: np.fft.rfft2(x.real)),
-        ("irfft2", lambda x: jnp.fft.irfft2(x, (100, 30)),
-         lambda x: np.fft.irfft2(x, (100, 30))),
-    ]:
-        text = hlo(fn, x)
-        assert n_calls(text) == 1, name
-        assert_fft_close(jax.jit(fn)(x), ref(x.astype(np.complex128)), 100,
-                         f"fallback {name}")
+    for fn in [jnp.fft.fft2, lambda x: jnp.fft.rfft(x.real, axis=0),
+               lambda x: jnp.fft.irfft(x, 100, axis=0)]:
+        with pytest.raises(NotImplementedError,
+                           match=r"FFT of length 100 .*2\^24.*2\^23 - 1"):
+            jax.jit(fn)(x)
+    assert n_calls(hlo(jnp.fft.fft, x)) == 1
     jax.clear_caches()
+
+
+def test_dft_length_cap():
+    # The DFT fallback's int32 phase index r * c is exact up to 46340 (its
+    # matrix would not fit in memory past that anyway).
+    _lowerings._twiddles(4, 4, 46340, jnp.float32)
+    with pytest.raises(NotImplementedError, match="n <= 46340"):
+        _lowerings._twiddles(4, 4, 46341, jnp.float32)
+
+
+def test_export_multi_platform():
+    # A module exported for cpu and mtl holds the stablehlo fft in its cpu
+    # branch. Today the StableHLO -> HLO conversion already folds the
+    # platform conditional of exp.call (so this also passed when the fft op
+    # was refused before optimization); the compiler refuses the HLO fft op
+    # only after optimization, so a conditional that reaches HLO is folded
+    # first too (hlo_checks_test FftIsRefusedAfterOptimization).
+    from jax import export
+    x = cx(8, 64)
+    exp = export.export(
+        jax.jit(jnp.fft.fft), platforms=("cpu", "mtl"),
+        disabled_checks=[export.DisabledSafetyCheck.custom_call("metal$fft")])(x)
+    assert "stablehlo.fft" in exp.mlir_module()
+    assert "metal$fft" in exp.mlir_module()
+    assert_fft_close(exp.call(x), np.fft.fft(x.astype(np.complex128)), 64,
+                     "export cpu+mtl")
+
+
+def test_export_symbolic_batch():
+    # metal$fft's workspace needs the row count at lowering time: a symbolic
+    # batch takes the DFT (and still runs).
+    from jax import export
+    (b,) = export.symbolic_shape("b")
+    exp = export.export(jax.jit(jnp.fft.fft), platforms=("mtl",))(
+        jax.ShapeDtypeStruct((b, 64), jnp.complex64))
+    assert "metal$fft" not in exp.mlir_module()
+    x = cx(5, 64)
+    assert_fft_close(exp.call(x), np.fft.fft(x.astype(np.complex128)), 64,
+                     "export symbolic batch")
 
 
 DISABLE_CHILD = r"""

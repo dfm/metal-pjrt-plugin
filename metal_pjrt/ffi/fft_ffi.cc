@@ -155,6 +155,10 @@ absl::Status Fft(stream_executor::Stream* stream, xffi::AnyBuffer x,
         " (metal_pjrt_plugin/_lowerings.py and FftWorkspaceBytes disagree)"));
   }
   ABSL_ASSIGN_OR_RETURN(MetalContext ctx, GetMetalContext(stream));
+  // The tables (and the constants' device allocation) belong to the device
+  // they were made on at instantiation. The plugin has one device, and XLA
+  // instantiates per executable per device, so a mismatch is a bug; a
+  // re-lookup here would allocate and upload constants on the hot path.
   if (ctx.device != t.device) {
     return absl::InternalError("metal$fft: instantiated for another device");
   }

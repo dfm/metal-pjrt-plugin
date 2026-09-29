@@ -11,10 +11,14 @@ describe the present only. Commit hashes point at the change.
 - FFTs run on MLX's FFT kernels (`metal$fft`, one call per transformed
   axis) instead of the dense O(n^2) DFT: every length up to 2^24 (powers
   of two) or 2^23 - 1, complex64 / float32, 0.6-1.3x MLX's time and 2.5-44x
-  faster than the DFT on `bench/fft_bench.py`. Longer lengths still take
-  the DFT, and `METAL_PJRT_DISABLE_FFT=1` sends every axis to it. The HLO
-  `fft` op (from programs lowered for another platform) is refused at
-  compile time instead of reaching XLA's cuFFT-only thunk.
+  faster than the DFT on `bench/fft_bench.py`. Longer lengths raise
+  NotImplementedError (the DFT would need an n x n matrix); the DFT stays
+  for `METAL_PJRT_DISABLE_FFT=1` (every axis), complex128 and symbolic
+  batch dims (`jax.export`), up to n = 46340. The HLO `fft` op (from
+  programs lowered for another platform) is refused at compile time
+  instead of reaching XLA's cuFFT-only thunk; a module exported for
+  ("cpu", "mtl") runs, since the check comes after its platform
+  conditional is folded.
 - Clearer messages for a complex scatter without `unique_indices` and for
   complex128 data movement.
 

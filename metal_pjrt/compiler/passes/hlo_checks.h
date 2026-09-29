@@ -22,6 +22,10 @@ std::string DescribeOp(const HloInstruction& instr);
 //    movement, calls and custom calls on f64 stay legal;
 //  - no scatter on 64-bit elements with a read-modify-write combiner and
 //    possibly repeated indices (needs 64-bit atomics).
+//  - no fft op (XLA's FftThunk is cuFFT-only; JAX's fft lowers to metal$fft
+//    on mtl). Checked here, after the simplifier has folded the platform
+//    conditional of a multi-platform module (jax.export for ("cpu", "mtl"),
+//    lax.platform_dependent), whose dead cpu branch may hold an fft.
 // These run here rather than first in RunHloPasses because the simplifier
 // removes some such ops (e.g. f32 -> f64 -> f32 chains) from programs that
 // run. f64 here includes complex128. complex64 is supported (the emitter
@@ -35,8 +39,7 @@ std::string DescribeOp(const HloInstruction& instr);
 absl::Status CheckPostGemmRewriter(const HloModule& module);
 
 // What the Metal backend refuses up front (first thing in RunHloPasses,
-// before sorts are expanded): dots and sorts of complex values, and the fft
-// op (XLA's FftThunk is cuFFT-only; JAX's fft lowers to metal$fft on mtl).
+// before sorts are expanded): dots and sorts of complex values.
 // Returns an error naming the first offending op.
 absl::Status CheckBeforeOptimization(const HloModule& module);
 

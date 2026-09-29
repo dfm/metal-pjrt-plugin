@@ -12,10 +12,12 @@ Registered for platform "mtl":
 
 * ``fft``: one 1-D transform per axis, each a ``metal$fft`` FFI call (MLX's
   FFT kernels, metal_pjrt/fft/fft.h; XLA's FftThunk is cuFFT/hipFFT-only)
-  on complex64 (float32 on the real side of rfft / irfft) where the length
-  is supported, else a pure-JAX dense DFT (real matmuls against in-graph
-  twiddle matrices, O(n^2) per axis). ``METAL_PJRT_DISABLE_FFT=1`` sends
-  every axis to the DFT (for A/B comparisons).
+  on complex64 (float32 on the real side of rfft / irfft); lengths past the
+  kernels' limits raise NotImplementedError. Other dtypes (complex128, which
+  the compiler then refuses like float64), batch dims that are symbolic
+  (jax.export) and ``METAL_PJRT_DISABLE_FFT=1`` (for A/B comparisons) take
+  a pure-JAX dense DFT (real matmuls against in-graph twiddle matrices,
+  O(n^2) per axis, n <= 46340).
 * ``check`` (checkify): the TPU rule, i.e. a no-op for ``debug=True`` checks
   and the usual "functionalize with checkify" error otherwise. The cpu/gpu
   rule, which raises from a host callback, is not wired up (host callbacks
@@ -59,14 +61,23 @@ logger = logging.getLogger(__name__)
 # FFT as a dense DFT
 # --------------------------------------------------------------------------
 
+_MAX_DFT = 46340  # r * c < 2^31 below this; the n x n matrix is ~8 GB here
+
+
 def _twiddles(n_out, n_in, period, dtype):
   """cos/sin of 2*pi*(row*col mod period)/period as (n_out, n_in) arrays.
 
   Reducing the phase index modulo `period` in integer arithmetic keeps the
   angles in [0, 2*pi), so accuracy does not degrade with n (int32 products
-  are exact for n <= 46340)."""
+  are exact for n <= 46340; longer DFTs raise, their twiddle matrix would
+  not fit in memory anyway)."""
   from jax import lax
   import jax.numpy as jnp
+  if period > _MAX_DFT:
+    raise NotImplementedError(
+        f"Metal: an FFT of length {period} through the dense DFT fallback "
+        f"(METAL_PJRT_DISABLE_FFT, complex128 or a symbolic batch) needs an "
+        f"{period} x {period} matrix; the DFT is limited to n <= {_MAX_DFT}")
   r = lax.broadcasted_iota(jnp.int32, (n_out, n_in), 0)
   c = lax.broadcasted_iota(jnp.int32, (n_out, n_in), 1)
   phase = lax.rem(r * c, jnp.int32(period)).astype(dtype)
@@ -183,7 +194,7 @@ def _metal_fft_last(x, kind, n):
   import jax.numpy as jnp
   out_len = n // 2 + 1 if kind == "rfft" else n
   out_dtype = jnp.float32 if kind == "irfft" else jnp.complex64
-  rows = int(np.prod(x.shape[:-1], dtype=np.int64))
+  rows = int(np.prod(x.shape[:-1], dtype=np.int64))  # constant (native())
   out, _ = jax.ffi.ffi_call(
       "metal$fft",
       (jax.ShapeDtypeStruct(x.shape[:-1] + (out_len,), out_dtype),
@@ -195,15 +206,25 @@ def _metal_fft_last(x, kind, n):
 def _fft_per_axis(x, *, fft_type, fft_lengths):
   """lax.fft_p as one 1-D transform per axis, like numpy: rfft on the last
   axis then forward transforms of the outer axes; irfft after inverse
-  transforms of the outer axes. Each axis is metal$fft where the length and
-  dtype allow (complex64 / float32), else the DFT."""
+  transforms of the outer axes. Each axis is metal$fft for complex64 /
+  float32, else the DFT (module docstring)."""
   from jax import lax
   from jax._src.lax.fft import FftType
 
   native_dtype = x.dtype in (np.complex64, np.float32)
+  # metal$fft's workspace is sized by the row count, which must be known at
+  # lowering time: a symbolic batch (jax.export) takes the DFT.
+  constant_batch = all(isinstance(d, (int, np.integer)) for d in x.shape)
 
   def native(n):
-    return native_dtype and not fft_disabled() and fft_supported(n)
+    if not native_dtype or fft_disabled():
+      return False
+    if not fft_supported(n):
+      # The DFT would need an n x n matrix (>= 2^46 elements here).
+      raise NotImplementedError(
+          f"Metal: FFT of length {n} is not supported: the kernels take "
+          f"powers of two up to 2^24 and other lengths up to 2^23 - 1")
+    return constant_batch
 
   def c2c(z, axis, inverse):
     n = z.shape[axis]

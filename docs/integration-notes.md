@@ -254,13 +254,16 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   rfft / irfft; other axes moved last by a transpose), with a u8 workspace
   result that the Python rule sizes as `FftWorkspaceBytes` does (the
   handler refuses any other size, so the two cannot drift silently).
-  XLA's FftThunk is cuFFT-only, so `CheckBeforeOptimization` refuses the
-  HLO `fft` op instead of letting it reach the thunk emitter. The plan and
+  XLA's FftThunk is cuFFT-only, so `CheckPostGemmRewriter` refuses the
+  HLO `fft` op instead of letting it reach the thunk emitter (after
+  optimization, so that the dead cpu branch of a module exported for
+  ("cpu", "mtl") does not count). The plan and
   the Rader / Bluestein constants are made at instantiation and shared by
   every call site of a length while one uses them (up to ~0.6 GB of
   transient host work and 160 MB on the device near n = 2^23). Lengths the
-  kernels do not cover (powers of two above 2^24, other n above 2^23 - 1),
-  and complex128, take the dense DFT. `METAL_PJRT_DISABLE_FFT=1` sends
+  kernels do not cover (powers of two above 2^24, other n above 2^23 - 1)
+  raise NotImplementedError; complex128 and a symbolic batch (whose
+  workspace size is unknown at lowering) take the dense DFT. `METAL_PJRT_DISABLE_FFT=1` sends
   every axis to the DFT.
   (A `metal$softmax` rewriter was removed after an end-to-end A/B,
   docs/performance.md, "Measured and rejected".)

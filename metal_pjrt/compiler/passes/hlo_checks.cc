@@ -225,14 +225,6 @@ absl::Status CheckBeforeOptimization(const HloModule& module) {
   for (const HloComputation* comp : module.computations()) {
     for (const HloInstruction* instr : comp->instructions()) {
       const HloOpcode op = instr->opcode();
-      if (op == HloOpcode::kFft) {
-        return absl::UnimplementedError(absl::StrCat(
-            "Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT "
-            "only); jax.numpy.fft / jax.lax.fft lower to the plugin's "
-            "metal$fft instead, so this program was lowered for another "
-            "platform: ",
-            DescribeOp(*instr)));
-      }
       if ((op == HloOpcode::kDot || op == HloOpcode::kRaggedDot ||
            op == HloOpcode::kSort) &&
           TouchesType(*instr, {C64, C128})) {
@@ -250,6 +242,14 @@ absl::Status CheckBeforeOptimization(const HloModule& module) {
 absl::Status CheckPostGemmRewriter(const HloModule& module) {
   for (const HloComputation* comp : module.computations()) {
     for (const HloInstruction* instr : comp->instructions()) {
+      if (instr->opcode() == HloOpcode::kFft) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT "
+            "only); jax.numpy.fft / jax.lax.fft lower to the plugin's "
+            "metal$fft instead, so this program was lowered for another "
+            "platform: ",
+            DescribeOp(*instr)));
+      }
       if (Computes(*instr) && TouchesType(*instr, {F64, C128})) {
         return absl::UnimplementedError(absl::StrCat(
             "Metal: f64 / complex128 arithmetic is not supported (Apple GPUs "

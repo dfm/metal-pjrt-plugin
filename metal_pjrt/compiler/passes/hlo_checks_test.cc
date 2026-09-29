@@ -337,7 +337,7 @@ ENTRY e {
                   .ok());
 }
 
-TEST_F(MetalHloChecksTest, ComplexDotSortAndFftAreRefused) {
+TEST_F(MetalHloChecksTest, ComplexDotAndSortAreRefused) {
   auto check = [&](const std::string& hlo) {
     auto module = ParseAndReturnUnverifiedModule(hlo);
     EXPECT_TRUE(module.ok()) << module.status();
@@ -371,15 +371,6 @@ ENTRY e {
   EXPECT_EQ(sort.code(), absl::StatusCode::kUnimplemented);
   EXPECT_NE(sort.message().find("sort of complex"), std::string::npos) << sort;
   EXPECT_NE(sort.message().find("jit(f)/sort"), std::string::npos) << sort;
-  absl::Status fft = check(R"(
-HloModule m
-ENTRY e {
-  x = c64[4,8] parameter(0)
-  ROOT f = c64[4,8] fft(x), fft_type=FFT, fft_length={8}, metadata={op_name="jit(f)/fft"}
-})");
-  EXPECT_EQ(fft.code(), absl::StatusCode::kUnimplemented);
-  EXPECT_NE(fft.message().find("HLO fft op"), std::string::npos) << fft;
-  EXPECT_NE(fft.message().find("jit(f)/fft"), std::string::npos) << fft;
   EXPECT_TRUE(check(R"(
 HloModule m
 ENTRY e {
@@ -387,6 +378,24 @@ ENTRY e {
   b = f32[3,2] parameter(1)
   ROOT d = f32[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
 })").ok());
+}
+
+// After optimization, so that an fft in the dead branch of a folded
+// platform conditional (multi-platform jax.export) does not count.
+TEST_F(MetalHloChecksTest, FftIsRefusedAfterOptimization) {
+  const std::string kFft = R"(
+HloModule m
+ENTRY e {
+  x = c64[4,8] parameter(0)
+  ROOT f = c64[4,8] fft(x), fft_type=FFT, fft_length={8}, metadata={op_name="jit(f)/fft"}
+})";
+  absl::Status fft = Check(kFft);
+  EXPECT_EQ(fft.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(fft.message().find("HLO fft op"), std::string::npos) << fft;
+  EXPECT_NE(fft.message().find("jit(f)/fft"), std::string::npos) << fft;
+  auto module = ParseAndReturnUnverifiedModule(kFft);
+  ASSERT_TRUE(module.ok()) << module.status();
+  EXPECT_TRUE(CheckBeforeOptimization(**module).ok());
 }
 
 }  // namespace
