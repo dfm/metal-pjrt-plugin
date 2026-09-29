@@ -253,6 +253,9 @@ Language; it does not re-interpret StableHLO op by op.
   [`CHANGELOG.md`](CHANGELOG.md): renames and dated decisions.
 - [`examples/llm`](examples/llm): Qwen3 inference in pure JAX (bf16,
   int8, int4), benchmarked against mlx-lm; a case study in fast decoding.
+  [`examples/lora`](examples/lora): LoRA fine-tuning of Qwen3 against
+  `mlx_lm.lora`; [`examples/cifar`](examples/cifar): CIFAR-10 to 94%
+  (airbench94) against PyTorch on MPS.
 - [`docs/development.md`](docs/development.md): layout, building, tests,
   benchmarks, environment variables; `docs/archive/` keeps the dated
   performance log and the review roadmap as history.
