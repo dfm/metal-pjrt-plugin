@@ -8,6 +8,12 @@ package(default_visibility = ["//visibility:public"])
 # a separate file.
 
 embed_msl(
+    name = "conv_misc",
+    src = "conv_misc.metal",
+    symbol = "kConvMiscMsl",
+)
+
+embed_msl(
     name = "cub_sort",
     src = "cub_sort.metal",
     symbol = "kCubSortMsl",
@@ -45,6 +51,12 @@ embed_msl(
 )
 
 embed_msl(
+    name = "steel_conv",
+    src = "steel_conv.metal",
+    symbol = "kSteelConvMsl",
+)
+
+embed_msl(
     name = "steel_gemm",
     src = "steel_gemm.metal",
     symbol = "kSteelGemmMsl",
@@ -58,15 +70,18 @@ cc_test(
     tags = DEVICE_TEST_TAGS,
     timeout = "eternal",
     deps = [
+        ":conv_misc",
         ":cub_sort",
         ":mps_staging",
         ":msl_prelude",
         ":runtime_builtins",
         ":scan",
         ":small_linalg",
+        ":steel_conv",
         ":steel_gemm",
         "//metal_pjrt/blas:mps_gemm",
         "//metal_pjrt/blas:steel_gemm",
+        "//metal_pjrt/conv:conv_kernels",
         "//metal_pjrt/runtime:metal_runtime",
         "@com_google_absl//absl/status:status_matchers",
         "@com_google_absl//absl/status:statusor",

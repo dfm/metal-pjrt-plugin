@@ -1,0 +1,16 @@
+package(default_visibility = ["//visibility:public"])
+
+# The convolution kernels' host side: parameter structs, variant sources and
+# tile rules (kernels/steel_conv.metal, kernels/conv_misc.metal). No XLA.
+cc_library(
+    name = "conv_kernels",
+    srcs = ["conv_kernels.cc"],
+    hdrs = ["conv_kernels.h"],
+    deps = [
+        "//metal_pjrt/kernels:conv_misc",
+        "//metal_pjrt/kernels:steel_conv",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/strings",
+    ],
+)
+

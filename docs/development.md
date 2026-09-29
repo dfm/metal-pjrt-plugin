@@ -35,7 +35,7 @@ the plugin.
   kernel in isolation; `//metal_pjrt:xla_free_test` fails if an XLA
   dependency creeps back in.
 - `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,
-  radix sort, scan, small linear algebra, MPS staging, the runtime's
+  steel convolutions, radix sort, scan, small linear algebra, MPS staging, the runtime's
   fill/copy kernels, the emitter's prelude). A genrule (`embed_msl.bzl`)
   embeds each as a char array in the dylib; they are compiled at run time
   (`newLibraryWithSource`: the command-line tools have no offline `metal`

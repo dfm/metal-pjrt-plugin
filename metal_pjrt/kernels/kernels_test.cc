@@ -17,12 +17,15 @@
 #include "absl/types/span.h"
 #include "metal_pjrt/blas/mps_gemm.h"
 #include "metal_pjrt/blas/steel_gemm.h"
+#include "metal_pjrt/conv/conv_kernels.h"
+#include "metal_pjrt/kernels/conv_misc.metal.h"
 #include "metal_pjrt/kernels/cub_sort.metal.h"
 #include "metal_pjrt/kernels/mps_staging.metal.h"
 #include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "metal_pjrt/kernels/runtime_builtins.metal.h"
 #include "metal_pjrt/kernels/scan.metal.h"
 #include "metal_pjrt/kernels/small_linalg.metal.h"
+#include "metal_pjrt/kernels/steel_conv.metal.h"
 #include "metal_pjrt/kernels/steel_gemm.metal.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 
@@ -80,8 +83,9 @@ class KernelsTest : public ::testing::Test {
 // instantiation appended by the host (steel) still compile on their own.
 TEST_F(KernelsTest, EverySourceCompiles) {
   for (const char* source :
-       {kCubSortMsl, kMpsStagingMsl, kMslPrelude, kRuntimeBuiltinsMsl,
-        kScanMsl, kSmallLinalgMsl, kSteelGemmMsl}) {
+       {kConvMiscMsl, kCubSortMsl, kMpsStagingMsl, kMslPrelude,
+        kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl, kSteelConvMsl,
+        kSteelGemmMsl}) {
     FunctionNames(source);
   }
 }
@@ -182,6 +186,20 @@ TEST_F(KernelsTest, SteelGemm) {
     }
   }
   EXPECT_EQ(seen.size(), 5 * 4 * 2);
+}
+
+// Every convolution variant the dispatch can select (conv::AllConvKernels:
+// the tile rules across their branch points, both ALIGN_C values of the
+// general kernel), plus conv_misc's two kernels per type.
+TEST_F(KernelsTest, SteelConv) {
+  EXPECT_EQ(FunctionNames(kConvMiscMsl).size(), 2 * 3);
+  const std::vector<conv::ConvKernelSource> all = conv::AllConvKernels();
+  // Per type: implicit c1..c4 on the 3 bm-32 tiles, small/large filter on
+  // all 5 implicit tiles; general 3 tiles x ALIGN_C; unfold, pad.
+  EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 2));
+  for (const conv::ConvKernelSource& k : all) {
+    ExpectKernel(k.msl.c_str(), k.function, k.constants);
+  }
 }
 
 }  // namespace
