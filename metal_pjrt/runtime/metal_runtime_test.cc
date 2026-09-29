@@ -1,6 +1,7 @@
 // Tests for the runtime layer on its own (no XLA). Needs a Metal device.
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/runtime/system_memory.h"
+#include "metal_pjrt/kernels/msl_prelude.metal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -152,6 +153,39 @@ TEST_F(MetalRuntimeTest, AcquiredKernelsGoWithTheirLastReference) {
   ASSERT_THAT(stream->Synchronize(), IsOk());
   for (int i = 0; i < 1024; ++i) ASSERT_EQ(y[i], 1) << i;
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A source starting with kMslPreludeLine compiles with the MSL prelude in
+// its place; the cache keeps the short text, the identity hashes the full
+// one (the same key as the source written out in full).
+TEST_F(MetalRuntimeTest, PreludeLine) {
+  const std::string body =
+      "\nkernel void pre(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) {\n"
+      "  y[i] = xla_vext<int>(int2(3, 4), 1);\n}\n";
+  const std::string msl = kMslPreludeLine + body;
+  const Device::KernelCacheStats base = dev_->kernel_cache_stats();
+  absl::StatusOr<const Kernel*> k = dev_->AcquireKernel(msl, "pre");
+  ASSERT_THAT(k, IsOk());
+  EXPECT_EQ(dev_->kernel_cache_stats().source_bytes,
+            base.source_bytes + msl.size());
+  absl::StatusOr<const Kernel*> full = dev_->AcquireKernel(
+      std::string(kernels::kMslPrelude) + body, "pre");
+  ASSERT_THAT(full, IsOk());
+  EXPECT_NE(*k, *full);
+  EXPECT_EQ((*k)->key(), (*full)->key());
+
+  std::unique_ptr<Stream> s = NewStream();
+  auto* y = static_cast<int32_t*>(Alloc(64 * sizeof(int32_t)));
+  ASSERT_THAT(s->Launch(**k, Dim3{1, 1, 1}, Dim3{64, 1, 1},
+                        {KernelArg::Buffer(y)}),
+              IsOk());
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  for (int i = 0; i < 64; ++i) ASSERT_EQ(y[i], 4) << i;
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+  dev_->ReleaseKernel(*k);
+  dev_->ReleaseKernel(*full);
+  EXPECT_EQ(dev_->kernel_cache_stats().kernels, base.kernels);
 }
 
 // Function constants select a variant at pipeline creation: one kernel per

@@ -37,6 +37,7 @@
 #include "absl/strings/str_replace.h"
 #include "absl/strings/strip.h"
 #include "absl/strings/ascii.h"
+#include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "metal_pjrt/kernels/runtime_builtins.metal.h"
 
 namespace metal_pjrt {
@@ -1037,7 +1038,13 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
     }
     return cached;
   }
-  const std::string source(msl_source);
+  // The full source: its hash is the kernels' identity (a prelude change is
+  // a new key), and it is what Metal compiles.
+  const std::string source =
+      absl::StartsWith(msl_source, kMslPreludeLine)
+          ? absl::StrCat(kernels::kMslPrelude,
+                         msl_source.substr(sizeof(kMslPreludeLine) - 1))
+          : std::string(msl_source);
   NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   absl::Cleanup drain = [pool] { pool->release(); };
   if (entry == nullptr) {
@@ -1054,7 +1061,7 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
           source.size(), hash, NSErrorToString(err)));
     }
     std::lock_guard<std::mutex> lock(kernel_mu_);
-    auto [it, inserted] = kernel_cache_.try_emplace(source);
+    auto [it, inserted] = kernel_cache_.try_emplace(msl_source);
     if (inserted) {
       it->second.library = lib;
       it->second.hash = hash;

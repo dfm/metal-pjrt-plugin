@@ -16,6 +16,12 @@ describe the present only. Commit hashes point at the change.
   deleted or after `jax.clear_caches()`. Library kernels (steel, FFI,
   built-ins) still stay for the process. `metal_pjrt_memory_stats` (test
   hook) also reports the cached kernels and their MSL bytes.
+- Each compiled executable takes ~15% less host memory: emitted kernels
+  carry a one-line `#include <metal_pjrt/msl_prelude.metal>` instead of
+  the ~9 KB MSL prelude, which the runtime puts back when it compiles the
+  kernel. XLA keeps two copies of every kernel thunk's source per
+  executable; a Qwen3-0.6B LoRA train step (~3150 kernels) drops from 272
+  to 232 MB of malloc'd memory. MSL dumps (`--xla_dump_to`) show the line.
 - Accuracy policy decided: mtl matches XLA:CPU, including its flushing of
   subnormal inputs and outputs. The subnormal `log` / `log2` / `log10`
   fix (70bf680) is reverted: `log(1e-40)` is `-inf` again, as on CPU, and

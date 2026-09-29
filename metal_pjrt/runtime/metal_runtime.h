@@ -131,6 +131,13 @@ struct KernelArg {
 // codegen::kArgumentBufferMarker (codegen/msl_kernel.h).
 inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
 
+// An MSL source starting with this line stands for the same source with the
+// line replaced by kernels/msl_prelude.metal; GetKernel/AcquireKernel compile
+// that (the cache keeps the short form). The MSL emitter's kernels start with
+// it. Must match codegen::kMslPreludeLine (codegen/msl_kernel.h).
+inline constexpr char kMslPreludeLine[] =
+    "#include <metal_pjrt/msl_prelude.metal>\n";
+
 // True when kernel `kernel_name` in `msl_source` uses the argument-buffer
 // convention (the marker line immediately precedes `kernel void <name>(`).
 bool UsesArgumentBuffer(const std::string& msl_source,

@@ -35,6 +35,7 @@ namespace {
 
 using ::testing::HasSubstr;
 using ::testing::Not;
+using ::testing::StartsWith;
 
 class MslEmitterTest : public ::testing::Test {
  protected:
@@ -99,7 +100,7 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_EQ(kernel->kernel_name, "fusion");
   EXPECT_EQ(kernel->num_buffer_args, 3);
   const std::string& msl = kernel->msl_source;
-  EXPECT_THAT(msl, HasSubstr("#include <metal_stdlib>"));
+  EXPECT_THAT(msl, StartsWith(kMslPreludeLine));  // the runtime expands it
   EXPECT_THAT(msl, HasSubstr("kernel void fusion("));
   EXPECT_THAT(msl, HasSubstr("device char* xla_arg0 [[buffer(0)]]"));
   EXPECT_THAT(msl, HasSubstr("device char* xla_arg2 [[buffer(2)]]"));

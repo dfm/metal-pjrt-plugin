@@ -26,7 +26,6 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/raw_ostream.h"
 #include "metal_pjrt/compiler/report_bug.h"
-#include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "mlir/Conversion/AffineToStandard/AffineToStandard.h"
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/ComplexToStandard/ComplexToStandard.h"
@@ -2424,7 +2423,7 @@ absl::StatusOr<MslKernel> EmitMslKernel(
     return s;
   }
 
-  std::string out(kernels::kMslPrelude);
+  std::string out(kMslPreludeLine);
   llvm::raw_string_ostream os(out);
   os << "\n";
   for (const auto& entry_it : info.constants) {

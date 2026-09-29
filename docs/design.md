@@ -68,6 +68,12 @@ remains (func/scf/arith/math/vector/gpu plus the LLVM-dialect memory ops that
 LowerTensors introduced) to EmitC, and prints MSL. The text rides to
 `CompileTargetBinary` inside a stub LLVM module and becomes the kernel
 "binary"; the executor compiles it with `newLibraryWithSource` at load time.
+The binary's first line, `#include <metal_pjrt/msl_prelude.metal>`, stands
+for the ~9 KB prelude of helpers, which the runtime puts back before
+compiling: XLA keeps two copies of every kernel thunk's binary for the
+executable's life (the thunk's and its serialized form, one per thunk even
+where thunks share a kernel), so a full prelude in each was ~40 MB of a
+Qwen3-0.6B train step's ~270 MB (`docs/performance.md`, host memory).
 Details and the exact contract are in `docs/integration-notes.md`.
 
 Runtime shader compilation works with command-line tools only (verified:

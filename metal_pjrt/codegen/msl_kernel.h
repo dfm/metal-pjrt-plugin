@@ -14,10 +14,20 @@ namespace metal_pjrt::codegen {
 inline constexpr int kMaxDirectBufferArgs = 31;
 inline constexpr char kArgumentBufferMarker[] = "// xla_metal_argbuffer";
 
+// The first line of every emitted kernel, standing for the MSL prelude
+// (kernels/msl_prelude.metal, ~9 KB): the runtime puts the prelude back
+// before compiling. XLA keeps each kernel thunk's source twice (the thunk and
+// the executable's serialized thunks), one copy per thunk even when kernels
+// are shared, so the prelude would be most of an executable's MSL. Must match
+// metal_pjrt::rt::kMslPreludeLine (runtime/metal_runtime.h).
+inline constexpr char kMslPreludeLine[] =
+    "#include <metal_pjrt/msl_prelude.metal>\n";
+
 struct MslKernel {
   // Name of the `kernel` function in `msl_source` (== the XLA entry function).
   std::string kernel_name;
-  // Complete, self-contained MSL translation unit.
+  // An MSL translation unit, complete once its first line, kMslPreludeLine,
+  // is replaced by the prelude (rt::Device::GetKernel does that).
   std::string msl_source;
   // The kernel takes exactly this many `device char*` arguments bound to
   // [[buffer(0)]] .. [[buffer(num_buffer_args - 1)]], in XLA's kernel argument
