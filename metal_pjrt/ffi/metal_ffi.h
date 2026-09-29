@@ -32,7 +32,6 @@
 #include "metal_pjrt/runtime/kernel_launch.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "xla/stream_executor/stream.h"
-#include "xla/xla_data.pb.h"
 
 namespace metal_pjrt {
 namespace ffi {
@@ -57,10 +56,6 @@ absl::StatusOr<MetalContext> GetMetalContext(stream_executor::Stream* stream);
 // The runtime device of Metal executor 0 (the only one). For the FFI
 // instantiate stage, which runs without a stream.
 absl::StatusOr<rt::Device*> DefaultMetalDevice();
-
-// MSL scalar type name for an XLA element type ("float", "half", "bfloat",
-// "int"), or an error for unsupported types.
-absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type);
 
 // Buffers + params launch of a compiled kernel (runtime/kernel_launch.h).
 using rt::LaunchKernel;

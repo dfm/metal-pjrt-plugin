@@ -15,9 +15,8 @@ cc_library(
     ],
     hdrs = ["metal_ffi.h"],
     deps = [
-        "//metal_pjrt/compiler:report_bug",
+        ":scan",
         "//metal_pjrt/kernels:cub_sort",
-        "//metal_pjrt/kernels:scan",
         "//metal_pjrt/runtime:kernel_launch",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
@@ -38,6 +37,41 @@ cc_library(
         "@xla//xla/stream_executor:stream_executor_h",
     ],
     alwayslink = True,
+)
+
+# The scan kernel's dispatch (metal$scan's handler is scan_ffi.cc). No XLA.
+cc_library(
+    name = "scan",
+    srcs = ["scan.cc"],
+    hdrs = ["scan.h"],
+    deps = [
+        "//metal_pjrt/compiler:report_bug",
+        "//metal_pjrt/kernels:scan",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+    ],
+)
+
+# RunScan against a double reference, on rt::Device alone. Needs a Metal
+# device.
+cc_test(
+    name = "scan_test",
+    srcs = ["scan_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":scan",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
 )
 
 # The radix sort handlers (cub_sort_ffi.cc) against a CPU stable sort.

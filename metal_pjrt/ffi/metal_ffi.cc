@@ -1,13 +1,9 @@
 #include "metal_pjrt/ffi/metal_ffi.h"
 
-#include <string>
-
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "absl/strings/str_cat.h"
 #include "metal_pjrt/stream_executor/metal_executor.h"
 #include "metal_pjrt/stream_executor/metal_platform_id.h"
-#include "xla/primitive_util.h"
 #include "xla/stream_executor/platform.h"
 #include "xla/stream_executor/platform_manager.h"
 #include "xla/stream_executor/stream_executor.h"
@@ -52,23 +48,6 @@ absl::StatusOr<rt::Device*> DefaultMetalDevice() {
     return absl::InternalError("Metal FFI: executor 0 has no runtime device");
   }
   return device;
-}
-
-absl::StatusOr<std::string> MslTypeName(xla::PrimitiveType type) {
-  switch (type) {
-    case xla::F32:
-      return std::string("float");
-    case xla::F16:
-      return std::string("half");
-    case xla::BF16:
-      return std::string("bfloat");
-    case xla::S32:
-      return std::string("int");
-    default:
-      return absl::UnimplementedError(
-          absl::StrCat("Metal FFI: unsupported element type ",
-                       xla::primitive_util::LowercasePrimitiveTypeName(type)));
-  }
 }
 
 }  // namespace ffi
