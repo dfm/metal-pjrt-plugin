@@ -250,14 +250,25 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             DescribeOp(*instr)));
       }
       if (MovesF64InAKernel(*instr)) {
+        const bool c128 = TouchesType(*instr, {C128});
         return absl::UnimplementedError(absl::StrCat(
-            "Metal: f64 ", HloOpcodeString(instr->opcode()),
+            "Metal: ", c128 ? "complex128 " : "f64 ",
+            HloOpcodeString(instr->opcode()),
             " inside jit is not supported (Apple GPUs have no double "
             "precision, so GPU kernels cannot load f64; only transfers of "
-            "f64 arrays work). Use float32, or run it on the CPU backend: ",
+            "f64 / complex128 arrays work). Use float32 / complex64, or run "
+            "it on the CPU backend: ",
             DescribeOp(*instr)));
       }
       if (NeedsWideAtomics(*instr)) {
+        if (TouchesType(*instr, {C64, C128})) {
+          return absl::UnimplementedError(absl::StrCat(
+              "Metal: scatter of complex values needs 64-bit atomics (XLA "
+              "compare-and-swaps complex elements, even to overwrite), which "
+              "Metal does not have; pass unique_indices=True if the indices "
+              "do not repeat: ",
+              DescribeOp(*instr)));
+        }
         return absl::UnimplementedError(absl::StrCat(
             "Metal: scatter with a combiner on 64-bit elements needs 64-bit "
             "atomics, which Metal does not have: ",

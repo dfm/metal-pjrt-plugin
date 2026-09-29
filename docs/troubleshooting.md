@@ -99,18 +99,22 @@ operation and its source line:
   no double precision; use float32 / complex64, or run it on the CPU
   backend): ...` and
   `Metal: f64 transpose inside jit is not supported (...; only transfers
-  of f64 arrays work). Use float32, or run it on the CPU backend: ...`
-  (also broadcast, concatenate, gather, iota, pad, reverse, select). Keep
-  f64 work on CPU, or turn `jax_enable_x64` off.
+  of f64 / complex128 arrays work). Use float32 / complex64, or run it on
+  the CPU backend: ...` (also broadcast, concatenate, gather, iota, pad,
+  reverse, select; "complex128 transpose" for complex128). Keep f64 work
+  on CPU, or turn `jax_enable_x64` off.
 - `Metal: matmul s8 x s8 -> s32 is not supported: both operands must be
   f32, f16 or bf16 of one type, the result that type or f32. Cast the
   operands` (also for mixed types such as `f16 x f16 -> bf16`). Cast to
   a supported type.
 - `Metal: scatter with a combiner on 64-bit elements needs 64-bit atomics,
   which Metal does not have: ...` Pass `unique_indices=True` if the
-  indices are unique, or use 32-bit elements. A scatter on complex64
-  needs them even to overwrite (XLA writes complex elements with a
-  compare-and-swap loop).
+  indices are unique, or use 32-bit elements.
+- `Metal: scatter of complex values needs 64-bit atomics (XLA
+  compare-and-swaps complex elements, even to overwrite), ...`: the same
+  for complex64, even without a combiner. Pass `unique_indices=True` if
+  the indices do not repeat, or scatter the real and imaginary parts
+  separately.
 - `Metal: matmul (dot) of complex values is not supported; ...` and
   `Metal: sort of complex values is not supported; ...`: split into real
   and imaginary parts (a complex matmul is four real ones), or run it on

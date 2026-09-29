@@ -139,6 +139,15 @@ ENTRY e {
       << s;
   EXPECT_NE(s.message().find("jit(f)/transpose"), std::string::npos) << s;
   EXPECT_NE(s.message().find("model.py:3"), std::string::npos) << s;
+  s = Check(R"(
+HloModule m
+ENTRY e {
+  a = c128[4,3]{1,0} parameter(0)
+  ROOT t = c128[3,4]{1,0} transpose(a), dimensions={1,0}
+})");
+  EXPECT_NE(s.message().find("complex128 transpose inside jit"),
+            std::string::npos)
+      << s;
   // A transpose that only relabels (the layout makes it a bitcast).
   EXPECT_TRUE(Check(R"(
 HloModule m
@@ -318,8 +327,11 @@ ENTRY e {
   ROOT s = c64[4] scatter(x, i, u), update_window_dims={}, inserted_window_dims={0}, scatter_dims_to_operand_dims={0}, index_vector_dim=1, $UNIQUEto_apply=comb
 })";
   // Even an overwrite: XLA compare-and-swaps complex elements.
-  EXPECT_EQ(Check(absl::StrReplaceAll(kScatter, {{"$UNIQUE", ""}})).code(),
-            absl::StatusCode::kUnimplemented);
+  absl::Status s = Check(absl::StrReplaceAll(kScatter, {{"$UNIQUE", ""}}));
+  EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(s.message().find("scatter of complex values"), std::string::npos)
+      << s;
+  EXPECT_EQ(s.message().find("combiner"), std::string::npos) << s;
   EXPECT_TRUE(Check(absl::StrReplaceAll(kScatter,
                                         {{"$UNIQUE", "unique_indices=true, "}}))
                   .ok());

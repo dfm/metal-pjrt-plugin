@@ -210,6 +210,14 @@ case("c64 fused")(lambda: ref(lambda x, y: jnp.abs(jnp.exp(x * y + 0.5j) / (y + 
 case("c64 unfused (complex between kernels)")(lambda: ref(lambda x, y: (jnp.exp(x).T * jnp.sum(y, 0)).reshape(-1)[::3], CX(16, 8), CX(4, 16)))
 case("c64 constants")(lambda: ref(lambda x: (x * jnp.asarray(CX(64)[::-1]), x[:1] * jnp.asarray(CX(4096))), CX(64)))
 case("c64 pure_callback")(lambda: ref(lambda x: jax.pure_callback(lambda v: np.asarray(v).conj() * 2, jax.ShapeDtypeStruct((8,), jnp.complex64), x), CX(8), same=True))
+# Near the unit circle, so long products neither overflow nor vanish.
+CXU = lambda *s: (np.exp(1j * R(*s)) * (1 + 0.01 * np.roll(R(*s), 1))).astype(np.complex64)
+# A complex multiply as the reduction combiner (shuffles + shared memory).
+case("c64 prod")(lambda: ref(lambda x: (jnp.prod(x, 1), jnp.prod(x)), CXU(64, 32)))
+# A complex cumsum goes through ReduceWindowRewriter (metal$scan is real only).
+case("c64 cumsum")(lambda: ref(lambda x: jnp.cumsum(x, 1), CX(8, 300)))
+# unique_indices: no atomics, so a complex scatter runs.
+case("c64 scatter unique_indices")(lambda: ref(lambda x, u: x.at[np.random.default_rng(0).permutation(64)[:20]].set(u, unique_indices=True), CX(64), CX(20), same=True))
 case("int8 / uint8 math")(lambda: ref(lambda x: (x.astype(jnp.int8) * 2 + x.astype(jnp.uint8)).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("int4 (expected unsupported)")(lambda: ref(lambda x: x.astype(jnp.int4).astype(f32), jnp.arange(16, dtype=jnp.int32) % 7))
 case("float8 e4m3")(lambda: ref(lambda x: x.astype(jnp.float8_e4m3fn), A(16)))
@@ -262,6 +270,7 @@ ULPS = {
     'c64 exp': 3.7, 'c64 log': 5.8, 'c64 reduce sum': 3.2,
     'c64 reduce sum 1M': 1.5, 'c64 fused': 6.7,
     'c64 unfused (complex between kernels)': 1.6, 'c64 constants': 1.9,
+    'c64 prod': 7.6, 'c64 cumsum': 3,
     'many-arg fusion (>31 buffers)': 6.1,
 }
 # Outputs of sums, dots and whole programs: ulps of the largest output.
@@ -277,7 +286,7 @@ NORMWISE = {
     "softmax cross entropy", "layernorm fwd+bwd", "attention block",
     "bf16 reduce", "many-arg fusion (>31 buffers)", "c64 reduce sum",
     "c64 reduce sum 1M", "c64 unfused (complex between kernels)",
-    "c64 constants",
+    "c64 constants", "c64 prod", "c64 cumsum",
 }
 
 

@@ -443,10 +443,12 @@ void LowerComplexToFloat2(ModuleOp module) {
     if (auto create = mlir::dyn_cast<mlir::complex::CreateOp>(op)) {
       repl = mlir::vector::FromElementsOp::create(
           b, loc, float2, ValueRange{create.getReal(), create.getImaginary()});
-    } else if (auto re = mlir::dyn_cast<mlir::complex::ReOp>(op)) {
-      repl = mlir::vector::ExtractOp::create(b, loc, re.getComplex(), 0);
-    } else if (auto im = mlir::dyn_cast<mlir::complex::ImOp>(op)) {
-      repl = mlir::vector::ExtractOp::create(b, loc, im.getComplex(), 1);
+    } else if (mlir::isa<mlir::complex::ReOp, mlir::complex::ImOp>(op)) {
+      // The operand is already float2: read it untyped (getComplex() would
+      // cast it to TypedValue<ComplexType>, which asserts).
+      repl = mlir::vector::ExtractOp::create(
+          b, loc, op->getOperand(0),
+          mlir::isa<mlir::complex::ReOp>(op) ? 0 : 1);
     } else {
       auto cst = mlir::cast<mlir::complex::ConstantOp>(op);
       repl = mlir::arith::ConstantOp::create(
