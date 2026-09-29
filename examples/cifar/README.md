@@ -42,25 +42,24 @@ standard deviations (ddof=1).
 
 Measured 2026-09-29 on an M3 MacBook (10-core GPU, 8 GB), macOS 26.2,
 JAX 0.11.2 with optax, with the plugin's faster conv weight gradients
-(f0aca7b, prompted by this example), against PyTorch 2.14.0 on MPS
-running the same algorithm (`torch_baseline.py`, float16, as airbench
-runs), in the same quiet window (no other GPU jobs or builds). Spreads
-are sample standard deviations.
+(f0aca7b) and its PyTorch-like memory limits (c4bf2d6), both prompted by
+this example, against PyTorch 2.14.0 on MPS running the same algorithm
+(`torch_baseline.py`, float16, as airbench runs). Spreads are sample
+standard deviations; accuracy is on the full 10,000-image test set.
 
 | | JAX (mtl), bf16 | PyTorch MPS, fp16 |
 |---|---|---|
-| test accuracy | 94.03%, 93.93% (2 seeds) | 93.93% ± 0.11% (5 seeds; 1 reached 94%) |
-| time to train (airbench's measure) | 229 s, 259 s (mean 244 s) | 254 ± 20 s |
+| test accuracy (5 seeds) | 94.02% ± 0.05% (4 of 5 reached 94%) | 93.93% ± 0.11% (1 of 5) |
+| time to train (airbench's measure) | 260 ± 13 s | 254 ± 20 s |
 | warmup (first epoch, compiling every program) | 30 s | 28 s (no compile; MPS graph setup) |
 | peak memory footprint | 3.3 GB | 5.9 GB |
 
-JAX and PyTorch train at about the same speed and reach the same
-accuracy; JAX uses 45% less memory. Of the 5 JAX seeds, 3 did not run:
-the plugin's memory guard refused the train step's 0.9 GB of scratch on
-all 9 attempts for seeds 2-4 (1.1-1.4 GB of system memory free, other
-applications open), and seed 1's process was refused starting its second
-run. PyTorch, which has no such guard, completed its 5 seeds in the same
-window by going into swap. See "What it found in the plugin".
+JAX and PyTorch train at the same speed and reach the same accuracy (JAX
+slightly higher and less variable); JAX uses 45% less memory. The JAX
+seeds ran in one process with other applications open (memory pressure
+at "warn" for part of the run); in an earlier quiet window, before
+c4bf2d6, seeds 1 and 5 gave the same accuracies in 229 and 259 s. Runs are
+deterministic: a seed gives the same accuracy every time.
 
 Before the plugin's weight-gradient change, the conv weight gradients
 took 2.5-5x the forward time and the step 545 ms (about 259 s per run);
@@ -82,8 +81,8 @@ both backends alike.
 
 The port reproduced airbench94's accuracy on the first complete run
 (94.01%). Everything else was memory: an 8 GB Mac shared with other
-applications has 1-2 GB free, and the plugin's memory guard refuses an
-allocation that would leave less than 512 MB for the system.
+applications has 1-2 GB free, and until c4bf2d6 the plugin's memory guard
+refused any allocation that would leave less than 512 MB of it.
 
 - **Keep the data as uint8 and normalize inside the jitted programs.**
   The training set is 150 MB as uint8 and 300 MB as bf16; an eager
@@ -136,12 +135,13 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
   (~1M) into a small output. Reported with a standalone benchmark, the
   plugin now sizes the GEMM tile and split-K together (f0aca7b): 18 ms
   for that layer, and end to end JAX went from ~259 s to 229-259 s.
-- **The memory guard decides whether training runs at all** on a busy
-  8 GB machine. It refused the step (0.9 GB of scratch) whenever less than
-  ~1.4 GB was free, which on this machine was most of the time (25 of 28
-  attempts across the measurements); PyTorch
-  MPS, which has no such guard, ran with a 4-6 GB footprint and pushed the
-  machine into swap instead. The trade-off (refuse vs swap under GPU load)
-  is an open decision for the plugin; the numbers are recorded there.
+- **The memory guard decided whether training ran at all** on a busy
+  8 GB machine. It refused any allocation that would leave less than
+  512 MB of free memory, so the step (0.9 GB of scratch) was refused
+  whenever less than ~1.4 GB was free: 25 of 28 attempts. PyTorch MPS,
+  which caps only its own allocations, ran with a 4-6 GB footprint and
+  let macOS make room. The plugin now does the same (c4bf2d6: a
+  per-process budget, refusals only at critical system memory pressure),
+  and the 5 JAX seeds above ran in one go on the same busy machine.
 - **An out-of-memory error named the wrong program** (the next eager op,
   not the program whose allocation failed). Reported with a repro.

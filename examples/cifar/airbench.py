@@ -113,9 +113,9 @@ def forward(params, stats, x, train, dtype=jnp.bfloat16):
     new_stats = []
     # The backward pass recomputes each group from its input instead of
     # keeping every intermediate: the step's scratch at batch 1024 goes from
-    # 1.17 to 0.94 GB for 7% more time per step. Without it (--no-remat)
-    # the plugin's memory guard refused the step on an 8 GB machine shared
-    # with other applications.
+    # 1.17 to 0.94 GB for 7% more time per step (--no-remat turns it off;
+    # the plugin's memory guard, before c4bf2d6, refused the larger step on
+    # an 8 GB machine shared with other applications).
     group = jax.checkpoint(conv_group, static_argnums=(3,)) if REMAT and train else conv_group
     for g, s in zip(params["groups"], stats):
         x, s12 = group(g, s, x, train)
