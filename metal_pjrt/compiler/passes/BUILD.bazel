@@ -64,15 +64,41 @@ cc_library(
     ],
 )
 
+cc_library(
+    name = "conv_rewriter",
+    srcs = ["conv_rewriter.cc"],
+    hdrs = ["conv_rewriter.h"],
+    deps = [
+        "//metal_pjrt/conv",
+        "@com_google_absl//absl/algorithm:container",
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:permutation_util",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/pass:hlo_pass",
+        "@xla//xla/service/gpu:backend_configs_cc",
+        "@xla//xla/tsl/platform:errors",
+        "@xla//xla/tsl/platform:statusor",
+    ],
+)
+
 cc_test(
     name = "ffi_rewriters_test",
     srcs = ["ffi_rewriters_test.cc"],
     deps = [
+        ":conv_rewriter",
         ":scan_rewriter",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",
+        "@xla//xla:shape_util",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
+        "@xla//xla/service/gpu:backend_configs_cc",
     ],
 )
 

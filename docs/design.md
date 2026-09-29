@@ -87,7 +87,11 @@ is `__cublas$lt$matmul`), and the StreamExecutor BLAS interface is the plug
 point. f32 GEMMs run on Metal Performance Shaders' matrix kernels (a bias
 or activation epilogue is a second MSL pass); f16/bf16 GEMMs run on "steel"
 kernels ported from MLX (MIT), with the epilogue applied in their store.
-There is no DNN library path: convolutions run as XLA-emitted loop kernels.
+There is no DNN library: convolutions of 4 Mflop and more (1-D and 2-D,
+f32/f16/bf16, ungrouped) go to `metal$conv`, MLX's steel convolution kernels
+(`metal_pjrt/conv`), through the plugin's own rewriter in
+`OptimizeHloConvolutionCanonicalization` (CUDA's cuDNN canonicalization
+hook); the rest run as XLA-emitted loop kernels.
 Other custom calls follow CUDA's shape, where CUDA also has a library call:
 XLA's SortRewriter targets an MSL radix sort, dense linear algebra goes to
 Accelerate LAPACK on the shared buffers (GPU kernels up to 32x32), Python
@@ -126,8 +130,10 @@ gets a buffer of its own. Eight chained 4096^3 f32 GEMMs used to share one
 budget splits only between dispatches, so one kernel longer than the
 watchdog still resets the GPU (one 16384^3 f32 GEMM is ~8.8e12 flops, 3-4 s
 in one dispatch here); and non-GEMM heavy kernels (emitted fusions,
-especially convolutions through XLA's loop emitter) are charged only their
-thread count, so a large convolution can be a multi-second single kernel. Copies and uniform fills up to 16 MB run as built-in
+especially convolutions left to XLA's loop emitter) are charged only their
+thread count, so a large convolution there can be a multi-second single
+kernel (`metal$conv` charges its flops and splits its launches at half the
+budget). Copies and uniform fills up to 16 MB run as built-in
 compute kernels so kernels and copies share one compute encoder (an encoder
 switch costs ~10 us of GPU time); larger ones use the blit engine.
 

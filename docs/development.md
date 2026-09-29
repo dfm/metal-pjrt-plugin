@@ -32,8 +32,7 @@ the plugin.
   `linalg:lapack_host` (Accelerate on host pointers). `metal_pjrt/conv/`
   (`conv:conv`, MLX's steel convolutions: path choice, implicit-GEMM
   kernels, unfold + GEMM, the weight gradient as patches x dY with split-K
-  parts, launches bounded in flops) is one too, not yet used by the
-  compiler. Their
+  parts, launches bounded in flops) is one too, behind `metal$conv`. Their
   tests, `conv_test`, `scan_test`, `radix_sort_test`, `small_linalg_test`
   (device tests) and
   `lapack_host_test` (host), link no XLA, so they build quickly and test a
@@ -153,7 +152,7 @@ ignored with a warning and the default kept.
 | variable | scope | audience | values and default | read in |
 |---|---|---|---|---|
 | `METAL_PJRT_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
-| `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `all`; other names are ignored with a warning | compiler |
+| `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `conv` (the `metal$conv` rewriter; every convolution then takes the loop emitter), `all`; other names are ignored with a warning | compiler |
 | `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
 | `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |

@@ -93,6 +93,10 @@ def test_cache_key_fingerprints_parsed_settings():
     assert version(METAL_PJRT_DISABLE_LAPACK="0") == unset
     assert version(METAL_PJRT_DISABLE_LAPACK="") == unset
     assert version(METAL_PJRT_DISABLE_LAPACK="1") != unset
-    assert version(METAL_PJRT_DISABLE_REWRITES="scan,cubsort") == \
+    assert version(METAL_PJRT_DISABLE_REWRITES="scan,cubsort,conv") == \
         version(METAL_PJRT_DISABLE_REWRITES="all")
+    assert version(METAL_PJRT_DISABLE_REWRITES="scan,cubsort") != \
+        version(METAL_PJRT_DISABLE_REWRITES="all")
+    assert version(METAL_PJRT_DISABLE_REWRITES="conv") not in (
+        unset, version(METAL_PJRT_DISABLE_REWRITES="scan"))
     assert version(METAL_PJRT_DISABLE_REWRITES="bogus") == unset

@@ -17,11 +17,13 @@ struct CompileSettings {
   // reads it the same way (_env_flag).
   bool lapack = true;
   // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off
-  // the metal$scan rewriter, "cubsort" XLA's SortRewriter (radix sort), and
-  // "all" both (compiler/metal_compiler.cc). Other names are ignored with a
-  // warning.
+  // the metal$scan rewriter, "cubsort" XLA's SortRewriter (radix sort),
+  // "conv" the metal$conv rewriter (convolutions stay on the loop emitter),
+  // and "all" all three (compiler/metal_compiler.cc). Other names are
+  // ignored with a warning.
   bool scan_rewrite = true;
   bool cub_sort = true;
+  bool conv_rewrite = true;
 
   // The parsed values, for the cache key.
   std::string Fingerprint() const;

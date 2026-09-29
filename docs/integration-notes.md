@@ -113,8 +113,9 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - Ctor: `GpuCompiler(kMetalPlatformId, "spirv64-unknown-unknown", "")` so the
   emitters take the SPIR branches (`target_util.cc`, `fusion_emitter.cc`).
 - Pure virtuals: `GetLLVMCommandLineOptions`, `AddPaddingForGpublasGemms`
-  (no-op), `OptimizeHloConvolutionCanonicalization` (no-op: convolutions
-  stay loop-emitted),
+  (no-op), `OptimizeHloConvolutionCanonicalization` (MetalConvRewriter:
+  convolutions to `metal$conv`, the rest stay loop-emitted; then the
+  expanders below),
   `CompileTargetBinary(module_config, llvm::Module*, device_description,
   relocatable, debug_module, shard)`.
 - `AddConfigAssignerPass`: no-op. `OptimizeHloPostLayoutAssignment`:
@@ -226,6 +227,27 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   total elements > 16384 regardless of row length; `RunHloPasses` expands
   rows <= 64 of such sorts with `MetalSortExpander` first.
   `METAL_PJRT_DISABLE_REWRITES=cubsort` turns SortRewriter off.
+- `metal$conv` (`ffi/conv_ffi.cc` over `conv/conv.h`, MLX's steel
+  convolutions): the target of MetalConvRewriter
+  (`compiler/passes/conv_rewriter.h`), which runs in
+  `OptimizeHloConvolutionCanonicalization`, before layout assignment, where
+  CUDA canonicalizes for cuDNN. XLA's own ConvRewriter is not usable: it
+  rewrites every convolution, and thunk_emitter sends cuDNN targets to a
+  ConvolutionThunk (a DnnSupport) before any FFI lookup. Each convolution
+  becomes transposes to NHWC / OHWI (none for NHWC activations; weights are
+  small), the custom call with a u8 workspace tuple element sized by
+  PlanConv at rewrite time (re-planned and checked by the handler), and a
+  transpose back. Two kinds: "fwd" (the forward convolution and JAX's input
+  gradient, whose kReverse of the kernel folds into `flip` when the
+  convolution is its only user) and "wgrad" (JAX's weight gradient: lhs
+  feature dimension before its batch dimension, rhs batch before feature;
+  computed as patches x dY). A window reversed on every spatial dim (XLA's
+  algebraic simplifier swaps the operands of a convolution whose kernel is
+  larger than its input) toggles `flip` or reverses the rhs. Left to the loop
+  emitter: grouped, 3-D, negative low padding, types other than
+  f32/f16/bf16, and convolutions under 4 Mflop (the loop emitter's single
+  fused kernel is faster there, docs/performance.md).
+  `METAL_PJRT_DISABLE_REWRITES=conv` turns the rewriter off.
   (A `metal$softmax` rewriter was removed after an end-to-end A/B,
   docs/performance.md, "Measured and rejected".)
 - Dense linear algebra (`metal_pjrt/linalg/`): handlers

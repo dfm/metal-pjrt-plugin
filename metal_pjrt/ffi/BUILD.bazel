@@ -3,11 +3,13 @@ load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
 package(default_visibility = ["//visibility:public"])
 
 # XLA FFI support for the Metal platform: helpers plus the handlers the Metal
-# compiler's scan rewriter targets (metal$scan), XLA's SortRewriter targets
-# (xla.gpu.ext.cub_sort_keys/pairs) and the Python callback handler. Handlers register statically, so this is alwayslink.
+# compiler's scan and convolution rewriters target (metal$scan, metal$conv),
+# XLA's SortRewriter targets (xla.gpu.ext.cub_sort_keys/pairs) and the Python
+# callback handler. Handlers register statically, so this is alwayslink.
 cc_library(
     name = "metal_ffi",
     srcs = [
+        "conv_ffi.cc",
         "cub_sort_ffi.cc",
         "metal_ffi.cc",
         "python_callback_ffi.cc",
@@ -17,6 +19,7 @@ cc_library(
     deps = [
         ":radix_sort",
         ":scan",
+        "//metal_pjrt/conv",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
         "//metal_pjrt/stream_executor:metal_platform_id",

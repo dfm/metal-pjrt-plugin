@@ -29,6 +29,7 @@
 #include "metal_pjrt/stream_executor/metal_platform_id.h"
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
+#include "metal_pjrt/compiler/passes/conv_rewriter.h"
 #include "metal_pjrt/compiler/passes/scan_rewriter.h"
 #include "metal_pjrt/compiler/passes/sort_expander.h"
 // --- begin linalg (Accelerate LAPACK) ---
@@ -105,7 +106,8 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
 
 // METAL_PJRT_DISABLE_REWRITES=scan (or all) turns off the metal$scan
 // rewriter, =cubsort XLA's SortRewriter (radix sort; MetalSortExpander then
-// takes every sort), for A/B comparisons and bisecting. LAPACK has its own
+// takes every sort), =conv the metal$conv rewriter (the loop emitter then
+// takes every convolution), for A/B comparisons and bisecting. LAPACK has its own
 // switch, METAL_PJRT_DISABLE_LAPACK (LapackDisabled()), shared with the
 // Python lowerings. All are read once (compile_settings.h).
 const metal_pjrt::CompileSettings& Settings() {
@@ -133,11 +135,16 @@ absl::Status MetalCompiler::OptimizeHloConvolutionCanonicalization(
     se::dnn::VersionInfo dnn_version,
     const se::SemanticVersion& toolkit_version,
     CompilationStats* compilation_stats) {
-  // No convolution library, so nothing to canonicalize. This hook runs after
-  // RunOptimizationPasses (CholeskyExpander, TopkDecomposer, StableSortExpander
-  // and SortSimplifier are done) and before layout assignment, so it is where
-  // we replace ops that only have legacy or library emitters in XLA:GPU.
+  // This hook runs after RunOptimizationPasses (CholeskyExpander,
+  // TopkDecomposer, StableSortExpander and SortSimplifier are done) and
+  // before layout assignment, so it is where we replace ops that only have
+  // legacy or library emitters in XLA:GPU: convolutions go to metal$conv
+  // (MLX's steel kernels; the rest stay on the loop emitter), in place of
+  // CUDA's cuDNN canonicalization.
   HloPassPipeline pipeline("metal-expanders", compilation_stats);
+  if (Settings().conv_rewrite) {
+    pipeline.AddPass<MetalConvRewriter>();
+  }
   // Same default block size as CholeskyExpander (128): Cholesky of n <= 128
   // emits no triangular-solve; larger ones emit blocked solves expanded here.
   pipeline.AddPass<TriangularSolveExpander>();

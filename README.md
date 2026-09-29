@@ -150,7 +150,7 @@ translator ("MSL emitter: unsupported ..."); see
 | Matmul, integer GEMMs (int8 x int8 -> int32) and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops run (`test_lax.py`, "dot int32") |
 | Matmul, dot precision algorithms (`TF32_TF32_F32`, `F16_F16_F16`, `BF16_BF16_BF16`) | no | XLA refuses them ("Unsupported algorithm on the current device(s)"). The `BF16_BF16_F32` family works |
 | Matmul, fp8 | untested | fp8 conversions work (`test_lax.py`) |
-| Convolutions | yes, slow | XLA's loop emitter, no library kernel (`test_lax.py`). 3 of JAX's convolution test cases fail: two with complex values, one in the kernel translator |
+| Convolutions | yes | 1-D and 2-D f32/f16/bf16 (forward and gradients) on MLX's steel convolution kernels, near MLX's speed (`test_conv.py`); grouped, 3-D, other types and tiny ones on XLA's slow loop emitter. 3 of JAX's convolution test cases fail: two with complex values, one in the kernel translator |
 | Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`) |
 | Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the shared memory (`test_linalg.py`). f16/bf16 linear algebra is untested |
 | `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering on mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") |
