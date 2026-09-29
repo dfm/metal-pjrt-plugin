@@ -54,11 +54,15 @@ standard deviations; accuracy is on the full 10,000-image test set.
 | warmup (first epoch, compiling every program) | 30 s | 28 s (no compile; MPS graph setup) |
 | peak memory footprint | 3.3 GB | 5.9 GB |
 
-JAX and PyTorch train at the same speed and reach the same accuracy (JAX
-slightly higher and less variable); JAX uses 45% less memory. The JAX
-seeds ran in one process with other applications open (memory pressure
-at "warn" for part of the run); in an earlier quiet window, before
-c4bf2d6, seeds 1 and 5 gave the same accuracies in 229 and 259 s. Runs are
+The two columns were measured in different conditions: PyTorch's 5 seeds
+in a quiet window (no other GPU jobs or builds), JAX's in one process on
+the busy machine, with memory pressure at "warn" for part of the run.
+There JAX's runs 2-5 took 262-271 s against 237 s for run 1, consistent
+with the plugin releasing its buffer cache on every free at warn (a
+roadmap item); in the earlier quiet window, before c4bf2d6, seeds 1 and 5
+took 229 and 259 s. So "the same speed" is conservative for JAX: JAX and
+PyTorch reach the same accuracy (JAX slightly higher and less variable)
+in about the same time, and JAX uses 45% less memory. Runs are
 deterministic: a seed gives the same accuracy every time.
 
 Before the plugin's weight-gradient change, the conv weight gradients
