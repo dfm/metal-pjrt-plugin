@@ -8,6 +8,14 @@ describe the present only. Commit hashes point at the change.
 
 ### 2026-09-29
 
+- Kernels the compiler emitted now go with their executables: dropping
+  an executable releases its Metal pipelines, libraries and the MSL text
+  the kernel cache kept (~40 KB per kernel; before, they stayed until the
+  process exited). JAX's caches hold every executable a live jitted
+  function compiled, so the memory comes back when the function is
+  deleted or after `jax.clear_caches()`. Library kernels (steel, FFI,
+  built-ins) still stay for the process. `metal_pjrt_memory_stats` (test
+  hook) also reports the cached kernels and their MSL bytes.
 - Accuracy policy decided: mtl matches XLA:CPU, including its flushing of
   subnormal inputs and outputs. The subnormal `log` / `log2` / `log10`
   fix (70bf680) is reverted: `log(1e-40)` is `-inf` again, as on CPU, and

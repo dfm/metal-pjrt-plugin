@@ -230,13 +230,14 @@ absl::StatusOr<std::unique_ptr<Kernel>> MetalExecutor::LoadKernel(
   std::string msl(reinterpret_cast<const char*>(bytes.data()), bytes.size());
 
   absl::StatusOr<const rt::Kernel*> rt_kernel =
-      device_->GetKernel(msl, spec.kernel_name());
+      device_->AcquireKernel(msl, spec.kernel_name());
   if (!rt_kernel.ok()) {
     return absl::Status(rt_kernel.status().code(),
                         absl::StrCat("loading kernel ", spec.kernel_name(),
                                      ": ", rt_kernel.status().message()));
   }
-  auto kernel = std::make_unique<MetalKernel>(*rt_kernel, spec.arity());
+  auto kernel =
+      std::make_unique<MetalKernel>(device_.get(), *rt_kernel, spec.arity());
   kernel->set_name(spec.kernel_name());
   if (std::holds_alternative<KernelLoaderSpec::KernelArgsPackingFunc>(
           spec.kernel_args_packing())) {

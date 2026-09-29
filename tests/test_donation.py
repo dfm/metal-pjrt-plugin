@@ -169,9 +169,10 @@ import numpy as np, jax, jax.numpy as jnp
 import metal_pjrt_plugin
 lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
 def stats():
-    out = (ctypes.c_uint64 * 6)()
+    out = (ctypes.c_uint64 * 8)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0
-    return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure"), out))
+    return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure",
+                     "kernels", "kernel_msl_bytes"), out))
 MB = 1 << 20
 n = 4 * MB  # 16 MB of f32
 step = jax.jit(lambda x, i: x * 0.5 + i, donate_argnums=0)

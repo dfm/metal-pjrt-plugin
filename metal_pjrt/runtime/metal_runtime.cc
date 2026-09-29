@@ -565,8 +565,8 @@ Device::~Device() {
                << allocated_bytes_ << " bytes; releasing them";
   }
   for (auto& [source, entry] : kernel_cache_) {
-    for (auto& [key, kernel] : entry->kernels) kernel->pso()->release();
-    entry->library->release();
+    for (auto& [key, kernel] : entry.kernels) kernel->pso()->release();
+    entry.library->release();
   }
   for (auto& kv : allocations_) kv.second.first->release();
   if (device_) device_->release();
@@ -922,7 +922,61 @@ uint64_t Device::allocated_bytes() const {
 absl::StatusOr<const Kernel*> Device::GetKernel(
     absl::string_view msl_source, absl::string_view function,
     absl::Span<const FunctionConstant> constants) {
-  return GetKernelImpl(msl_source, function, constants, /*builtin=*/false);
+  return GetKernelImpl(msl_source, function, constants, /*builtin=*/false,
+                       /*pin=*/true);
+}
+
+absl::StatusOr<const Kernel*> Device::AcquireKernel(
+    absl::string_view msl_source, absl::string_view function) {
+  return GetKernelImpl(msl_source, function, {}, /*builtin=*/false,
+                       /*pin=*/false);
+}
+
+void Device::HoldLocked(Kernel* k, bool pin) {
+  if (pin) {
+    k->pinned_ = true;
+  } else {
+    ++k->refs_;
+  }
+}
+
+MTL::Library* Device::MaybeEraseLocked(absl::string_view source) {
+  auto it = kernel_cache_.find(source);
+  if (it == kernel_cache_.end() || !it->second.kernels.empty() ||
+      it->second.pending > 0) {
+    return nullptr;
+  }
+  MTL::Library* lib = it->second.library;
+  kernel_cache_.erase(it);
+  return lib;
+}
+
+void Device::ReleaseKernel(const Kernel* kernel) {
+  MTL::ComputePipelineState* pso = nullptr;
+  MTL::Library* lib = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(kernel_mu_);
+    Kernel* k = const_cast<Kernel*>(kernel);
+    if (--k->refs_ > 0 || k->pinned_) return;
+    pso = k->pso_;
+    const absl::string_view source = k->source_;
+    auto entry = kernel_cache_.find(source);
+    entry->second.kernels.erase(entry->second.kernels.find(k->cache_key_));
+    lib = MaybeEraseLocked(source);  // `source` dangles once erased
+  }
+  pso->release();
+  if (lib != nullptr) lib->release();
+}
+
+Device::KernelCacheStats Device::kernel_cache_stats() {
+  std::lock_guard<std::mutex> lock(kernel_mu_);
+  KernelCacheStats stats;
+  for (const auto& [source, entry] : kernel_cache_) {
+    ++stats.libraries;
+    stats.kernels += entry.kernels.size();
+    stats.source_bytes += source.size();
+  }
+  return stats;
 }
 
 absl::Status Device::CheckQuarantine(const KernelIdentity& id) {
@@ -947,7 +1001,7 @@ absl::Status Device::CheckQuarantine(const KernelIdentity& id) {
 
 absl::StatusOr<const Kernel*> Device::GetKernelImpl(
     absl::string_view msl_source, absl::string_view function,
-    absl::Span<const FunctionConstant> constants, bool builtin) {
+    absl::Span<const FunctionConstant> constants, bool builtin, bool pin) {
   // Kernels of one source by function name, plus the constants if any.
   std::string kernel_key(function);
   for (const FunctionConstant& c : constants) {
@@ -955,19 +1009,32 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
                     c.type == FunctionConstant::Type::kBool ? "b" : "i",
                     c.value);
   }
+  // `entry` (with `entry_source`, its key) is held by `pending` until this
+  // call ends, so a concurrent ReleaseKernel cannot drop it.
   CachedLibrary* entry = nullptr;
-  const Kernel* cached = nullptr;
+  absl::string_view entry_source;
+  Kernel* cached = nullptr;
   {
     std::lock_guard<std::mutex> lock(kernel_mu_);
     auto lib = kernel_cache_.find(msl_source);
     if (lib != kernel_cache_.end()) {
-      entry = lib->second.get();
-      auto k = entry->kernels.find(kernel_key);
-      if (k != entry->kernels.end()) cached = k->second.get();
+      auto k = lib->second.kernels.find(kernel_key);
+      if (k != lib->second.kernels.end()) {
+        cached = k->second.get();
+        HoldLocked(cached, pin);
+      } else {
+        entry = &lib->second;
+        entry_source = lib->first;
+        ++entry->pending;
+      }
     }
   }
   if (cached != nullptr) {
-    ABSL_RETURN_IF_ERROR(CheckQuarantine(*cached->identity()));
+    absl::Status quarantined = CheckQuarantine(*cached->identity());
+    if (!quarantined.ok()) {
+      if (!pin) ReleaseKernel(cached);
+      return quarantined;
+    }
     return cached;
   }
   const std::string source(msl_source);
@@ -987,18 +1054,26 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
           source.size(), hash, NSErrorToString(err)));
     }
     std::lock_guard<std::mutex> lock(kernel_mu_);
-    auto [it, inserted] = kernel_cache_.try_emplace(source, nullptr);
+    auto [it, inserted] = kernel_cache_.try_emplace(source);
     if (inserted) {
-      it->second = std::make_unique<CachedLibrary>();
-      it->second->library = lib;
-      it->second->hash = hash;
+      it->second.library = lib;
+      it->second.hash = hash;
     } else {
       lib->release();  // lost a race; use the cached one
     }
-    entry = it->second.get();
+    entry = &it->second;
+    entry_source = it->first;
+    ++entry->pending;
   }
-  // The entry and its library stay until ~Device; only its map needs the
-  // lock.
+  absl::Cleanup unpend = [this, entry, entry_source] {
+    MTL::Library* lib = nullptr;
+    {
+      std::lock_guard<std::mutex> lock(kernel_mu_);
+      --entry->pending;
+      lib = MaybeEraseLocked(entry_source);
+    }
+    if (lib != nullptr) lib->release();
+  };
   auto identity = std::make_shared<KernelIdentity>();
   identity->name = std::string(function);
   identity->key = absl::StrCat(entry->hash, ":", kernel_key);
@@ -1039,6 +1114,8 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
   auto kernel = std::make_unique<Kernel>(
       pso, std::move(identity), UsesArgumentBuffer(source, name),
       DeclaredMaxThreadsPerThreadgroup(source, name));
+  kernel->source_ = entry_source;
+  kernel->cache_key_ = kernel_key;
   std::lock_guard<std::mutex> lock(kernel_mu_);
   auto [it, inserted] = entry->kernels.try_emplace(kernel_key, nullptr);
   if (inserted) {
@@ -1046,6 +1123,7 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
   } else {
     pso->release();  // lost a race; use the cached one
   }
+  HoldLocked(it->second.get(), pin);
   return it->second.get();
 }
 
@@ -1061,8 +1139,9 @@ absl::StatusOr<const Kernel*> Device::BuiltinKernel(Builtin kind) {
   const Kernel*& slot = builtin_kernels_[static_cast<int>(kind)];
   if (slot == nullptr) {
     ABSL_ASSIGN_OR_RETURN(
-        slot, GetKernelImpl(kernels::kRuntimeBuiltinsMsl, kBuiltinNames[static_cast<int>(kind)],
-                            {}, /*builtin=*/true));
+        slot, GetKernelImpl(kernels::kRuntimeBuiltinsMsl,
+                            kBuiltinNames[static_cast<int>(kind)], {},
+                            /*builtin=*/true, /*pin=*/true));
   }
   return slot;
 }
@@ -2011,8 +2090,9 @@ __attribute__((visibility("default"))) void metal_pjrt_memory_pressure(
   for (Device* d : g_devices) d->OnMemoryPressure(level);
 }
 
-// Writes {live, cached, budget, cache hits, cache misses, pressure level} of
-// device `ordinal` to out[0..5]; returns 0, or -1 if there is no such device.
+// Writes {live, cached, budget, cache hits, cache misses, pressure level,
+// cached kernels, their MSL bytes} of device `ordinal` to out[0..7]; returns
+// 0, or -1 if there is no such device.
 __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
     int ordinal, uint64_t* out) {
   using namespace metal_pjrt::rt;
@@ -2026,6 +2106,9 @@ __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
     out[3] = m.cache_hits;
     out[4] = m.cache_misses;
     out[5] = static_cast<uint64_t>(m.pressure);
+    const Device::KernelCacheStats k = d->kernel_cache_stats();
+    out[6] = k.kernels;
+    out[7] = k.source_bytes;
     return 0;
   }
   return -1;

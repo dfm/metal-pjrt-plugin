@@ -23,9 +23,14 @@ namespace metal {
 // memory.
 class MetalKernel : public Kernel {
  public:
-  // `kernel` is owned by the runtime device's kernel cache.
-  MetalKernel(const metal_pjrt::rt::Kernel* kernel, unsigned arity)
-      : kernel_(kernel), arity_(arity) {}
+  // `kernel` is a reference taken by Device::AcquireKernel on `device`,
+  // released when this kernel (and so the executable owning it) goes.
+  MetalKernel(metal_pjrt::rt::Device* device,
+              const metal_pjrt::rt::Kernel* kernel, unsigned arity)
+      : device_(device), kernel_(kernel), arity_(arity) {}
+  ~MetalKernel() override { device_->ReleaseKernel(kernel_); }
+  MetalKernel(const MetalKernel&) = delete;
+  MetalKernel& operator=(const MetalKernel&) = delete;
 
   unsigned Arity() const override { return arity_; }
 
@@ -47,6 +52,7 @@ class MetalKernel : public Kernel {
                       const std::optional<ClusterDim>& cluster_dims,
                       Stream* stream, const KernelArgs& args) override;
 
+  metal_pjrt::rt::Device* device_;
   const metal_pjrt::rt::Kernel* kernel_;
   unsigned arity_;
 };

@@ -95,6 +95,65 @@ TEST_F(MetalRuntimeTest, KernelCache) {
   EXPECT_FALSE(kernel_->uses_argument_buffer());
 }
 
+// Kernels taken with AcquireKernel (compiled executables' kernels) go with
+// their last reference, and their source's library and text with its last
+// kernel; GetKernel's kernels stay. A kernel released while its launch is in
+// flight still runs (the command buffer retains the pipeline).
+TEST_F(MetalRuntimeTest, AcquiredKernelsGoWithTheirLastReference) {
+  const Device::KernelCacheStats base = dev_->kernel_cache_stats();
+  const std::string msl =
+      "#include <metal_stdlib>\nusing namespace metal;\n"
+      "kernel void one(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) { y[i] = 1; }\n"
+      "kernel void two(device int* y [[buffer(0)]],\n"
+      "    uint i [[thread_position_in_grid]]) { y[i] = 2; }\n";
+  absl::StatusOr<const Kernel*> a = dev_->AcquireKernel(msl, "one");
+  absl::StatusOr<const Kernel*> b = dev_->AcquireKernel(msl, "one");
+  absl::StatusOr<const Kernel*> c = dev_->AcquireKernel(msl, "two");
+  ASSERT_THAT(a, IsOk());
+  ASSERT_THAT(b, IsOk());
+  ASSERT_THAT(c, IsOk());
+  EXPECT_EQ(*a, *b);
+  Device::KernelCacheStats s = dev_->kernel_cache_stats();
+  EXPECT_EQ(s.libraries, base.libraries + 1);
+  EXPECT_EQ(s.kernels, base.kernels + 2);
+  EXPECT_EQ(s.source_bytes, base.source_bytes + msl.size());
+
+  std::unique_ptr<Stream> stream = NewStream();
+  auto* y = static_cast<int32_t*>(Alloc(1024 * sizeof(int32_t)));
+  ASSERT_THAT(stream->Launch(**c, Dim3{4, 1, 1}, Dim3{256, 1, 1},
+                             {KernelArg::Buffer(y)}),
+              IsOk());
+  dev_->ReleaseKernel(*c);  // "two" goes, the library stays for "one"
+  s = dev_->kernel_cache_stats();
+  EXPECT_EQ(s.libraries, base.libraries + 1);
+  EXPECT_EQ(s.kernels, base.kernels + 1);
+  ASSERT_THAT(stream->Synchronize(), IsOk());
+  for (int i = 0; i < 1024; ++i) ASSERT_EQ(y[i], 2) << i;
+
+  dev_->ReleaseKernel(*a);
+  EXPECT_EQ(dev_->kernel_cache_stats().kernels, base.kernels + 1);
+  dev_->ReleaseKernel(*b);
+  s = dev_->kernel_cache_stats();
+  EXPECT_EQ(s.libraries, base.libraries);
+  EXPECT_EQ(s.kernels, base.kernels);
+  EXPECT_EQ(s.source_bytes, base.source_bytes);
+
+  // Acquired and got: GetKernel's pin keeps it after the last release.
+  absl::StatusOr<const Kernel*> d = dev_->AcquireKernel(msl, "one");
+  ASSERT_THAT(d, IsOk());
+  ASSERT_THAT(dev_->GetKernel(msl, "one"), IsOk());
+  EXPECT_EQ(*dev_->GetKernel(msl, "one"), *d);
+  dev_->ReleaseKernel(*d);
+  EXPECT_EQ(dev_->kernel_cache_stats().kernels, base.kernels + 1);
+  ASSERT_THAT(stream->Launch(**d, Dim3{4, 1, 1}, Dim3{256, 1, 1},
+                             {KernelArg::Buffer(y)}),
+              IsOk());
+  ASSERT_THAT(stream->Synchronize(), IsOk());
+  for (int i = 0; i < 1024; ++i) ASSERT_EQ(y[i], 1) << i;
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // Function constants select a variant at pipeline creation: one kernel per
 // (source, function, constants), each with its own identity key.
 TEST_F(MetalRuntimeTest, FunctionConstants) {

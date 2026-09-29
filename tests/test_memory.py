@@ -21,9 +21,10 @@ import numpy as np, jax, jax.numpy as jnp
 import metal_pjrt_plugin
 lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
 def stats():
-    out = (ctypes.c_uint64 * 6)()
+    out = (ctypes.c_uint64 * 8)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0
-    return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure"), out))
+    return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure",
+                     "kernels", "kernel_msl_bytes"), out))
 def footprint():
     libc = ctypes.CDLL(None)
     buf = (ctypes.c_uint64 * 64)(); count = ctypes.c_uint32(128)
@@ -119,6 +120,49 @@ assert s["cached"] == 0 and s["live"] < 8 * MB, s
 assert idle < base + 100 * MB, (base // MB, idle // MB)
 """)
     print(out)
+
+
+def test_dropped_executables_release_their_kernels():
+    # Compiled kernels belong to their executables: once the executables are
+    # gone (jax.clear_caches: JAX's own caches hold every executable a
+    # jitted function compiled), their pipelines, libraries and MSL go too,
+    # and malloc'd memory comes back to where it was.
+    out = run_child(r"""
+class MStats(ctypes.Structure):
+    _fields_ = [(n, ctypes.c_size_t) for n in
+                ("total", "chunks_used", "used", "chunks_free", "free")]
+libc = ctypes.CDLL(None)
+libc.mstats.restype = MStats
+ops = (jnp.tanh, jnp.sin, jnp.exp, jnp.log1p, jnp.cos, jnp.sqrt, jnp.abs,
+       jnp.negative)
+def f(x):
+    for op in ops:
+        y = op(x * 0.5)
+        x = y / (1.0 + jnp.sum(y * y, axis=-1, keepdims=True))
+    return x
+def run(p):  # a distinct shape: distinct kernels (8 or more)
+    g = jax.jit(f)
+    g(jnp.ones((16, 16 + p))).block_until_ready()
+    return g
+run(-1)  # one-time state (Metal's shader cache)
+jax.clear_caches(); gc.collect()
+base, base_used = stats(), libc.mstats().used
+n = 32
+held = [run(p) for p in range(n)]
+grown = stats()
+del held
+jax.clear_caches(); gc.collect()
+s, used = stats(), libc.mstats().used
+print(f"kernels {base['kernels']} -> {grown['kernels']} -> {s['kernels']}; "
+      f"malloc used MB {base_used / MB:.1f} -> {used / MB:.1f}")
+assert grown["kernels"] >= base["kernels"] + n * 8, (base, grown)
+assert s["kernels"] == base["kernels"], (base, s)
+assert s["kernel_msl_bytes"] == base["kernel_msl_bytes"], (base, s)
+assert used < base_used + 8 * MB, (base_used / MB, used / MB)  # 15 if kept
+print("OK")
+""")
+    print(out)
+    assert "OK" in out
 
 
 def test_memory_pressure_drops_the_cache():

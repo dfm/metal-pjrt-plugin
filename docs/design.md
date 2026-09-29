@@ -76,7 +76,11 @@ Metal's system shader cache keys on the source, so the same MSL compiles in
 ~1.3 ms in a later process (186 ms the first time). Within a
 process every kernel (emitted, FFI, steel, MPS staging, built-ins) comes
 from one cache in `rt::Device` (`GetKernel`), keyed by the MSL source, the
-function name and any function constants. XLA compilation
+function name and any function constants. Library kernels (FFI, steel, MPS
+staging, built-ins) stay for the process; kernels the compiler emitted are
+counted (`AcquireKernel`, taken by the StreamExecutor's `LoadKernel` and
+dropped with the thunk that owns it), so a dropped executable takes its
+pipelines, libraries and cached MSL text with it (~40 KB per kernel). XLA compilation
 itself is cached across processes by JAX's persistent compilation cache
 when the user turns it on (`docs/integration-notes.md`, PJRT client).
 
@@ -240,7 +244,7 @@ kernels in the buffer that timed out (none if it only waited on another
 stream; built-in fill/copy kernels are listed apart and never blamed) and
 the plugin build (diagnostics only). A kernel seen in two resets since boot
 (`METAL_PJRT_QUARANTINE_STRIKES`, 0 disables) is refused by
-`Device::GetKernel` (at load time, and on later cache hits) with
+`Device::GetKernel`/`AcquireKernel` (at load time, and on later cache hits) with
 FAILED_PRECONDITION, so a compiler bug costs at most two resets, not one per
 run; a reboot or deleting the reset log lifts it (`scripts/gpu_health.py
 --clear` does that in a source checkout; the wheel does not ship it). Strikes are not

@@ -57,6 +57,7 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/inlined_vector.h"
+#include "absl/container/node_hash_map.h"
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/string_view.h"
@@ -165,7 +166,8 @@ std::string ImageUuid();
 // (pjrt/metal_pjrt_api.cc).
 std::string LastAllocationRefusal(uint64_t* size);
 
-// A compute pipeline, owned by the Device's kernel cache (Device::GetKernel).
+// A compute pipeline, owned by the Device's kernel cache (Device::GetKernel,
+// Device::AcquireKernel).
 class Kernel {
  public:
   Kernel(MTL::ComputePipelineState* pso,
@@ -196,10 +198,19 @@ class Kernel {
   uint32_t thread_execution_width() const;
 
  private:
+  friend class Device;
   MTL::ComputePipelineState* pso_;
   std::shared_ptr<const KernelIdentity> identity_;
   bool uses_argument_buffer_;
   uint32_t declared_max_threads_;  // 0: none declared
+  // Kernel cache bookkeeping, guarded by the Device's kernel_mu_: the
+  // source (its cache key) and function + constants (the key within it),
+  // the AcquireKernel references, and whether GetKernel returned it (then
+  // it stays until ~Device).
+  absl::string_view source_;
+  std::string cache_key_;
+  int refs_ = 0;
+  bool pinned_ = false;
 };
 
 // The value of an MSL function constant (`constant T name
@@ -306,6 +317,23 @@ class Device {
   absl::StatusOr<const Kernel*> GetKernel(
       absl::string_view msl_source, absl::string_view function,
       absl::Span<const FunctionConstant> constants = {});
+  // Like GetKernel, but the kernel is counted, not kept: it stays cached
+  // until every AcquireKernel is matched by a ReleaseKernel (unless GetKernel
+  // returned it too), and the source's library and cached text go with its
+  // last kernel. For kernels owned by compiled executables (the
+  // StreamExecutor's LoadKernel), so dropping an executable frees them.
+  // Command buffers retain their pipelines, so work in flight is not
+  // affected; KernelIdentity (reset attribution, quarantine) outlives the
+  // kernel.
+  absl::StatusOr<const Kernel*> AcquireKernel(absl::string_view msl_source,
+                                              absl::string_view function);
+  void ReleaseKernel(const Kernel* kernel);
+  struct KernelCacheStats {
+    uint64_t libraries = 0;     // MSL sources
+    uint64_t kernels = 0;       // pipelines
+    uint64_t source_bytes = 0;  // MSL text kept as cache keys
+  };
+  KernelCacheStats kernel_cache_stats();
 
   absl::StatusOr<std::unique_ptr<Stream>> CreateStream();
   absl::StatusOr<std::unique_ptr<Event>> CreateEvent();
@@ -407,20 +435,28 @@ class Device {
   absl::Status error_ = absl::OkStatus();
   // The kernel cache: per MSL source, its library, its identity hash and
   // its kernels by function name + constants. Guarded by kernel_mu_, a leaf
-  // lock (compilation happens outside it).
+  // lock (compilation happens outside it). An entry goes when its last
+  // kernel is released and no GetKernelImpl is compiling from it (pending).
   struct CachedLibrary {
     MTL::Library* library = nullptr;
     std::string hash;  // HashString(source): the kernels' KernelIdentity key
     absl::flat_hash_map<std::string, std::unique_ptr<Kernel>> kernels;
+    int pending = 0;
   };
+  // `pin`: GetKernel (kept until ~Device), else AcquireKernel (counted).
   absl::StatusOr<const Kernel*> GetKernelImpl(
       absl::string_view msl_source, absl::string_view function,
-      absl::Span<const FunctionConstant> constants, bool builtin);
+      absl::Span<const FunctionConstant> constants, bool builtin, bool pin);
+  // Takes a pin or a reference on `k`; kernel_mu_ held.
+  static void HoldLocked(Kernel* k, bool pin);
+  // Drops the entry of `source` if it has no kernels and nothing pending;
+  // kernel_mu_ held. Returns its library to release (outside the lock), or
+  // null.
+  MTL::Library* MaybeEraseLocked(absl::string_view source);
   // FailedPrecondition when `id` is quarantined. Takes mu_.
   absl::Status CheckQuarantine(const KernelIdentity& id);
   std::mutex kernel_mu_;
-  absl::flat_hash_map<std::string, std::unique_ptr<CachedLibrary>>
-      kernel_cache_;
+  absl::node_hash_map<std::string, CachedLibrary> kernel_cache_;
   std::mutex builtin_mu_;
   const Kernel* builtin_kernels_[4] = {};
   // Reset log state (see RecordReset); strikes_ is guarded by mu_.
