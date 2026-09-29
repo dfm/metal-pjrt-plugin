@@ -87,8 +87,8 @@ is `__cublas$lt$matmul`), and the StreamExecutor BLAS interface is the plug
 point. f32 GEMMs run on Metal Performance Shaders' matrix kernels (a bias
 or activation epilogue is a second MSL pass); f16/bf16 GEMMs run on "steel"
 kernels ported from MLX (MIT), with the epilogue applied in their store, and
-2..8 rows of x W^T (small-batch LLM decode) on MLX's wide gemv, which
-streams the weight once per <= 5 rows.
+2..8 rows of x W^T with K >= 512 (small-batch LLM decode) on MLX's wide
+gemv, which streams the weight once per <= 5 rows.
 There is no DNN library: convolutions of 4 Mflop and more (1-D and 2-D,
 f32/f16/bf16, ungrouped) go to `metal$conv`, MLX's steel convolution kernels
 (`metal_pjrt/conv`), through the plugin's own rewriter in

@@ -69,8 +69,8 @@ std::optional<GemvPlan> ChooseGemv(const GemmParams& p, int gpu_family) {
   plan.vectors_are_b = p.n < p.m;
   const int64_t vecs = std::min(p.m, p.n);
   const int64_t rows = std::max(p.m, p.n);
-  if (vecs < 2 || vecs > kGemvMaxVectors || p.k <= 0 || p.k % 4 != 0 ||
-      rows > kMaxInt || p.k > kMaxInt || p.batch_count < 1 ||
+  if (vecs < 2 || vecs > kGemvMaxVectors || p.k < kGemvMinK ||
+      p.k % 4 != 0 || rows > kMaxInt || p.k > kMaxInt || p.batch_count < 1 ||
       p.batch_count > kMaxInt) {
     return std::nullopt;
   }

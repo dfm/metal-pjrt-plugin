@@ -22,9 +22,9 @@ for dt in (jnp.bfloat16, jnp.float16):
         CASES[f"{d} {m}x{k}x{n} f32 out"] = ("f32 out", lambda x, y: jnp.matmul(x, y, preferred_element_type=jnp.float32), (a, b))
         CASES[f"{d} {m}x{k}x{n} +bias relu"] = ("matmul", lambda x, y, c: jax.nn.relu(x @ y + c), (a, b, bias))
     # Few rows in the x @ W.T layout (W stored [n, k]): MetalBlasLt runs
-    # these on the wide gemv (metal_pjrt/blas/gemv.h, 2..8 rows, either side)
-    # or steel's 16-row tile (9..48 rows).
-    for (m, k, n) in ((2, 256, 300), (5, 1024, 96), (8, 64, 1030), (13, 512, 200), (40, 128, 70)):
+    # these on the wide gemv (metal_pjrt/blas/gemv.h, 2..8 rows, either side,
+    # K >= 512) or steel's 16-row tile (9..48 rows, or K < 512).
+    for (m, k, n) in ((2, 256, 300), (5, 1024, 96), (8, 516, 1030), (13, 512, 200), (40, 128, 70)):
         x, w, bias = host(m, k), host(n, k), host(n)
         CASES[f"{d} few rows {m}x{k}x{n}"] = ("matmul", lambda x, w: x @ w.T, (x, w))
         CASES[f"{d} few cols {n}x{k}x{m}"] = ("matmul", lambda x, w: w @ x.T, (x, w))
@@ -36,7 +36,7 @@ for dt in (jnp.bfloat16, jnp.float16):
     # A transposed (x stored [k, m]): never the gemv; steel's 16-row tile.
     a, y = host(200, 24), host(200, 90)
     CASES[f"{d} few rows A.T 24x200x90"] = ("matmul", lambda a, y: a.T @ y, (a, y))
-    x, w = host(3, 4, 128), host(3, 96, 128)
+    x, w = host(3, 4, 512), host(3, 96, 512)
     CASES[f"{d} few rows batched"] = ("matmul", lambda x, w: jnp.einsum("bmk,bnk->bmn", x, w), (x, w))
     CASES[f"{d} few rows batched bcast"] = ("matmul", lambda x, w: jnp.einsum("bmk,nk->bmn", x, w[0]), (x, w))
     x, y = host(6, 33, 70), host(6, 70, 45)

@@ -105,10 +105,10 @@ Still on hold:
 Small-M bf16/f16 GEMM: done (e30480f: MLX's wide gemv for 2..8 rows, a
 16-row steel tile to 48, DotMerger off). 28 independent [M,1024]x[1024,6144]
 GEMMs at M=2: 15.03 -> 4.47 ms p10 (MLX 4.07); Qwen3-0.6B bf16 decode at
-batch 2: 26.71 -> 13.88 ms. Open: on heavily batched small matrices (1024
-x [4..8, 128] x [128, 128]^T) the gemv is 1.7x slower than the 16-row tile
-(`docs/performance.md`); a gemv condition on rows per batch would need a
-sweep.
+batch 2: 26.71 -> 13.88 ms. The gemv needs K >= 512 (a sweep over batch,
+rows and K: below that the 16-row tile wins by up to 2.8x), so batched
+decode attention, 1024 x [4..8, 128] x [128, 128]^T, is 1.9-2.0x faster
+(6.9 -> 3.5 ms per 8 GEMMs; `docs/performance.md`).
 
 Complex dot / sort: a probe matched CPU; ~5 lines in
 `CheckBeforeOptimization` to enable, plus tests (kept refused for now).

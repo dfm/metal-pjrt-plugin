@@ -232,10 +232,10 @@ TEST_F(KernelsTest, Gemv) {
         blas::GemmParams p;
         p.m = vecs;
         p.n = rows;
-        p.k = 64;
+        p.k = blas::kGemvMinK;
         p.a.dtype = p.b.dtype = in;
         p.c.dtype = out;
-        p.a.ld = p.b.ld = 64;
+        p.a.ld = p.b.ld = blas::kGemvMinK;
         p.c.ld = rows;
         p.b.transpose = true;
         std::optional<blas::GemvPlan> plan = blas::ChooseGemv(p, 9);

@@ -238,11 +238,11 @@ rt::Stream* GemvTest::stream_ = nullptr;
 
 // Every vector count, in both orientations (m small: x W^T; n small: the
 // vectors are B's rows and D is written through its column stride), with
-// tail rows (not a multiple of 4) and K both below and above one unrolled
-// block (KL * 8 * 4 elements) with a remainder.
+// tail rows (not a multiple of 4) and K with a remainder both below (32 K
+// lanes) and above one unrolled block (KL * 8 * 4 elements).
 TEST_F(GemvTest, VectorCountsAndOrientations) {
   for (int64_t vecs = 2; vecs <= kGemvMaxVectors; ++vecs) {
-    for (int64_t k : {4, 1028}) {
+    for (int64_t k : {516, 1028}) {
       Run(Case{vecs, 301, k});
       Run(Case{301, vecs, k});
     }
@@ -268,7 +268,7 @@ TEST_F(GemvTest, TypesAndOutputs) {
 // broadcast matrix, alpha / beta (C read from D in place).
 TEST_F(GemvTest, StridesBatchesAlphaBeta) {
   for (bool swap : {false, true}) {
-    Case c{5, 70, 64};
+    Case c{5, 70, 512};
     c.pad = 4;
     c.d_pad = 3;
     c.batch = 3;
@@ -284,7 +284,7 @@ TEST_F(GemvTest, StridesBatchesAlphaBeta) {
 TEST_F(GemvTest, Epilogues) {
   for (bool swap : {false, true}) {
     for (int act : {0, 1, 2, 3}) {
-      Case c{6, 40, 132};
+      Case c{6, 40, 532};
       c.act = act;
       c.bias = true;
       c.aux = act != 0;
@@ -294,7 +294,7 @@ TEST_F(GemvTest, Epilogues) {
       Run(c);
     }
   }
-  Case c{4, 33, 16};
+  Case c{4, 33, 516};
   c.in = c.out = kF16;
   c.bias = true;
   c.beta = 1.0;
@@ -304,7 +304,7 @@ TEST_F(GemvTest, Epilogues) {
 // Rows >= 65536: one grid column walks every pass (MLX's vocabulary-wide
 // case), here with two passes of four and three vectors.
 TEST_F(GemvTest, WideMatrix) {
-  Case c{7, 65540, 8};
+  Case c{7, 65540, 512};
   Run(c);
 }
 
@@ -353,6 +353,20 @@ TEST_F(GemvTest, Plans) {
   refuse([](GemmParams& q) { q.a.dtype = q.b.dtype = q.c.dtype = kF32; },
          "f32");
   refuse([](GemmParams& q) { q.k = 0; }, "k = 0");
+  // K below kGemvMinK: batched decode attention, 1024 x [8, 128] x
+  // [128, 128]^T, runs 1.9x faster on steel's 16-row tile.
+  refuse([](GemmParams& q) {
+    q.n = q.c.ld = q.k = q.a.ld = q.b.ld = 128;
+    q.batch_count = 1024;
+    q.a.batch_stride = q.c.batch_stride = 8 * 128;
+    q.b.batch_stride = 128 * 128;
+  }, "K = 128");
+  refuse([](GemmParams& q) { q.k = q.a.ld = q.b.ld = 508; }, "K = 508");
+  {
+    GemmParams q = p;
+    q.k = q.a.ld = q.b.ld = 512;
+    EXPECT_TRUE(ChooseGemv(q, 9).has_value()) << "K = 512";
+  }
   refuse([](GemmParams& q) { q.c.ld = 6000; }, "ldc < n");
   refuse([](GemmParams& q) {
     q.batch_count = 2;

@@ -14,6 +14,9 @@ describe the present only. Commit hashes point at the change.
   copied the weights of dots sharing an input into one operand on every
   call. Qwen3-0.6B bf16 decode at batch 2: 26.7 -> 13.9 ms per step
   (batch 1: 13.3). docs/performance.md has the numbers.
+- The wide gemv needs K >= 512; below that (e.g. decode attention's
+  head_dim of 128) the 16-row steel tile runs it: batched q K^T, 1024 x
+  [4..8, 128] x [128, 128]^T, 6.9 -> 3.5 ms per 8 GEMMs.
 - FFTs run on MLX's FFT kernels (`metal$fft`, one call per transformed
   axis) instead of the dense O(n^2) DFT: every length up to 2^24 (powers
   of two) or 2^23 - 1, complex64 / float32, 0.6-1.3x MLX's time and 2.5-44x

@@ -117,9 +117,9 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   dispatch-bound program, not the kernels.
 
 - Few-row f16/bf16 GEMMs (small-batch LLM decode). Three changes:
-  x W^T with 2..8 rows (either side) runs on MLX's wide gemv
-  (`blas:gemv`), 9..48 rows on a 16-row steel tile, and XLA's DotMerger
-  is off. Before, 28 bf16 GEMMs of [M, 1024] x [1024, 6144] ran at ~23
+  x W^T with 2..8 rows (either side) and K >= 512 runs on MLX's wide gemv
+  (`blas:gemv`), 9..48 rows (or K < 512) on a 16-row steel tile, and
+  XLA's DotMerger is off. Before, 28 bf16 GEMMs of [M, 1024] x [1024, 6144] ran at ~23
   GB/s for every M from 2 to 64. Half of that was DotMerger: the GEMMs
   share x, so it concatenated the 28 weights into one operand, a 336 MB
   copy on every call. The other half was steel's 64-row tile. p10 ms per
@@ -168,9 +168,40 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   m = 1 is a reduction fusion and NT 2..8 is the gemv in the first two
   columns, so those differences are noise. Where the rule applies (NN 2..16,
   NT 16) it is 1.5-1.9x faster, so it keeps no batch condition. The gemv
-  is not: on 1024 batches of a 128-row matrix it is 1.7-1.8x slower than
+  was not: on 1024 batches of a 128-row matrix it was 1.7-1.8x slower than
   the 16-row tile at 4 and 8 vectors (and 8% at 2), about where the
-  64-row tile was before. Open (`docs/roadmap.md`).
+  64-row tile was before.
+  A sweep (NT, bf16, 8 independent GEMMs per call with distinct weights,
+  fewer when they pass 512 MB; p10 ms, 3 interleaved rounds, gemv vs the
+  16-row tile) shows K decides, not the batch or the rows per batch:
+
+  | batch x [rows, K] | m = 2 | 4 | 8 |
+  |---|---|---|---|
+  | 1 x [128, 128] | 0.29 / 0.37 | 0.61 / 0.73 | 0.66 / 0.75 |
+  | 1 x [1024, 128] | 0.39 / 0.39 | 0.80 / 0.57 | 0.75 / 0.67 |
+  | 64 x [128, 128] | 1.13 / 0.52 | 1.42 / 0.86 | 1.35 / 1.06 |
+  | 64 x [1024, 128] | 2.65 / 1.81 | 5.42 / 2.44 | 7.33 / 2.59 |
+  | 64 x [256, 256] | 2.15 / 1.11 | 1.82 / 1.61 | 2.33 / 1.58 |
+  | 1024 x [128, 128] | 3.74 / 3.30 | 5.45 / 3.38 | 6.46 / 3.59 |
+  | 1024 x [256, 256] | 6.29 / 6.08 | 6.96 / 6.30 | 8.51 / 6.59 |
+  | 1 x [128, 1024] | 0.33 / 1.03 | 0.67 / 1.38 | 0.65 / 1.39 |
+  | 1 x [512, 512] | 0.36 / 0.65 | 0.65 / 1.01 | 0.74 / 0.92 |
+  | 64 x [128, 512] | 1.11 / 1.22 | 1.44 / 1.86 | 1.95 / 1.95 |
+  | 64 x [512, 512] | 3.14 / 3.41 | 3.72 / 4.02 | 4.22 / 4.24 |
+  | 1024 x [512, 512] | 6.20 / 6.08 | 6.47 / 6.21 | 6.46 / 6.44 |
+  | 1024 x [128, 1024] | 5.95 / 6.14 | 6.16 / 6.26 | 6.57 / 6.46 |
+  | 64 x [1024, 1024] | 5.84 / 6.23 | 6.11 / 6.46 | 6.36 / 6.64 |
+  | 64 x [6144, 1024] | 8.68 / 9.13 | 8.89 / 9.34 | 9.30 / 9.76 |
+
+  With K = 128 or 256 the gemv loses up to 2.8x once there is work to
+  fill the GPU (it wins only single tiny GEMMs, by 0.01-0.02 ms each);
+  from K = 512 it ties (within 8%) or wins, at every batch. Hence the
+  gemv needs K >= 512 (`kGemvMinK`), one condition. NN never takes the
+  gemv (the same sweep over NN only shows noise). The decode attention
+  above, NT: 6.90 / 6.82 ms -> 3.44 / 3.58 at m = 4 / 8 (4.19 -> 3.67 at
+  2); the case-study bench (K = 1024) and Qwen3-0.6B decode at batch 1 /
+  2 / 4 / 8 (13.26 / 13.95 / 15.04 / 17.11 -> 13.26 / 13.98 / 15.11 /
+  17.09) do not change (3 interleaved rounds).
 
 - FFTs run on MLX's FFT kernels (`metal$fft`, `metal_pjrt/fft`).
   `bench/fft_bench.py` (one process; bursts of 10 calls, 15 interleaved
