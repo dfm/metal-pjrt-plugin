@@ -1,17 +1,17 @@
 # XLA op coverage audit (XLA @ 91888df6)
 
 For users: the README's support table is the short version. JAX's own
-`lax_test.py` passes 993 cases on mtl; its 16 known failures
+`lax_test.py` passes 996 cases on mtl; its 13 known failures
 (`scripts/jax_known_failures/lax_test.txt`, run with
-`JAX_NUM_GENERATED_CASES=3` and x64 off) are complex dots and sorts
-(refused), int4, dot precision algorithms and JAX's `dce_sink` test
-handler (an FFI handler not registered for Metal).
+`JAX_NUM_GENERATED_CASES=3` and x64 off) are int4, dot precision
+algorithms and JAX's `dce_sink` test handler (an FFI handler not
+registered for Metal).
 
 How each thing XLA:GPU can emit reaches the Metal backend, and whether it
 works. "Verified" means observed in `tests/test_lax.py` (against a float64
 CPU reference, with tolerances in ulps; int4 is an expected failure). File
 references are into the XLA tree. Missing pieces worth building (int8
-GEMM, complex dots) are in `docs/roadmap.md`.
+GEMM) are in `docs/roadmap.md`.
 
 ## Execution paths the backend implements
 
@@ -50,11 +50,11 @@ emitter's default case ("Unsupported instruction opcode").
 | convolution | 1-D/2-D f32/f16/bf16 ungrouped, >= 4 Mflop: `MetalConvRewriter` -> `metal$conv` FFI (MLX's steel kernels, `metal_pjrt/conv`; forward, input and weight gradients). Else FusionWrapper, loop emitter, naive `EmitDotLoop` | OK | vs a float64 CPU reference in f32/f16/bf16, forward and both gradients, NHWC/NCHW/1-D, strides, dilations, padding (`tests/test_conv.py`, `conv:conv_test`); `METAL_PJRT_DISABLE_REWRITES=conv` sends every convolution to the loop emitter (slow: the cnn fwd+bwd step 5.5 vs 1.6 ms) |
 | dot, f16/bf16/f32 | BlasLt thunk over MPS (f32) / steel (f16/bf16; 2..8 rows or columns of x W^T with K >= 512 and a multiple of 4: MLX's wide gemv, `blas:gemv`); XLA's DotMerger is off (`ApplyMetalDefaults`: it would copy the weights of dots sharing an input into one operand on every call) | OK | verified incl. batched and few-row shapes (`tests/test_steel_gemm.py`, `blas:gemv_test`). For every type, a GEMM whose batch, row or column group has more than INT32_MAX elements is refused at compile time (XLA's matmul config counts them in 32 bits; `CheckGemmGroupsFitInt32`). f16/bf16 GEMMs past steel's 32-bit index limits (a row of more than 8388607 elements, a dimension or batch count over INT32_MAX) are refused at compile time too. GEMMs mixing types (e.g. f16 x f16 -> bf16) are refused ("both operands must be f32, f16 or bf16 of one type, the result that type or f32"). Integer dots GemmRewriter turns into GEMMs (s8 x s8 -> s32, at every size) are refused at compile time ("Metal: matmul s8 x s8 -> s32 is not supported"); other integer dots (e.g. s32, or s8 -> s8) stay kDot and run in elemental loops. Open decision: size-capped elemental fallback (watchdog risk for large K) vs an int8 steel GEMM; int8 via f32 GEMM is exact only for K < ~1040 |
 | dot, f64 / s8 to s32 | rewriter still emits BlasLt | NO | `CheckPostGemmRewriter` refuses the GEMM at compile time, naming the op (s8 x s8 -> s32 is a GEMM at every size); f64 GEMMs are refused as f64 arithmetic by the same check |
-| dot, c64 / c128 | | NO | `CheckBeforeOptimization` (first thing in `RunHloPasses`) refuses the complex dots of the program as JAX lowers it, naming the op (small ones would run in the loop emitter, but a complex GEMM has no library path). Dots XLA creates later, e.g. in the expanders of complex64 cholesky / triangular_solve (`MetalLinalgRewriter` takes f32 only), are not seen there: they are refused by `CheckGemm` if they become GEMMs, or run as loop fusions |
+| dot, c64 | `MetalComplexDotExpander` (`compiler/passes/complex_dot.h`; start of `RunHloPasses`, and again after `TriangularSolveExpander` for the dots XLA's complex cholesky / triangular_solve / qr expanders make) turns each complex64 dot into four real f32 dots (Ar.Br - Ai.Bi, Ar.Bi + Ai.Br; not Gauss's three, for accuracy parity with cuBLAS and CPU) with the same dimension numbers and precision config, which then take the f32 GEMM or loop-emitter paths | OK | against CPU: small and GEMM-sized, matvec, batched einsum, conj / transpose, HIGHEST precision, real @ complex, gradients, complex conv (`tests/test_lax.py` "c64 ..." cases, 0.6-4.3 ulps normwise, the same as CPU float32). complex64 cholesky, triangular_solve, qr (`tests/test_lax.py`, 2.4 ulps normwise, CPU 3.9) and ragged_dot (a probe) run through XLA's expanders; LU (solve, inv, det) is refused: its pivoting scatter on complex needs 64-bit atomics. c128 is refused with the f64 arithmetic (`CheckPostGemmRewriter`) |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | rewriter fuses on OneAPI (`gemm_rewriter.cc:1806-2169`) | OK | applied in steel's store (bias, relu / tanh-gelu / silu, aux; f16/bf16); f32: MPS GEMM + one MSL epilogue kernel; verified by `tests/test_epilogue.py` and `blas:metal_blas_lt_test` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / untested for fp8 | fp8 GEMMs are untested; `CheckBlasLtTypes` refuses any GEMM that is not f32, f16 or bf16 |
 | dot precision algorithms `TF32_*`, `F16_F16_F16`, `BF16_BF16_BF16` | XLA's algorithm check | NO | XLA: "Unsupported algorithm on the current device(s)"; the `BF16_BF16_F32` family runs (`test_small_dot_bf16_algorithm`) |
-| sort, argsort, top_k, searchsorted, unique | Simple comparators on more than 16384 elements: XLA's SortRewriter -> `xla.gpu.ext.cub_sort_{keys,pairs}` FFI, an MSL LSD radix sort (`metal_pjrt/ffi/cub_sort_ffi.cc`, `radix_sort.h`). Everything else, and rows of <= 64 (pre-expanded in `RunHloPasses`; top_k with such rows is decomposed to a sort there first, since XLA would otherwise make it a sort only after that point): `MetalSortExpander` (`metal_pjrt/compiler/passes`), a bitonic network (straight-line up to 64 per row, else a while loop of gather + elementwise compare-and-swap); TopK decomposes back to sort on OneAPI | OK | bit-identical to CPU incl. 16M elements, batched, +-0/NaN and stability (`tests/test_sort.py`, `ffi:radix_sort_test`); `METAL_PJRT_DISABLE_REWRITES=cubsort` sends every sort to the bitonic network; sorts of complex values are refused at compile time (`CheckBeforeOptimization`) |
+| sort, argsort, top_k, searchsorted, unique | Simple comparators on more than 16384 elements: XLA's SortRewriter -> `xla.gpu.ext.cub_sort_{keys,pairs}` FFI, an MSL LSD radix sort (`metal_pjrt/ffi/cub_sort_ffi.cc`, `radix_sort.h`). Everything else, and rows of <= 64 (pre-expanded in `RunHloPasses`; top_k with such rows is decomposed to a sort there first, since XLA would otherwise make it a sort only after that point): `MetalSortExpander` (`metal_pjrt/compiler/passes`), a bitonic network (straight-line up to 64 per row, else a while loop of gather + elementwise compare-and-swap); TopK decomposes back to sort on OneAPI | OK | bit-identical to CPU incl. 16M elements, batched, +-0/NaN and stability (`tests/test_sort.py`, `ffi:radix_sort_test`); `METAL_PJRT_DISABLE_REWRITES=cubsort` sends every sort to the bitonic network; complex64 keys and values (lexicographic, real then imaginary; SortRewriter's radix sort takes no complex comparator) go to `MetalSortExpander`, bit-identical to CPU incl. ties, NaN / inf, `argsort` and `sort_key_val` (`tests/test_lax.py` "c64 sort ...") |
 | rng-bit-generator | Philox/ThreeFry expander | OK | verified via jax.random |
 | rng (HLO kRng) | RngExpander emits rng-get-and-update-state, legacy IR | NO | JAX does not emit this |
 | cholesky | `MetalLinalgRewriter` -> `metal$cholesky` FFI (Accelerate `spotrf`, f32); CholeskyExpander otherwise | OK | host LAPACK on the unified-memory buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores the expander. `tests/test_linalg.py` |
@@ -97,10 +97,10 @@ counts as f64 there. complex64 works: the MSL emitter carries
 as) as `float2`, in buffers, constants, shared memory, loop-carried values
 and helper calls, with the arithmetic already expanded to f32 by
 ConvertComplexToStandard (`tests/test_lax.py` "c64 ..." cases; JAX's
-`lax_test.py` complex cases pass). Refused, naming the op: complex dots
-and sorts (`CheckBeforeOptimization`), and complex scatters without
-`unique_indices` (XLA compare-and-swaps complex elements in 64 bits, even
-to overwrite). bf16 and f8 conversions
+`lax_test.py` complex cases pass); complex dots become real dots
+(`MetalComplexDotExpander`) and complex sorts run on the bitonic network.
+Refused, naming the op: complex scatters without `unique_indices` (XLA
+compare-and-swaps complex elements in 64 bits, even to overwrite). bf16 and f8 conversions
 are expanded to integer math by XLA and round exactly (0 ulps against CPU).
 The mismatch seen earlier came from the test converting back to f32 inside
 the same jit: XLA's GPU pipeline removes f32 -> bf16/f16 -> f32 pairs

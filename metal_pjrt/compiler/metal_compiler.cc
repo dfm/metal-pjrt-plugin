@@ -27,6 +27,7 @@
 #include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/runtime/constants_container.h"
 #include "metal_pjrt/stream_executor/metal_platform_id.h"
+#include "metal_pjrt/compiler/passes/complex_dot.h"
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
 #include "metal_pjrt/compiler/passes/conv_rewriter.h"
@@ -154,6 +155,9 @@ absl::Status MetalCompiler::OptimizeHloConvolutionCanonicalization(
   // Same default block size as CholeskyExpander (128): Cholesky of n <= 128
   // emits no triangular-solve; larger ones emit blocked solves expanded here.
   pipeline.AddPass<TriangularSolveExpander>();
+  // Complex dots XLA made after RunHloPasses' expansion: CholeskyExpander,
+  // QrExpander, RaggedDotRewriter and TriangularSolveExpander above.
+  pipeline.AddPass<MetalComplexDotExpander>();
   pipeline.AddPass<MetalSortExpander>();
   pipeline.AddPass<CallInliner>();
   pipeline.AddPass<TupleSimplifier>();
@@ -165,7 +169,13 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
   ApplyMetalDefaults(module->mutable_config().mutable_debug_options());
-  TF_RETURN_IF_ERROR(CheckBeforeOptimization(*module));
+  {
+    // Complex64 dots become real f32 dots (MetalBlasLt has no complex GEMM),
+    // before the simplifier and GemmRewriter see them.
+    HloPassPipeline pipeline("metal-complex-dots");
+    pipeline.AddPass<MetalComplexDotExpander>();
+    TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
+  }
   // --- begin linalg (Accelerate LAPACK) ---
   // kCholesky / kTriangularSolve -> metal$cholesky / metal$triangular_solve,
   // before CholeskyExpander / TriangularSolveExpander see them.

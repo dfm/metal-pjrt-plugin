@@ -28,6 +28,7 @@ cc_library(
         ":compile_settings",
         "//metal_pjrt/codegen:metal_kernel_compiler",
         "//metal_pjrt/codegen:msl_llvm_bridge",
+        "//metal_pjrt/compiler/passes:complex_dot",
         "//metal_pjrt/compiler/passes:dot_upcast",
         "//metal_pjrt/compiler/passes:hlo_checks",
         "//metal_pjrt/compiler/passes:conv_rewriter",

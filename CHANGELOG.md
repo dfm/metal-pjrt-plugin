@@ -17,6 +17,15 @@ describe the present only. Commit hashes point at the change.
   CPU (NaN before). The small-argument exp / sin / cos polynomials and
   cbrt's Newton step stay: they bring mtl closer to CPU.
   `docs/accuracy.md` lists the remaining differences.
+- complex64 matmul and sort work (they were refused at compile time):
+  a new pass, `MetalComplexDotExpander`, turns each complex dot into four
+  real f32 dots on the usual GEMM / loop paths (as accurate as CPU), and
+  complex sorts run on the bitonic network, bit-identical to CPU. A
+  1024^2 c64 matmul takes 3.9 ms (3.9x the f32 one; CPU 17 ms), a
+  1024 x 1024 c64 sort 26 ms (CPU 21 ms). Complex convolutions, cholesky,
+  triangular_solve, qr and ragged_dot work with them; complex LU (solve,
+  inv, det) is still refused (its scatter). JAX's lax_test: the 3 complex
+  known failures now pass.
 - Few-row f16/bf16 matmuls (small-batch LLM decode) are 1.8-3.4x faster,
   at or above MLX's speed. x W^T with 2..8 rows runs on MLX's wide gemv,
   9..48 rows on a 16-row steel tile, and XLA's DotMerger is off: it

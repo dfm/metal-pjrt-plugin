@@ -221,24 +221,6 @@ bool NeedsWideAtomics(const HloInstruction& instr) {
 
 }  // namespace
 
-absl::Status CheckBeforeOptimization(const HloModule& module) {
-  for (const HloComputation* comp : module.computations()) {
-    for (const HloInstruction* instr : comp->instructions()) {
-      const HloOpcode op = instr->opcode();
-      if ((op == HloOpcode::kDot || op == HloOpcode::kRaggedDot ||
-           op == HloOpcode::kSort) &&
-          TouchesType(*instr, {C64, C128})) {
-        return absl::UnimplementedError(absl::StrCat(
-            "Metal: ", op == HloOpcode::kSort ? "sort" : "matmul (dot)",
-            " of complex values is not supported; split into real and "
-            "imaginary parts, or run it on the CPU backend: ",
-            DescribeOp(*instr)));
-      }
-    }
-  }
-  return absl::OkStatus();
-}
-
 absl::Status CheckPostGemmRewriter(const HloModule& module) {
   for (const HloComputation* comp : module.computations()) {
     for (const HloInstruction* instr : comp->instructions()) {
@@ -281,6 +263,12 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             "Metal: scatter with a combiner on 64-bit elements needs 64-bit "
             "atomics, which Metal does not have: ",
             DescribeOp(*instr)));
+      }
+      if (instr->opcode() == HloOpcode::kDot &&
+          instr->shape().element_type() == C64) {
+        return absl::InternalError(absl::StrCat(
+            "Metal: complex64 dot after MetalComplexDotExpander: ",
+            DescribeOp(*instr), metal_pjrt::kReportBug));
       }
       if (IsNarrowOperandDot(instr)) {
         return absl::InternalError(absl::StrCat(

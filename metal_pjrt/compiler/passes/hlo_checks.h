@@ -29,19 +29,16 @@ std::string DescribeOp(const HloInstruction& instr);
 // These run here rather than first in RunHloPasses because the simplifier
 // removes some such ops (e.g. f32 -> f64 -> f32 chains) from programs that
 // run. f64 here includes complex128. complex64 is supported (the emitter
-// carries it as float2), except where it needs atomics: a scatter on complex
-// without unique indices (XLA compare-and-swaps it in 64 bits).
+// carries it as float2; MetalComplexDotExpander has turned its dots into
+// real ones, so none is left here), except where it needs atomics: a
+// scatter on complex without unique indices (XLA compare-and-swaps it in 64
+// bits).
 //  - every cuBLASLt GEMM is a plain "__cublas$lt$matmul" whose element types,
 //    epilogue and (for f16/bf16, steel only) shape MetalBlasLt supports
 //    (blas_lt_support.h).
 // Returns an error naming the first offending op, so a violation fails at
 // compile time instead of at run time or with wrong values.
 absl::Status CheckPostGemmRewriter(const HloModule& module);
-
-// What the Metal backend refuses up front (first thing in RunHloPasses,
-// before sorts are expanded): dots and sorts of complex values.
-// Returns an error naming the first offending op.
-absl::Status CheckBeforeOptimization(const HloModule& module);
 
 
 }  // namespace gpu

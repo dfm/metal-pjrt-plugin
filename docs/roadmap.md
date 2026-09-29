@@ -110,9 +110,6 @@ rows and K: below that the 16-row tile wins by up to 2.8x), so batched
 decode attention, 1024 x [4..8, 128] x [128, 128]^T, is 1.9-2.0x faster
 (6.9 -> 3.5 ms per 8 GEMMs; `docs/performance.md`).
 
-Complex dot / sort: a probe matched CPU; ~5 lines in
-`CheckBeforeOptimization` to enable, plus tests (kept refused for now).
-
 Housekeeping: drop the old `~/.cache/jax_metal/device.lock` in
 `scripts/device_lock.py` at the next pin bump (not before 2026-10-31).
 

@@ -218,6 +218,28 @@ case("c64 prod")(lambda: ref(lambda x: (jnp.prod(x, 1), jnp.prod(x)), CXU(64, 32
 case("c64 cumsum")(lambda: ref(lambda x: jnp.cumsum(x, 1), CX(8, 300)))
 # unique_indices: no atomics, so a complex scatter runs.
 case("c64 scatter unique_indices")(lambda: ref(lambda x, u: x.at[np.random.default_rng(0).permutation(64)[:20]].set(u, unique_indices=True), CX(64), CX(20), same=True))
+# Dots: MetalComplexDotExpander makes four real f32 dots (loop emitter when
+# small, the GEMM paths when large).
+case("c64 dot small (loop emitter)")(lambda: ref(lambda x, y: x @ y, CX(4, 3), CX(3, 5)))
+case("c64 matmul (GEMM)")(lambda: ref(lambda x, y: x @ y, CX(256, 128), CX(128, 192)))
+case("c64 matvec")(lambda: ref(lambda x, y: x @ y, CX(96, 64), CX(64)))
+case("c64 batched einsum")(lambda: ref(lambda x, y: jnp.einsum("bij,bkj->bik", x, y), CX(6, 48, 40), CX(6, 32, 40)))
+case("c64 matmul conj / transpose")(lambda: ref(lambda x, y: (x.conj().T @ y, x @ y.T, jnp.vdot(x, y)), CX(64, 48), CX(64, 48)))
+case("c64 matmul HIGHEST, real @ complex")(lambda: ref(lambda x, y: (jnp.matmul(x, y, precision="highest"), R(32, 64) @ y), CX(32, 64), CX(64, 16)))
+case("c64 matmul grad")(lambda: ref(lambda x, y: jax.grad(lambda a, b: jnp.sum(jnp.abs(a @ b) ** 2), argnums=(0, 1))(x, y), CX(40, 24), CX(24, 16)))
+case("c64 conv")(lambda: ref(lambda x, w: lax.conv_general_dilated(x, w, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC")), CX(2, 8, 8, 3), CX(3, 3, 3, 4)))
+# XLA's expanders build complex cholesky / triangular_solve / qr from dots
+# (MetalLinalgRewriter takes f32 only); the second expander run takes them.
+CSPD = lambda n: (lambda a: (a @ a.conj().T + n * np.eye(n)).astype(np.complex64))(CX(n, n).astype(np.complex128))
+case("c64 cholesky / triangular_solve / qr")(lambda: ref(lambda a, b: (jnp.linalg.cholesky(a), jax.scipy.linalg.solve_triangular(jnp.tril(a), b, lower=True), jnp.abs(jnp.linalg.qr(a)[1])), CSPD(48), CX(48, 4)))
+# Sorts: lexicographic (real, then imaginary), stable, bit-identical to CPU.
+# Ties in the real part and exact duplicates; the rows > 64 and the big sort
+# take the bitonic loop (SortRewriter's radix sort takes no complex keys).
+CXT = lambda *s: (np.round(R(*s) * 2) + 1j * np.round(np.roll(R(*s), 1) * 2)).astype(np.complex64)
+case("c64 sort / argsort")(lambda: ref(lambda x: (jnp.sort(x, axis=-1), jnp.argsort(x, axis=-1), jnp.argsort(x, axis=0, descending=True)), CXT(12, 40), same=True))
+case("c64 sort 100 x 300")(lambda: ref(lambda x: (jnp.sort(x), jnp.argsort(x)), CXT(100, 300), same=True))
+case("c64 lax.sort_key_val")(lambda: ref(lambda k, v: lax.sort_key_val(k, v), CXT(8, 200), CX(8, 200), same=True))
+case("c64 sort with NaN / inf")(lambda: ref(lambda x: jnp.sort(x), np.array([1 + 1j, np.nan, 1 - 1j, np.inf, -np.inf + 2j, complex(0, np.nan), 1j, 0, -1j, 1 + 1j], np.complex64), same=True))
 case("int8 / uint8 math")(lambda: ref(lambda x: (x.astype(jnp.int8) * 2 + x.astype(jnp.uint8)).astype(f32), jnp.arange(16, dtype=jnp.int32)))
 case("int4 (expected unsupported)")(lambda: ref(lambda x: x.astype(jnp.int4).astype(f32), jnp.arange(16, dtype=jnp.int32) % 7))
 case("float8 e4m3")(lambda: ref(lambda x: x.astype(jnp.float8_e4m3fn), A(16)))
@@ -271,6 +293,11 @@ ULPS = {
     'c64 reduce sum 1M': 1.5, 'c64 fused': 6.7,
     'c64 unfused (complex between kernels)': 1.6, 'c64 constants': 1.9,
     'c64 prod': 7.6, 'c64 cumsum': 3,
+    'c64 dot small (loop emitter)': 1.2, 'c64 matmul (GEMM)': 6.6,
+    'c64 matvec': 1.7, 'c64 batched einsum': 4.6,
+    'c64 matmul conj / transpose': 5.5,
+    'c64 matmul HIGHEST, real @ complex': 8.5, 'c64 matmul grad': 3.7,
+    'c64 conv': 4.5, 'c64 cholesky / triangular_solve / qr': 4.9,
     'many-arg fusion (>31 buffers)': 6.1,
 }
 # Outputs of sums, dots and whole programs: ulps of the largest output.
@@ -286,7 +313,10 @@ NORMWISE = {
     "softmax cross entropy", "layernorm fwd+bwd", "attention block",
     "bf16 reduce", "many-arg fusion (>31 buffers)", "c64 reduce sum",
     "c64 reduce sum 1M", "c64 unfused (complex between kernels)",
-    "c64 constants", "c64 prod", "c64 cumsum",
+    "c64 constants", "c64 prod", "c64 cumsum", "c64 dot small (loop emitter)",
+    "c64 matmul (GEMM)", "c64 matvec", "c64 batched einsum",
+    "c64 matmul conj / transpose", "c64 matmul HIGHEST, real @ complex",
+    "c64 matmul grad", "c64 conv", "c64 cholesky / triangular_solve / qr",
 }
 
 
@@ -297,18 +327,6 @@ NORMWISE = {
 def test_lax(name, fn):
     _current[0] = name
     fn()
-
-
-# Complex dots and sorts are refused up front (CheckBeforeOptimization),
-# naming the op, rather than failing in a kernel.
-@pytest.mark.parametrize("fn,what", [
-    (lambda x: x @ x.T, r"matmul \(dot\) of complex"),
-    (lambda x: jnp.sort(x, axis=1), "sort of complex"),
-])
-def test_complex_dot_and_sort_refused(fn, what):
-    x = jax.device_put(CX(8, 8), metal_testing.metal())
-    with pytest.raises(jax.errors.JaxRuntimeError, match=what):
-        jax.jit(fn)(x)
 
 
 # exp / sin / cos of small arguments use the prelude's Taylor polynomials

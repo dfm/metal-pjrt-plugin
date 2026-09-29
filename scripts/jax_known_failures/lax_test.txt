@@ -1,19 +1,12 @@
 # Known failures of JAX's tests/lax_test.py on mtl, as run by
 # scripts/run_jax_tests.sh. One test id per line (without the file), '#'
-# comments. Baseline: 993 pass, 16 fail, 63 skipped.
+# comments. Baseline: 996 pass, 13 fail, 63 skipped.
 #
 # Test ids depend on the generated-case count and x64, so
 # scripts/jax_tests_plugin.py only compares against this list when the run
 # matches the config line below. Matching is by id only: a known failure
 # that starts failing for a different reason stays hidden.
 # config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0
-
-# UNSUPPORTED: dots and sorts of complex values, refused at compile time
-# ("Metal: matmul (dot) of complex values is not supported", "Metal: sort
-# of complex values ...")
-LaxTest::testConvGeneralDilatedLocal2
-LaxTest::testSortKeyVal2
-LaxTest::test_no_complex_to_real_cast_warning_in_transpose
 
 # UNSUPPORTED: int4 converts (MSL emitter: unsupported non-trivial
 # unrealized_conversion_cast)

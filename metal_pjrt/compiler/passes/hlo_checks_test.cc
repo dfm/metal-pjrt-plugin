@@ -337,47 +337,25 @@ ENTRY e {
                   .ok());
 }
 
-TEST_F(MetalHloChecksTest, ComplexDotAndSortAreRefused) {
-  auto check = [&](const std::string& hlo) {
-    auto module = ParseAndReturnUnverifiedModule(hlo);
-    EXPECT_TRUE(module.ok()) << module.status();
-    return module.ok() ? CheckBeforeOptimization(**module) : module.status();
-  };
-  absl::Status dot = check(R"(
+// MetalComplexDotExpander runs before GemmRewriter, so a complex64 dot here
+// is a bug; complex128 is refused with the f64 arithmetic.
+TEST_F(MetalHloChecksTest, ComplexDots) {
+  const std::string kDot = R"(
 HloModule m
 ENTRY e {
-  a = c64[4,3] parameter(0)
-  b = c64[3,2] parameter(1)
-  ROOT d = c64[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(f)/dot_general"}
-})");
-  EXPECT_EQ(dot.code(), absl::StatusCode::kUnimplemented);
-  EXPECT_NE(dot.message().find("matmul (dot) of complex"), std::string::npos)
-      << dot;
-  EXPECT_NE(dot.message().find("jit(f)/dot_general"), std::string::npos)
-      << dot;
-  absl::Status sort = check(R"(
-HloModule m
-lt {
-  a = c64[] parameter(0)
-  b = c64[] parameter(1)
-  ra = f32[] real(a)
-  rb = f32[] real(b)
-  ROOT l = pred[] compare(ra, rb), direction=LT
-}
-ENTRY e {
-  x = c64[8] parameter(0)
-  ROOT s = c64[8] sort(x), dimensions={0}, to_apply=lt, metadata={op_name="jit(f)/sort"}
-})");
-  EXPECT_EQ(sort.code(), absl::StatusCode::kUnimplemented);
-  EXPECT_NE(sort.message().find("sort of complex"), std::string::npos) << sort;
-  EXPECT_NE(sort.message().find("jit(f)/sort"), std::string::npos) << sort;
-  EXPECT_TRUE(check(R"(
-HloModule m
-ENTRY e {
-  a = f32[4,3] parameter(0)
-  b = f32[3,2] parameter(1)
-  ROOT d = f32[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
-})").ok());
+  a = $T[4,3] parameter(0)
+  b = $T[3,2] parameter(1)
+  ROOT d = $T[4,2] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}, metadata={op_name="jit(f)/dot_general"}
+})";
+  absl::Status c64 = Check(absl::StrReplaceAll(kDot, {{"$T", "c64"}}));
+  EXPECT_EQ(c64.code(), absl::StatusCode::kInternal);
+  EXPECT_NE(c64.message().find("MetalComplexDotExpander"), std::string::npos)
+      << c64;
+  absl::Status c128 = Check(absl::StrReplaceAll(kDot, {{"$T", "c128"}}));
+  EXPECT_EQ(c128.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(c128.message().find("complex128"), std::string::npos) << c128;
+  EXPECT_NE(c128.message().find("jit(f)/dot_general"), std::string::npos)
+      << c128;
 }
 
 // After optimization, so that an fft in the dead branch of a folded
@@ -393,9 +371,6 @@ ENTRY e {
   EXPECT_EQ(fft.code(), absl::StatusCode::kUnimplemented);
   EXPECT_NE(fft.message().find("HLO fft op"), std::string::npos) << fft;
   EXPECT_NE(fft.message().find("jit(f)/fft"), std::string::npos) << fft;
-  auto module = ParseAndReturnUnverifiedModule(kFft);
-  ASSERT_TRUE(module.ok()) << module.status();
-  EXPECT_TRUE(CheckBeforeOptimization(**module).ok());
 }
 
 }  // namespace
