@@ -41,8 +41,13 @@ below.
 ## Out of memory (RESOURCE_EXHAUSTED)
 
 GPU memory is system RAM. JAX's message starts with XLA's "Out of memory
-while trying to allocate ..." and the plugin appends the reason. Two
-different limits:
+while trying to allocate ..." and the plugin appends the reason, starting
+with the computation whose allocation was refused: `in jit_f: ...`. JAX
+runs computations asynchronously, so the error often surfaces in a later
+one that used the result (for example an eager `jnp.sum`, which is also what
+XLA's `[executable_name=...]` names); the plugin then says `in jit_f (an
+earlier asynchronous computation; the error surfaced in jit__reduce_sum)`.
+Two different limits:
 
 - `Metal: allocating ... refused: this process already holds ... of its
   ... memory budget (device 0; half of RAM, capped by the GPU's

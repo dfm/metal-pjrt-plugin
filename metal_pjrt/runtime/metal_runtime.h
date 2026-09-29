@@ -166,12 +166,21 @@ struct KernelIdentity {
 // image's contents, so every rebuild that changes the code gets a new one.
 std::string ImageUuid();
 
-// The reason of the last allocation Device::Allocate refused (any device) and
-// its requested size, or "" when none was refused. XLA's allocator adapter
+// The reason of the last allocation Device::Allocate refused (any device),
+// its requested size and the executable it was for (NameAllocationRefusal;
+// "" when not known), or "" when none was refused. XLA's allocator adapter
 // turns every refusal into a generic "Out of memory while trying to allocate
 // N" error; the plugin's PJRT_Error_Message appends this reason to it
 // (pjrt/metal_pjrt_api.cc).
-std::string LastAllocationRefusal(uint64_t* size);
+std::string LastAllocationRefusal(uint64_t* size, std::string* executable);
+
+// The number of the last refusal on the calling thread (0: none). Refusals
+// are numbered in order across threads.
+uint64_t LastAllocationRefusalOnThisThread();
+
+// Records that refusal number `refusal` was for `executable`, if it is still
+// the last one.
+void NameAllocationRefusal(uint64_t refusal, std::string executable);
 
 // A compute pipeline, owned by the Device's kernel cache (Device::GetKernel,
 // Device::AcquireKernel).

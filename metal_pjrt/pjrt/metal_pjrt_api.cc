@@ -1,8 +1,9 @@
 // The plugin's exported GetPjrtApi: XLA's GPU C API shim with the
 // PJRT_AbiVersion extension removed, PJRT_Client_BufferFromHostBuffer
 // wrapped so the caller's host buffer is copied (or, when large, done with)
-// before it returns, and
-// PJRT_Error_Message wrapped so out-of-memory errors say why (below).
+// before it returns, and PJRT_LoadedExecutable_Execute and
+// PJRT_Error_Message wrapped so out-of-memory errors say why and for which
+// executable (below).
 //
 // With that extension, PjRtCApiExecutable::GetAbiVersion reports the OneAPI
 // executable ABI, which jaxlib's IFRT (GetXlaExecutableVersion) rejects
@@ -157,11 +158,76 @@ PJRT_Error* BufferFromHostBuffer(PJRT_Client_BufferFromHostBuffer_Args* args) {
 // XLA's allocator adapter replaces the runtime's refusal (budget or system
 // memory guard, with numbers) by "Out of memory while trying to allocate
 // <size> with allocator ...". Append the runtime's reason when the last
-// refusal was of that size. The annotated text lives until the error is
+// refusal was of that size, with the executable it was for. XLA's
+// executable_name payload names the last computation the error reached:
+// a failed execution's outputs carry its error into every consumer, each of
+// which overwrites the name, so after an eager op on an asynchronous jit's
+// result it names that op. The annotated text lives until the error is
 // destroyed, as the C API requires.
 std::mutex g_messages_mu;
 std::unordered_map<const PJRT_Error*, std::string>* g_messages =
     new std::unordered_map<const PJRT_Error*, std::string>;
+
+// The executable's name, for a refusal during its execution.
+std::string ExecutableName(PJRT_LoadedExecutable* loaded) {
+  PJRT_LoadedExecutable_GetExecutable_Args get;
+  get.struct_size = PJRT_LoadedExecutable_GetExecutable_Args_STRUCT_SIZE;
+  get.extension_start = nullptr;
+  get.loaded_executable = loaded;
+  PJRT_Error* error = g_gpu->PJRT_LoadedExecutable_GetExecutable(&get);
+  std::string name;
+  if (error == nullptr) {
+    PJRT_Executable_Name_Args args;
+    args.struct_size = PJRT_Executable_Name_Args_STRUCT_SIZE;
+    args.extension_start = nullptr;
+    args.executable = get.executable;
+    error = g_gpu->PJRT_Executable_Name(&args);
+    if (error == nullptr) name.assign(args.executable_name,
+                                      args.executable_name_size);
+    PJRT_Executable_Destroy_Args destroy{
+        PJRT_Executable_Destroy_Args_STRUCT_SIZE, nullptr, get.executable};
+    if (PJRT_Error* e = g_gpu->PJRT_Executable_Destroy(&destroy)) error = e;
+  }
+  if (error != nullptr) {
+    PJRT_Error_Destroy_Args d{PJRT_Error_Destroy_Args_STRUCT_SIZE, nullptr,
+                              error};
+    g_gpu->PJRT_Error_Destroy(&d);
+  }
+  return name;
+}
+
+// XLA allocates an execution's buffers on the calling thread (no async
+// dispatch), so a refusal during the call is for this executable.
+PJRT_Error* Execute(PJRT_LoadedExecutable_Execute_Args* args) {
+  const uint64_t before = metal_pjrt::rt::LastAllocationRefusalOnThisThread();
+  PJRT_Error* error = g_gpu->PJRT_LoadedExecutable_Execute(args);
+  const uint64_t refusal = metal_pjrt::rt::LastAllocationRefusalOnThisThread();
+  if (refusal != before) {
+    metal_pjrt::rt::NameAllocationRefusal(refusal,
+                                          ExecutableName(args->executable));
+  }
+  return error;
+}
+
+std::string PayloadExecutableName(const PJRT_Error* error) {
+  std::string name;
+  PJRT_Error_ForEachPayload_Args args;
+  args.struct_size = PJRT_Error_ForEachPayload_Args_STRUCT_SIZE;
+  args.extension_start = nullptr;
+  args.error = error;
+  args.user_arg = &name;
+  args.visitor = [](const char* key, size_t key_size, const char* value,
+                    size_t value_size, void* user_arg) {
+    if (absl::string_view(key, key_size) == "executable_name") {
+      static_cast<std::string*>(user_arg)->assign(value, value_size);
+    }
+  };
+  if (PJRT_Error* e = g_gpu->PJRT_Error_ForEachPayload(&args)) {
+    PJRT_Error_Destroy_Args d{PJRT_Error_Destroy_Args_STRUCT_SIZE, nullptr, e};
+    g_gpu->PJRT_Error_Destroy(&d);
+  }
+  return name;
+}
 
 void ErrorMessage(PJRT_Error_Message_Args* args) {
   g_gpu->PJRT_Error_Message(args);
@@ -170,7 +236,9 @@ void ErrorMessage(PJRT_Error_Message_Args* args) {
     return;
   }
   uint64_t size = 0;
-  const std::string reason = metal_pjrt::rt::LastAllocationRefusal(&size);
+  std::string executable;
+  const std::string reason =
+      metal_pjrt::rt::LastAllocationRefusal(&size, &executable);
   if (reason.empty() ||
       !absl::StrContains(message,
                          absl::StrCat(" allocate ",
@@ -180,7 +248,19 @@ void ErrorMessage(PJRT_Error_Message_Args* args) {
   }
   std::lock_guard<std::mutex> lock(g_messages_mu);
   auto [it, inserted] = g_messages->try_emplace(args->error);
-  if (inserted) it->second = absl::StrCat(message, " metal-pjrt-plugin: ", reason);
+  if (inserted) {
+    std::string origin;
+    if (!executable.empty()) {
+      const std::string surfaced = PayloadExecutableName(args->error);
+      origin = surfaced.empty() || surfaced == executable
+                   ? absl::StrCat("in ", executable, ": ")
+                   : absl::StrCat("in ", executable,
+                                  " (an earlier asynchronous computation; the "
+                                  "error surfaced in ",
+                                  surfaced, "): ");
+    }
+    it->second = absl::StrCat(message, " metal-pjrt-plugin: ", origin, reason);
+  }
   args->message = it->second.data();
   args->message_size = it->second.size();
 }
@@ -203,6 +283,7 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
     g_gpu = gpu;
     static PJRT_Api copy = *gpu;
     copy.PJRT_Client_BufferFromHostBuffer = BufferFromHostBuffer;
+    copy.PJRT_LoadedExecutable_Execute = Execute;
     copy.PJRT_Error_Message = ErrorMessage;
     copy.PJRT_Error_Destroy = ErrorDestroy;
     // Copy every other extension node (they are plain structs of function

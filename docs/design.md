@@ -225,7 +225,12 @@ sizes.
   them all, and frees release directly until the level is normal.
 - XLA reports every refusal as "Out of memory while trying to allocate N";
   the plugin's `PJRT_Error_Message` appends the runtime's reason (budget or
-  system guard, with the numbers) so it reaches Python.
+  system guard, with the numbers) so it reaches Python, with the executable
+  whose allocation was refused (its wrapped `PJRT_LoadedExecutable_Execute`
+  names refusals made during the call; XLA allocates an execution's
+  buffers on the calling thread). XLA's own `executable_name` payload names
+  the last computation the error reached instead (each consumer of a failed
+  output overwrites it).
 - Only the `pinned_host` memory kind uses XLA's host BFC pool (never
   shrinks).
 

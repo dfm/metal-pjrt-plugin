@@ -100,6 +100,34 @@ print("OK")
     assert "OK" in out, out
 
 
+def test_refusal_names_its_executable():
+    # big_temp's ~512 MB of scratch is over the 256 MB budget, so it is
+    # refused before anything is allocated. XLA's executable_name names the
+    # last computation the error reached (the eager ops on big_temp's result);
+    # the plugin's text names the one whose allocation was refused.
+    out = run_child(r"""
+@jax.jit
+def big_temp(x):
+    h = jnp.tanh(x @ x.T)
+    return jnp.tanh(h @ h) @ x
+x = jnp.ones((8192, 1024), jnp.float32)
+try:
+    big_temp(x).block_until_ready()
+    raise SystemExit("no error")
+except jax.errors.JaxRuntimeError as e:
+    assert "metal-pjrt-plugin: in jit_big_temp: Metal: allocating" in str(e), e
+try:
+    int(jnp.argmax(big_temp(x), -1).sum())
+    raise SystemExit("no error")
+except jax.errors.JaxRuntimeError as e:
+    assert ("metal-pjrt-plugin: in jit_big_temp (an earlier asynchronous "
+            "computation; the error surfaced in jit_") in str(e), e
+    assert "memory budget" in str(e), e
+print("OK")
+""", METAL_PJRT_MEMORY_FRACTION=small_budget_fraction(256))
+    assert "OK" in out, out
+
+
 def test_memory_returned_after_compute():
     out = run_child(r"""
 base = footprint()

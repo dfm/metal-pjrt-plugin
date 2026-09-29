@@ -575,21 +575,34 @@ Device::~Device() {
 
 namespace {
 std::mutex g_refusal_mu;
+uint64_t g_refusal_count = 0;
 uint64_t g_refusal_size = 0;
 std::string g_refusal;
+std::string g_refusal_executable;
+thread_local uint64_t t_refusal = 0;
 
 absl::Status RecordRefusal(uint64_t size, absl::Status s) {
   std::lock_guard<std::mutex> lock(g_refusal_mu);
+  t_refusal = ++g_refusal_count;
   g_refusal_size = size;
   g_refusal = std::string(s.message());
+  g_refusal_executable.clear();
   return s;
 }
 }  // namespace
 
-std::string LastAllocationRefusal(uint64_t* size) {
+std::string LastAllocationRefusal(uint64_t* size, std::string* executable) {
   std::lock_guard<std::mutex> lock(g_refusal_mu);
   *size = g_refusal_size;
+  *executable = g_refusal_executable;
   return g_refusal;
+}
+
+uint64_t LastAllocationRefusalOnThisThread() { return t_refusal; }
+
+void NameAllocationRefusal(uint64_t refusal, std::string executable) {
+  std::lock_guard<std::mutex> lock(g_refusal_mu);
+  if (refusal == g_refusal_count) g_refusal_executable = std::move(executable);
 }
 
 bool Device::FitsAfterReleasingCache(uint64_t length, uint64_t* reclaimable) {
