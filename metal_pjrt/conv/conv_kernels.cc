@@ -84,6 +84,11 @@ ConvKernelSource PadColsKernel(ConvType t) {
           {}};
 }
 
+ConvKernelSource SumSplitsKernel(ConvType t) {
+  return {kernels::kConvMiscMsl, absl::StrCat("sum_splits_", MslTypeName(t)),
+          {}};
+}
+
 std::vector<ConvKernelSource> AllConvKernels() {
   std::vector<ConvKernelSource> out;
   std::set<std::string> seen;
@@ -116,6 +121,7 @@ std::vector<ConvKernelSource> AllConvKernels() {
     }
     add(UnfoldKernel(t));
     add(PadColsKernel(t));
+    add(SumSplitsKernel(t));
   }
   return out;
 }

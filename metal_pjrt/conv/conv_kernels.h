@@ -39,8 +39,9 @@ struct ImplicitGemmParams {
   int32_t inp_jump_w, inp_jump_h, inp_jump_c;
   int32_t tiles_n, tiles_m;
   int32_t swizzle_log;
+  int32_t tile_m_offset;  // first row tile of this launch
 };
-static_assert(sizeof(ImplicitGemmParams) == 40, "layout must match the MSL");
+static_assert(sizeof(ImplicitGemmParams) == 44, "layout must match the MSL");
 
 // Must match Conv2DGeneralJumpParams in steel_conv.metal.
 struct GeneralJumpParams {
@@ -55,12 +56,15 @@ struct GeneralBaseInfo {
   int32_t weight_base, weight_size;
 };
 
-// Must match UnfoldRows / PadRows in conv_misc.metal.
+// Must match UnfoldRows / PadRows / SumSplits in conv_misc.metal.
 struct UnfoldRows {
   int32_t row_offset, rows;
 };
 struct PadRows {
   uint32_t rows, cols, out_cols;
+};
+struct SumSplits {
+  uint32_t count, splits;
 };
 
 struct ConvTile {
@@ -92,9 +96,11 @@ ConvKernelSource ImplicitConvKernel(ConvType t, const ConvTile& tile,
 // implicit_gemm_conv_2d_general; align_c = C % bk == 0.
 ConvKernelSource GeneralConvKernel(ConvType t, const ConvTile& tile,
                                    bool align_c);
-// naive_unfold_2d_<type> / pad_cols_<type> of conv_misc.metal.
+// naive_unfold_2d_<type> / pad_cols_<type> / sum_splits_<type> of
+// conv_misc.metal.
 ConvKernelSource UnfoldKernel(ConvType t);
 ConvKernelSource PadColsKernel(ConvType t);
+ConvKernelSource SumSplitsKernel(ConvType t);
 
 // Every variant the dispatch (conv.h) can select, each once: the tile rules
 // applied across their branch points, for every type (kernels_test compiles

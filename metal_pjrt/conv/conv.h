@@ -21,6 +21,22 @@
 //   kGeneral     general implicit GEMM: input dilation, any C and O (C and O
 //                multiples of 16, or >= 256 output pixels);
 //   kExplicit    unfold (im2col) row tiles into the workspace + steel GEMM.
+//
+// The weight gradient (ConvKind::kWeightGrad, MLX's vjp for the weight) is
+// its own path, kWeightGrad: for the forward convolution described by the
+// params, dW [O, kH * kW * C] = dY^T [O, N * oH * oW] x patches [N * oH *
+// oW, kH * kW * C], the patches unfolded into the workspace in row chunks.
+// That contraction is long and the product small, and steel has no split-K:
+// each chunk's rows are split into `splits` equal parts, one batched steel
+// GEMM accumulates the parts into f32 partial products in the workspace,
+// and sum_splits adds them into dW (with one part and one chunk the GEMM
+// writes dW directly).
+//
+// Every launch is charged its flops (rt::Stream::Launch) and none exceeds
+// max_launch_flops: implicit and general split their row tiles over several
+// launches (tile_m_offset), the explicit and weight-gradient paths bound
+// their unfold chunks; so a large convolution spreads over several command
+// buffers, each far from the GPU watchdog, like any other work.
 #ifndef METAL_PJRT_CONV_CONV_H_
 #define METAL_PJRT_CONV_CONV_H_
 
@@ -35,7 +51,13 @@
 namespace metal_pjrt {
 namespace conv {
 
+// kForward: RunConv(in, weight -> out). kWeightGrad: RunConv(in, dY -> dW),
+// the weight gradient of the forward convolution the params describe: dY
+// has the output's shape [N, oH, oW, O], dW the weight's [O, kH, kW, C].
+enum class ConvKind { kForward, kWeightGrad };
+
 struct ConvParams {
+  ConvKind kind = ConvKind::kForward;
   ConvType type = ConvType::kF32;
   int64_t n = 0, h = 0, w = 0, c = 0;  // input
   int64_t o = 0, kh = 0, kw = 0;       // weight [o, kh, kw, c]
@@ -50,7 +72,13 @@ struct ConvParams {
 
 std::string ConvParamsDebugString(const ConvParams& p);
 
-enum class ConvPath { kImplicit, kPadChannels, kGeneral, kExplicit };
+enum class ConvPath {
+  kImplicit,
+  kPadChannels,
+  kGeneral,
+  kExplicit,
+  kWeightGrad
+};
 const char* ConvPathName(ConvPath path);
 
 struct ConvPlan {
@@ -60,26 +88,39 @@ struct ConvPlan {
   bool small_filter = false; // kImplicit: kH, kW <= 16
   bool align_c = false;      // kGeneral: C % tile.bk == 0
   int64_t padded_c = 0;      // kPadChannels
-  int64_t unfold_rows = 0;   // kExplicit: output pixels per unfold tile
+  int64_t unfold_rows = 0;   // kExplicit, kWeightGrad: output pixels per chunk
+  int64_t splits = 0;        // kWeightGrad: parts per chunk (f32 partials)
+  int64_t split_rows = 0;    // kWeightGrad: rows per part
+  int64_t tiles_m = 0;         // kImplicit..kGeneral: row tiles
+  int64_t launch_tiles_m = 0;  // kImplicit..kGeneral: row tiles per launch
   uint64_t workspace_bytes = 0;
 };
 
-// The plan for `p`, or for `p` on path `*force` (tests). Unimplemented for
-// what the kernels do not cover (groups > 1, negative pad_lo, an empty
-// contraction C * kH * kW == 0, sizes past 32-bit indexing, a forced path
-// that cannot run `p`); InvalidArgument for inconsistent sizes.
+// The default max_launch_flops: half the command buffer's flop budget.
+inline constexpr uint64_t kMaxLaunchFlops =
+    rt::Stream::kMaxFlopsPerCommandBuffer / 2;
+
+// The plan for `p`, or for `p` on path `*force` (tests; kWeightGrad is
+// the only path of a kWeightGrad `p`). Unimplemented for what the kernels do
+// not cover (groups > 1, negative pad_lo, an empty contraction C * kH * kW
+// == 0, sizes past 32-bit indexing, a forced path that cannot run `p`);
+// InvalidArgument for inconsistent sizes. `max_launch_flops` bounds each
+// launch (tests pass small values to force the splits).
 absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p,
-                                  const ConvPath* force = nullptr);
+                                  const ConvPath* force = nullptr,
+                                  uint64_t max_launch_flops = kMaxLaunchFlops);
 
 // 2 * N * oH * oW * O * kH * kW * C / groups.
 uint64_t ConvFlops(const ConvParams& p);
 
 // Enqueues the convolution on the stream: `plan` is PlanConv(p) (or a
 // forced plan), `workspace` at least plan.workspace_bytes (unused when 0).
-// Nothing is launched for an empty output.
+// kForward: `b` is the weight, `out` the output; kWeightGrad: `b` is dY,
+// `out` dW. Nothing is launched for an empty output; an empty contraction
+// of the weight gradient (N * oH * oW == 0) zero-fills dW.
 absl::Status RunConv(rt::Device* device, rt::Stream* stream,
                      const ConvParams& p, const ConvPlan& plan,
-                     const void* in, const void* weight, void* out,
+                     const void* in, const void* b, void* out,
                      void* workspace);
 
 }  // namespace conv

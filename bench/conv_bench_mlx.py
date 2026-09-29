@@ -26,18 +26,31 @@ CASES = [
      dict(stride=1, padding=([2, 2], [1, 1]), input_dilation=2, flip=True)),
 ]
 
+# Weight gradients (MLX's vjp w.r.t. the weight: patches x cotangent) of
+# the two forward convolutions.
+WGRAD = {"conv1 weight grad": 0, "conv2 weight grad": 1}
+CASES += [(name, CASES[i][1], CASES[i][2], CASES[i][3]) for name, i in WGRAD.items()]
+
+
+def run(name, x, w, kw):
+    if name not in WGRAD:
+        return mx.conv_general(x, w, **kw)
+    cot = mx.ones(mx.conv_general(x, w, **kw).shape, dtype=x.dtype)
+    return mx.vjp(lambda w: mx.conv_general(x, w, **kw), [w], [cot])[1][0]
+
+
 for name, xs, ws, kw in CASES:
     xs_ = [mx.random.normal(xs).astype(dtype) for _ in range(BURST)]
     w = mx.random.normal(ws).astype(dtype)
     mx.eval(xs_, w)
     for _ in range(3):
-        mx.eval([mx.conv_general(x, w, **kw) for x in xs_[:3]])
+        mx.eval([run(name, x, w, kw) for x in xs_[:3]])
     for _ in range(rounds):
         t0 = time.perf_counter()
-        outs = [mx.conv_general(x, w, **kw) for x in xs_]
+        outs = [run(name, x, w, kw) for x in xs_]
         mx.eval(outs)
         ms = (time.perf_counter() - t0) * 1e3 / BURST
-        o = outs[0].shape
+        o = mx.conv_general(xs_[0], w, **kw).shape
         flops = 2 * o[0] * o[1] * o[2] * o[3] * ws[1] * ws[2] * ws[3]
         print(json.dumps({"backend": "mlx", "case": name, "type": tname,
                           "ms": round(ms, 4), "gflops": round(flops / (ms * 1e6), 1),

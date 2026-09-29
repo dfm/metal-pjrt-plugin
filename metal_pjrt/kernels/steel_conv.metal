@@ -65,6 +65,9 @@ struct ImplicitGemmConv2DParams {
   int tiles_n;
   int tiles_m;
   int swizzle_log;
+  // Row tiles [tile_m_offset, tile_m_offset + grid height) of tiles_m: a
+  // large convolution is split into several launches (conv/conv.cc).
+  int tile_m_offset;
 };
 
 // Must match GeneralJumpParams in conv/conv_kernels.cc.
@@ -934,8 +937,8 @@ struct Conv2DWeightBlockLoaderGeneral {
 
 // Specialized implicit GEMM (MLX steel_conv.h): no input dilation; C <= 4
 // (N_CHANNELS = C) or C % 16 == 0 (N_CHANNELS = 0); O <= 16 (BN = 8) or
-// O % BN == 0. SMALL_FILTER: kH, kW <= 16 (masked taps). Grid (tiles_n,
-// tiles_m, groups), WM * WN simdgroups.
+// O % BN == 0. SMALL_FILTER: kH, kW <= 16 (masked taps). Grid (tiles_n, a
+// range of tiles_m, groups), WM * WN simdgroups.
 template <typename T, int BM, int BN, int BK, int WM, int WN, int N_CHANNELS,
           bool SMALL_FILTER>
 [[kernel, max_total_threads_per_threadgroup(WM * WN * 32)]] void
@@ -983,7 +986,8 @@ implicit_gemm_conv_2d(const device T* A [[buffer(0)]],
   threadgroup T Bs[tgp_mem_size_b];
 
   const int tid_y = ((tid.y) << gemm_params->swizzle_log) +
-                    ((tid.x) & ((1 << gemm_params->swizzle_log) - 1));
+                    ((tid.x) & ((1 << gemm_params->swizzle_log) - 1)) +
+                    gemm_params->tile_m_offset;
   const int tid_x = (tid.x) >> gemm_params->swizzle_log;
   if (gemm_params->tiles_n <= tid_x || gemm_params->tiles_m <= tid_y) return;
 
@@ -1066,7 +1070,8 @@ implicit_gemm_conv_2d_general(
   threadgroup T Bs[tgp_mem_size_b];
 
   const int tid_y = ((tid.y) << gemm_params->swizzle_log) +
-                    ((tid.x) & ((1 << gemm_params->swizzle_log) - 1));
+                    ((tid.x) & ((1 << gemm_params->swizzle_log) - 1)) +
+                    gemm_params->tile_m_offset;
   const int tid_x = (tid.x) >> gemm_params->swizzle_log;
   if (gemm_params->tiles_n <= tid_x || gemm_params->tiles_m <= tid_y) return;
 

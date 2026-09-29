@@ -1,7 +1,8 @@
 // The convolution library (metal_pjrt/conv/conv.h) on the cnn benchmark's
 // layers (bench/jax_bench.py "cnn fwd+bwd", batch 32, f32): the two forward
-// convolutions and the input gradient of the second (input dilation 2,
-// flipped kernel). Needs a Metal device; run under scripts/device_lock.py:
+// convolutions, the input gradient of the second (input dilation 2,
+// flipped kernel) and both weight gradients. Needs a Metal device; run under
+// scripts/device_lock.py:
 //   bazel build //bench:conv_bench
 //   scripts/device_lock.py -- bazel-bin/bench/conv_bench [rounds] [f32|f16|bf16]
 // Each round runs a burst of 30 back-to-back RunConv calls per case and
@@ -62,6 +63,12 @@ std::vector<Case> Cases(conv::ConvType t) {
   ig.idil[0] = ig.idil[1] = 2;
   ig.flip = true;
   cases.push_back({"conv2 input grad", ig});
+  conv::ConvParams wg1 = c1;
+  wg1.kind = conv::ConvKind::kWeightGrad;
+  cases.push_back({"conv1 weight grad", wg1});
+  conv::ConvParams wg2 = c2;
+  wg2.kind = conv::ConvKind::kWeightGrad;
+  cases.push_back({"conv2 weight grad", wg2});
   return cases;
 }
 
@@ -92,9 +99,13 @@ int main(int argc, char** argv) {
       std::memset(a->ptr, 0, bytes);
       return a->ptr;
     };
+    // Forward: in, weight -> out; weight gradient: in, dY -> dW.
+    const bool wgrad = p.kind == conv::ConvKind::kWeightGrad;
+    const int64_t wt_bytes = p.o * p.kh * p.kw * p.c * item;
+    const int64_t out_bytes = p.n * p.out_h * p.out_w * p.o * item;
     void* in = alloc(p.n * p.h * p.w * p.c * item);
-    void* wt = alloc(p.o * p.kh * p.kw * p.c * item);
-    void* out = alloc(p.n * p.out_h * p.out_w * p.o * item);
+    void* wt = alloc(wgrad ? out_bytes : wt_bytes);
+    void* out = alloc(wgrad ? wt_bytes : out_bytes);
     void* ws = plan->workspace_bytes ? alloc(plan->workspace_bytes) : nullptr;
     for (int i = 0; i < 3; ++i) {  // compile + warm up
       Check(conv::RunConv(dev.get(), stream.get(), p, *plan, in, wt, out, ws),

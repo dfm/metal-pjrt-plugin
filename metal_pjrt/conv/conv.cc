@@ -19,13 +19,24 @@ namespace metal_pjrt {
 namespace conv {
 namespace {
 
-// The explicit path unfolds at most this much of the patch matrix at a time
-// (whole rows; at least one).
+// The explicit and weight-gradient paths unfold at most this much of the
+// patch matrix at a time (whole rows; at least one).
 constexpr uint64_t kUnfoldMaxBytes = 64ull << 20;
+
+// Weight gradient split-K: enough threadgroups for the GPU (the M3 has 10
+// cores), each part at least kMinSplitRows long.
+constexpr int64_t kWgradTargetGroups = 128;
+constexpr int64_t kMinSplitRows = 256;
 
 constexpr int64_t kInt32Max = std::numeric_limits<int32_t>::max();
 
 int64_t ItemSize(ConvType t) { return t == ConvType::kF32 ? 4 : 2; }
+
+blas::MpsDType GemmType(ConvType t) {
+  return t == ConvType::kF32   ? blas::MpsDType::kF32
+         : t == ConvType::kF16 ? blas::MpsDType::kF16
+                               : blas::MpsDType::kBF16;
+}
 
 int64_t CeilDiv(int64_t a, int64_t b) { return (a + b - 1) / b; }
 
@@ -91,6 +102,31 @@ rt::Dim3 Threads(const ConvTile& t) {
   return {static_cast<uint32_t>(32 * t.wm * t.wn), 1, 1};
 }
 
+// Launches `kernel` over the row tiles [0, tiles_m) in ranges of
+// plan.launch_tiles_m (gp.tile_m_offset = the range's first tile), each
+// charged its share of the flops. args[4] is gp (KernelArg::Bytes copies,
+// so it is set per launch).
+absl::Status LaunchRowTiles(rt::Stream* stream, const rt::Kernel& kernel,
+                            const ConvParams& p, const ConvPlan& plan,
+                            ImplicitGemmParams& gp, uint32_t grid_z,
+                            std::vector<rt::KernelArg> args) {
+  const int64_t tiles_m = gp.tiles_m;
+  const uint64_t tile_flops =
+      (ConvFlops(p) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
+  const int64_t step = plan.launch_tiles_m > 0 ? plan.launch_tiles_m : tiles_m;
+  for (int64_t first = 0; first < tiles_m; first += step) {
+    const int64_t tiles = std::min(step, tiles_m - first);
+    gp.tile_m_offset = static_cast<int32_t>(first);
+    args[4] = rt::KernelArg::Bytes(&gp, sizeof(gp));
+    const rt::Dim3 groups{static_cast<uint32_t>(gp.tiles_n),
+                          static_cast<uint32_t>(tiles), grid_z};
+    ABSL_RETURN_IF_ERROR(stream->Launch(kernel, groups, Threads(plan.tile),
+                                        args, /*threadgroup_memory_bytes=*/0,
+                                        tile_flops * tiles));
+  }
+  return absl::OkStatus();
+}
+
 // MLX implicit_gemm_conv_2D_gpu, on input channels `c` (the padded count for
 // kPadChannels).
 absl::Status RunImplicit(rt::Device* device, rt::Stream* stream,
@@ -125,15 +161,11 @@ absl::Status RunImplicit(rt::Device* device, rt::Stream* stream,
       ImplicitConvKernel(p.type, t, plan.n_channels, plan.small_filter);
   ABSL_ASSIGN_OR_RETURN(const rt::Kernel* kernel,
                         device->GetKernel(k.msl, k.function, k.constants));
-  const rt::Dim3 groups{static_cast<uint32_t>(gp.tiles_n),
-                        static_cast<uint32_t>(gp.tiles_m),
-                        static_cast<uint32_t>(p.groups)};
-  return stream->Launch(
-      *kernel, groups, Threads(t),
+  return LaunchRowTiles(
+      stream, *kernel, p, plan, gp, static_cast<uint32_t>(p.groups),
       {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(weight),
        rt::KernelArg::Buffer(out), rt::KernelArg::Bytes(&sp, sizeof(sp)),
-       rt::KernelArg::Bytes(&gp, sizeof(gp))},
-      /*threadgroup_memory_bytes=*/0, ConvFlops(p));
+       rt::KernelArg::Bytes(&gp, sizeof(gp))});
 }
 
 // MLX implicit_gemm_conv_2D_general_gpu.
@@ -196,12 +228,9 @@ absl::Status RunGeneral(rt::Device* device, rt::Stream* stream,
   const ConvKernelSource k = GeneralConvKernel(p.type, t, plan.align_c);
   ABSL_ASSIGN_OR_RETURN(const rt::Kernel* kernel,
                         device->GetKernel(k.msl, k.function, k.constants));
-  const rt::Dim3 groups{static_cast<uint32_t>(gp.tiles_n),
-                        static_cast<uint32_t>(gp.tiles_m),
-                        static_cast<uint32_t>(jp.f_out_jump_h *
-                                              jp.f_out_jump_w)};
-  return stream->Launch(
-      *kernel, groups, Threads(t),
+  return LaunchRowTiles(
+      stream, *kernel, p, plan, gp,
+      static_cast<uint32_t>(jp.f_out_jump_h * jp.f_out_jump_w),
       {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(weight),
        rt::KernelArg::Buffer(out), rt::KernelArg::Bytes(&sp, sizeof(sp)),
        rt::KernelArg::Bytes(&gp, sizeof(gp)),
@@ -209,8 +238,7 @@ absl::Status RunGeneral(rt::Device* device, rt::Stream* stream,
        rt::KernelArg::Bytes(base_h.data(),
                             base_h.size() * sizeof(GeneralBaseInfo)),
        rt::KernelArg::Bytes(base_w.data(),
-                            base_w.size() * sizeof(GeneralBaseInfo))},
-      /*threadgroup_memory_bytes=*/0, ConvFlops(p));
+                            base_w.size() * sizeof(GeneralBaseInfo))});
 }
 
 // dst[r, :cols_out] = [src[r, :cols], 0...] for r < rows.
@@ -236,11 +264,29 @@ absl::StatusOr<blas::MpsOperand> Operand(rt::Device* device, const void* ptr,
   op.buffer = ref.buffer;
   op.offset = ref.offset;
   op.ld = ld;
-  op.dtype = type == ConvType::kF32   ? blas::MpsDType::kF32
-             : type == ConvType::kF16 ? blas::MpsDType::kF16
-                                      : blas::MpsDType::kBF16;
+  op.dtype = GemmType(type);
   op.transpose = transpose;
   return op;
+}
+
+// Unfolds patch rows [row, row + rows) of `in` into `dst` ([rows, kH * kW *
+// C]).
+absl::Status Unfold(rt::Stream* stream, const rt::Kernel& unfold,
+                    const ConvParams& p, const SteelConvParams& sp,
+                    const void* in, void* dst, int64_t row, int64_t rows) {
+  // 256 threads: the columns (at least 32 wide) times rows.
+  const int64_t cols = p.kh * p.kw * p.c;
+  uint32_t tx = 32;
+  while (tx < 256 && tx < cols) tx *= 2;
+  const rt::Dim3 threads{tx, 256 / tx, 1};
+  const UnfoldRows ur{static_cast<int32_t>(row), static_cast<int32_t>(rows)};
+  const rt::Dim3 groups{static_cast<uint32_t>(CeilDiv(cols, threads.x)),
+                        static_cast<uint32_t>(CeilDiv(rows, threads.y)), 1};
+  return stream->Launch(
+      unfold, groups, threads,
+      {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(dst),
+       rt::KernelArg::Bytes(&sp, sizeof(sp)),
+       rt::KernelArg::Bytes(&ur, sizeof(ur))});
 }
 
 // MLX explicit_gemm_conv_ND_gpu: per tile of unfold_rows output pixels,
@@ -256,22 +302,12 @@ absl::Status RunExplicit(rt::Device* device, rt::Stream* stream,
   const ConvKernelSource uk = UnfoldKernel(p.type);
   ABSL_ASSIGN_OR_RETURN(const rt::Kernel* unfold,
                         device->GetKernel(uk.msl, uk.function, uk.constants));
-  const uint32_t tx = p.c > 32 ? 64 : 32;
-  const rt::Dim3 threads{tx, 256 / tx, 1};
   ABSL_ASSIGN_OR_RETURN(blas::MpsOperand b,
                         Operand(device, weight, p.type, k, true));
   for (int64_t row = 0; row < m; row += plan.unfold_rows) {
     const int64_t rows = std::min(plan.unfold_rows, m - row);
-    const UnfoldRows ur{static_cast<int32_t>(row), static_cast<int32_t>(rows)};
-    const rt::Dim3 groups{static_cast<uint32_t>(CeilDiv(p.c, threads.x)),
-                          static_cast<uint32_t>(
-                              CeilDiv(p.kh * p.kw, threads.y)),
-                          static_cast<uint32_t>(rows)};
-    ABSL_RETURN_IF_ERROR(stream->Launch(
-        *unfold, groups, threads,
-        {rt::KernelArg::Buffer(in), rt::KernelArg::Buffer(workspace),
-         rt::KernelArg::Bytes(&sp, sizeof(sp)),
-         rt::KernelArg::Bytes(&ur, sizeof(ur))}));
+    ABSL_RETURN_IF_ERROR(
+        Unfold(stream, *unfold, p, sp, in, workspace, row, rows));
     blas::GemmParams g;
     g.m = rows;
     g.n = p.o;
@@ -286,6 +322,77 @@ absl::Status RunExplicit(rt::Device* device, rt::Stream* stream,
     ABSL_RETURN_IF_ERROR(blas::RunSteelGemm(device, stream, g));
   }
   return absl::OkStatus();
+}
+
+// The weight gradient (see conv.h): per chunk of unfold_rows patch rows, one
+// batched GEMM over its parts of split_rows rows (plus one for a shorter
+// last part) accumulating dY^T x patches into the f32 partials, which
+// sum_splits then adds into dW. With one part and one chunk the GEMM writes
+// dW itself.
+absl::Status RunWeightGrad(rt::Device* device, rt::Stream* stream,
+                           const ConvParams& p, const ConvPlan& plan,
+                           const void* in, const void* dy, void* dw,
+                           void* workspace) {
+  const int64_t m = OutPixels(p);
+  const int64_t k = p.kh * p.kw * p.c;
+  const int64_t item = ItemSize(p.type);
+  if (m == 0) return stream->Memset8(dw, 0, p.o * k * item);
+  const SteelConvParams sp = MakeSteelParams(p, p.c);
+  const ConvKernelSource uk = UnfoldKernel(p.type);
+  ABSL_ASSIGN_OR_RETURN(const rt::Kernel* unfold,
+                        device->GetKernel(uk.msl, uk.function, uk.constants));
+  char* patches = static_cast<char*>(workspace);
+  const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
+  void* partials =
+      direct ? dw : patches + plan.unfold_rows * k * item;
+  const blas::MpsDType partial_type =
+      direct ? GemmType(p.type) : blas::MpsDType::kF32;
+  for (int64_t row = 0; row < m; row += plan.unfold_rows) {
+    const int64_t rows = std::min(plan.unfold_rows, m - row);
+    ABSL_RETURN_IF_ERROR(
+        Unfold(stream, *unfold, p, sp, in, patches, row, rows));
+    // Parts [0, full) of split_rows rows, then the rest into part `full`,
+    // which the first chunk (as long as any later one) also wrote.
+    const int64_t full = rows / plan.split_rows;
+    const int64_t rest = rows % plan.split_rows;
+    for (int pass = 0; pass < 2; ++pass) {
+      const int64_t batch = pass == 0 ? full : 1;
+      const int64_t part = pass == 0 ? 0 : full;
+      const int64_t len = pass == 0 ? plan.split_rows : rest;
+      if (batch == 0 || len == 0) continue;
+      blas::GemmParams g;
+      g.m = p.o;
+      g.n = k;
+      g.k = len;
+      g.batch_count = batch;
+      g.beta = row == 0 ? 0.0 : 1.0;
+      const char* dy_rows = static_cast<const char*>(dy) +
+                            (row + part * plan.split_rows) * p.o * item;
+      ABSL_ASSIGN_OR_RETURN(g.a, Operand(device, dy_rows, p.type, p.o, true));
+      g.a.batch_stride = plan.split_rows * p.o;
+      ABSL_ASSIGN_OR_RETURN(
+          g.b, Operand(device, patches + part * plan.split_rows * k * item,
+                       p.type, k, false));
+      g.b.batch_stride = plan.split_rows * k;
+      ABSL_ASSIGN_OR_RETURN(
+          g.c, Operand(device,
+                       static_cast<char*>(partials) +
+                           part * p.o * k * (direct ? item : 4),
+                       p.type, k, false));
+      g.c.dtype = partial_type;
+      g.c.batch_stride = p.o * k;
+      ABSL_RETURN_IF_ERROR(blas::RunSteelGemm(device, stream, g));
+    }
+  }
+  if (direct) return absl::OkStatus();
+  const ConvKernelSource sk = SumSplitsKernel(p.type);
+  ABSL_ASSIGN_OR_RETURN(const rt::Kernel* sum,
+                        device->GetKernel(sk.msl, sk.function, sk.constants));
+  const SumSplits ss{static_cast<uint32_t>(p.o * k),
+                     static_cast<uint32_t>(plan.splits)};
+  return rt::LaunchKernel(stream, *sum, {partials, dw}, ss,
+                          {static_cast<uint32_t>(CeilDiv(p.o * k, 256)), 1, 1},
+                          {256, 1, 1});
 }
 
 }  // namespace
@@ -310,6 +417,8 @@ const char* ConvPathName(ConvPath path) {
       return "general";
     case ConvPath::kExplicit:
       return "explicit";
+    case ConvPath::kWeightGrad:
+      return "weight_grad";
   }
   return "?";
 }
@@ -320,7 +429,8 @@ uint64_t ConvFlops(const ConvParams& p) {
          static_cast<uint64_t>(p.c / std::max<int64_t>(p.groups, 1));
 }
 
-absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
+absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
+                                  uint64_t max_launch_flops) {
   for (int64_t v : {p.n, p.h, p.w, p.c, p.o, p.kh, p.kw, p.out_h, p.out_w}) {
     if (v < 0) {
       return absl::InvalidArgumentError(
@@ -337,10 +447,13 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
   if (p.pad_lo[0] < 0 || p.pad_lo[1] < 0) {
     return Unsupported(p, "negative low padding");
   }
-  if (p.c == 0 || p.kh == 0 || p.kw == 0) {
+  const bool wgrad = p.kind == ConvKind::kWeightGrad;
+  // (The weight gradient's contraction is N * oH * oW; RunConv zero-fills
+  // dW when that is empty.)
+  if (!wgrad && (p.c == 0 || p.kh == 0 || p.kw == 0)) {
     return Unsupported(p, "empty contraction");
   }
-  if (p.h == 0 || p.w == 0) return Unsupported(p, "empty input");
+  if (!wgrad && (p.h == 0 || p.w == 0)) return Unsupported(p, "empty input");
   // The kernels index within an operand in 32 bits (MLX convention); the
   // pad and dilation terms of the input positions too.
   const int64_t k = p.kh * p.kw * p.c;
@@ -351,6 +464,38 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
                     ((p.w - 1) * p.idil[1] + 1) + p.pad_lo[1] +
                         (p.kw - 1) * p.kdil[1] + p.stride[1] * p.out_w}) {
     if (v > kInt32Max) return Unsupported(p, "exceeds 32-bit indexing");
+  }
+  const uint64_t max_flops = std::max<uint64_t>(max_launch_flops, 1);
+  const int64_t item = ItemSize(p.type);
+
+  if (wgrad) {
+    if (force != nullptr && *force != ConvPath::kWeightGrad) {
+      return Unsupported(p, absl::StrCat("path ", ConvPathName(*force)));
+    }
+    ConvPlan plan;
+    plan.path = ConvPath::kWeightGrad;
+    if (m == 0 || p.o == 0 || k == 0) return plan;
+    // Chunks bounded in bytes and in flops (2 * O * K per row).
+    const uint64_t row_bytes = static_cast<uint64_t>(k * item);
+    const uint64_t row_flops = 2ull * static_cast<uint64_t>(p.o * k);
+    plan.unfold_rows = std::clamp<int64_t>(
+        std::min(kUnfoldMaxBytes / row_bytes, max_flops / row_flops), 1, m);
+    // Parts: enough threadgroups over the GEMM's (O x K) tiles (32 x 32 when
+    // few), each part at least kMinSplitRows long.
+    const int64_t tiles = CeilDiv(p.o, 32) * CeilDiv(k, 32);
+    plan.splits = std::clamp<int64_t>(
+        CeilDiv(kWgradTargetGroups, tiles), 1,
+        std::max<int64_t>(plan.unfold_rows / kMinSplitRows, 1));
+    plan.split_rows = CeilDiv(plan.unfold_rows, plan.splits);
+    plan.splits = CeilDiv(plan.unfold_rows, plan.split_rows);
+    const bool direct = plan.splits == 1 && plan.unfold_rows >= m;
+    plan.workspace_bytes =
+        plan.unfold_rows * row_bytes +
+        (direct ? 0 : static_cast<uint64_t>(plan.splits * p.o * k) * 4);
+    if (plan.splits * p.o * k > kInt32Max) {
+      return Unsupported(p, "exceeds 32-bit indexing");
+    }
+    return plan;
   }
 
   const bool idil1 = NoInputDilation(p);
@@ -368,6 +513,7 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
     path = *force;
     const bool ok = path == ConvPath::kImplicit      ? implicit_ok
                     : path == ConvPath::kPadChannels ? pad_ok
+                    : path == ConvPath::kWeightGrad  ? false
                                                      : true;
     if (!ok) {
       return Unsupported(p, absl::StrCat("path ", ConvPathName(path)));
@@ -384,7 +530,7 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
 
   ConvPlan plan;
   plan.path = path;
-  const int64_t item = ItemSize(p.type);
+  int64_t tile_rows = m;  // GEMM rows the row tiles cover
   switch (path) {
     case ConvPath::kPadChannels:
     case ConvPath::kImplicit: {
@@ -404,31 +550,57 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force) {
           std::lcm(p.idil[0], p.stride[0]) / p.stride[0];
       const int64_t phases_w =
           std::lcm(p.idil[1], p.stride[1]) / p.stride[1];
-      const int64_t adj_m =
+      tile_rows =
           p.n * CeilDiv(p.out_h, phases_h) * CeilDiv(p.out_w, phases_w);
-      plan.tile = GeneralTile(adj_m, p.o, p.c);
+      plan.tile = GeneralTile(tile_rows, p.o, p.c);
       plan.align_c = p.c % plan.tile.bk == 0;
       break;
     }
     case ConvPath::kExplicit: {
       const uint64_t row_bytes = static_cast<uint64_t>(k * item);
-      plan.unfold_rows = std::clamp<int64_t>(kUnfoldMaxBytes / row_bytes, 1,
-                                             std::max<int64_t>(m, 1));
+      const uint64_t row_flops = 2ull * static_cast<uint64_t>(p.o * k);
+      plan.unfold_rows = std::clamp<int64_t>(
+          std::min(kUnfoldMaxBytes / row_bytes, max_flops / row_flops), 1,
+          std::max<int64_t>(m, 1));
       plan.workspace_bytes = plan.unfold_rows * row_bytes;
       break;
     }
+    case ConvPath::kWeightGrad:
+      break;
+  }
+  if (path != ConvPath::kExplicit) {
+    // The kernels' first row of a tile, tile * BM, is a 32-bit int.
+    const int64_t tiles_m = CeilDiv(tile_rows, plan.tile.bm);
+    if (tiles_m * plan.tile.bm > kInt32Max) {
+      return Unsupported(p, "exceeds 32-bit indexing");
+    }
+    const uint64_t tile_flops =
+        (ConvFlops(p) + tiles_m - 1) / std::max<int64_t>(tiles_m, 1);
+    plan.tiles_m = tiles_m;
+    plan.launch_tiles_m = std::clamp<int64_t>(
+        max_flops / std::max<uint64_t>(tile_flops, 1), 1,
+        std::max<int64_t>(tiles_m, 1));
   }
   return plan;
 }
 
 absl::Status RunConv(rt::Device* device, rt::Stream* stream,
                      const ConvParams& p, const ConvPlan& plan,
-                     const void* in, const void* weight, void* out,
+                     const void* in, const void* b, void* out,
                      void* workspace) {
-  if (OutPixels(p) == 0 || p.o == 0) return absl::OkStatus();
   if (plan.workspace_bytes > 0 && workspace == nullptr) {
     return absl::InvalidArgumentError("RunConv: missing workspace");
   }
+  if ((plan.path == ConvPath::kWeightGrad) !=
+      (p.kind == ConvKind::kWeightGrad)) {
+    return absl::InvalidArgumentError("RunConv: plan of another kind");
+  }
+  if (p.kind == ConvKind::kWeightGrad) {
+    if (p.o == 0 || p.kh * p.kw * p.c == 0) return absl::OkStatus();
+    return RunWeightGrad(device, stream, p, plan, in, b, out, workspace);
+  }
+  const void* weight = b;
+  if (OutPixels(p) == 0 || p.o == 0) return absl::OkStatus();
   switch (plan.path) {
     case ConvPath::kImplicit:
       return RunImplicit(device, stream, p, plan, p.c, in, weight, out);
@@ -446,6 +618,8 @@ absl::Status RunConv(rt::Device* device, rt::Stream* stream,
       return RunGeneral(device, stream, p, plan, in, weight, out);
     case ConvPath::kExplicit:
       return RunExplicit(device, stream, p, plan, in, weight, out, workspace);
+    case ConvPath::kWeightGrad:
+      break;
   }
   return absl::InternalError("RunConv: unknown path");
 }
