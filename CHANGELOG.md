@@ -31,7 +31,9 @@ describe the present only. Commit hashes point at the change.
   test: `scan_test`, `radix_sort_test` (replaces `cub_sort_test`, which
   drove the handlers through XLA's FFI), `small_linalg_test` and the host
   `lapack_host_test`. `xla_free_test` keeps them XLA-free (88be444 to
-  3a80152).
+  3a80152). The Cholesky, triangular-solve and LU handlers now look up the
+  stream's Metal context before the empty-batch early return, so a call on
+  a non-Metal stream fails even with an empty batch (880c55b).
 - The hand-written MSL moved out of C++ string literals into `.metal` files
   under `metal_pjrt/kernels/` (f59719c), with a device test that compiles
   every kernel (318c2ba).

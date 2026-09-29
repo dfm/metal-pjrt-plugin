@@ -5,14 +5,19 @@ rt::Device alone, and lapack_host_test is a plain host test; a dependency
 on XLA (or, for lapack_host_test, on metal-cpp, the runtime or the Metal
 framework) creeping back in would undo that. Reads the genquery outputs
 named in argv: the new tests' transitive deps, lapack_host_test's deps, the
-rules among those that link Metal/QuartzCore, and (as a control that the
-label pattern still matches) the direct deps of //metal_pjrt/ffi:metal_ffi.
+rules among those that link Metal/QuartzCore, and the direct deps of
+//metal_pjrt/ffi:metal_ffi. Controls keep a label-format change from
+silencing a check: the XLA pattern must match among metal_ffi's direct
+deps, and both Metal patterns (metal-cpp, the runtime/kernels packages) among
+the device dispatch tests' deps (reached through metal_runtime).
 """
 import re
 import sys
 
 XLA = re.compile(r"^@@?xla[+/]")  # @xla//..., @@xla+//..., @@xla++ext+repo//...
-NO_METAL = re.compile(r"^(@@?metal_cpp[+/]|//metal_pjrt/(runtime|kernels)[:/])")
+# @metal_cpp//..., canonical @@+_repo_rules+metal_cpp//...
+METAL_CPP = re.compile(r"(^|[+@])metal_cpp//")
+METAL_PKGS = re.compile(r"^//metal_pjrt/(runtime|kernels)[:/]")
 
 
 def labels(path):
@@ -27,10 +32,15 @@ def main(dispatch_deps, lapack_host_deps, lapack_host_metal_linkopts,
     if not control:
         failures.append("control: no XLA label among metal_ffi's direct deps; "
                         "did the label format change?")
+    for name, pattern in (("metal-cpp", METAL_CPP), ("runtime/kernels", METAL_PKGS)):
+        if not any(pattern.search(l) for l in labels(dispatch_deps)):
+            failures.append(f"control: no {name} label among the dispatch "
+                            "tests' deps; did the label format change?")
     xla = [l for l in labels(dispatch_deps) if XLA.match(l)]
     if xla:
         failures.append(f"XLA in the dispatch tests' deps: {xla[:10]}")
-    metal = [l for l in labels(lapack_host_deps) if NO_METAL.match(l)]
+    metal = [l for l in labels(lapack_host_deps)
+             if METAL_CPP.search(l) or METAL_PKGS.match(l)]
     if metal:
         failures.append(f"Metal in lapack_host_test's deps: {metal[:10]}")
     linkopts = labels(lapack_host_metal_linkopts)

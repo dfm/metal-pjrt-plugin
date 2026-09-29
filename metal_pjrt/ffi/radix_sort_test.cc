@@ -208,8 +208,9 @@ class RadixSortTest : public ::testing::Test {
 };
 
 // Rows around the one-threadgroup limit (2048) and the tile boundaries, one
-// and several rows on both paths (cub_sort_test's shapes, plus 0, 20000 and
-// 3 rows of each length).
+// and several rows on both paths (the shapes of the retired cub_sort_test,
+// which drove the handlers through XLA's FFI, plus 0, 20000 and 3 rows of
+// each length).
 TEST_F(RadixSortTest, Sweep) {
   std::vector<std::pair<int64_t, int64_t>> shapes = {
       {1, 17}, {5, 100}, {2, 2049}, {1, 4095}, {2, 4096}};
