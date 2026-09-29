@@ -69,6 +69,13 @@ mlx-lm 42.1; int8 21.0 vs 22.9 (3 interleaved rounds); int4 12.1-13.6
 (single runs) vs 13.2. Prefill of 128 tokens: bf16 134 vs 160 ms, int4 171
 vs 201; short quantized prompts are 2.3x slower than mlx-lm's (below).
 
+Long contexts (Qwen3-0.6B, max_len 4096, single runs): decode after a
+1024-token prompt, int4, 6.4 ms/token (mlx-lm 6.0); after 3072 tokens
+10.1 (8.6). Prefill of a 3072-token prompt: bf16 1.89 s (mlx-lm 1.87),
+int4 1.96 s (2.31). Attention reads a window of the cache a little
+larger than the context (up to 1/8 more), where mlx-lm's cache is
+exactly the context.
+
 Quality, on the first 512 tokens of `docs/design.md` (as of f4e2691)
 against float32 on CPU (`check.py --text-file`; mlx-lm via
 `mlx_baseline.py --kl-ref`):
@@ -104,9 +111,12 @@ Known gaps:
   the GEMM (`ROWS_MAX` in `qwen3.py`): int4 does 234 tokens/s at B = 2.
 - One prompt at a time: no continuous batching, no paged cache, no
   prompt caching across calls. The KV cache is allocated at `--max-len`
-  up front (attention reads only a power-of-two window of it).
-- Compile time is ~1 s per shape; each prompt-length bucket (powers of
-  two from 16) and each attention window compiles once per process.
+  up front (attention reads only a window of it).
+- Compile time is ~1-2 s per shape; each prompt-length bucket (powers of
+  two from 16, prompts over 512 tokens in 512-token chunks) and each
+  attention window (4 per doubling of the context) compiles once per
+  process, so a long generation pauses briefly when it crosses into a
+  new window unless `Engine.warmup` compiled it first (the CLI does).
 
 ## What made it fast
 
@@ -150,10 +160,12 @@ Decode time per token, bf16 unless noted, M3 (10-core GPU, 8 GB):
    small products read slower than large ones, so q/k/v and gate/up are
    concatenated into one product each.
 5. **Attend over a window, not the whole cache.** Decode compiles one
-   step per power-of-two window (256, 512, ... max_len) and reads only
-   that much of the cache; written as multiply-reduce (not einsum), the
-   reductions read the window in place. max_len 4096 then costs the same
-   as 256.
+   step per window size (256, 512, 768, 1024, 1280, ... max_len: an
+   eighth of a power of two apart) and reads only that much of the cache;
+   written as multiply-reduce (not einsum), the reductions read the
+   window in place. max_len 4096 then costs the same as 256 for a short
+   context. Long prompts are prefilled in 512-token chunks, which keeps
+   the attention scores small (one 4096-token chunk: 1 GB per layer).
 6. **Put the reduced axis last.** Keys are cached `[.., pos, dim]` and
    values `[.., dim, pos]`: both attention reductions then run along the
    minor axis. With values stored like keys, XLA transposed every layer's
