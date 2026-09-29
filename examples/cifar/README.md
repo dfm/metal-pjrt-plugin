@@ -41,30 +41,31 @@ standard deviations (ddof=1).
 ## Results
 
 Measured 2026-09-29 on an M3 MacBook (10-core GPU, 8 GB), macOS 26.2,
-JAX 0.11.2 with optax, against PyTorch 2.14.0 on MPS running the same
-algorithm (`torch_baseline.py`, float16, as airbench runs).
+JAX 0.11.2 with optax, with the plugin's faster conv weight gradients
+(f0aca7b, prompted by this example), against PyTorch 2.14.0 on MPS
+running the same algorithm (`torch_baseline.py`, float16, as airbench
+runs), in the same quiet window (no other GPU jobs or builds). Spreads
+are sample standard deviations.
 
 | | JAX (mtl), bf16 | PyTorch MPS, fp16 |
 |---|---|---|
-| test accuracy | 94.01% (1 run) | 93.93% ± 0.10% (5 seeds; 1 of 5 reached 94%) |
-| time to train (airbench's measure) | 289 s, including ~30 s of recompilation (see below) | 251 ± 19 s (225 s in an earlier single run) |
-| train step at batch 1024 | 545 ms steady state (509 without rematerialization); x 476 steps = 259 s | 527 ms (train time / 476 steps) |
-| compile / warmup (1 epoch incl. compiling everything) | 36 s | 27-38 s (no compile; MPS graph setup) |
-| peak memory footprint | 2.7-3.4 GB | 3.9-5.9 GB |
+| test accuracy | 94.03%, 93.93% (2 seeds) | 93.93% ± 0.11% (5 seeds; 1 reached 94%) |
+| time to train (airbench's measure) | 229 s, 259 s (mean 244 s) | 254 ± 20 s |
+| warmup (first epoch, compiling every program) | 30 s | 28 s (no compile; MPS graph setup) |
+| peak memory footprint | 3.3 GB | 5.9 GB |
 
-The JAX time above is flawed: that version compiled a separate train step
-for the warmup (its schedule baked in 48 total steps) and another for the
-timed run, so the timed run included ~30 s of compilation (and it synced
-once per epoch to log the loss). Fixed since: every run shares one jitted
-step and the warmup uses the full run's schedule, and `airbench.py`
-asserts that nothing recompiles during a timed run. Re-timing, and the
-5-seed JAX measurement, wait for a window with enough free memory (next
-paragraph); the steady-state step time implies ~260 s. The planned 5-seed JAX
-measurement did not complete: the plugin's memory guard refused the
-training step on 13 attempts over two hours, whenever the machine
-(with other applications open) had less than ~1.4 GB free; see "What it
-found in the plugin". PyTorch, which has no such guard, completed its 5
-seeds in the same conditions by going into swap.
+JAX and PyTorch train at about the same speed and reach the same
+accuracy; JAX uses 45% less memory. Of the 5 JAX seeds, 3 did not run:
+the plugin's memory guard refused the train step's 0.9 GB of scratch on
+all 9 attempts for seeds 2-4 (1.1-1.4 GB of system memory free, other
+applications open), and seed 1's process was refused starting its second
+run. PyTorch, which has no such guard, completed its 5 seeds in the same
+window by going into swap. See "What it found in the plugin".
+
+Before the plugin's weight-gradient change, the conv weight gradients
+took 2.5-5x the forward time and the step 545 ms (about 259 s per run);
+per layer at batch 1024 (bf16) they went from 54, 28, 53, 39 and 7 ms to
+18, 10, 26, 23 and 4.5 ms.
 
 For scale, airbench94 takes about 3.8 s on an A100; the M3 is ~76x slower
 here, a ~3.5 TFLOPS GPU against a 312 TFLOPS (fp16 tensor core) one plus
@@ -127,15 +128,18 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
   weight gradients (2e-4, 1e-3; CPU float32 itself is 1.3e-4 and 5.3e-4
   from float64 there) (`check.py`); in
   bfloat16 they are as far from float32 as CPU bfloat16 is.
-- **Conv weight gradients are the bottleneck of CNN training.** Per layer
-  at batch 1024 (bf16), the forward and input-gradient convolutions run
-  near PyTorch MPS's speed, but the weight gradient takes 2.5-5x the
-  forward time (31x31, 24 -> 64 channels: 54 ms, where PyTorch's whole
-  backward is 25 ms). It is a reduction over batch x pixels (~1M) into a
-  small output. Reported with a standalone benchmark.
+- **Conv weight gradients were the bottleneck of CNN training.** Per
+  layer at batch 1024 (bf16), the forward and input-gradient
+  convolutions ran near PyTorch MPS's speed, but the weight gradient took
+  2.5-5x the forward time (31x31, 24 -> 64 channels: 54 ms, where
+  PyTorch's whole backward is 25 ms): a reduction over batch x pixels
+  (~1M) into a small output. Reported with a standalone benchmark, the
+  plugin now sizes the GEMM tile and split-K together (f0aca7b): 18 ms
+  for that layer, and end to end JAX went from ~259 s to 229-259 s.
 - **The memory guard decides whether training runs at all** on a busy
   8 GB machine. It refused the step (0.9 GB of scratch) whenever less than
-  ~1.4 GB was free, which on this machine was most of the time; PyTorch
+  ~1.4 GB was free, which on this machine was most of the time (25 of 28
+  attempts across the measurements); PyTorch
   MPS, which has no such guard, ran with a 4-6 GB footprint and pushed the
   machine into swap instead. The trade-off (refuse vs swap under GPU load)
   is an open decision for the plugin; the numbers are recorded there.
