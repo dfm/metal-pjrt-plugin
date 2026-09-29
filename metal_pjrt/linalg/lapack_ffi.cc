@@ -7,7 +7,8 @@
 // visible), then runs LAPACK directly on the shared-storage buffers (a device
 // pointer is the MTLBuffer's contents() address, so there is no copy) and
 // returns. Later stream work is encoded after the handler returns, so it sees
-// the results.
+// the results. Cholesky, triangular solve and getrf of matrices of up to 32
+// rows/cols run on the GPU instead, with no synchronization (small_linalg.h).
 //
 // Two families of targets:
 //
@@ -45,7 +46,6 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <initializer_list>
 #include <limits>
 #include <vector>
 
@@ -55,7 +55,7 @@
 #include "absl/types/span.h"
 #include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/ffi/metal_ffi.h"
-#include "metal_pjrt/kernels/small_linalg.metal.h"
+#include "metal_pjrt/linalg/small_linalg.h"
 #include "xla/backends/gpu/ffi.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
@@ -174,59 +174,6 @@ absl::StatusOr<int> Workspace(const char* name, float query, int64_t minimum) {
 }
 
 //===--------------------------------------------------------------------===//
-// Small matrices on the GPU.
-//
-// Each host handler synchronizes the stream, which costs a full GPU round
-// trip (and splits the command buffer) per call. Programs that solve many
-// tiny systems inside loops (a batched 4x4 solve per level of an associative
-// scan, say) paid three round trips per solve. Matrices of up to
-// kSmallMatrixMax rows/cols are therefore factorized or solved by one GPU
-// thread per matrix (per right-hand-side column for triangular solves),
-// enqueued on the stream like any kernel, with no synchronization
-// (kernels/small_linalg.metal).
-//===--------------------------------------------------------------------===//
-
-constexpr int64_t kSmallMatrixMax = 32;
-
-// SmallParams::flags bits.
-constexpr uint32_t kFlagLower = 1;
-constexpr uint32_t kFlagLeft = 2;
-constexpr uint32_t kFlagTrans = 4;
-constexpr uint32_t kFlagUnit = 8;
-
-struct SmallParams {
-  uint32_t batch;
-  uint32_t m;      // rows of the matrix being factorized / of B
-  uint32_t n;      // cols of the matrix being factorized / of B
-  uint32_t k;      // order of the triangular matrix
-  uint32_t flags;
-};
-
-// The small kernels compute offsets (b * n * n, gid) in 32-bit uint: at 2^32
-// elements or threads they would wrap and silently alias other batch
-// elements, so such calls take the host path instead.
-bool FitsSmallKernel(std::initializer_list<uint64_t> counts) {
-  for (uint64_t c : counts) {
-    if (c > 0xffffffffu) return false;
-  }
-  return true;
-}
-
-absl::Status LaunchSmall(stream_executor::Stream* stream, const char* function,
-                         const std::vector<const void*>& buffers,
-                         const SmallParams& params, uint64_t threads) {
-  // An empty batch has nothing to do and may have null buffers to bind.
-  // (XLA folds zero-element ops away before this, so it is a backstop.)
-  if (threads == 0) return absl::OkStatus();
-  const uint32_t group = 64;
-  const uint32_t groups =
-      static_cast<uint32_t>((threads + group - 1) / group);
-  return ffi::LaunchMsl(stream, kernels::kSmallLinalgMsl, function, buffers,
-                        params, rt::Dim3{std::max(groups, 1u), 1, 1},
-                        rt::Dim3{group, 1, 1});
-}
-
-//===--------------------------------------------------------------------===//
 // HLO-level ops (row-major).
 //===--------------------------------------------------------------------===//
 
@@ -239,14 +186,15 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$cholesky: matrix must be square");
   }
-  if (d->rows <= kSmallMatrixMax && d->rows > 0 &&
-      FitsSmallKernel({static_cast<uint64_t>(d->batch * d->rows * d->cols)})) {
-    SmallParams p{static_cast<uint32_t>(d->batch), 0,
-                  static_cast<uint32_t>(d->rows), 0, lower ? kFlagLower : 0u};
-    return LaunchSmall(stream, "small_cholesky",
-                       {a.untyped_data(), out->untyped_data()}, p, d->batch);
+  absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
+  if (!ctx.ok()) return ctx.status();
+  if (UseSmallCholesky(d->batch, d->rows)) {
+    return RunSmallCholesky(ctx->device, ctx->stream,
+                            static_cast<const float*>(a.untyped_data()),
+                            static_cast<float*>(out->untyped_data()),
+                            d->batch, d->rows, lower);
   }
-  if (absl::Status s = SyncStream(stream); !s.ok()) return s;
+  if (absl::Status s = ctx->stream->Synchronize(); !s.ok()) return s;
   const int n = static_cast<int>(d->rows);
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
@@ -296,22 +244,17 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
   // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
   // 3 = ADJOINT (the same as TRANSPOSE for real types).
   const bool trans = transpose_a == 2 || transpose_a == 3;
-  const uint64_t lines = left_side ? db->cols : db->rows;
-  if (k <= kSmallMatrixMax && k > 0 && db->rows > 0 && db->cols > 0 &&
-      FitsSmallKernel({static_cast<uint64_t>(da->batch * k * k),
-                       static_cast<uint64_t>(db->batch * db->rows * db->cols),
-                       static_cast<uint64_t>(db->batch) * lines})) {
-    SmallParams p{static_cast<uint32_t>(db->batch),
-                  static_cast<uint32_t>(db->rows),
-                  static_cast<uint32_t>(db->cols), static_cast<uint32_t>(k),
-                  (lower ? kFlagLower : 0u) | (left_side ? kFlagLeft : 0u) |
-                      (trans ? kFlagTrans : 0u) |
-                      (unit_diagonal ? kFlagUnit : 0u)};
-    return LaunchSmall(stream, "small_trsm",
-                       {a.untyped_data(), b.untyped_data(), out->untyped_data()},
-                       p, db->batch * lines);
+  absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
+  if (!ctx.ok()) return ctx.status();
+  if (UseSmallTrsm(db->batch, db->rows, db->cols, left_side)) {
+    return RunSmallTrsm(ctx->device, ctx->stream,
+                        static_cast<const float*>(a.untyped_data()),
+                        static_cast<const float*>(b.untyped_data()),
+                        static_cast<float*>(out->untyped_data()), db->batch,
+                        db->rows, db->cols, left_side, lower, trans,
+                        unit_diagonal);
   }
-  if (absl::Status s = SyncStream(stream); !s.ok()) return s;
+  if (absl::Status s = ctx->stream->Synchronize(); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, b.untyped_data(), b.size_bytes());
   const int m = static_cast<int>(db->rows);
@@ -345,19 +288,17 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   }
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
-  if (d->rows <= kSmallMatrixMax &&
-      d->cols <= kSmallMatrixMax && d->rows > 0 && d->cols > 0 &&
-      FitsSmallKernel({static_cast<uint64_t>(d->batch * d->rows * d->cols)})) {
-    SmallParams p{static_cast<uint32_t>(d->batch),
-                  static_cast<uint32_t>(d->rows),
-                  static_cast<uint32_t>(d->cols),
-                  static_cast<uint32_t>(std::min(d->rows, d->cols)), 0};
-    return LaunchSmall(stream, "small_getrf",
-                       {a.untyped_data(), lu->untyped_data(),
-                        pivots->untyped_data(), permutation->untyped_data()},
-                       p, d->batch);
+  absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
+  if (!ctx.ok()) return ctx.status();
+  if (UseSmallGetrf(d->batch, d->rows, d->cols)) {
+    return RunSmallGetrf(ctx->device, ctx->stream,
+                         static_cast<const float*>(a.untyped_data()),
+                         static_cast<float*>(lu->untyped_data()),
+                         static_cast<int32_t*>(pivots->untyped_data()),
+                         static_cast<int32_t*>(permutation->untyped_data()),
+                         d->batch, d->rows, d->cols);
   }
-  if (absl::Status s = SyncStream(stream); !s.ok()) return s;
+  if (absl::Status s = ctx->stream->Synchronize(); !s.ok()) return s;
   float* x = static_cast<float*>(lu->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
   const int m = static_cast<int>(d->rows);

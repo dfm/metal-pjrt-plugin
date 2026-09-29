@@ -23,6 +23,7 @@ test_suite(
         "//metal_pjrt/ffi:radix_sort_test",
         "//metal_pjrt/ffi:scan_test",
         "//metal_pjrt/kernels:kernels_test",
+        "//metal_pjrt/linalg:small_linalg_test",
         "//metal_pjrt/runtime:metal_runtime_test",
         "//metal_pjrt/stream_executor:metal_executor_test",
     ],

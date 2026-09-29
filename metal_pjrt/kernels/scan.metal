@@ -1,4 +1,4 @@
-// Inclusive scan over rows (metal$scan, ffi/scan_ffi.cc). One threadgroup per
+// Inclusive scan over rows (metal$scan, ffi/scan.cc). One threadgroup per
 // row; 4 elements per thread per chunk, simdgroup shuffles, a threadgroup
 // pass over the simdgroup totals and a carry between chunks. f16/bf16
 // accumulate in f32; s32 add/mul wrap. Params must match the C++ struct

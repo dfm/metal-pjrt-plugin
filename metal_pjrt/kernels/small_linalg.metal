@@ -1,6 +1,6 @@
 // Small (n <= 32) dense linear algebra on the GPU, one thread per matrix (per
-// right-hand-side line for triangular solves); see linalg/lapack_ffi.cc.
-// SmallParams must match the C++ struct of the same name there.
+// right-hand-side line for triangular solves); see linalg/small_linalg.h.
+// SmallParams must match the C++ struct of the same name in small_linalg.cc.
 #include <metal_stdlib>
 using namespace metal;
 struct SmallParams { uint batch; uint m; uint n; uint k; uint flags; };

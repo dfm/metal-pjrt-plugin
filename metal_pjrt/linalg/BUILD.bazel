@@ -1,4 +1,39 @@
+load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
+
 package(default_visibility = ["//visibility:public"])
+
+# Cholesky, triangular solve and LU of matrices of up to 32 rows/cols on the
+# GPU, one thread per matrix. No XLA.
+cc_library(
+    name = "small_linalg",
+    srcs = ["small_linalg.cc"],
+    hdrs = ["small_linalg.h"],
+    deps = [
+        "//metal_pjrt/kernels:small_linalg",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+# The small kernels against double references, on rt::Device alone. Needs a
+# Metal device.
+cc_test(
+    name = "small_linalg_test",
+    srcs = ["small_linalg_test.cc"],
+    tags = DEVICE_TEST_TAGS,
+    timeout = "eternal",
+    deps = [
+        ":small_linalg",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_matchers",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
 
 # Dense linear algebra via Apple Accelerate (LAPACK/BLAS on the CPU, zero
 # copy on unified memory): FFI handlers plus the HLO pass that targets them.
@@ -8,9 +43,9 @@ cc_library(
     srcs = ["lapack_ffi.cc"],
     linkopts = ["-framework Accelerate"],
     deps = [
+        ":small_linalg",
         "//metal_pjrt/compiler:report_bug",
         "//metal_pjrt/ffi:metal_ffi",
-        "//metal_pjrt/kernels:small_linalg",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",

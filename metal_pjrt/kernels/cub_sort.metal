@@ -1,6 +1,7 @@
 // LSD radix sort for XLA's cub_sort_keys / cub_sort_pairs targets; see
-// ffi/cub_sort_ffi.cc for the algorithm, the key orders and the scratch
-// layout. Params must match the C++ struct of the same name there.
+// ffi/radix_sort.h for the algorithm, the key orders and the scratch
+// layout. Params must match the C++ struct of the same name in
+// ffi/radix_sort.cc.
 //
 // Kernels are templates over the key bits' storage type K (uchar, ushort,
 // uint, ulong) and the value type V (the same four; raw bits), instantiated
@@ -9,7 +10,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Indices match cub_sort_ffi.cc's SortConstants.
+// Indices match GetRadixSortKernels (ffi/radix_sort.cc).
 constant int KIND [[function_constant(0)]];  // 0 unsigned, 1 signed, 2 float
 constant bool HAS_VALUES [[function_constant(1)]];
 

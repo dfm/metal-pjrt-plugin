@@ -17,7 +17,6 @@ cc_library(
     deps = [
         ":radix_sort",
         ":scan",
-        "//metal_pjrt/runtime:kernel_launch",
         "//metal_pjrt/runtime:metal_runtime",
         "//metal_pjrt/stream_executor:metal_executor",
         "//metal_pjrt/stream_executor:metal_platform_id",

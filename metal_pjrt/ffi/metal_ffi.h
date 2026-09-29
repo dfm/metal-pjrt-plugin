@@ -23,13 +23,7 @@
 #ifndef METAL_PJRT_FFI_METAL_FFI_H_
 #define METAL_PJRT_FFI_METAL_FFI_H_
 
-#include <cstdint>
-#include <string>
-#include <vector>
-
-#include "absl/status/status.h"
 #include "absl/status/statusor.h"
-#include "metal_pjrt/runtime/kernel_launch.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "xla/stream_executor/stream.h"
 
@@ -56,28 +50,6 @@ absl::StatusOr<MetalContext> GetMetalContext(stream_executor::Stream* stream);
 // The runtime device of Metal executor 0 (the only one). For the FFI
 // instantiate stage, which runs without a stream.
 absl::StatusOr<rt::Device*> DefaultMetalDevice();
-
-// Buffers + params launch of a compiled kernel (runtime/kernel_launch.h).
-using rt::LaunchKernel;
-
-// LaunchKernel of `function` from `msl_source`, compiled for the stream's
-// device (cached there).
-template <typename Params>
-absl::Status LaunchMsl(stream_executor::Stream* stream,
-                       const std::string& msl_source,
-                       const std::string& function,
-                       const std::vector<const void*>& buffers,
-                       const Params& params, rt::Dim3 threadgroups,
-                       rt::Dim3 threads,
-                       uint32_t threadgroup_memory_bytes = 0) {
-  absl::StatusOr<MetalContext> ctx = GetMetalContext(stream);
-  if (!ctx.ok()) return ctx.status();
-  absl::StatusOr<const rt::Kernel*> kernel =
-      ctx->device->GetKernel(msl_source, function);
-  if (!kernel.ok()) return kernel.status();
-  return LaunchKernel(ctx->stream, **kernel, buffers, params, threadgroups,
-                      threads, threadgroup_memory_bytes);
-}
 
 }  // namespace ffi
 }  // namespace metal_pjrt
