@@ -1,3 +1,6 @@
+# Derived from airbench94 (https://github.com/KellerJordan/cifar10-airbench):
+# Copyright (c) 2024 Keller Jordan. MIT License; the full notice is in
+# LICENSE-airbench in this directory.
 """The same airbench94 run in PyTorch on MPS, for comparison with airbench.py.
 
 Needs PyTorch, which is not a dependency of this repo; run it from its own

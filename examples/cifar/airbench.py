@@ -1,3 +1,6 @@
+# Derived from airbench94 (https://github.com/KellerJordan/cifar10-airbench):
+# Copyright (c) 2024 Keller Jordan. MIT License; the full notice is in
+# LICENSE-airbench in this directory.
 """CIFAR-10 to 94% in pure JAX: a port of Keller Jordan's airbench94.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/airbench.py --runs 5

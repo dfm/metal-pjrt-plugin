@@ -7,8 +7,14 @@ y + scale * (x A) B with A [in, r] ~ U(-1/sqrt(in), 1/sqrt(in)) and B [r, out]
 = 0 in float32, on every linear projection (q, k, v, o, gate, up, down) of
 the last `num_layers` layers. The data pipeline reproduces mlx_lm.lora's
 batches too (`batches`), including its data order and loss mask.
+
+The adapter initialization and scaling, the batching and the loss mask
+follow mlx-lm (https://github.com/ml-explore/mlx-lm, Copyright (c) 2023
+Apple Inc., MIT License), reimplemented here in JAX.
 """
 import dataclasses, json, math, os, sys
+
+WIKISQL_REVISION = "886acf6d49be0dc2ee58fc3eb768d2dee1476da2"   # the one tested
 
 import jax
 import jax.numpy as jnp
@@ -37,7 +43,8 @@ def wikisql(split):
     the table, columns and question, and the SQL query that answers it."""
     import pyarrow.parquet as pq
     from huggingface_hub import snapshot_download
-    path = snapshot_download("mlx-community/WikiSQL", repo_type="dataset")
+    path = snapshot_download("mlx-community/WikiSQL", repo_type="dataset",
+                             revision=WIKISQL_REVISION)
     rows = pq.read_table(os.path.join(path, "data", f"{split}-00000-of-00001.parquet"))
     out = []
     for text in rows.column("text").to_pylist():

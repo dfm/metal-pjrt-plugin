@@ -48,10 +48,21 @@ class Config:
         return cls(**{k.name: d[k.name] for k in dataclasses.fields(cls)})
 
 
-def model_dir(repo="Qwen/Qwen3-0.6B"):
-    """Local snapshot of `repo` in the Hugging Face cache (downloaded once)."""
+# The Hub revisions these examples were tested with. Other repos (any dense
+# Qwen3) download their latest revision.
+REVISIONS = {
+    "Qwen/Qwen3-0.6B": "c1899de289a04d12100db370d81485cdf75e47ca",
+    "Qwen/Qwen3-1.7B": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "Qwen/Qwen3-4B": "1cfa9a7208912126459214e8b04321603b3df60c",
+}
+
+
+def model_dir(repo="Qwen/Qwen3-0.6B", revision=None):
+    """Local snapshot of `repo` in the Hugging Face cache (downloaded once),
+    at `revision` or else the tested one in REVISIONS."""
     from huggingface_hub import snapshot_download
-    return snapshot_download(repo, allow_patterns=["*.json", "*.safetensors"])
+    return snapshot_download(repo, revision=revision or REVISIONS.get(repo),
+                             allow_patterns=["*.json", "*.safetensors"])
 
 
 # --- Weights ---------------------------------------------------------------
@@ -164,8 +175,9 @@ def quantize_int4(w, group=GROUP):
     w = np.asarray(w, np.float32)
     w = w.reshape(w.shape[0], -1, group)
     lo, hi = w.min(axis=-1, keepdims=True), w.max(axis=-1, keepdims=True)
-    # The grid is ported from MLX's affine_quantize (mlx/ops.cpp, MIT,
-    # Apple): anchor it at the group's largest-magnitude
+    # The grid is ported from MLX's affine_quantize (mlx/ops.cpp;
+    # https://github.com/ml-explore/mlx, Copyright (c) 2023 Apple Inc., MIT
+    # License): anchor it at the group's largest-magnitude
     # weight (the offset b) and stretch the step so that zero also falls on
     # the grid. A plain min..max grid has the same RMS error but loses more
     # accuracy (on 512 tokens: KL 0.33 against float32, where this gives
