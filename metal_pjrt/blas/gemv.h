@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/matmul.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // Small-M half-precision GEMM ("wide gemv", after MLX's gemv_wide; see
 // kernels/gemv.metal): D = x W^T for 2..8 vectors x and K >= 512, streaming
 // the matrix W once per <= 5 vectors instead of through steel's (mostly

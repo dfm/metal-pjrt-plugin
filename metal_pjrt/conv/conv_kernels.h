@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/conv.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // The convolution kernels (kernels/steel_conv.metal, kernels/conv_misc.metal)
 // as the host sees them: the parameter structs they take, the MSL source and
 // function name of each variant, and the tile rules that pick one. No XLA;

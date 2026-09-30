@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/fft.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // 1-D FFTs on the GPU with MLX's kernels (kernels/fft.metal, plan in
 // fft_plan.h), no XLA, so fft_test runs them against rt::Device alone.
 //

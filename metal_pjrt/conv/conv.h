@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/conv.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // 2-D convolutions on the GPU with MLX's steel kernels (conv_kernels.h), no
 // XLA, so conv_test runs them against rt::Device alone.
 //

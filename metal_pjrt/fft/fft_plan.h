@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/fft.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // The host side of the FFTs (fft.h), no Metal and no XLA: MLX's plan
 // (mlx/backend/metal/fft.cpp, MLX 0.32.2; line numbers below refer to that
 // file), the launch geometry, the Rader and Bluestein constants (computed in

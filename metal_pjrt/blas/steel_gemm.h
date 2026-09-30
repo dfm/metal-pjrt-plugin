@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/matmul.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+//
 // Native half-precision GEMM ("steel", after the MLX kernels it is ported
 // from; see kernels/steel_gemm.metal): bf16/f16 with simdgroup-matrix MSL
 // kernels that accumulate in f32 (MPSMatrixMultiplication has no bf16).

@@ -1,3 +1,7 @@
+// Parts of this file are ported from MLX (mlx/backend/metal/conv.cpp, MLX
+// 0.32.2), Copyright (c) 2023 Apple Inc., MIT License: see
+// THIRD_PARTY_NOTICES.
+
 #include "metal_pjrt/conv/conv.h"
 
 #include <algorithm>
