@@ -26,6 +26,10 @@ export JAX_PLATFORMS=mtl,cpu
 # at a matched thermal state (fanless Macs throttle after ~3 min): an untimed
 # full-length run first; the same flag exists in torch_baseline.py
 .venv/bin/python examples/cifar/airbench.py --runs 5 --warm-full
+# the comparison protocol: an untimed warm-up run, then JAX and PyTorch
+# alternating, 5 runs each, optionally with a GPU power/P-state sampler
+.venv/bin/python examples/cifar/compare.py --torch-python ~/.venvs/torch/bin/python \
+    --wrap "scripts/device_lock.py --" [--sampler PATH]
 # per-epoch time, footprint, macOS memory pressure and the plugin's cache counters
 .venv/bin/python examples/cifar/airbench.py --runs 5 --profile-memory
 # PyTorch on MPS, in its own environment (not a dependency of this repo)
