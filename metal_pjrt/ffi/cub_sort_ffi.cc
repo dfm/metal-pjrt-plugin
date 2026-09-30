@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // "xla.gpu.ext.cub_sort_keys" / "xla.gpu.ext.cub_sort_pairs": XLA's
 // SortRewriter targets (CUB DeviceRadixSort on CUDA), as an MSL LSD radix
 // sort (radix_sort.h). Mirrors xla/stream_executor/cuda/cub_sort_kernel_cuda.cc:

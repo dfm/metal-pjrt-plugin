@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Memory policy (runtime Device::Allocate behind XLA's platform allocator):
 a workload that outgrows the budget gets RESOURCE_EXHAUSTED and the process
 keeps working; memory goes back to the system after a computation; a

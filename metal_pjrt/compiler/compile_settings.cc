@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #include "metal_pjrt/compiler/compile_settings.h"
 
 #include <cstdlib>

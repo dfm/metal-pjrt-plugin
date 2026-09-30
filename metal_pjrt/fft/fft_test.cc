@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // RunFft (fft.h) against a double reference on rt::Device alone (no XLA):
 // every plan path (Stockham, Rader, fused Bluestein, four-step, multi-upload
 // Bluestein, length 1) in all four transform types (fft, ifft, rfft, irfft

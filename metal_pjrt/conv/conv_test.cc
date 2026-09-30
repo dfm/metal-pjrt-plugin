@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // RunConv (conv.h) against a double reference on rt::Device alone (no XLA):
 // for every case, every path PlanConv accepts (the one it picks, and each
 // forced one), in f32, f16 and bf16. Cases: the cnn bench's layers and its

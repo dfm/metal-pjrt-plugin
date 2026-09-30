@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Settings shared by tests that need a Metal device.
 
 Device tests are listed in //metal_pjrt:device_tests; run them with

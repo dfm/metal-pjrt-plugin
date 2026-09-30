@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MSL source for the FFTs (fft/fft.h): MLX's Stockham, Rader, Bluestein and
 // four-step FFT kernels (mlx/backend/metal/kernels/{fft.h,fft/radix.h,
 // fft/readwrite.h}, MLX 0.32.2), which are:

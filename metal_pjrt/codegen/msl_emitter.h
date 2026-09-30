@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MLIR (post-XLA-lowering, pre-SCFToControlFlow) -> Metal Shading Language.
 //
 // The input module is what XLA's MLIR kernel emitter produces after

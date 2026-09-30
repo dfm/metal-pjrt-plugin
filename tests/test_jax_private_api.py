@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Tripwires for the private JAX APIs the plugin calls or replaces
 (metal_pjrt_plugin). The pinned jax version is checked at import
 (test_packaging.py); these fail when a JAX upgrade changes a signature or

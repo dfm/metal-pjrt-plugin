@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Microbenchmark for the CPU-side cost of a kernel dispatch through
 // rt::Stream::Launch. Needs a Metal device; run under scripts/device_lock.py:
 //   bazel build //bench:dispatch_bench

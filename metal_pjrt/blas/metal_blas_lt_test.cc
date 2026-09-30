@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // BlasLt epilogues (bias / ReLU / GELU / SiLU, with and without aux output)
 // through the Metal StreamExecutor, against a host reference. Needs a Metal
 // device. f16/bf16 epilogues run fused in steel, f32 ones on MPS + the

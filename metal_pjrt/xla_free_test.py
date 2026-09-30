@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """The dispatch libraries' tests link no XLA, and the host tests no Metal.
 
 conv_test, fft_test, scan_test, radix_sort_test and small_linalg_test run

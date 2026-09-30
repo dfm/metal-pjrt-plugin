@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Host callbacks on metal vs cpu: pure_callback, io_callback (ordered and
 unordered), debug.print, debug.callback, errors, vmap/grad. These test
 callback plumbing, so values are compared with CPU in the same precision

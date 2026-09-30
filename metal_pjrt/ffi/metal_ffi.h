@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Helpers for XLA FFI custom-call handlers on the Metal platform.
 //
 // How a custom call reaches a handler here:

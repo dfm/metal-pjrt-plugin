@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """MLX equivalents of bench/jax_bench.py. Training steps use mx.compile as an
 MLX user would."""
 import os, sys

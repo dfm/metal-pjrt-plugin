@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Dense linear algebra on the CPU (Apple Accelerate LAPACK/BLAS) for the
 // Metal platform.
 //

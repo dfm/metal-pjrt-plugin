@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // The convolution library (metal_pjrt/conv/conv.h) on the cnn benchmark's
 // layers (bench/jax_bench.py "cnn fwd+bwd", batch 32, f32): the two forward
 // convolutions, the input gradient of the second (input dilation 2,

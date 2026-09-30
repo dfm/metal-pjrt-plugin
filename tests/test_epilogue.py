@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """GEMM epilogue fusion (bias / ReLU / GELU, with and without aux output) on
 metal against a float64 CPU reference, and a check that XLA really fused
 them into the `__cublas$lt$matmul` custom call (the `"epilogue":"..."` in

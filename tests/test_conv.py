@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Convolutions on MLX's steel kernels (MetalConvRewriter -> metal$conv,
 metal_pjrt/conv/conv.h): forward, input gradient and weight gradient
 against a float64 CPU reference, in f32, f16 and bf16 (which accumulate in

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Build the plugin dylib and link it into the Python package for development.
 #   scripts/install_dev.sh            # build + link + pip install -e .[test]
 #   scripts/install_dev.sh --no-build # just link an existing build

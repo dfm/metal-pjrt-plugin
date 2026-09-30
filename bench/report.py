@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Merge BENCH_OUT jsonl files into a markdown table: per backend the median
 over rows (rounds) of each case's median wall ms; for metal also the GPU ms
 (from the "metal-gpu" rows, a separate METAL_PJRT_TRACE=1 pass, since the

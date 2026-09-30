@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Sorts on metal against CPU, bit for bit. Sorts of more than 16384
 elements with a simple comparator go through XLA's SortRewriter to the MSL
 radix sort (metal_pjrt/ffi/cub_sort_ffi.cc; exhaustive type sweep of the

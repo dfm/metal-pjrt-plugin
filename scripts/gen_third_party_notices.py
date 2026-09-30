@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Generate the license notices for the code statically linked into the
 plugin dylib (XLA and its dependencies).
 

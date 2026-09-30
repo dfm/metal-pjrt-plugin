@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """tinygp value+grad and predict timings (ms, mean of 5) on metal and CPU:
 the quasiseparable solver (parallel associative-scan and sequential) and
 the dense solver. Needs tinygp installed (it is not a test dependency).

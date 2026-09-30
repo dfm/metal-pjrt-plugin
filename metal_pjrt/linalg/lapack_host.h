@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Batched f32 dense linear algebra on the host with Apple Accelerate
 // (classic LAPACK, LP64, and CBLAS): the work behind the metal$cholesky,
 // metal$triangular_solve and metal$lapack_* handlers (lapack_ffi.cc), which

@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Run files from JAX's own test suite on the Metal backend, safely:
 #  - one process, no xdist (concurrent GPU processes over-commit memory)
 #  - no timeout that exits: pytest-timeout (either method) ends the process

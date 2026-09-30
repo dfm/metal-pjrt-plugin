@@ -1,1 +1,4 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 exports_files(["metal_cpp.BUILD"])

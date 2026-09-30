@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // metal-cpp requires exactly one translation unit to instantiate its
 // Objective-C bridging implementation.
 #define NS_PRIVATE_IMPLEMENTATION

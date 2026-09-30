@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Signed-error sweep of float32 transcendentals, Metal vs CPU.
 
 Max ulp error hides a *bias*: an error that is small per call but has the

@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Helper kernels of the convolutions (conv/conv.h): the explicit and
 // weight-gradient paths' unfold (im2col, in place of MLX's naive_unfold_Nd),
 // the zero padding of the channel dimension for the pad-channels path and

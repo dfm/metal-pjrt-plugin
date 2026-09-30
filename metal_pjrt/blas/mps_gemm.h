@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Plain C++ interface to a GEMM implemented with Metal Performance Shaders
 // (MPSMatrixMultiplication). The implementation (mps_gemm_objc.cc) is
 // Objective-C++; this header is free of Objective-C and metal-cpp so it can be

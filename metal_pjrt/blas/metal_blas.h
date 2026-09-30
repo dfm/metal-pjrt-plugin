@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // BLAS support for the Metal StreamExecutor: f32 GEMMs on Metal Performance
 // Shaders (mps_gemm.h), f16/bf16 on the steel kernels (steel_gemm.h), or,
 // with 2..8 rows (or columns) in the x W^T layout, on the wide gemv

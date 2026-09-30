@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Compiles every embedded MSL source (kernels/*.metal) and creates a pipeline
 // for every kernel the plugin can ask for, through rt::Device::GetKernel as
 // the plugin does, so that a kernel that stops compiling fails this test

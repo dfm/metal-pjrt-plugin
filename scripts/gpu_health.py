@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Report GPU watchdog resets recorded by the Metal runtime and quarantined
 kernels; refuse (exit 1) with --strict when the GPU was reset since boot.
 

@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Environment variables, parsed one way everywhere. Booleans: unset, "",
 // "0", "false", "no" and "off" (any case) are off; anything else is on
 // (metal_pjrt_plugin._env_flag is the Python twin). Numbers: a value that

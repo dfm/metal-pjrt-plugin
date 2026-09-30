@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """metal-pjrt-plugin: run JAX on Apple GPUs through Metal.
 
 Installing the package registers a JAX platform named "mtl" (not "metal",

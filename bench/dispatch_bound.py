@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Dispatch-bound programs: the fixed per-call cost (tiny arrays), long
 chains of tiny kernels and a scan with tiny state, where per-launch host
 cost and command-buffer batching dominate.

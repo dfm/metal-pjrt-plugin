@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Inclusive scan over rows (metal$scan, ffi/scan.cc). One threadgroup per
 // row; 4 elements per thread per chunk, simdgroup shuffles, a threadgroup
 // pass over the simdgroup totals and a carry between chunks. f16/bf16

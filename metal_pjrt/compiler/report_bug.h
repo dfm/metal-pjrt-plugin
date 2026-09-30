@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // The suffix of internal errors (a broken invariant of the plugin's own
 // passes, not something the user's program can fix).
 #ifndef METAL_PJRT_COMPILER_REPORT_BUG_H_

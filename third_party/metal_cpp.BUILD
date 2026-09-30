@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Apple's metal-cpp: header-only C++ bindings for Metal/Foundation/QuartzCore.
 package(default_visibility = ["//visibility:public"])
 

@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Tripwire over the pinned XLA sources the Metal plugin depends on.
 
 The plugin relies on specific behaviour of XLA code it does not own: OneAPI

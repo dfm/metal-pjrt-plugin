@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // LSD radix sort for XLA's cub_sort_keys / cub_sort_pairs targets; see
 // ffi/radix_sort.h for the algorithm, the key orders and the scratch
 // layout. Params must match the C++ struct of the same name in

@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Persistent compilation cache opt-in (metal_pjrt_plugin/__init__.py).
 
 No GPU work (the cache-key test creates the mtl client, so it is

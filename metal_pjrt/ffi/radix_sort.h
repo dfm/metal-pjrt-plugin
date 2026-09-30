@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // An LSD radix sort of the rows of [batch, n] keys (and optional values) on
 // the GPU: the dispatch behind XLA's SortRewriter targets
 // "xla.gpu.ext.cub_sort_keys/pairs" (cub_sort_ffi.cc), with no XLA, so

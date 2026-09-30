@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // LaunchKernel: a compiled kernel with buffers plus a params struct, the
 // calling convention of the hand-written kernels (kernels/*.metal). No XLA,
 // so the dispatch libraries built on it (ffi/, linalg/) can be tested

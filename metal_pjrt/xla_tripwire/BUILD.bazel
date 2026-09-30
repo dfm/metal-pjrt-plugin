@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 load("@rules_python//python:defs.bzl", "py_test")
 
 # Pinned XLA sources snapshotted by tripwire.py (see its docstring). Files in

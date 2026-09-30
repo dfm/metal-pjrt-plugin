@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // The plugin's exported GetPjrtApi: XLA's GPU C API shim with the
 // PJRT_AbiVersion extension removed, PJRT_Client_BufferFromHostBuffer
 // wrapped so the caller's host buffer is copied (or, when large, done with)

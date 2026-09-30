@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MSL source for the "steel" GEMM (steel_gemm.h). A port of the tiled
 // simdgroup-matrix GEMM from MLX (mlx/backend/metal/kernels/steel/gemm/
 // {loader,mma,gemm}.h), which is:

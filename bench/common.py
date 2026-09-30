@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared timing helpers for the benchmark scripts."""
 import datetime, functools, json, os, re, statistics, subprocess, sys, tempfile, time
 

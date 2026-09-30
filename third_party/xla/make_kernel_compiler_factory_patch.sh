@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Regenerates patches/0002-gpu-compiler-kernel-compiler-factory.patch: turns the
 # hard-coded `CubinCustomKernelCompiler` in GpuCompiler::CompileToBackendResult
 # into a protected virtual factory, so a GpuCompiler subclass (MetalCompiler)

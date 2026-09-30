@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Host <-> device transfers without staging
 (should_stage_host_to_device_transfers=False): exact round trips, and the
 source/destination numpy arrays' lifetimes.

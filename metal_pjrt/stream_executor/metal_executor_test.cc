@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Exercises the Metal platform through the StreamExecutor interfaces XLA
 // uses: platform lookup, allocation, MSL kernel loading via the in-memory
 // binary spec, launch with packed device-pointer args, memcpy and events.

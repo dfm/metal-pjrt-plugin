@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Run a command while holding the Metal device lock.
 
 Only one GPU-heavy process (test suite, benchmark, sweep) should run at a

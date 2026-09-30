@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Carries MSL kernels through XLA's LLVM-module-based kernel pipeline.
 //
 // XLA's MlirKernelFusion::EmitLlvmModule expects an llvm::Module containing a

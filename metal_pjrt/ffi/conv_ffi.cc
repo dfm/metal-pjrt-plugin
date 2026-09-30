@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // "metal$conv": a 2-D convolution or weight gradient on MLX's steel kernels
 // (metal_pjrt/conv/conv.h), the target of MetalConvRewriter
 // (compiler/passes/conv_rewriter.h).

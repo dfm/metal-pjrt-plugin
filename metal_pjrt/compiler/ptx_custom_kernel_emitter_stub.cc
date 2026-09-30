@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // XLA's thunk emitter references EmitPtxCustomKernelThunk, whose definition
 // is selected by CUDA/ROCm/SYCL build configuration. With none configured the
 // symbol is undefined, so provide it here. PTX custom kernels never apply to

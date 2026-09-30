@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """LAPACK-backed lowerings of JAX's linear algebra primitives on "mtl".
 
 The plugin's C++ side (metal_pjrt/linalg/lapack_ffi.cc) registers FFI

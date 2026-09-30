@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Serialization of an XLA "constants module" (a set of named byte blobs) into
 // the opaque binary that GpuExecutable carries and StreamExecutor::LoadModule
 // receives. Shared by the compiler (writer) and the executor (reader); kept

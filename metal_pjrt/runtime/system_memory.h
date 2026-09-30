@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // System memory queries. On unified-memory machines "GPU memory" is system
 // RAM, so the allocator also looks at the system's memory pressure.
 #ifndef METAL_PJRT_RUNTIME_SYSTEM_MEMORY_H_

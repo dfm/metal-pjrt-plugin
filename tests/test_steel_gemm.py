@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """f16 / bf16 GEMMs through JAX (steel kernels) against a float64 CPU
 reference, normwise in ulps of the output dtype (tests/metal_testing.py)."""
 import re

@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Small matrices on the GPU: Cholesky, triangular solve and LU of matrices
 // of up to kSmallMatrixMax rows/cols, one GPU thread per matrix (per
 // right-hand-side line for triangular solves; kernels/small_linalg.metal).

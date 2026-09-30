@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // "metal$fft": 1-D FFTs over the minor dimension on MLX's kernels
 // (metal_pjrt/fft/fft.h), the target of the fft lowering in
 // metal_pjrt_plugin/_lowerings.py (XLA's FftThunk is cuFFT-only, and

@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Buffer donation (donate_argnums) on mtl: the plugin adds "mtl" to JAX's
 list of platforms with donation (metal_pjrt_plugin.initialize), and XLA's
 GPU client aliases a donated input to an output.

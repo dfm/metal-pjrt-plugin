@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Regenerates patches/0003-macos-build-fixes.patch: portability fixes needed to
 # compile XLA's GPU stack on macOS (size_t and uint64_t are distinct types on
 # Darwin, so an override declared with size_t does not match).

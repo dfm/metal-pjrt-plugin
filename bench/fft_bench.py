@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """FFTs on metal: metal$fft (MLX's kernels, the default lowering) vs the dense
 DFT (the METAL_PJRT_DISABLE_FFT=1 lowering) vs MLX's own mx.fft, in one
 process.

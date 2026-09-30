@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Runs every backend ROUNDS times, interleaved (round 1: metal, metal-gpu,
 # cpu, mlx; round 2: ...), appending to bench/results/<label>.jsonl (not
 # tracked), then writes the table (medians over rounds). Every row records

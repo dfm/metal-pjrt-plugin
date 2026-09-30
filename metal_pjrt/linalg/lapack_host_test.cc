@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // lapack_host (the Accelerate calls behind the LAPACK handlers) on host
 // memory: reconstruction residuals of every factorization, batched, above
 // the small-kernel size (32); a Cholesky that is not positive definite

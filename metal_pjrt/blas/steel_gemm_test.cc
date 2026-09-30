@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests RunSteelGemm through a metal_pjrt::rt::Stream against a CPU double
 // reference (no XLA). Needs a Metal device.
 #include "metal_pjrt/blas/steel_gemm.h"

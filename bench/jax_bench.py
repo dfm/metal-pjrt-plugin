@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """JAX benchmark workloads. Run under any backend:
   JAX_PLATFORMS=mtl python bench/jax_bench.py
 Cases are chosen to separate memory-bound fusion, reductions, GEMM, linear

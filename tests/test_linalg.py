@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Linear algebra / FFT on metal against a float64 CPU reference
 (tests/metal_testing.py), normwise in ulps per output.
 

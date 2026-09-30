@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Median wall times (ms) of linear algebra on metal and CPU.
 
   scripts/device_lock.py -- .venv/bin/python bench/linalg_bench.py [n ...]

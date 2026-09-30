@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // PlanFft, ElemsPerThread and LaunchGeometry against MLX's rules
 // (mlx/backend/metal/fft.cpp, MLX 0.32.2) and the kernels' fixed-size
 // arrays; the Rader and Bluestein constants by running those algorithms in

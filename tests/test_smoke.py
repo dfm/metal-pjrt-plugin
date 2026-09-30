@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """End-to-end smoke test for the Metal PJRT plugin:
   scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 """

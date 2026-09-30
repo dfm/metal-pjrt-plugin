@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef METAL_PJRT_COMPILER_METAL_COMPILER_H_
 #define METAL_PJRT_COMPILER_METAL_COMPILER_H_
 

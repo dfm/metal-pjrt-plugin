@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Compile-time settings from the environment, read once per process. The
 // passes and the persistent-cache key (MetalExecutor's PluginVersion) use
 // the same parsed values, so an executable is always cached under the

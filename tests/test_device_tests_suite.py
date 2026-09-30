@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Every C++ device test (a cc_test with tags = DEVICE_TEST_TAGS) is listed
 in //metal_pjrt:device_tests. A test_suite silently skips manual tests
 it doesn't name, which is how the old README command came to run nothing.

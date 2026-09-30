@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # metal-pjrt-plugin: a PJRT plugin for Apple Silicon built on XLA's GPU stack.
 #
 # This mirrors jax-ml/jax's MODULE.bazel at the jax-v0.11.2 tag, minus the

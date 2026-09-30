@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """MLX's convolutions on bench/conv_bench.cc's cases, timed the same way.
 
   .venv/bin/python bench/conv_bench_mlx.py [rounds] [f32|f16|bf16]

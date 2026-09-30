@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """MLIR lowering rules for primitives whose upstream rules are registered only
 for named platforms (cpu/cuda/rocm/tpu), so that they also lower on "mtl".
 

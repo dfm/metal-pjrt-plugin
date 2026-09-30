@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MPSMatrixMultiplication-backed GEMM. Objective-C++ with ARC; must not
 // include metal-cpp headers (they clash with <Metal/Metal.h>), so Metal objects
 // arrive as void* and are bridged here. absl is plain C++ and fine to use here.

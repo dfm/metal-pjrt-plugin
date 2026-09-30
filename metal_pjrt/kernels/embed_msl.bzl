@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """embed_msl: a .metal file as a NUL-terminated char array in a header.
 
 The kernels are compiled at run time (MTLDevice newLibraryWithSource; the

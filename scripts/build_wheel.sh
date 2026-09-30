@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Build the metal-pjrt-plugin wheel with the plugin dylib inside it as package
 # data (a real file, not the dev symlink into bazel-bin).
 #   scripts/build_wheel.sh            # bazel build, then the wheel in dist/

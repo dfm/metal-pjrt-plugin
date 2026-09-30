@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Helper kernels of the FFTs (fft/fft.h): the length-1 real transforms and
 // the elementwise steps of the multi-upload Bluestein FFT around its two
 // four-step passes (MLX chains copies, multiplies, pads and slices for

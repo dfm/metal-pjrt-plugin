@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // RunScan (scan.h) against a double reference on rt::Device alone (no XLA):
 // every op and element type, both directions, rows of 1 to 10000 elements
 // around the SIMD group (32), 4-per-thread chunk (4 * 256) and threadgroup

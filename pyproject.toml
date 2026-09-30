@@ -4,6 +4,7 @@ version = "0.0.1"
 description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"
+authors = [{name = "The metal-pjrt-plugin Authors"}]
 # PEP 639 (setuptools >= 77): both files land in the wheel's
 # dist-info/licenses/.
 license = "Apache-2.0"

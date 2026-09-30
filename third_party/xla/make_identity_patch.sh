@@ -1,4 +1,7 @@
 #!/bin/bash
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 # Regenerates third_party/xla/patches/0001-metal-pjrt-identity.patch against a
 # pristine XLA tree (argument 1). The edits teach XLA's GPU PJRT client, C API
 # shim and platform utilities about the Metal platform on macOS (PJRT/JAX

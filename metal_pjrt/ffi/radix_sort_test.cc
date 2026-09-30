@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // RunRadixSort (radix_sort.h) against a CPU stable sort, bit for bit, on
 // rt::Device alone (no XLA): every key type the handlers map (8/16/32/64-bit
 // unsigned, signed and float, f16 and bf16), keys only and with 8/16/32/64-bit

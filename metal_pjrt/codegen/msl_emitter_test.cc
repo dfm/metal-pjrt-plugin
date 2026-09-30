@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 #include "metal_pjrt/codegen/msl_emitter.h"
 
 #include <memory>
@@ -103,7 +106,7 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_THAT(msl, StartsWith(kMslPreludeLine));  // the runtime expands it
   // As the runtime compiles it and dumps write it: standalone MSL.
   const std::string full = ExpandMslPrelude(msl);
-  EXPECT_THAT(full, StartsWith("#include <metal_stdlib>"));
+  EXPECT_THAT(full, HasSubstr("#include <metal_stdlib>"));
   EXPECT_THAT(full, Not(HasSubstr(kMslPreludeLine)));
   EXPECT_EQ(full.size(), msl.size() - std::string(kMslPreludeLine).size() +
                              std::string(kernels::kMslPrelude).size());

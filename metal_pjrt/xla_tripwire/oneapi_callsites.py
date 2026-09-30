@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Lists every line of the pinned XLA tree that branches on the OneAPI
 capability or on the SYCL platform, and compares it with
 oneapi_callsites.txt. The Metal platform reports a OneAPI compute

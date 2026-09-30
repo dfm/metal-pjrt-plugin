@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Host (Python) callbacks on the "mtl" platform.
 
 Makes ``jax.pure_callback``, ``jax.experimental.io_callback``,

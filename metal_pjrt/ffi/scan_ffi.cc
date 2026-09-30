@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // "metal$scan": inclusive scan (cumsum/cumprod/cummax/cummin) over the minor
 // dimension; the kernel and its dispatch are in scan.h.
 //

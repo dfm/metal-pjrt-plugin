@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // xla::gpu::KernelCompiler for Metal. MetalCompiler returns one from
 // GpuCompiler::CreateKernelCompiler (see
 // third_party/xla/patches/0002-gpu-compiler-kernel-compiler-factory.patch).

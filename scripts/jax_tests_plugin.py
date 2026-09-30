@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """pytest plugin used by scripts/run_jax_tests.sh for JAX's own test files.
 
 - Before any test runs, prints the backend and refuses to run unless it is

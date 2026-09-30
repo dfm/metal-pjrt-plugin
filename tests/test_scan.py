@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Numerics of the metal$scan FFI kernel against a float64 CPU reference
 (integer cases: CPU in the same precision), a check that the rewriter
 fired, and metal$scan called directly through jax.ffi.ffi_call (handlers

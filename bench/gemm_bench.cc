@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Small-M half-precision GEMMs, D[M, N] = x[M, K] W^T (default N = 6144,
 // K = 1024), on the kernels MetalBlasLt picks (the wide gemv for 2..8
 // rows, else steel) and on steel with a few tiles, cycling through up to 28

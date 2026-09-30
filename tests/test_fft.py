@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """jax.numpy.fft on metal: the fft lowering (metal_pjrt_plugin/_lowerings.py)
 sends each transformed axis to metal$fft (MLX's kernels,
 metal_pjrt/fft/fft.h; the kernels themselves are tested per path in

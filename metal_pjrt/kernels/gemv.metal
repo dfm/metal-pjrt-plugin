@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MSL source for the small-M GEMM ("wide gemv", gemv.h): out = x W^T for a
 // few vectors x. A port of MLX's gemv_wide (mlx/backend/metal/kernels/
 // gemv.h, MLX 0.32.2), which is:

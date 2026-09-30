@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests RunMpsGemm through a metal_pjrt::rt::Stream against a CPU reference
 // (no XLA). Objective-C++ only because mps_gemm_objc.cc is; this file does not
 // itself use Objective-C. Needs a Metal device.

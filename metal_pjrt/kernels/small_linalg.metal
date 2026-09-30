@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Small (n <= 32) dense linear algebra on the GPU, one thread per matrix (per
 // right-hand-side line for triangular solves); see linalg/small_linalg.h.
 // SmallParams must match the C++ struct of the same name in small_linalg.cc.

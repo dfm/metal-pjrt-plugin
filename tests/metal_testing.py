@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Shared helpers for the metal tests: devices, references, ulp comparison.
 
 Accuracy is measured in ulps of the output dtype against a float64

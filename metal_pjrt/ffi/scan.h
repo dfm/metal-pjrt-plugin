@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Inclusive scan (cumsum/cumprod/cummax/cummin) over the rows of a row-major
 // [rows, n] array on the GPU: the dispatch behind "metal$scan"
 // (scan_ffi.cc), with no XLA, so scan_test runs it against rt::Device alone.

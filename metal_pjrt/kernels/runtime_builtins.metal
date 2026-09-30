@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // The runtime's built-in kernels (rt::Device::BuiltinKernel). Fill: `v` is
 // the pattern broadcast to 32 bits, `n` the number of elements (words or
 // bytes) to write; byte i takes byte (i mod 4) of the pattern, which is right

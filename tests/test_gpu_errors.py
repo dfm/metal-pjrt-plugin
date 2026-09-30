@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """GPU errors reach Python as exceptions, never as wrong values.
 
 Runs a small JAX program in a fresh process with

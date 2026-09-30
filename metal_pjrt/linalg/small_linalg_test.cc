@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // The small-matrix GPU kernels (small_linalg.h) against double references
 // on rt::Device alone (no XLA): n in {1, 2, 3, 4, 16, 31, 32}, batches of 1,
 // 7 and 65. Cholesky lower and upper (the other triangle of the input is

@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // MSL source for the "steel" implicit-GEMM 2-D convolutions (conv/conv.h).
 // A port of MLX's steel convolution kernels (mlx/backend/metal/kernels/
 // steel/conv/{params.h,loaders/*.h,kernels/steel_conv.h,

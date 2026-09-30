@@ -1,3 +1,6 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+
 """Host-only checks of how the plugin's environment variables are parsed
 (the C++ side is metal_pjrt/runtime/env_test.cc; test_memory.py runs the
 runtime with bad values)."""

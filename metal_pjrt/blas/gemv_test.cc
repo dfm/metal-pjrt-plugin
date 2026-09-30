@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Tests ChooseGemv / RunGemv (the wide gemv, gemv.h) through a
 // metal_pjrt::rt::Stream against a CPU double reference (no XLA): both
 // orientations, every vector count, tails, strides, batches, alpha/beta and
