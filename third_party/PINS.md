@@ -12,4 +12,9 @@
 The plugin must be built against the exact XLA commit of the jaxlib release it
 targets, as the CUDA plugin is. Re-pin by updating `MODULE.bazel` from JAX's
 `MODULE.bazel` at the new release tag and refreshing the patches under
-`third_party/`.
+`third_party/`. Then regenerate the license notices of the statically linked
+projects (`THIRD_PARTY_NOTICES`, from `third_party/notices_manifest.json`):
+`scripts/gen_third_party_notices.py "$(bazel info output_base)/external" --update`
+stops where a pinned project's license file moved or changed; update the
+manifest's versions and paths there. It lists what the dylib contained at
+the current pin; a dependency XLA adds has to be added by hand.

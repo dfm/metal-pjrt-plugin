@@ -1,0 +1,591 @@
+{
+  "comment": [
+    "Third-party projects with code in pjrt_c_api_mtl_plugin.dylib; input of scripts/gen_third_party_notices.py.",
+    "Order: the plugin's direct third-party code, XLA, LLVM (and code vendored in LLVM), then alphabetical.",
+    "License paths are relative to Bazel's external directory ($(bazel info output_base)/external).",
+    "in_binary records the evidence (nm on the dylib against the archives of the link params file, 2026-09-30); it is not printed.",
+    "On the link line but with no code in the dylib, so not listed: gRPC, upb, envoy_api, xds, googleapis, cel-spec, protoc-gen-validate.",
+    "After a pin bump: update versions, re-check the evidence, and re-run the script with --update."
+  ],
+  "projects": [
+    {
+      "name": "MLX",
+      "url": "https://github.com/ml-explore/mlx",
+      "version": "0.32.2",
+      "spdx": "MIT",
+      "used_by": "the plugin's Metal kernels and plans ported from MLX (GEMM, gemv, convolution, FFT)",
+      "in_binary": "kernel sources embedded as strings carry \"Copyright (c) 2023-2024 Apple Inc. MIT License (MLX)\"",
+      "handwritten": true,
+      "license": []
+    },
+    {
+      "name": "metal-cpp",
+      "url": "https://developer.apple.com/metal/cpp/",
+      "version": "metal-cpp_26.zip (macOS 26 SDK release)",
+      "spdx": "Apache-2.0",
+      "used_by": "the plugin's Metal runtime (header-only bindings)",
+      "in_binary": "1933 symbols naming MTL::, NS:: or CA:: types",
+      "handwritten": true,
+      "license": [
+        {
+          "path": "+_repo_rules+metal_cpp/LICENSE.txt",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "XLA (including TSL)",
+      "url": "https://github.com/openxla/xla",
+      "version": "commit 91888df6ce85102c30220e41d952065925e10886 (the XLA of jaxlib 0.11.2), with the patches in third_party/xla/patches of this repository",
+      "spdx": "Apache-2.0",
+      "used_by": "the plugin is built on XLA's GPU compiler, runtime and PJRT C API layer",
+      "note": "Copyright The OpenXLA Authors and The TensorFlow Authors. TSL, the TensorFlow platform layer, is vendored in the XLA tree (xla/tsl and third_party/tsl) under the same license file. XLA ships no NOTICE file.",
+      "in_binary": "134405 symbols defined only by xla+ archives (1201 archives on the link line), 378 more by the tsl archives",
+      "license": [
+        {
+          "path": "xla+/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "LLVM and MLIR",
+      "url": "https://github.com/llvm/llvm-project",
+      "version": "commit 7024b9e1b423b3c3c6ac76ab6a73cb2c9e4ef842 (24.0.0git), with XLA's build patches (third_party/llvm in XLA)",
+      "spdx": "Apache-2.0 WITH LLVM-exception",
+      "used_by": "XLA, StableHLO, Shardy and Triton (MLIR dialects and passes, LLVM IR and the configured code generators) and the plugin's kernel compiler",
+      "note": "mlir/LICENSE.TXT is the same text without the legacy section. Third-party code in LLVM's Support library that is in the binary under its own terms follows in the next four entries; the MD5, SHA-1 and SHA-256 implementations there are public domain and SipHash is LLVM's own adaptation of the CC0 reference implementation.",
+      "in_binary": "208873 symbols defined only by llvm-project archives (76 llvm, 248 mlir archives)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/LICENSE.TXT",
+          "expect": "LLVM Exceptions to the Apache 2.0 License"
+        }
+      ]
+    },
+    {
+      "name": "BLAKE3 (in LLVM)",
+      "url": "https://github.com/BLAKE3-team/BLAKE3",
+      "version": "1.8.2, as vendored in llvm/lib/Support/BLAKE3 at the LLVM commit above",
+      "spdx": "CC0-1.0 OR Apache-2.0",
+      "used_by": "LLVM's Support library",
+      "in_binary": "13 llvm_blake3_* symbols",
+      "license": [
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/lib/Support/BLAKE3/LICENSE",
+          "expect": "CC0 1.0"
+        }
+      ]
+    },
+    {
+      "name": "OpenBSD regex (in LLVM)",
+      "url": "https://github.com/llvm/llvm-project/tree/main/llvm/lib/Support",
+      "version": "as vendored in llvm/lib/Support (reg*.c, reg*.h, regengine.inc) at the LLVM commit above",
+      "spdx": "Spencer-94 AND BSD-3-Clause AND ISC",
+      "used_by": "LLVM's Support library (llvm::Regex)",
+      "in_binary": "llvm_regcomp, llvm_regexec, llvm_regerror, llvm_regfree, llvm_strlcpy",
+      "license": [
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/lib/Support/COPYRIGHT.regex",
+          "expect": "Henry Spencer"
+        },
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/lib/Support/regstrlcpy.c",
+          "lines": [
+            1,
+            17
+          ],
+          "expect": "Todd C. Miller"
+        }
+      ]
+    },
+    {
+      "name": "Unicode ConvertUTF (in LLVM)",
+      "url": "https://github.com/llvm/llvm-project/tree/main/llvm/lib/Support",
+      "version": "as vendored in llvm/lib/Support/ConvertUTF.cpp at the LLVM commit above",
+      "spdx": "Unicode-DFS-2015",
+      "used_by": "LLVM's Support library (UTF-8/16/32 conversion)",
+      "note": "The file has been modified by the LLVM project.",
+      "in_binary": "llvm::ConvertUTF8toUTF32, llvm::ConvertUTF16toUTF8, llvm::ConvertUTF32toUTF8, llvm::isLegalUTF8String",
+      "license": [
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/lib/Support/ConvertUTF.cpp",
+          "lines": [
+            8,
+            44
+          ],
+          "expect": "Unicode, Inc."
+        }
+      ]
+    },
+    {
+      "name": "xxHash (in LLVM)",
+      "url": "https://github.com/Cyan4973/xxHash",
+      "version": "as ported in llvm/lib/Support/xxhash.cpp at the LLVM commit above",
+      "spdx": "BSD-2-Clause",
+      "used_by": "LLVM's Support library (llvm::xxh3_64bits)",
+      "in_binary": "llvm::xxh3_64bits, XXH3_hashLong_64b, XXH3_len_129to240_64b",
+      "license": [
+        {
+          "path": "xla++third_party_ext+llvm-raw/llvm/lib/Support/xxhash.cpp",
+          "lines": [
+            1,
+            33
+          ],
+          "expect": "Yann Collet"
+        }
+      ]
+    },
+    {
+      "name": "Abseil",
+      "url": "https://github.com/abseil/abseil-cpp",
+      "version": "20260526.0, with the patches in third_party/absl of this repository",
+      "spdx": "Apache-2.0",
+      "used_by": "the plugin, XLA and most of XLA's dependencies",
+      "in_binary": "1054 symbols defined only by abseil-cpp+ archives (79 archives)",
+      "license": [
+        {
+          "path": "abseil-cpp+/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "BoringSSL",
+      "url": "https://boringssl.googlesource.com/boringssl",
+      "version": "0.20250818.0",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA's TSL platform layer and Riegeli (SHA-256 and other digests)",
+      "in_binary": "49 symbols: SHA256, BCM_sha256_*, sha1/sha256/sha512_block_data_order_*, aes_hw_*, gcm_*_v8, bn_*, ecp_nistz256_*",
+      "license": [
+        {
+          "path": "boringssl+/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "Brotli",
+      "url": "https://github.com/google/brotli",
+      "version": "1.1.0",
+      "spdx": "MIT",
+      "used_by": "Riegeli (compression)",
+      "in_binary": "238 symbols (Brotli*), and the brotli dictionary in the string table",
+      "license": [
+        {
+          "path": "xla++third_party_ext+org_brotli/LICENSE",
+          "expect": "Brotli Authors"
+        }
+      ]
+    },
+    {
+      "name": "cpuinfo",
+      "url": "https://github.com/pytorch/cpuinfo",
+      "version": "commit 8ce83db858065145192c97af90cb668ad72a12e9",
+      "spdx": "BSD-2-Clause",
+      "used_by": "YNNPACK (CPU feature detection)",
+      "in_binary": "26 cpuinfo_* symbols",
+      "license": [
+        {
+          "path": "xla++third_party_ext+cpuinfo/LICENSE",
+          "expect": "Redistributions in binary form"
+        }
+      ]
+    },
+    {
+      "name": "DUCC (ducc0 FFT)",
+      "url": "https://gitlab.mpcdf.mpg.de/mtr/ducc",
+      "version": "commit aa46a4c21e440b3d416c16eca3c96df19c74f316",
+      "spdx": "BSD-3-Clause",
+      "used_by": "XLA's CPU backend (FFT)",
+      "note": "The ducc0 FFT component and its internal dependencies, the only ducc0 sources XLA compiles (src/ducc0/fft, and parts of src/ducc0/infra and src/ducc0/math), are dual-licensed BSD-3-Clause OR GPL-2.0-or-later. This distribution elects BSD-3-Clause. The files' headers carry copyright notices of the Max-Planck-Society (2010-2024), Peter Bell (2019-2023) and Matteo Frigo and the Massachusetts Institute of Technology (2003, 2007-14; odd-sized DCT-IV transforms), all under the terms reproduced here from fft1d_impl.h.",
+      "in_binary": "1828 symbols defined only by the ducc archives; 1925 name ducc0::",
+      "license": [
+        {
+          "path": "xla++third_party_ext+ducc/src/ducc0/fft/fft1d_impl.h",
+          "lines": [
+            1,
+            41
+          ],
+          "expect": "BSD-3-Clause OR GPL-2.0-or-later"
+        }
+      ]
+    },
+    {
+      "name": "Eigen",
+      "url": "https://gitlab.com/libeigen/eigen",
+      "version": "commit ea13a98decd497a8c5588fb5de71b57bcf10d864 (5.0.1-dev), unmodified",
+      "source": "https://gitlab.com/libeigen/eigen/-/archive/ea13a98decd497a8c5588fb5de71b57bcf10d864/eigen-ea13a98decd497a8c5588fb5de71b57bcf10d864.tar.gz",
+      "spdx": "MPL-2.0 AND Apache-2.0 AND BSD-3-Clause",
+      "used_by": "XLA and TSL (thread pool, Tensor module, special functions, half and bfloat16 types)",
+      "note": "Eigen is MPL-2.0; the Source line above is the exact source code of the version compiled into this library (Source Code Form, MPL-2.0 section 3.2), used without modification. Of the modules included (Core, ThreadPool, unsupported Tensor and SpecialFunctions), Eigen/src/Core/arch/Default/BFloat16.h is Apache-2.0 (The TensorFlow Authors) and Eigen/src/Core/util/MKL_support.h is BSD-3-Clause (Intel Corporation); no LGPL or MINPACK-licensed file is included.",
+      "in_binary": "header-only, no archive; 30361 symbols defined in namespace Eigen (Eigen::ThreadPoolTempl, Eigen::Tensor*, Eigen::internal::*)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+eigen_archive/COPYING.README",
+          "expect": "MPL2"
+        },
+        {
+          "path": "xla++third_party_ext+eigen_archive/COPYING.MPL2",
+          "expect": "Mozilla Public License Version 2.0"
+        },
+        {
+          "path": "xla++third_party_ext+eigen_archive/COPYING.APACHE",
+          "expect": "Apache License"
+        },
+        {
+          "path": "xla++third_party_ext+eigen_archive/COPYING.BSD",
+          "expect": "Intel Corporation"
+        }
+      ]
+    },
+    {
+      "name": "f2reduce (in Triton)",
+      "url": "https://gitlab.com/hatsya/open-source/f2reduce",
+      "version": "revision 949b91d022c001bbce19157f806013d37f05fbf5, as vendored in Triton's third_party/f2reduce",
+      "spdx": "MIT",
+      "used_by": "Triton",
+      "in_binary": "50 symbols in namespace f2reduce",
+      "license": [
+        {
+          "path": "xla++third_party_ext+triton/third_party/f2reduce/LICENCE.txt",
+          "expect": "Adam P. Goucher"
+        }
+      ]
+    },
+    {
+      "name": "FarmHash",
+      "url": "https://github.com/google/farmhash",
+      "version": "commit 0d859a811870d10f53a594927d0d0b97573ad06d",
+      "spdx": "MIT",
+      "used_by": "XLA's TSL platform layer (hashing)",
+      "in_binary": "6 symbols: util::Fingerprint32/64/128, farmhashna::Hash64, farmhashmk::Hash32, farmhashcc::CityHash128WithSeed",
+      "license": [
+        {
+          "path": "xla++third_party_ext+farmhash_archive/COPYING",
+          "expect": "Google, Inc."
+        }
+      ]
+    },
+    {
+      "name": "Highway",
+      "url": "https://github.com/google/highway",
+      "version": "1.4.0",
+      "spdx": "Apache-2.0 OR BSD-3-Clause",
+      "used_by": "XLA (SIMD bit packing)",
+      "in_binary": "12 symbols in namespace hwy (hwy::GetChosenTarget, hwy::SupportedTargets, hwy::FunctionCache<...>)",
+      "license": [
+        {
+          "path": "highway+/LICENSE",
+          "expect": "dual-licensed"
+        }
+      ]
+    },
+    {
+      "name": "HighwayHash",
+      "url": "https://github.com/google/highwayhash",
+      "version": "commit c13d28517a4db259d738ea4886b1f00352a3cc33",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA and Riegeli (fingerprints)",
+      "in_binary": "7 symbols in namespace highwayhash",
+      "license": [
+        {
+          "path": "xla++third_party_ext+highwayhash/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "JsonCpp",
+      "url": "https://github.com/open-source-parsers/jsoncpp",
+      "version": "1.9.6",
+      "spdx": "MIT",
+      "used_by": "XLA (JSON output in xla/service, xla/backends/gpu and TSL)",
+      "note": "Public domain where that is recognised, MIT otherwise, as its license file explains. src/lib_json/json_reader.cpp also carries \"Copyright (C) 2016 InfoTeCS JSC. All rights reserved.\" under the same terms.",
+      "in_binary": "135 symbols in namespace Json",
+      "license": [
+        {
+          "path": "jsoncpp+/LICENSE",
+          "expect": "MIT License"
+        }
+      ]
+    },
+    {
+      "name": "ml_dtypes",
+      "url": "https://github.com/jax-ml/ml_dtypes",
+      "version": "commit 00d98cd92ade342fef589c0470379abb27baebe9",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA and TSL (the float8, float6, float4 and intN scalar types; headers only)",
+      "in_binary": "header-only, no archive; 4583 symbols defined in namespace ml_dtypes",
+      "license": [
+        {
+          "path": "xla++third_party_ext+ml_dtypes_py/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "Protocol Buffers",
+      "url": "https://github.com/protocolbuffers/protobuf",
+      "version": "32.1, with the patches in third_party/protobuf of this repository",
+      "spdx": "BSD-3-Clause",
+      "used_by": "XLA, TSL and Riegeli",
+      "in_binary": "3665 symbols defined only by protobuf+/src archives (the upb archives contribute none)",
+      "license": [
+        {
+          "path": "protobuf+/LICENSE",
+          "expect": "Google Inc."
+        }
+      ]
+    },
+    {
+      "name": "RE2",
+      "url": "https://github.com/google/re2",
+      "version": "2025-11-05",
+      "spdx": "BSD-3-Clause",
+      "used_by": "XLA",
+      "note": "util/rune.cc (the Plan 9 UTF-8 routines) carries its own notice, reproduced after RE2's LICENSE.",
+      "in_binary": "645 symbols defined only by libre2.a",
+      "license": [
+        {
+          "path": "re2+/LICENSE",
+          "expect": "The RE2 Authors"
+        },
+        {
+          "path": "re2+/util/rune.cc",
+          "lines": [
+            1,
+            13
+          ],
+          "expect": "Lucent Technologies"
+        }
+      ]
+    },
+    {
+      "name": "Riegeli",
+      "url": "https://github.com/google/riegeli",
+      "version": "commit 9f2744dc23e81d84c02f6f51244e9e9bb9802d57",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA (record files for large protos)",
+      "in_binary": "2050 symbols defined only by riegeli archives (78 archives)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+riegeli/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "Shardy",
+      "url": "https://github.com/openxla/shardy",
+      "version": "commit c3d100208411df3ec0e5828f3dd4ca46b256551e, with XLA's third_party/shardy patch",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA (sharding dialect and propagation)",
+      "in_binary": "5869 symbols defined only by shardy archives (23 archives)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+shardy/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "Slinky",
+      "url": "https://github.com/dsharlet/slinky",
+      "version": "commit 2c9e129fc82215530af851cfd8d3094de0519241",
+      "spdx": "MIT",
+      "used_by": "YNNPACK",
+      "note": "slinky/base/atomic_wait.h is adapted from https://github.com/ogiroux/atomic_wait (MIT, NVIDIA Corporation); its header is reproduced after Slinky's LICENSE.",
+      "in_binary": "2881 symbols defined only by slinky archives",
+      "license": [
+        {
+          "path": "xla++third_party_ext+slinky/LICENSE",
+          "expect": "Dillon Sharlet"
+        },
+        {
+          "path": "xla++third_party_ext+slinky/slinky/base/atomic_wait.h",
+          "lines": [
+            1,
+            24
+          ],
+          "expect": "NVIDIA Corporation"
+        }
+      ]
+    },
+    {
+      "name": "Snappy",
+      "url": "https://github.com/google/snappy",
+      "version": "1.2.1",
+      "spdx": "BSD-3-Clause",
+      "used_by": "XLA's TSL platform layer and Riegeli",
+      "in_binary": "43 symbols in namespace snappy",
+      "license": [
+        {
+          "path": "snappy+/COPYING",
+          "expect": "Google Inc."
+        }
+      ]
+    },
+    {
+      "name": "SQLite",
+      "url": "https://sqlite.org",
+      "version": "3.53.2 (amalgamation 3530200)",
+      "spdx": "blessing (public domain)",
+      "used_by": "XLA (xla/service)",
+      "note": "SQLite is in the public domain; the amalgamation ships no license file, and the notice below is the one its sources carry.",
+      "in_binary": "1795 symbols defined only by liborg_sqlite.a (sqlite3_*)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+org_sqlite/sqlite3.h",
+          "lines": [
+            2,
+            9
+          ],
+          "expect": "The author disclaims copyright"
+        }
+      ]
+    },
+    {
+      "name": "StableHLO",
+      "url": "https://github.com/openxla/stablehlo",
+      "version": "commit 639335932274930617d9724fb25ec9f2f52c5e40, with XLA's third_party/stablehlo patch",
+      "spdx": "Apache-2.0",
+      "used_by": "XLA and the plugin (the StableHLO, CHLO and VHLO dialects JAX programs arrive in)",
+      "in_binary": "26443 symbols defined only by stablehlo archives (19 archives)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+stablehlo/LICENSE",
+          "expect": "Apache License"
+        }
+      ]
+    },
+    {
+      "name": "Triton",
+      "url": "https://github.com/triton-lang/triton",
+      "version": "commit a77e7c793abc0d0c923a9afb275058e2fe57a198, with XLA's third_party/triton patches",
+      "spdx": "MIT",
+      "used_by": "XLA's GPU backend (Triton MLIR dialects, passes and LLVM lowering)",
+      "note": "Files of Triton's AMD and NVIDIA backends (third_party/amd, third_party/nvidia, lib/Dialect/TritonNvidiaGPU), which are linked, carry the same MIT terms with their own copyright notices: Advanced Micro Devices, Inc. (2023, 2024) and NVIDIA Corporation & Affiliates (2023, 2025). One header of each is reproduced after Triton's LICENSE.",
+      "in_binary": "27367 symbols defined only by triton archives (22 archives)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+triton/LICENSE",
+          "expect": "Philippe Tillet"
+        },
+        {
+          "path": "xla++third_party_ext+triton/third_party/amd/include/TritonAMDGPUToLLVM/GCNAsmFormat.h",
+          "lines": [
+            1,
+            22
+          ],
+          "expect": "Advanced Micro Devices, Inc."
+        },
+        {
+          "path": "xla++third_party_ext+triton/third_party/nvidia/include/Dialect/NVGPU/IR/Dialect.h",
+          "lines": [
+            1,
+            22
+          ],
+          "expect": "NVIDIA Corporation"
+        }
+      ]
+    },
+    {
+      "name": "utf8_range (in Protocol Buffers)",
+      "url": "https://github.com/protocolbuffers/protobuf/tree/main/third_party/utf8_range",
+      "version": "as vendored in protobuf 32.1 (third_party/utf8_range)",
+      "spdx": "MIT",
+      "used_by": "Protocol Buffers (UTF-8 validation)",
+      "in_binary": "3 symbols: utf8_range_IsValid, utf8_range_ValidPrefix, utf8_range_ValidateUTF8Naive",
+      "license": [
+        {
+          "path": "protobuf+/third_party/utf8_range/LICENSE",
+          "expect": "Yibo Cai"
+        }
+      ]
+    },
+    {
+      "name": "XNNPACK (YNNPACK)",
+      "url": "https://github.com/google/XNNPACK",
+      "version": "commit d89ef6669a14db203b3b7935b1b3862cb63fb6df",
+      "spdx": "BSD-3-Clause",
+      "used_by": "XLA's CPU backend (the YNNPACK kernels and subgraph runtime in the ynnpack directory; no other XNNPACK code is linked)",
+      "in_binary": "2078 symbols defined only by XNNPACK/ynnpack archives (48 archives; namespace ynn)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+XNNPACK/LICENSE",
+          "expect": "For XNNPACK software"
+        }
+      ]
+    },
+    {
+      "name": "zlib",
+      "url": "https://zlib.net",
+      "version": "1.3.2",
+      "spdx": "Zlib",
+      "used_by": "XLA's TSL platform layer and Riegeli",
+      "in_binary": "65 symbols defined only by libz.a (adler32, crc32, deflate*, inflate*)",
+      "license": [
+        {
+          "path": "zlib+/LICENSE",
+          "expect": "Jean-loup Gailly"
+        }
+      ]
+    },
+    {
+      "name": "Zstandard",
+      "url": "https://github.com/facebook/zstd",
+      "version": "1.5.7",
+      "spdx": "BSD-3-Clause",
+      "used_by": "Riegeli (compression)",
+      "note": "Zstandard is dual-licensed BSD-3-Clause OR GPL-2.0-only. This distribution elects BSD-3-Clause.",
+      "in_binary": "321 symbols defined only by libzstdlib.a (ZSTD_*, HUF_*, FSE_*)",
+      "license": [
+        {
+          "path": "xla++third_party_ext+net_zstd/zstd.h",
+          "lines": [
+            1,
+            9
+          ],
+          "expect": "BSD-style license"
+        },
+        {
+          "origin": "LICENSE of zstd 1.5.7 (XLA's pinned archive keeps only lib/, without it)",
+          "text": [
+            "BSD License",
+            "",
+            "For Zstandard software",
+            "",
+            "Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.",
+            "",
+            "Redistribution and use in source and binary forms, with or without modification,",
+            "are permitted provided that the following conditions are met:",
+            "",
+            " * Redistributions of source code must retain the above copyright notice, this",
+            "   list of conditions and the following disclaimer.",
+            "",
+            " * Redistributions in binary form must reproduce the above copyright notice,",
+            "   this list of conditions and the following disclaimer in the documentation",
+            "   and/or other materials provided with the distribution.",
+            "",
+            " * Neither the name Facebook, nor Meta, nor the names of its contributors may",
+            "   be used to endorse or promote products derived from this software without",
+            "   specific prior written permission.",
+            "",
+            "THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS \"AS IS\" AND",
+            "ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED",
+            "WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE",
+            "DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE FOR",
+            "ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES",
+            "(INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;",
+            "LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON",
+            "ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT",
+            "(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS",
+            "SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE."
+          ],
+          "expect": "For Zstandard software"
+        }
+      ]
+    }
+  ]
+}

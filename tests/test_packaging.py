@@ -1,6 +1,7 @@
 """Host-only packaging checks (no GPU)."""
 import importlib.metadata
 import importlib.util
+import json
 import pathlib
 import re
 import tomllib
@@ -85,3 +86,9 @@ def test_license_files_in_wheel():
                    "Copyright \u00a9 2024 Apple Inc.",
                    "Apache License\n                           Version 2.0"):
         assert needle in notices, needle
+    # The statically linked projects (scripts/gen_third_party_notices.py):
+    # every project of the manifest has its section.
+    manifest = json.loads(
+        (ROOT / "third_party/notices_manifest.json").read_text())
+    for project in manifest["projects"]:
+        assert f"\n{project['name']} ({project['url']})\n" in notices, project["name"]
