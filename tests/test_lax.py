@@ -137,6 +137,19 @@ case("lax.gather")(lambda: ref(lambda x, i: x[i], A(64), jnp.array([3, 5, 7, 63]
 case("lax.gather 2d")(lambda: ref(lambda x, i: x[i, :], A(16, 8), jnp.array([3, 5])))
 case("lax.scatter")(lambda: ref(lambda x: x.at[jnp.array([1, 3])].set(9.0), A(64)))
 case("lax.scatter_add")(lambda: ref(lambda x: x.at[jnp.array([1, 1, 3])].add(1.0), A(64)))
+# Below 32 bits XLA has no direct atomic: these go through a compare-and-swap
+# on the containing 32-bit word (rewriteAsAtomicCAS). Values are small
+# integers, so every sum is exact.
+case("scatter i16 / u8 / bf16 add and f16 max, repeated indices")(lambda: ref(
+    lambda i: (jnp.zeros(16, jnp.int16).at[i].add(jnp.arange(64, dtype=jnp.int16)),
+               jnp.zeros(16, jnp.uint8).at[i].add(jnp.ones(64, jnp.uint8)),
+               jnp.zeros(16, jnp.bfloat16).at[i].add(jnp.ones(64, jnp.bfloat16)).astype(f32),
+               jnp.zeros(16, jnp.float16).at[i].max(jnp.arange(64, dtype=jnp.float16)).astype(f32)),
+    np.arange(64, dtype=np.int32) % 16))
+# x.at[:128].set(f(x[:128])): with static indices XLA sees a slice feeding a
+# GEMM whose result is written back over the slice, which its dynamic-slice
+# fusion would run in place (off on mtl, metal_compiler.cc).
+case("slice update through a matmul")(lambda: ref(lambda x, r: x.at[:128].set(x[:128] @ r), R(256, 64), R(64, 64)))
 case("lax.scatter_mul/min/max")(lambda: ref(lambda x: x.at[jnp.array([2])].mul(2.0).at[jnp.array([3])].min(-9.0).at[jnp.array([4])].max(9.0), A(64)))
 # ---- reductions ----
 for name, fn in [("reduce_sum", lambda x: jnp.sum(x, 1)), ("reduce_max", lambda x: jnp.max(x, 0)), ("reduce_min", lambda x: jnp.min(x)),
@@ -152,6 +165,11 @@ for name, fn in [("reduce_sum", lambda x: jnp.sum(x, 1)), ("reduce_max", lambda 
 case("lax.cumsum/cumprod/cummax")(lambda: ref(lambda x: lax.cumsum(x, 1) + lax.cummax(x, 0) + lax.cumprod(x / 4 + 1, 1), A(16, 32)))
 case("lax.reduce_window (maxpool)")(lambda: ref(lambda x: lax.reduce_window(x, -jnp.inf, lax.max, (2, 2), (2, 2), "VALID"), A(8, 8)))
 case("lax.reduce_window sum")(lambda: ref(lambda x: lax.reduce_window(x, 0.0, lax.add, (3,), (1,), "SAME"), A(64)))
+# Overlapping windows and SAME padding: JAX's padded select-and-scatter rule
+# and variadic reduce_window JVP are 'gpu'-only, so mtl takes the generic ones.
+POOL = lambda v: lax.reduce_window(v, -jnp.inf, lax.max, (1, 3, 3, 1), (1, 2, 2, 1), "SAME")
+case("max_pool 3x3 stride 2 SAME grad")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(POOL(v) ** 2))(x), R(2, 9, 9, 3)))
+case("max_pool 3x3 stride 2 SAME jvp")(lambda: ref(lambda x, t: jax.jvp(POOL, (x,), (t,))[1], R(2, 9, 9, 3), -R(2, 9, 9, 3)[::-1].copy()))
 case("select_and_scatter (maxpool grad)")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(lax.reduce_window(v, -jnp.inf, lax.max, (2, 2), (2, 2), "VALID")))(x), A(8, 8)))
 # ---- linear algebra / library ----
 case("lax.dot_general f32")(lambda: ref(lambda x, y: lax.dot_general(x, y, (((1,), (0,)), ((), ()))), R(32, 48), R(48, 16)))
@@ -304,6 +322,7 @@ ULPS = {
     'lax.reduce_prod': 93, 'lax.mean/var': 1.4, 'lax.logsumexp': 1.3,
     'lax.reduce column 2048x64': 1, 'lax.cumsum/cumprod/cummax': 6.1,
     'lax.reduce_window sum': 1, 'lax.dot_general f32': 4.2,
+    'slice update through a matmul': 4.2, 'max_pool 3x3 stride 2 SAME grad': 2,
     'matvec / outer': 1.5, 'conv 2d NHWC': 3.2, 'conv 2d strided NCHW': 2.3,
     'conv grad': 3.3, 'cholesky': 1.7, 'triangular_solve': 1.2,
     'lu / solve': 2.9, 'qr': 2.3, 'eigh': 6.9, 'svd': 1.7, 'inv / det': 21,
@@ -331,6 +350,7 @@ NORMWISE = {
     "lax.reduce_sum", "lax.mean/var", "lax.logsumexp", "lax.reduce big 1M",
     "lax.reduce column 2048x64", "lax.cumsum/cumprod/cummax",
     "lax.reduce_window sum", "lax.dot_general f32", "dot f16 -> f32 out",
+    "slice update through a matmul",
     "dot batched bf16", "matvec / outer", "conv 2d NHWC",
     "conv 2d strided NCHW", "conv grad", "cholesky", "triangular_solve",
     "lu / solve", "qr", "eigh", "svd", "inv / det", "fft", "rfft2",
