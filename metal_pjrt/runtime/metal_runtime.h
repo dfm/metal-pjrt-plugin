@@ -398,6 +398,10 @@ class Device {
   uint64_t unsignaled_host_task_waits_committed() const {
     return unsignaled_host_task_waits_committed_.load();
   }
+  // Command buffers committed with an encoded wait whose value was not yet
+  // signaled, i.e. that may wait on the GPU (for another stream's work).
+  // Buffers without ops never do (Stream::Commit waits on the host).
+  uint64_t gpu_waits_encoded() const { return gpu_waits_encoded_.load(); }
 
  private:
   Device() = default;
@@ -522,6 +526,7 @@ class Device {
   bool CheckInFlight(bool wait);
   std::atomic<uint64_t> host_task_holds_{0};
   std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
+  std::atomic<uint64_t> gpu_waits_encoded_{0};
 };
 
 // Timeline-semaphore style event: `Record` on a stream bumps and signals a

@@ -155,6 +155,14 @@ switch costs ~10 us of GPU time); larger ones use the blit engine.
 recorded and encoded only just before the stream's next GPU work, and a
 `Synchronize` with pending waits satisfies them on the host, so no command
 buffer ever only waits (a waiting buffer counts against the watchdog).
+`RecordEvent` right after waits (XLA's zero-byte device-to-device copy:
+wait for the destination's allocation, i.e. the compute stream, then record
+the event) would commit a
+buffer with waits and no ops; `Commit` waits for such a buffer's values on
+the host first. `Device::gpu_waits_encoded()` counts buffers committed with
+a wait not yet signaled (they wait on the GPU: a copy or kernel after
+another stream's work, e.g. `device_put(x, may_alias=False)` of a pending
+`x`); `metal_pjrt_sync_stats` exposes it to tests.
 `WaitForStream(other)` waits for the highest value `other` has issued,
 including host tasks, and inherits the waits `other` has not encoded yet.
 `RecordEvent` publishes its value only once the signaling buffer is

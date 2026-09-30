@@ -1433,10 +1433,17 @@ absl::Status Stream::Commit() {
     flops_in_cmd_ = 0;
     return absl::OkStatus();
   }
+  // Hold rule, plus: a buffer with no ops (RecordEvent after only waits,
+  // e.g. a zero-byte host-to-device copy behind the compute sync point)
+  // would sit on the GPU for as long as it waits, which counts against the
+  // watchdog. Wait for such a buffer's values on the host instead.
   for (const PendingWait& w : pending_waits_) {
-    if (!w.host_task || w.event->signaledValue() >= w.value) continue;
+    if (w.event->signaledValue() >= w.value) continue;
+    if (!w.host_task && ops_in_cmd_ > 0) continue;
     ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(w.event, w.value));
-    device_->host_task_holds_.fetch_add(1, std::memory_order_relaxed);
+    if (w.host_task) {
+      device_->host_task_holds_.fetch_add(1, std::memory_order_relaxed);
+    }
     ABSL_RETURN_IF_ERROR(WaitForValueOnHost(device_, w.event, w.value));
   }
   EndEncoder();
@@ -1466,12 +1473,18 @@ absl::Status Stream::Commit() {
   }
   std::vector<PendingWait> waits;
   waits.swap(pending_waits_);
+  bool waits_on_gpu = false;
   for (const PendingWait& w : waits) {
     w.event->retain();
-    if (w.host_task && w.event->signaledValue() < w.value) {
+    if (w.event->signaledValue() >= w.value) continue;
+    waits_on_gpu = true;
+    if (w.host_task) {
       device_->unsignaled_host_task_waits_committed_.fetch_add(
           1, std::memory_order_relaxed);
     }
+  }
+  if (waits_on_gpu) {
+    device_->gpu_waits_encoded_.fetch_add(1, std::memory_order_relaxed);
   }
   auto kernels =
       std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
@@ -2178,6 +2191,24 @@ __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
     const Device::KernelCacheStats k = d->kernel_cache_stats();
     out[6] = k.kernels;
     out[7] = k.source_bytes;
+    return 0;
+  }
+  return -1;
+}
+
+// Writes up to n of {gpu_waits_encoded, host_task_holds,
+// unsignaled_host_task_waits_committed} of device `ordinal` to out; returns
+// 0, or -1 if there is no such device. A separate hook so callers of
+// metal_pjrt_memory_stats keep their 8-slot buffers.
+__attribute__((visibility("default"))) int metal_pjrt_sync_stats(
+    int ordinal, uint64_t* out, int n) {
+  using namespace metal_pjrt::rt;
+  std::lock_guard<std::mutex> lock(g_devices_mu);
+  for (Device* d : g_devices) {
+    if (d->ordinal() != ordinal) continue;
+    const uint64_t v[] = {d->gpu_waits_encoded(), d->host_task_holds(),
+                          d->unsignaled_host_task_waits_committed()};
+    for (int i = 0; i < n && i < 3; ++i) out[i] = v[i];
     return 0;
   }
   return -1;

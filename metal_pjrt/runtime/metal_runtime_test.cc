@@ -564,6 +564,43 @@ TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
+// An event recorded after only waits (XLA: a zero-byte host-to-device copy
+// behind the compute sync point) waits on the host: a command buffer with no
+// ops that waits for another stream's backlog would sit on the GPU for all of
+// it, counting against the watchdog.
+TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
+  const uint32_t n = 1 << 20;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> a = NewStream();
+  std::unique_ptr<Stream> b = NewStream();
+  absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
+  ASSERT_THAT(e, IsOk());
+  ASSERT_THAT(a->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
+  ASSERT_THAT(a->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(a->Synchronize(), IsOk());
+  const uint64_t gpu_waits = dev_->gpu_waits_encoded();
+  // A backlog of short kernels (~0.1 ms each; the thread cap commits a
+  // buffer every 128 of them).
+  const int kLaunches = 1000;
+  for (int i = 0; i < kLaunches; ++i) {
+    ASSERT_THAT(Axpy(a.get(), x, y, n, 1.0f, n / 256), IsOk());
+  }
+  ASSERT_THAT(a->Flush(), IsOk());
+  ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+  ASSERT_THAT(b->RecordEvent(e->get()), IsOk());
+  // The wait was satisfied on the host before the buffer was committed.
+  const auto [committed, signaled] = a->FenceForTesting();
+  EXPECT_GE(signaled, committed);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), gpu_waits);
+  ASSERT_THAT((*e)->WaitOnHost(), IsOk());
+  EXPECT_EQ(static_cast<float*>(y)[0], static_cast<float>(kLaunches));
+  EXPECT_EQ(static_cast<float*>(y)[n - 1], static_cast<float>(kLaunches));
+  ASSERT_THAT(b->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // WaitForStream covers the other stream's host tasks, not only its committed
 // GPU work: XLA orders a host-to-device copy (a host task) before compute
 // on another stream exactly this way.

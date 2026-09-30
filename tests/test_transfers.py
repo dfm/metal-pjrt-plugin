@@ -11,6 +11,7 @@ pattern) must not change the device value.
 import ctypes
 import gc
 import os
+import time
 
 import jax
 import jax.numpy as jnp
@@ -137,3 +138,58 @@ def test_device_puts_do_not_leak_host_port_refs():
         jax.device_put(b).block_until_ready()
     grew = _host_port_send_refs() - before - 1  # our own call's reference
     assert grew <= 0, f"{grew} host port send refs leaked by 220 device_puts"
+
+
+def _sync_stats():
+    import metal_pjrt_plugin
+    lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
+    out = (ctypes.c_uint64 * 3)()
+    assert lib.metal_pjrt_sync_stats(0, out, 3) == 0
+    return dict(zip(("gpu_waits_encoded", "host_task_holds",
+                     "unsignaled_host_task_waits_committed"), out))
+
+
+@pytest.mark.parametrize("put", ["zero_size", "copy"])
+def test_transfer_behind_a_compute_backlog(put):
+    # ~1 s of short GEMM chains queued on the compute stream, then a transfer
+    # that XLA orders after it. A zero-byte device-to-device copy only waits
+    # (for the destination's allocation, i.e. the compute stream) and records
+    # an event: that command buffer would sit on the GPU for the whole
+    # backlog (counting against the watchdog), so the runtime waits on the
+    # host instead. (A zero-byte host array needs no allocation, hence no
+    # wait.) device_put(x, may_alias=False) is a copy (an op) that
+    # waits on the GPU for x's producer, like any cross-stream consumer.
+    chain = jax.jit(lambda x, w: jax.lax.fori_loop(
+        0, 16, lambda i, x: jnp.tanh(x @ w), x, unroll=True))
+    k = jax.random.PRNGKey(0)
+    x = jax.random.normal(k, (1024, 1024), jnp.float32)
+    w = jax.random.normal(k, (1024, 1024), jnp.float32) / 32
+    chain(x, w).block_until_ready()
+    one = float("inf")
+    for _ in range(3):
+        t = time.perf_counter()
+        chain(x, w).block_until_ready()
+        one = min(one, time.perf_counter() - t)
+    # Each call (and so each of its command buffers) is far below the
+    # watchdog; together they queue ~1 s.
+    assert one < 0.1, one
+    empty = jnp.zeros((0, 3)).block_until_ready()
+    y = x
+    for _ in range(int(1.0 / one)):
+        y = chain(y, w)
+    s0 = _sync_stats()
+    if put == "zero_size":
+        z = jax.device_put(empty, may_alias=False)
+        assert z.block_until_ready().shape == (0, 3)
+        s1 = _sync_stats()
+        assert s1["gpu_waits_encoded"] == s0["gpu_waits_encoded"], (s0, s1)
+    else:
+        c = jax.device_put(y, may_alias=False)
+        np.testing.assert_array_equal(np.asarray(c), np.asarray(y))
+        s1 = _sync_stats()
+    assert s1["unsignaled_host_task_waits_committed"] == 0, s1
+    cpu = jax.devices("cpu")[0]
+    np.testing.assert_allclose(
+        np.asarray(chain(x, w)),
+        np.asarray(chain(jax.device_put(x, cpu), jax.device_put(w, cpu))),
+        atol=1e-5)
