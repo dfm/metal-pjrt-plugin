@@ -146,6 +146,40 @@ def test_not_rewritten(name, fn, shapes):
                         name=f"conv {name}")
 
 
+def _grouped_kernel_grad(groups):
+    def loss(w, x):
+        y = lax.conv_general_dilated(x, w, (1, 1), "SAME",
+                                     dimension_numbers=NHWC,
+                                     feature_group_count=groups)
+        return jnp.sum(y ** 2)
+    return jax.grad(loss)
+
+
+@pytest.mark.parametrize("name,fn,shapes", [
+    # JAX's kernel gradient of a grouped convolution is a convolution with
+    # batch_group_count = the groups (jax/_src/lax/convolution.py).
+    ("depthwise kernel gradient", _grouped_kernel_grad(4),
+     [(3, 3, 1, 8), (2, 8, 8, 4)]),
+    ("grouped kernel gradient", _grouped_kernel_grad(2),
+     [(3, 3, 4, 6), (4, 8, 8, 8)]),
+    ("batch groups", lambda x, w: lax.conv_general_dilated(
+        x, w, (1, 1), "VALID", dimension_numbers=NHWC, batch_group_count=2),
+     [(4, 8, 8, 3), (3, 3, 3, 6)]),
+    ("batch groups = batch = features", lambda x, w: lax.conv_general_dilated(
+        x, w, (1, 1), "VALID", dimension_numbers=NHWC, batch_group_count=4),
+     [(4, 8, 8, 3), (3, 3, 3, 4)]),
+])
+def test_batch_groups(name, fn, shapes):
+    # batch_group_count > 1: XLA's loop emitter sums over every batch group
+    # for each output feature, so MetalCompiler converts these to ordinary
+    # convolutions first (ConvolutionGroupConverter, as on XLA:CPU), and none
+    # is left.
+    a, b = _inputs(*shapes, np.float32)
+    assert "batch_group_count" not in _compiled(fn, a, b)
+    metal_testing.check(fn, a, b, ulps=GRAD_ULPS["f32"], normwise=True,
+                        name=f"conv {name}")
+
+
 DISABLE_CONV_CHILD = """
 import numpy as np, jax
 from jax import lax

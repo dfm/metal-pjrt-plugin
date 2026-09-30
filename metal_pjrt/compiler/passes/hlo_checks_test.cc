@@ -11,6 +11,7 @@
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
+#include "xla/hlo/transforms/simplifiers/convolution_group_converter.h"
 #include "xla/stream_executor/gpu/gpu_blas_lt.h"
 #include "xla/xla_data.pb.h"
 
@@ -356,6 +357,36 @@ ENTRY e {
   EXPECT_NE(c128.message().find("complex128"), std::string::npos) << c128;
   EXPECT_NE(c128.message().find("jit(f)/dot_general"), std::string::npos)
       << c128;
+}
+
+// XLA's loop emitter sums a batch_group_count > 1 convolution over every
+// batch group, so MetalCompiler converts them first (ConvolutionGroupConverter
+// with these arguments); one that is left is a bug.
+TEST_F(MetalHloChecksTest, BatchGroupConvolutions) {
+  const std::string kConv = R"(
+HloModule m
+ENTRY e {
+  x = f32[2,8,12,4] parameter(0)
+  w = f32[4,3,5,16] parameter(1)
+  ROOT c = f32[1,6,8,16] convolution(x, w), window={size=3x5 pad=0_0x0_0}, dim_labels=b01f_i01o->b01f, batch_group_count=2, metadata={op_name="jit(f)/conv_general_dilated"}
+})";
+  auto module = ParseAndReturnUnverifiedModule(kConv);
+  ASSERT_TRUE(module.ok()) << module.status();
+  absl::Status left = CheckPostGemmRewriter(**module);
+  EXPECT_EQ(left.code(), absl::StatusCode::kInternal);
+  EXPECT_NE(left.message().find("batch_group_count"), std::string::npos)
+      << left;
+  EXPECT_NE(left.message().find("jit(f)/conv_general_dilated"),
+            std::string::npos)
+      << left;
+  ConvolutionGroupConverter pass(
+      /*should_expand=*/[](HloInstruction*) { return true; },
+      /*is_cost_viable=*/[](HloInstruction*) { return false; },
+      /*convert_batch_groups_only=*/true);
+  auto changed = RunHloPass(&pass, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_TRUE(*changed);
+  EXPECT_TRUE(CheckPostGemmRewriter(**module).ok());
 }
 
 // After optimization, so that an fft in the dead branch of a folded

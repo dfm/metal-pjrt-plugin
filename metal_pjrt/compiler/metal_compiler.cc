@@ -37,6 +37,7 @@
 // --- begin linalg (Accelerate LAPACK) ---
 #include "metal_pjrt/linalg/linalg_rewriter.h"
 // --- end linalg ---
+#include "xla/hlo/transforms/simplifiers/convolution_group_converter.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
 #include "xla/service/call_inliner.h"
@@ -150,6 +151,17 @@ absl::Status MetalCompiler::OptimizeHloConvolutionCanonicalization(
   // (MLX's steel kernels; the rest stay on the loop emitter), in place of
   // CUDA's cuDNN canonicalization.
   HloPassPipeline pipeline("metal-expanders", compilation_stats);
+  // batch_group_count > 1 (the kernel gradient of a grouped or depthwise
+  // convolution, in JAX) becomes an ordinary convolution with one more
+  // spatial dimension, as on XLA:CPU (cpu_compiler.cc). On CUDA cuDNN takes
+  // these; XLA's loop emitter sums over every batch group for each output
+  // feature instead of the feature's own (indexing_analysis.cc,
+  // ComputeOutputToInputConvolutionOpIndexing), so none may reach it.
+  // CheckPostGemmRewriter refuses any that does.
+  pipeline.AddPass<ConvolutionGroupConverter>(
+      /*should_expand=*/[](HloInstruction*) { return true; },
+      /*is_cost_viable=*/[](HloInstruction*) { return false; },
+      /*convert_batch_groups_only=*/true);
   if (Settings().conv_rewrite) {
     pipeline.AddPass<MetalConvRewriter>();
   }

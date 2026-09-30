@@ -49,6 +49,7 @@ cc_library(
         "@xla//xla:xla_proto_cc",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/hlo/pass:hlo_pass_pipeline",
+        "@xla//xla/hlo/transforms/simplifiers:convolution_group_converter",
         "@xla//xla/hlo/transforms/simplifiers:hlo_dce",
         "@xla//xla/hlo/transforms/simplifiers:tuple_simplifier",
         "@xla//xla/service:call_inliner",

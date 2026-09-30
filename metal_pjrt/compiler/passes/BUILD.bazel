@@ -196,6 +196,7 @@ cc_test(
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/hlo/testlib:hlo_hardware_independent_test_base",
+        "@xla//xla/hlo/transforms/simplifiers:convolution_group_converter",
         "@xla//xla/stream_executor/gpu:gpu_blas_lt",
     ],
 )

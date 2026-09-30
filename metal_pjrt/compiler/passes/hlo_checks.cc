@@ -264,6 +264,14 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             "atomics, which Metal does not have: ",
             DescribeOp(*instr)));
       }
+      if (instr->opcode() == HloOpcode::kConvolution &&
+          instr->batch_group_count() > 1) {
+        return absl::InternalError(absl::StrCat(
+            "Metal: convolution with batch_group_count > 1 after "
+            "ConvolutionGroupConverter (XLA's loop emitter computes it "
+            "wrong): ",
+            DescribeOp(*instr), metal_pjrt::kReportBug));
+      }
       if (instr->opcode() == HloOpcode::kDot &&
           instr->shape().element_type() == C64) {
         return absl::InternalError(absl::StrCat(
