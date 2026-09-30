@@ -24,8 +24,11 @@
 namespace xla {
 namespace gpu {
 
-// GpuCompiler for Apple Metal. Modeled on IntelGpuCompiler: the HLO pipeline
-// is the stock one. Kernels are lowered to MSL by MetalKernelCompiler (see
+// GpuCompiler for Apple Metal, modeled on XLA's IntelGpuCompiler
+// (xla/service/gpu/intel_gpu_compiler.h; Apache-2.0, Copyright The OpenXLA
+// Authors). The HLO pipeline is GpuCompiler's with the plugin's passes
+// around it: before it (RunHloPasses), at the convolution-canonicalization
+// hook and after GemmRewriter. Kernels are lowered to MSL by MetalKernelCompiler (see
 // metal_pjrt/codegen), which CreateKernelCompiler hands to the
 // emitters; the target-binary step hands back that MSL source or, for the
 // constants module, a serialized constants container.
@@ -37,6 +40,10 @@ namespace gpu {
 //  - xla_gpu_enable_command_buffer cleared: no command buffer support (the
 //    OneAPI capability disables them too; this makes it explicit).
 //  - xla_gpu_enable_triton_gemm=false: Triton does not target Metal.
+//  - xla_gpu_dot_merger_threshold_mb=0: no DotMerger (it copies every weight
+//    that shares an operand, on each call).
+//  - xla_gpu_enable_dynamic_slice_fusion=false: it runs GEMMs and FFI calls
+//    in place on slices, which the handlers are not written for.
 void ApplyMetalDefaults(DebugOptions& debug_options);
 
 class MetalCompiler : public GpuCompiler {
@@ -53,8 +60,10 @@ class MetalCompiler : public GpuCompiler {
       std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
       const CompileOptions& options) override;
 
-  // Besides convolution canonicalization (a no-op), this is the last pre-layout
-  // hook: it expands sort and triangular-solve, which have no Metal emitter.
+  // CUDA's cuDNN canonicalization hook, the last before layout assignment:
+  // batch-group convolutions are converted to ordinary ones, convolutions
+  // go to metal$conv, and sort and triangular-solve, which have no Metal
+  // emitter, are expanded.
 
   absl::Status OptimizeHloConvolutionCanonicalization(
       HloModule* hlo_module, const se::GpuComputeCapability& gpu_version,
