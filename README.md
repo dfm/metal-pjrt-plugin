@@ -269,9 +269,11 @@ Language; it does not re-interpret StableHLO op by op.
 
 ## Contributing
 
-Issues and pull requests are welcome.
-[`docs/development.md`](docs/development.md) covers building and testing;
-please run the GPU tests under `scripts/device_lock.py`.
+Issues and pull requests are welcome: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+says what a useful report contains, and
+[`docs/development.md`](docs/development.md) covers building and testing.
+Please run the GPU tests under `scripts/device_lock.py`. Security reports:
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 
