@@ -180,6 +180,25 @@ def test_batch_groups(name, fn, shapes):
                         name=f"conv {name}")
 
 
+def test_batch_groups_1d_large():
+    # The kernel gradient of a 1-D depthwise convolution: the converter's
+    # extra dimension makes it a 2-D convolution with base dilation G and
+    # stride G - 1 on that dimension, which MetalConvRewriter may take (it is
+    # over 4 Mflop), so metal$conv sees a weight gradient with kernel and
+    # input dilation together. The tolerance is an estimate for a 65536-term
+    # contraction in f32 (not measured).
+    def loss(w, x):
+        y = lax.conv_general_dilated(x, w, (1,), "SAME",
+                                     dimension_numbers=("NWC", "WIO", "NWC"),
+                                     feature_group_count=4)
+        return jnp.sum(y ** 2)
+    w, x = _inputs((5, 1, 8), (32, 2048, 4), np.float32)
+    fn = jax.grad(loss)
+    assert "batch_group_count" not in _compiled(fn, w, x)
+    metal_testing.check(fn, w, x, ulps=128, normwise=True,
+                        name="conv 1-d depthwise kernel gradient")
+
+
 DISABLE_CONV_CHILD = """
 import numpy as np, jax
 from jax import lax
