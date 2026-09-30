@@ -67,7 +67,7 @@ inline bool ParseConstants(const uint8_t* bytes, size_t size,
   if (!IsConstantsContainer(bytes, size)) return false;
   size_t pos = 8;
   auto get = [&](void* dst, size_t n) {
-    if (pos + n > size) return false;
+    if (pos > size || n > size - pos) return false;
     std::memcpy(dst, bytes + pos, n);
     pos += n;
     return true;
@@ -82,10 +82,14 @@ inline bool ParseConstants(const uint8_t* bytes, size_t size,
     if (!get(&name_len, 4) || !get(&reserved, 4) || !get(&data_len, 8)) {
       return false;
     }
+    // Lengths before allocations: a corrupt container (a damaged entry of
+    // JAX's persistent cache) must fail here, not in resize.
+    if (pos > size || name_len > size - pos) return false;
     ConstantBlob b;
     b.name.resize(name_len);
     if (!get(b.name.data(), name_len)) return false;
     align8();
+    if (pos > size || data_len > size - pos) return false;
     b.data.resize(data_len);
     if (data_len > 0 && !get(b.data.data(), data_len)) return false;
     align8();
