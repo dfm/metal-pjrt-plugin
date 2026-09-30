@@ -299,7 +299,7 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"math.tan", "tan"},          {"math.tanh", "tanh"},
       {"math.ctlz", "clz"},         {"math.cttz", "ctz"},
       {"math.ctpop", "popcount"},   {"math.erf", "xla_erf"},
-      {"math.erfc", "xla_erfc"},    {"math.exp", "xla_exp"},
+      {"math.exp", "xla_exp"},
       {"math.exp2", "exp2"},        {"math.expm1", "xla_expm1"},
       {"math.floor", "floor"},      {"math.fma", "fma"},
       {"math.isfinite", "isfinite"}, {"math.isinf", "isinf"},

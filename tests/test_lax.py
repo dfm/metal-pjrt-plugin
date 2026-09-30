@@ -56,6 +56,16 @@ def _():
     # subnormals are in test_subnormals_match_cpu.
     m = np.geomspace(1.2e-38, 3e38, 512).astype(np.float32)
     ref(lax.cbrt, np.concatenate([m, -m]))
+@case("lax.expm1 wide range")
+def _():
+    # Up to just under log(FLT_MAX) = 88.72: the prelude's um1 * x overflowed
+    # from 84.3 on and returned inf.
+    ref(lax.expm1, np.linspace(-20, 88.5, 512, dtype=np.float32))
+@case("lax.erf f16")
+def _():
+    # f32 erf is expanded by XLA before the MSL emitter; other float types
+    # reach the prelude's xla_erf.
+    ref(lambda x: lax.erf(x.astype(jnp.float16)), A(64) * 2)
 for op in ["bessel_i0e","bessel_i1e","igamma","igammac","polygamma","zeta","random_gamma_grad","betainc"]:
     def mk(op):
         def fn():
@@ -269,6 +279,7 @@ ULPS = {
     'lax.atan': 2.5, 'lax.sinh': 2.9, 'lax.cosh': 1.9, 'lax.asinh': 3.2,
     'lax.acosh': 3, 'lax.atanh': 3.4, 'lax.sqrt': 1, 'lax.rsqrt': 1,
     'lax.cbrt': 1.7, 'lax.cbrt wide range': 2.8, 'lax.erf': 3.8, 'lax.erfc': 11, 'lax.erf_inv': 4.3,
+    'lax.expm1 wide range': 4.3, 'lax.erf f16': 1,
     'lax.lgamma': 580, 'lax.digamma': 1600, 'lax.square': 1,
     'lax.reciprocal': 1, 'lax.bessel_i0e': 2.7, 'lax.bessel_i1e': 5,
     'lax.igamma': 5.9, 'lax.igammac': 26, 'lax.polygamma': 17, 'lax.zeta': 2,

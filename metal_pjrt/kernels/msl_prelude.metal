@@ -125,7 +125,9 @@ inline T xla_expm1(T x) {
   if (u == 1.0f) return x;
   float um1 = u - 1.0f;
   if (um1 == -1.0f) return T(-1.0f);
-  if (isinf(u)) return T(u);
+  // From x ~ 17 on, u - 1 rounds to u; um1 * xf would overflow for
+  // x > 84.3, where exp(x) is still finite (up to 88.72).
+  if (um1 == u) return T(u);
   return T(um1 * xf / log(u));
 }
 // Metal's float exp/sin/cos are biased by ~0.3 ulp for small |x|, which a
@@ -155,38 +157,30 @@ template <typename T>
 inline T xla_sin(T x) { return sin(x); }
 template <typename T>
 inline T xla_cos(T x) { return cos(x); }
-// erfc for a >= 0 (Numerical Recipes erfcc; fractional error < 1.2e-7).
-inline float xla_erfc_pos(float a) {
-  float t = 1.0f / (1.0f + 0.5f * a);
-  float p = -a * a - 1.26551223f +
-            t * (1.00002368f +
-            t * (0.37409196f +
-            t * (0.09678418f +
-            t * (-0.18628806f +
-            t * (0.27886807f +
-            t * (-1.13520398f +
-            t * (1.48851587f +
-            t * (-0.82215223f + t * 0.17087277f))))))));
-  return t * exp(p);
-}
+// erf for the types XLA's RewriteErf32Pattern leaves alone (it expands f32
+// only), with that pattern's rational approximation evaluated in float:
+// coefficients and the saturation bound from XLA's
+// xla/codegen/emitters/transforms/expand_float_ops.cc (Apache-2.0,
+// Copyright The OpenXLA Authors).
 template <typename T>
 inline T xla_erf(T x) {
   float xf = float(x);
-  float a = fabs(xf);
-  if (a < 0.25f) {
-    float x2 = xf * xf;
-    return T(1.1283791671f * xf *
-             (1.0f + x2 * (-1.0f / 3.0f +
-                           x2 * (0.1f + x2 * (-1.0f / 42.0f +
-                                              x2 * (1.0f / 216.0f))))));
-  }
-  return T(copysign(1.0f - xla_erfc_pos(a), xf));
-}
-template <typename T>
-inline T xla_erfc(T x) {
-  float xf = float(x);
-  float r = xla_erfc_pos(fabs(xf));
-  return T(xf < 0.0f ? 2.0f - r : r);
+  // erfinv(1 - 2^-23): beyond it erf rounds to +-1 in float.
+  if (fabs(xf) >= 3.7439211627767994f) return T(copysign(1.0f, xf));
+  float x2 = xf * xf;
+  float p = 0.00022905065861350646f;
+  p = fma(p, x2, 0.0034082910107109506f);
+  p = fma(p, x2, 0.050955695062380861f);
+  p = fma(p, x2, 0.18520832239976145f);
+  p = fma(p, x2, 1.128379143519084f);
+  float q = -1.1791602954361697e-7f;
+  q = fma(q, x2, 0.000023547966471313185f);
+  q = fma(q, x2, 0.0010179625278914885f);
+  q = fma(q, x2, 0.014070470171167667f);
+  q = fma(q, x2, 0.11098505178285362f);
+  q = fma(q, x2, 0.49746925110067538f);
+  q = fma(q, x2, 1.0f);
+  return T(xf * p / q);
 }
 // pow(|x|, 1/3) alone is 7-12 ulps off away from 1 (1/3 rounds up in float,
 // an error that grows with |log x|); one Newton step, (2r + a / r^2) / 3,

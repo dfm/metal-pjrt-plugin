@@ -33,8 +33,10 @@ Open, not being fixed right now:
   polynomials cover only smaller arguments): on [0.125, 1) mean +0.11 ulps
   for exp(-x), -0.10 for sin, -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0,
   max 0.8 / 0.6 / 0.5); exp on 1 .. 10 +0.37 (table below).
-- tanh, sinh / cosh and the prelude's `xla_expm1` / `erf` still use Metal's
-  biased `exp`.
+- sinh / cosh and the prelude's `xla_expm1` still use Metal's biased `exp`.
+  f32 `tanh` and `erf` do not: XLA expands them to rational approximations
+  before the kernel translator (f16 `tanh` is Metal's builtin; f16 `erf` is
+  the same rational, in the prelude).
 - Metal's `log` is biased everywhere, by about +-0.5 ulps (+ below 1, -
   above), max ~2.5 ulps (~2.6 for `log2`, which is `log` times 1/ln 2).
 - The widest test tolerances (`tests/test_lax.py`, measured error doubled):
