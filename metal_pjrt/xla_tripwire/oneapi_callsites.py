@@ -13,7 +13,7 @@ after moving the XLA pin:
 
 Entries are "file: line text" (whitespace collapsed, no line numbers), so
 unrelated edits do not show up. Tests and the SYCL platform's own directory
-(xla/stream_executor/sycl, not built here) are skipped.
+(xla/stream_executor/sycl, whose platform is not built here) are skipped.
 """
 import argparse
 import difflib

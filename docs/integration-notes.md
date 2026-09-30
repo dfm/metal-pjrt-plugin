@@ -10,8 +10,8 @@ The load-bearing sites (OneAPI branches, the copied `AddLoweringPasses`
 prefix, assumptions of the plugin's HLO passes) are snapshotted by
 `//metal_pjrt/xla_tripwire:xla_tripwire_test`, which fails with a diff
 when a pin bump changes one; `metal_pjrt/xla_tripwire/oneapi_callsites.py`
-lists every `IsOneAPI()`/`IsIntelGpu()`/`is_sycl` line XLA-wide against a
-golden list. Both have an `--update` mode.
+lists every line XLA-wide that branches on the OneAPI capability, the SYCL
+platform id or a SPIR target against a golden list. Both have an `--update` mode.
 
 ## Identity
 
@@ -20,7 +20,8 @@ golden list. Both have an `--update` mode.
   (`xla/service/platform_util.cc` lowercases unknown names).
 - PJRT platform (the JAX platform): name "mtl" (`MetalName()`), id
   `tsl::Fingerprint64("mtl")`. Not "metal": that is Apple's
-  closed-source jax-metal plugin, and both may be installed together.
+  closed-source jax-metal plugin; the names do not collide (the two have
+  not been tried together).
   The StreamExecutor, FFI and XLA-internal names stay "METAL"/"metal": they
   live in registries private to our dylib (it exports only `GetPjrtApi`,
   the callback trampoline and three testing hooks, `metal_pjrt_memory_stats`,

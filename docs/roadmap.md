@@ -163,8 +163,9 @@ CUDA too). The plugin refuses such GEMMs at compile time
 
 ## Deferred / unverified
 
-- The README's "Unverified" item lists what was never tried (a real GPU
-  fault or watchdog timeout, jax-metal side by side, other Macs). Beyond
+- The README's "Unverified" item lists what was never tested (the error
+  path after a real GPU fault or watchdog timeout, jax-metal side by side,
+  other Macs). Beyond
   that: whether every work ticket ends after a sticky error is untested
   (if not, cached buffers stay until the process exits).
 - The critical-pressure refusal and its retry (drop the cache, wait for

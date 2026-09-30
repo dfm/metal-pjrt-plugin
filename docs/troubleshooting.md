@@ -78,8 +78,10 @@ Two different limits:
 `Metal: the driver could not allocate ... on device 0 (...): ... already
 allocated, recommended working set ..., maxBufferLength ...` is neither:
 the request was inside the budget and Metal itself returned no buffer
-(the machine is out of memory, or the single buffer is larger than the
-driver allows). Use smaller arrays or free memory.
+(the machine is out of memory). Use smaller arrays or free memory. A
+single array larger than Metal allows gets `Metal: allocating ... exceeds
+the largest buffer the device can create (maxBufferLength ...; device 0,
+...)` instead: split the array.
 
 ## "accepts no further GPU work in this process"
 

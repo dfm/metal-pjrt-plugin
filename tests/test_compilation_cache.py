@@ -116,8 +116,8 @@ jax.monitoring.register_event_listener(
     if event == "/jax/compilation_cache/cache_hits" else None)
 def f(x):
     # A loop (module constants), a matmul and elementwise kernels.
-    y = jax.lax.fori_loop(0, 3, lambda i, v: jnp.tanh(v @ v.T) + i, x)
-    return y.sum(0)
+    y = jax.lax.fori_loop(0, 3, lambda i, v: jnp.sin(1.5 * v + i), x)
+    return (y @ x.T).sum(0)
 x = np.linspace(-1, 1, 64 * 64, dtype=np.float32).reshape(64, 64)
 got = np.asarray(jax.jit(f)(x))
 mtl_hits = len(hits)
