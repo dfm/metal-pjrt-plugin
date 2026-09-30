@@ -847,6 +847,26 @@ Device::MemoryStats Device::memory_stats() const {
   return m;
 }
 
+std::string Device::DescribeNearestAllocations(const void* ptr) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+  auto above = allocations_.upper_bound(addr);
+  std::string out = absl::StrFormat("%d live allocations", allocations_.size());
+  if (above != allocations_.begin()) {
+    // `addr` may lie inside it (a range past its end is refused too).
+    auto below = std::prev(above);
+    absl::StrAppendFormat(&out, "; nearest at or below: %#x (%d bytes, %d bytes before)",
+                          below->first, below->second.second,
+                          addr - below->first);
+  }
+  if (above != allocations_.end()) {
+    absl::StrAppendFormat(&out, "; nearest above: %#x (%d bytes, starts %d bytes after)",
+                          above->first, above->second.second,
+                          above->first - addr);
+  }
+  return out;
+}
+
 absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   std::lock_guard<std::mutex> lock(mu_);
   uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
@@ -1965,6 +1985,24 @@ absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
   return absl::OkStatus();
 }
 
+absl::Status Stream::CheckHostTransfer(const void* device_ptr, uint64_t size,
+                                      absl::string_view what) {
+  absl::StatusOr<BufferRef> ref = device_->Resolve(device_ptr);
+  if (ref.ok() && ref->offset + size <= ref->buffer->length()) {
+    return absl::OkStatus();
+  }
+  const std::string msg = absl::StrFormat(
+      "Metal %s: device pointer %p (%d bytes) is %s a live allocation on "
+      "device %d (%s); refusing the copy",
+      what, device_ptr, size, ref.ok() ? "past the end of" : "not inside",
+      device_->ordinal(), device_->DescribeNearestAllocations(device_ptr));
+  LOG(ERROR) << msg;
+  return absl::InternalError(absl::StrCat(
+      msg,
+      ". This is a metal-pjrt-plugin bug; please report it with the log "
+      "above"));
+}
+
 absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
                                         uint64_t size) {
   if (size == 0) return absl::OkStatus();
@@ -1973,6 +2011,7 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
         "MemcpyHostToDevice(%p <- %p, %d bytes): null pointer", dst, src,
         size));
   }
+  ABSL_RETURN_IF_ERROR(CheckHostTransfer(dst, size, "MemcpyHostToDevice"));
   {
     ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);
@@ -2011,6 +2050,7 @@ absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
         "MemcpyDeviceToHost(%p <- %p, %d bytes): null pointer", dst, src,
         size));
   }
+  ABSL_RETURN_IF_ERROR(CheckHostTransfer(src, size, "MemcpyDeviceToHost"));
   {
     ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);

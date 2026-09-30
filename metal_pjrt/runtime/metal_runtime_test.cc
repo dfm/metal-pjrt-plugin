@@ -862,6 +862,30 @@ TEST_F(MetalRuntimeTest, HostTransfersInlineWhenIdle) {
   EXPECT_THAT(dev_->Deallocate(d), IsOk());
 }
 
+// A host transfer whose device side is not a live allocation (freed, or
+// past the end of one) is refused, not written through.
+TEST_F(MetalRuntimeTest, HostTransfersRefuseUnregisteredPointers) {
+  const uint32_t n = 1 << 12;
+  float* d = static_cast<float*>(Alloc(n * 4));
+  std::unique_ptr<Stream> s = NewStream();
+  std::vector<float> host(2 * n, 1.0f);
+  EXPECT_THAT(s->MemcpyHostToDevice(d, host.data(), 2 * n * 4),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("past the end of a live allocation")));
+  EXPECT_THAT(s->MemcpyDeviceToHost(host.data(), d + 1, n * 4),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("past the end of a live allocation")));
+  ASSERT_THAT(s->MemcpyHostToDevice(d, host.data(), n * 4), IsOk());
+  ASSERT_THAT(dev_->Deallocate(d), IsOk());  // cached, no longer live
+  EXPECT_THAT(s->MemcpyHostToDevice(d, host.data(), n * 4),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("not inside a live allocation")));
+  EXPECT_THAT(s->MemcpyDeviceToHost(host.data(), d, n * 4),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("not inside a live allocation")));
+  ASSERT_THAT(s->Synchronize(), IsOk());  // a refused copy is no GPU error
+}
+
 // A failed command buffer's error is sticky for the device: its events,
 // work that depends on it (also on other streams), unrelated streams, new
 // launches and host tasks all get it, and nothing recovers.

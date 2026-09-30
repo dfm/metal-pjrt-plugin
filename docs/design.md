@@ -229,6 +229,12 @@ sizes.
   is released (evicted, trimmed or dropped) only once all work that existed
   when it was freed has ended, since host tasks hold raw pointers and
   argument buffers hold GPU addresses.
+- Host transfers check their device side: a copy to or from a pointer that
+  is not inside a live allocation fails with INTERNAL and a log line naming
+  the nearest allocations. XLA keeps a transfer's buffer alive until the
+  copy is done, so this means the allocation table lost a buffer XLA still
+  holds (a use after free); writing through the pointer would corrupt
+  whatever reused the memory.
 - Idle trim and pressure: a libdispatch timer, armed only while the cache
   is not empty, releases buffers unused for 2 s, so an idle process gives
   its memory back; a `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning releases

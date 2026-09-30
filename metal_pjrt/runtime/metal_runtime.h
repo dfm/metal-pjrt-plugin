@@ -306,6 +306,8 @@ class Device {
   absl::Status Deallocate(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
+  // The live allocations nearest to `ptr` (below and above), for errors.
+  std::string DescribeNearestAllocations(const void* ptr) const;
   // Live bytes (allocated, not freed; buffer lengths).
   uint64_t allocated_bytes() const;
   static constexpr std::chrono::seconds kCacheIdleRelease{2};
@@ -605,6 +607,12 @@ class Stream {
   // numpy data, or waits for the copy of a large array).
   absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
+  // The device side of a host transfer must be `size` bytes inside a live
+  // allocation: anything else means the allocation table lost a buffer XLA
+  // still holds (a use after free), so the copy is refused with an
+  // InternalError, and logged, instead of writing through the pointer.
+  absl::Status CheckHostTransfer(const void* device_ptr, uint64_t size,
+                                 absl::string_view what);
 
   // Run `fn` on the host once all previously enqueued work has completed;
   // subsequent stream work waits for it to finish. GPU work that waits for a
