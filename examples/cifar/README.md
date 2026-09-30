@@ -29,7 +29,7 @@ export JAX_PLATFORMS=mtl,cpu
 # the comparison protocol: an untimed warm-up run, then JAX and PyTorch
 # alternating, 5 runs each, optionally with a GPU power/P-state sampler
 .venv/bin/python examples/cifar/compare.py --torch-python ~/.venvs/torch/bin/python \
-    --wrap "scripts/device_lock.py --" [--sampler PATH]
+    --wrap "scripts/device_lock.py --" [--sampler PATH] [--one-process]
 # per-epoch time, footprint, macOS memory pressure and the plugin's cache counters
 .venv/bin/python examples/cifar/airbench.py --runs 5 --profile-memory
 # PyTorch on MPS, in its own environment (not a dependency of this repo)

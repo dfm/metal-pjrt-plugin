@@ -8,12 +8,15 @@
    minutes of load, and the first run would otherwise get the fast minutes.
 2. Then JAX and PyTorch alternate, J T J T ..., `--runs` each, seeds 1..N,
    one process per run (each does its own one-epoch warm-up, untimed).
+   With --one-process, a second phase follows: JAX's --runs runs in one
+   process, then PyTorch's in one process, which shows run-over-run
+   accumulation (memory, caches) that fresh processes hide.
 3. With `--sampler`, a GPU sampler runs for the whole session (every
    `--sample-s` seconds a line "unix_time gpuW=.. cpuW=.. active=..%
    meanP=.. | states"); each run's rows get the mean GPU power and
    P-state over its timed part.
 
-Acceptance (printed): the JAX runs' times within ~3% of each other
+Acceptance (printed per phase): the JAX runs' times within ~3% of each other
 ((max - min) / min), and the JAX mean below the PyTorch mean of the same
 session. Raw rows go to stdout as JSON lines, the table at the end.
 """
@@ -24,10 +27,19 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 
 def run(cmd, env=None):
+    """Runs cmd; returns (rows, returncode, stderr tail, t0). Each JSON row
+    printed on stdout gets "_t", the time it arrived, so that runs within
+    one process can be matched to the sampler."""
     t0 = time.time()
-    out = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=ROOT)
-    rows = [json.loads(l) for l in out.stdout.splitlines() if l.startswith("{")]
-    return rows, out, t0, time.time()
+    p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         env=env, cwd=ROOT)
+    rows = []
+    for line in p.stdout:
+        if line.startswith("{"):
+            rows.append({**json.loads(line), "_t": time.time()})
+    err = p.stderr.read()
+    p.wait()
+    return rows, p.returncode, err.strip().splitlines()[-1:], t0
 
 
 def sampler_window(path, t0, t1):
@@ -53,6 +65,10 @@ def main():
     ap.add_argument("--sampler", help="GPU sampler binary (e.g. an IOReport P-state sampler)")
     ap.add_argument("--sample-s", type=int, default=10)
     ap.add_argument("--wrap", default="", help="command prefix for each run, e.g. the device lock")
+    ap.add_argument("--one-process", action="store_true",
+                    help="after the alternating phase, a second phase: JAX's --runs runs in "
+                         "one process, then PyTorch's in one process (shows run-over-run "
+                         "accumulation that fresh processes hide)")
     ap.add_argument("--log", default=os.path.join(tempfile.gettempdir(), "airbench_gpu_samples.txt"),
                     help="where the sampler writes (default: a temporary file)")
     args = ap.parse_args()
@@ -61,10 +77,26 @@ def main():
     tenv = {**os.environ, "PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.8",
             "PYTORCH_MPS_LOW_WATERMARK_RATIO": "0.6"}
     extra = ["--epochs", str(args.epochs)] if args.epochs else []
-    jax_cmd = lambda seed: wrap + [sys.executable, os.path.join(HERE, "airbench.py"),
-                                   "--runs", "1", "--seed", str(seed)] + extra
-    torch_cmd = lambda seed: wrap + [args.torch_python, os.path.join(HERE, "torch_baseline.py"),
-                                     "--runs", "1", "--seed", str(seed)] + extra
+    jax_cmd = lambda seed, n=1: wrap + [sys.executable, os.path.join(HERE, "airbench.py"),
+                                        "--runs", str(n), "--seed", str(seed)] + extra
+    torch_cmd = lambda seed, n=1: wrap + [args.torch_python,
+                                          os.path.join(HERE, "torch_baseline.py"),
+                                          "--runs", str(n), "--seed", str(seed)] + extra
+
+    def record(name, phase, rs, rc, err):
+        res = [r for r in rs if "seed" in r and "acc" in r]
+        if rc or not res:
+            res_rows = [{"impl": name, "phase": phase, "error": err}]
+        else:
+            # A run's timed part ends eval_s before its row was printed.
+            res_rows = [{"impl": name, "phase": phase, "seed": r["seed"], "acc": r["acc"],
+                         "train_s": r["train_s"],
+                         **sampler_window(args.log if sampler else None,
+                                          r["_t"] - r["eval_s"] - r["train_s"],
+                                          r["_t"] - r["eval_s"])} for r in res]
+        for row in res_rows:
+            rows.append(row)
+            print(json.dumps(row), flush=True)
 
     sampler = None
     if args.sampler:
@@ -72,44 +104,39 @@ def main():
                                    stderr=subprocess.STDOUT)
     rows = []
     try:
-        rows_w, out, t0, t1 = run(jax_cmd(0), env)
-        if out.returncode:
-            sys.exit(f"warm-up run failed:\n{out.stderr[-2000:]}")
-        print(json.dumps({"warmup_run": True, "wall_s": round(t1 - t0, 1)}), flush=True)
+        _, rc, err, t0 = run(jax_cmd(0), env)
+        if rc:
+            sys.exit(f"warm-up run failed: {err}")
+        print(json.dumps({"warmup_run": True, "wall_s": round(time.time() - t0, 1)}), flush=True)
         arms = [("jax", jax_cmd, env)] + ([("torch", torch_cmd, tenv)] if args.torch_python else [])
         for seed in range(1, args.runs + 1):
             for name, cmd, e in arms:
-                rs, out, t0, t1 = run(cmd(seed), e)
-                res = [r for r in rs if "seed" in r and "acc" in r]
-                if out.returncode or not res:
-                    row = {"impl": name, "seed": seed, "error": out.stderr.strip().splitlines()[-1:]}
-                else:
-                    r = res[-1]
-                    # The timed part is the last train_s + eval_s seconds before exit.
-                    row = {"impl": name, "seed": seed, "acc": r["acc"], "train_s": r["train_s"],
-                           **sampler_window(args.log if sampler else None,
-                                            t1 - r["train_s"] - r["eval_s"], t1 - r["eval_s"])}
-                rows.append(row)
-                print(json.dumps(row), flush=True)
+                record(name, "alternating", *run(cmd(seed), e)[:3])
+        if args.one_process:
+            for name, cmd, e in arms:
+                record(name, "one-process", *run(cmd(1, args.runs), e)[:3])
     finally:
         if sampler:
             sampler.terminate()
 
     print()
-    print("| impl | seed | train s | acc | GPU W | mean P-state |")
-    print("|---|---|---|---|---|---|")
+    print("| phase | impl | seed | train s | acc | GPU W | mean P-state |")
+    print("|---|---|---|---|---|---|---|")
     for r in rows:
-        print(f"| {r['impl']} | {r['seed']} | {r.get('train_s', 'error')} | {r.get('acc', '')} "
-              f"| {r.get('gpu_w', '')} | {r.get('mean_pstate', '')} |")
-    t = {k: [r["train_s"] for r in rows if r["impl"] == k and "train_s" in r] for k in ("jax", "torch")}
-    if t["jax"]:
+        print(f"| {r['phase']} | {r['impl']} | {r.get('seed', '')} | {r.get('train_s', 'error')} "
+              f"| {r.get('acc', '')} | {r.get('gpu_w', '')} | {r.get('mean_pstate', '')} |")
+    print()
+    for phase in ("alternating", "one-process"):
+        t = {k: [r["train_s"] for r in rows if r["impl"] == k and r["phase"] == phase
+                 and "train_s" in r] for k in ("jax", "torch")}
+        if not t["jax"]:
+            continue
         spread = (max(t["jax"]) - min(t["jax"])) / min(t["jax"])
-        summ = {"jax_mean_s": round(statistics.mean(t["jax"]), 1),
+        summ = {"phase": phase, "jax_mean_s": round(statistics.mean(t["jax"]), 1),
                 "jax_spread": round(spread, 3), "consistent": spread <= 0.03}
         if t["torch"]:
             summ.update(torch_mean_s=round(statistics.mean(t["torch"]), 1),
                         faster=statistics.mean(t["jax"]) < statistics.mean(t["torch"]))
-        print()
         print(json.dumps({"summary": True, **summ}))
 
 
