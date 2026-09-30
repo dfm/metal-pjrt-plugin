@@ -129,7 +129,9 @@ def _view(buf: _Buffer):
 
 
 def _write_error(err_ptr, capacity, msg: str):
-  data = msg.encode("utf-8", "replace")[: max(capacity - 1, 0)]
+  if capacity <= 0:
+    return
+  data = msg.encode("utf-8", "replace")[: capacity - 1]
   # The cut may fall inside a character; the message must stay valid UTF-8.
   data = data.decode("utf-8", "ignore").encode("utf-8")
   ctypes.memmove(err_ptr, data, len(data))
@@ -171,8 +173,9 @@ def _trampoline(cb_id, nargs, args, nrets, rets, err_ptr, err_cap):
 
 
 _c_trampoline = _TRAMPOLINE_TYPE(_trampoline)
-# Never freed: the library keeps the pointer, and a thread still executing at
-# interpreter exit can reach a callback after this module's globals are gone.
+# Never freed, so the pointer the library keeps stays valid when this
+# module's globals are cleared at interpreter exit. (A callback that runs
+# after the interpreter is finalized is still unsupported.)
 ctypes.pythonapi.Py_IncRef(ctypes.py_object(_c_trampoline))
 
 

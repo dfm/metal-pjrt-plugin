@@ -110,10 +110,12 @@ With `JAX_PLATFORMS` unset, JAX still initializes every installed backend,
 this one included (it prints the "experimental" warning), but if the Metal
 device cannot be set up it fails quietly and CPU programs carry on.
 `JAX_PLATFORMS=cpu` creates no Metal device. JAX still imports every
-installed plugin at startup, though, so the plugin library is loaded and
-its wrappers around three private JAX functions (compilation cache and
-host-callback lowering) are installed in every JAX process of the
-environment; they pass other backends straight through.
+installed plugin at startup, though, so in every JAX process of the
+environment the plugin library is loaded and the plugin's changes to
+private JAX state are made: wrappers around three functions (compilation
+cache and host-callback lowering; they pass other backends straight
+through), "mtl" added to the platforms that support buffer donation, and
+the "mtl" backend marked as one that may fail quietly.
 
 Next to Apple's jax-metal, use separate virtual environments: jax-metal
 pins its own jax version. The two have not been tried together.
