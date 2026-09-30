@@ -1,9 +1,7 @@
 # Performance
 
 Where metal-pjrt-plugin stands, how it is measured, and what was tried and dropped.
-The dated measurements behind every line here, including superseded ones,
-are in `docs/archive/performance-log-2026-09.md`. The runtime policies the
-numbers depend on (command-buffer batching, the buffer cache) are described
+The runtime policies the numbers depend on (command-buffer batching, the buffer cache) are described
 in `docs/design.md`, "Runtime".
 
 ## Methodology
@@ -46,7 +44,7 @@ in `docs/design.md`, "Runtime".
 ## Headline numbers
 
 Historical: this table and `bench/results/table.md` (the full table) are
-from one run (3 interleaved rounds at 64488ff, before the platform rename
+from one run (3 interleaved rounds on 2026-09-27, before the platform rename
 and later runtime work; MLX's column is an older run without metadata).
 They are not regenerated; the bullets below are more recent. Medians, ms:
 
@@ -110,8 +108,8 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   0.322 vs 0.252 and 0.576 vs 0.525. f16: 0.84-1.10x MLX (forward).
 - Weight gradients at CNN-training size (bf16, N = 1024, 3x3 SAME; the
   CIFAR case study's airbench94 layers, `examples/cifar/conv_jax.py`,
-  median ms): a vectorized unfold (be3f9e7) and the GEMM tile and split-K
-  sized together (f0aca7b: 64 x 64 tiles, >= 512 threadgroups, f32
+  median ms): a vectorized unfold (2026-09-29) and the GEMM tile and split-K
+  sized together (2026-09-29: 64 x 64 tiles, >= 512 threadgroups, f32
   partials capped at 8 MiB). Forward and input gradients unchanged.
 
   | layer | before | after |
@@ -306,46 +304,45 @@ distinct shape is an executable (~230 MB for this model).
 
 ## Measured and rejected
 
-One line each; the numbers and reasoning are in the archived log and the
-commit messages.
+One line each.
 
-- Indirect command buffers (cc0c5e2): replay costs 1.2-1.4 us of GPU time
+- Indirect command buffers (2026-09-26): replay costs 1.2-1.4 us of GPU time
   per dependent dispatch against 0.8 us for direct encoding.
-- XLA command buffers as software replay (ab0dfcc): nanoGPT
+- XLA command buffers as software replay (2026-09-26): nanoGPT
   184 vs 196 ms, but loops 5-30% slower (scan 8.1 vs 6.2 ms); the 30-40 us
   per-launch cost it targeted was a 1 ms Synchronize sleep and a
   command-buffer submission storm, both fixed in the runtime.
-- The `metal$softmax` rewriter (fcbf5ce): 1.5-1.8x on standalone softmax,
+- The `metal$softmax` rewriter (2026-09-27): 1.5-1.8x on standalone softmax,
   but it never fires under autodiff (0 of 111 custom calls in the nanoGPT
   train step) and gained nothing where it fired. Standalone softmax
   8192x1024 went 1.24 -> 1.91 ms (MLX 0.97).
-- f32 GEMMs with an epilogue on steel (7704d02, reverted): steel f32
+- f32 GEMMs with an epilogue on steel (2026-09-27, reverted): steel f32
   is 2-15% slower than MPS from batch*m*n*k ~ 1.7e10, 0-7% faster on mid
   shapes; nanoGPT unchanged. f32 stays MPS + a second pass (bitwise
   identical output).
-- XLA's BFC allocator (6f98ea9, later replaced and removed): the runtime's size-class cache matches its step time (nanoGPT
+- XLA's BFC allocator (2026-09-24, later replaced and removed): the runtime's size-class cache matches its step time (nanoGPT
   178.7-180.0 vs 179.6-181.7 ms) and returns memory (idle 0.5 vs 2.5-2.8 GB).
   The plain platform allocator with no cache: 217-245 ms (first-touch page
   faults, ~60 us per MB).
-- Host LAPACK as a stream host task (59ec97d): cholesky 128 median 313 ->
+- Host LAPACK as a stream host task (2026-09-27): cholesky 128 median 313 ->
   299 us with the same p90, a chain of 100 `cho_solve` 64 +12%. The two GPU
   round trips around the call remain, and the hold rule keeps the dispatch
   thread waiting anyway. Python callbacks stay synchronous too (not
   measured: a commit that host-waits for a callback task needing the GIL
   could deadlock).
-- Radix sort on short rows (e93e731): one threadgroup per row lost 3-180x
+- Radix sort on short rows (2026-09-27): one threadgroup per row lost 3-180x
   (1000x32 942 vs 307 us, 100000x4 65 vs 0.35 ms); such sorts are
   expanded to the bitonic network before SortRewriter sees them.
-- Host staging of H2D transfers (e133b93): 100 MB `device_put` 9.4 vs
+- Host staging of H2D transfers (2026-09-27): 100 MB `device_put` 9.4 vs
   8.7 ms, and it never triggered anyway (numpy memory counts as pinned).
 - `const` on read-only kernel arguments (not committed):
   nanoGPT 178.9-179.7 vs 178.3-179.5 ms.
 - An on-disk kernel cache / `MTLBinaryArchive`: Metal's
   system shader cache already compiles repeated MSL in ~1.3 ms (186 ms the
   first time), and JAX's persistent compilation cache skips it entirely.
-- Per-encoder blame via `EncoderExecutionStatus` (d90c267): free (96-107 vs
+- Per-encoder blame via `EncoderExecutionStatus` (2026-09-26): free (96-107 vs
   97-111 us per round trip), but a command buffer is mostly one compute
   encoder, so it cannot narrow a watchdog reset to a kernel.
 - A configurable early-commit interval (`METAL_PJRT_EARLY_COMMIT_US`,
-  f7ec606 removed it): 0 and 1e6 leave chain64's bimodality as it is (above);
+  2026-09-27 removed it): 0 and 1e6 leave chain64's bimodality as it is (above);
   the 500 us constant stays.

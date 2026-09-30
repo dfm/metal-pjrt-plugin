@@ -268,8 +268,7 @@ Language; it does not re-interpret StableHLO op by op.
 - [`examples/cifar`](examples/cifar): CIFAR-10 to 94% (airbench94) in
   pure JAX, against PyTorch on MPS.
 - [`docs/development.md`](docs/development.md): layout, building, tests,
-  benchmarks, environment variables; `docs/archive/` keeps the dated
-  performance log and the review roadmap as history.
+  benchmarks, environment variables.
 
 ## Contributing
 

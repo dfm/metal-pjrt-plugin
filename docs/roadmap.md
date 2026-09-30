@@ -1,9 +1,8 @@
 # Roadmap
 
-The design review's phased plan, with a status line per item and commit
-hashes, is kept verbatim in `docs/archive/roadmap-2026-09-27.md`; the
-measurements are in `docs/performance.md` and
-`docs/archive/performance-log-2026-09.md`.
+Decisions made, options decided against, and what is next. The
+measurements are in `docs/performance.md`; `CHANGELOG.md` has the dated
+record.
 
 Guiding rules: mirror what XLA does on CUDA; measure before building;
 delete what does not earn its keep; no new upstream patches unless
@@ -60,11 +59,11 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 ## Decided against
 
-- **Our own PJRT client** (3b209b5): it would remove only ~15
+- **Our own PJRT client** (2026-09-27): it would remove only ~15
   of patch 0001's ~200 lines; there is no `StreamExecutorGpuClient` class
   to subclass at this pin; zero-copy host import would need a ~400-line
   client fork. The small `GetPjrtApi` wrapper stays.
-- **Host LAPACK as a stream host task** (59ec97d, built and measured):
+- **Host LAPACK as a stream host task** (2026-09-27, built and measured):
   not faster (cholesky 128 median 313 -> 299 us, same p90; 100 unblocked
   `cho_solve` +12%). Each call still pays two dependent GPU round trips
   and the hold rule keeps the dispatch thread waiting.
@@ -72,11 +71,11 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
   host-task worker could make a commit wait for a task that needs the GIL,
   and the host-LAPACK experiment above showed the host-task path buys
   nothing here.
-- **The softmax rewriter** (fcbf5ce): 1.5-1.8x on standalone softmax, but
+- **The softmax rewriter** (2026-09-27): 1.5-1.8x on standalone softmax, but
   it never fires under autodiff and gave nothing where it fired. Cost:
   standalone softmax 8192x1024 1.24 -> 1.91 ms (MLX 0.97).
 - **XLA command buffers and Metal indirect command buffers** (removed
-  bdb9c4c): measured; a wash or slower once the runtime was fixed.
+  2026-09-26): measured; a wash or slower once the runtime was fixed.
 - **MPSGraph for program subsets**: what jax-metal does; closed source (it
   cannot be debugged or fused into), and still about one kernel per op for
   scan-shaped programs.
@@ -102,7 +101,7 @@ Still on hold:
 - Full third-party notices for the statically linked XLA dependencies:
   before a release, alongside CI.
 
-Small-M bf16/f16 GEMM: done (e30480f: MLX's wide gemv for 2..8 rows, a
+Small-M bf16/f16 GEMM: done (2026-09-29: MLX's wide gemv for 2..8 rows, a
 16-row steel tile to 48, DotMerger off). 28 independent [M,1024]x[1024,6144]
 GEMMs at M=2: 15.03 -> 4.47 ms p10 (MLX 4.07); Qwen3-0.6B bf16 decode at
 batch 2: 26.71 -> 13.88 ms. The gemv needs K >= 512 (a sweep over batch,
@@ -125,11 +124,11 @@ on CPU). Left open: an upstream change so thunks share one kernel binary
 (and the serialized copy is made on demand); examples/lora could use
 coarser length buckets (`--pad-to`; each length is an executable).
 
-OOM diagnostics: done (cad915f). A refused allocation's RESOURCE_EXHAUSTED
+OOM diagnostics: done (2026-09-29). A refused allocation's RESOURCE_EXHAUSTED
 now names the executable that asked for it, also when the error surfaces in
 a later eager op.
 
-Conv weight gradient: done (be3f9e7 vectorized unfold, f0aca7b GEMM tile
+Conv weight gradient: done (2026-09-29 vectorized unfold, 2026-09-29 GEMM tile
 and split-K sized together). bf16 N=1024 31x31 24->64: 53.8 -> 18.2 ms;
 airbench94 to 94% in 229-259 s vs torch-MPS 254 +/- 20 s, at 3.3 vs 5.9 GB
 peak (`docs/performance.md`). Deferred: an implicit-GEMM weight gradient
@@ -214,7 +213,7 @@ Unscheduled directions, with enough context to pick one up cold.
      copies). Needs an
      `MPSCommandBuffer` over ours and an on-disk executable cache. Targets:
      conv and its grads, SDPA (macOS 15+). Days, not weeks.
-  2. More MLX steel kernels (MIT; the f16/bf16 GEMM port 31a9623 shows the
+  2. More MLX steel kernels (MIT; the f16/bf16 GEMM port 2026-09-25 shows the
      process): quantized matmul, decode-shaped attention, gather-matmul
      and segmented reductions (steel conv is done: `metal$conv`).
   3. Metal 4 MetalPerformancePrimitives (`matmul2d` / `conv2d` in-shader,

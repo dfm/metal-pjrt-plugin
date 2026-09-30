@@ -31,7 +31,7 @@ absl::Status EmbedMslInLlvmModule(llvm::Module& m, const MslKernel& kernel);
 // several kernels were linked into one module their translation units are
 // concatenated (ordered by kernel name). Kernel-specific symbols are prefixed
 // with the kernel name, but each unit repeats the prelude without an include
-// guard (removed as dead in 7275033), so only a one-kernel module yields a
+// guard, so only a one-kernel module yields a
 // valid MSL translation unit; the compiler hands this one kernel at a time.
 std::optional<std::string> ExtractMslFromLlvmModule(const llvm::Module& m);
 

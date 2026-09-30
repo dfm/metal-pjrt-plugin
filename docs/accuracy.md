@@ -91,7 +91,7 @@ Repro:
 
 ## Fixed in the MSL prelude
 
-- **Small |x| exp / sin / cos** (a3a91ba). The prelude's `xla_exp` /
+- **Small |x| exp / sin / cos** (2026-09-27). The prelude's `xla_exp` /
   `xla_sin` / `xla_cos` (float overloads; half and vectors call Metal's)
   evaluate a degree-6 / 7 / 6 Taylor polynomial with `fma` for |x| < 0.125
   (truncation < 1e-9 relative) and call Metal's function elsewhere; `sin`
@@ -103,7 +103,7 @@ Repro:
   (243 / 1040). The polynomial is faster than Metal's functions on
   ALU-bound code (8 rounds of exp+sin+cos over 4M: 1.81 -> 1.22-1.25 ms)
   and costs nothing measurable elsewhere.
-- **cbrt** (ce2475b). `pow(|x|, 1/3)` was 7-12 ulps off away from 1 (1/3
+- **cbrt** (2026-09-27). `pow(|x|, 1/3)` was 7-12 ulps off away from 1 (1/3
   rounds up in float). The prelude's `xla_cbrt` adds one Newton step: max
   1.28 ulps against float64 over FLT_MIN..3e38 (CPU 0.5; `lax.cbrt wide
   range` in `tests/test_lax.py`). Zeros, subnormals, infinities and NaN
@@ -137,7 +137,7 @@ Repro:
   FFT cases measure 1.3-3.0 ulps normwise (CPU float32 0.8-1.5).
 
 - softmax in f16 runs as XLA's fusions since the `metal$softmax` rewriter
-  was deleted (fcbf5ce): 9.5 ulps max over `tests/test_scan.py`'s shapes,
+  was deleted (2026-09-27): 9.5 ulps max over `tests/test_scan.py`'s shapes,
   the same as CPU, against 5.0 with the rewriter (which accumulated in
   f32); f16 log_softmax 1.0 vs 0.55. f32 (30.6, CPU 30.3) and bf16 (0.5)
   are unchanged.
@@ -145,7 +145,7 @@ Repro:
   rounding like steel): <= 0.5 ulps normwise on test_steel_gemm's few-row
   cases (bias + gelu <= 0.5, CPU 0.45-0.97); f32 output 0.5-1.5 ulps of f32
   (CPU 1-7).
-- GEMM epilogues fused into steel (7704d02) round once: f16/bf16 bias and
+- GEMM epilogues fused into steel (2026-09-27) round once: f16/bf16 bias and
   activation lose the intermediate rounding of D (normwise ulps f16 bias
   0.74 -> 0.50, bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm "+bias relu"
   0.61-0.93 -> 0.34-0.50). f32 epilogue GEMMs (MPS + second pass) are
