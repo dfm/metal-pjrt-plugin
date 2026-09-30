@@ -248,6 +248,9 @@ case("c64 matmul conj / transpose")(lambda: ref(lambda x, y: (x.conj().T @ y, x 
 case("c64 matmul HIGHEST, real @ complex")(lambda: ref(lambda x, y: (jnp.matmul(x, y, precision="highest"), R(32, 64) @ y), CX(32, 64), CX(64, 16)))
 case("c64 matmul grad")(lambda: ref(lambda x, y: jax.grad(lambda a, b: jnp.sum(jnp.abs(a @ b) ** 2), argnums=(0, 1))(x, y), CX(40, 24), CX(24, 16)))
 case("c64 conv")(lambda: ref(lambda x, w: lax.conv_general_dilated(x, w, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC")), CX(2, 8, 8, 3), CX(3, 3, 3, 4)))
+# Large enough (9.4 Mflop per real convolution) for metal$conv: the plugin
+# registers JAX's complex-to-real convolution rule for mtl (_lowerings.py).
+case("c64 conv large")(lambda: ref(lambda x, w: lax.conv_general_dilated(x, w, (1, 1), "SAME", dimension_numbers=("NHWC", "HWIO", "NHWC")), CX(4, 16, 16, 16), CX(3, 3, 16, 32)))
 # XLA's expanders build complex cholesky / triangular_solve / qr from dots
 # (MetalLinalgRewriter takes f32 only); the second expander run takes them.
 CSPD = lambda n: (lambda a: (a @ a.conj().T + n * np.eye(n)).astype(np.complex64))(CX(n, n).astype(np.complex128))
@@ -320,7 +323,7 @@ ULPS = {
     'c64 matvec': 1.7, 'c64 batched einsum': 4.6,
     'c64 matmul conj / transpose': 5.5,
     'c64 matmul HIGHEST, real @ complex': 8.5, 'c64 matmul grad': 3.7,
-    'c64 conv': 4.5, 'c64 cholesky / triangular_solve / qr': 4.9,
+    'c64 conv': 4.5, 'c64 conv large': 10, 'c64 cholesky / triangular_solve / qr': 4.9,
     'many-arg fusion (>31 buffers)': 6.1,
 }
 # Outputs of sums, dots and whole programs: ulps of the largest output.
@@ -339,7 +342,8 @@ NORMWISE = {
     "c64 constants", "c64 prod", "c64 cumsum", "c64 dot small (loop emitter)",
     "c64 matmul (GEMM)", "c64 matvec", "c64 batched einsum",
     "c64 matmul conj / transpose", "c64 matmul HIGHEST, real @ complex",
-    "c64 matmul grad", "c64 conv", "c64 cholesky / triangular_solve / qr",
+    "c64 matmul grad", "c64 conv", "c64 conv large",
+    "c64 cholesky / triangular_solve / qr",
 }
 
 

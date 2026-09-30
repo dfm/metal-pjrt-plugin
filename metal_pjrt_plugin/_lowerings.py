@@ -18,6 +18,8 @@ Registered for platform "mtl":
   (jax.export) and ``METAL_PJRT_DISABLE_FFT=1`` (for A/B comparisons) take
   a pure-JAX dense DFT (real matmuls against in-graph twiddle matrices,
   O(n^2) per axis, n <= 46340).
+* ``conv_general_dilated``: the upstream cpu/gpu rule, which expands a
+  complex convolution into real ones (they then reach ``metal$conv``).
 * ``check`` (checkify): the TPU rule, i.e. a no-op for ``debug=True`` checks
   and the usual "functionalize with checkify" error otherwise. The cpu/gpu
   rule, which raises from a host callback, is not wired up (host callbacks
@@ -307,7 +309,19 @@ def register() -> None:
                            debugging.debug_print_lowering_rule,
                            platform=PLATFORM)
 
+  def _conv():
+    # Complex convolutions as real ones, as JAX does on cpu and gpu: the
+    # real convolutions reach metal$conv, where a complex one stays a single
+    # loop-emitted kernel whatever its size.
+    from jax._src.lax import convolution
+    mlir.register_lowering(
+        convolution.conv_general_dilated_p,
+        partial(convolution._conv_general_dilated_lower,
+                expand_complex_convolutions=True),
+        platform=PLATFORM)
+
   reg("fft", _fft)
+  reg("conv_general_dilated", _conv)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
   from metal_pjrt_plugin import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702

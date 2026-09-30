@@ -17,6 +17,7 @@ from jax._src import (callback, checkify, compilation_cache, compiler, config,
                       core, debugging, dtypes, ffi)
 from jax._src import xla_bridge as xb
 from jax._src.interpreters import mlir
+from jax._src.lax import convolution as lax_convolution
 from jax._src.lax import fft as lax_fft
 from jax._src.lax import linalg as ll
 from jax._src.sharding_impls import SdyArray, SdyArrayList
@@ -79,6 +80,12 @@ SIGNATURES = {
     "mlir.lower_fun": (mlir.lower_fun, "(fun, multiple_results=True)"),
     "checkify.check_lowering_rule_unsupported": (
         checkify.check_lowering_rule_unsupported, "(*a, debug, **k)"),
+    "lax_convolution._conv_general_dilated_lower": (
+        lax_convolution._conv_general_dilated_lower,
+        "(ctx, lhs, rhs, *, window_strides, padding, lhs_dilation, "
+        "rhs_dilation, dimension_numbers, feature_group_count, "
+        "batch_group_count, precision, preferred_element_type, out_sharding, "
+        "expand_complex_convolutions=False, **unused_kwargs)"),
     "debugging.debug_callback_lowering": (
         debugging.debug_callback_lowering,
         "(ctx, *args, effect, partitioned, callback, **params)"),
