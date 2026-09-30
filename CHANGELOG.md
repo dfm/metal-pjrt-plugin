@@ -6,21 +6,6 @@ describe the present only. Commit hashes point at the change.
 
 ## Unreleased
 
-### 2026-09-30
-
-- A host-to-device copy queued behind GPU work no longer blocks the host:
-  it is staged (the bytes copied into a new shared buffer, then a GPU
-  copy), up to 64 MB in flight per device, instead of a host task whose
-  command buffer commit waited for the GPU to drain. Anything consuming a
-  fresh `device_put` (JAX's eager slicing sends its indices that way) used
-  to wait in Execute for all queued work; airbench94's step loop did so
-  every step. At full GPU clock that idle time was 60-67 ms of a 490 ms
-  step (GPU busy 87%, now 99%: 431 ms/step); once the fanless M3 throttles
-  to its ~5.5 W limit the step time is set by energy per step and does not
-  change (525 vs 526 ms/step, 2.94 vs 2.95 J/step).
-  `metal_pjrt_transfer_stats` (test hook) counts staged and host-task
-  copies.
-
 ### 2026-09-29
 
 - Memory limits work like PyTorch MPS: the per-process budget (half of

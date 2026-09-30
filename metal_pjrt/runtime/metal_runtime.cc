@@ -798,13 +798,6 @@ void Device::ReleaseBuffers(const std::vector<MTL::Buffer*>& buffers) {
   for (MTL::Buffer* b : buffers) b->release();
 }
 
-void Device::ReleaseStaging(const std::vector<MTL::Buffer*>& staging) {
-  for (MTL::Buffer* b : staging) {
-    staging_bytes_.fetch_sub(b->length());
-    b->release();
-  }
-}
-
 void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
   std::vector<MTL::Buffer*> evicted;
   uint64_t bytes = 0;
@@ -1275,7 +1268,6 @@ Stream::~Stream() {
     cmd_->release();
     device_->EndWork(cmd_ticket_);
   }
-  device_->ReleaseStaging(pending_staging_);
   for (auto& sv : pending_signals_) sv.first->release();
   for (MTL::CommandBuffer* cb : in_flight_) cb->release();
   fence_->release();
@@ -1412,8 +1404,6 @@ absl::Status Stream::Commit() {
     pending_signals_.clear();
     pending_waits_.clear();
     pending_kernels_.clear();
-    device_->ReleaseStaging(pending_staging_);
-    pending_staging_.clear();
     inject_error_ = absl::OkStatus();
     cmd_->release();
     cmd_ = nullptr;
@@ -1467,8 +1457,6 @@ absl::Status Stream::Commit() {
       std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
           std::move(pending_kernels_));
   pending_kernels_.clear();
-  std::vector<MTL::Buffer*> staging;
-  staging.swap(pending_staging_);
   MTL::SharedEvent* fence = fence_;
   fence->retain();
   const int traced_ops = ops_in_cmd_;
@@ -1478,7 +1466,7 @@ absl::Status Stream::Commit() {
   const void* self = this;
   const uint64_t ticket = cmd_ticket_;
   device->AddInFlight(cmd_, fence_, v, injected_error);
-  cmd_->addCompletedHandler([device, self, v, fence, signals, waits, staging,
+  cmd_->addCompletedHandler([device, self, v, fence, signals, waits,
                              traced_ops, kernels, injected_error,
                              ticket](MTL::CommandBuffer* cb) {
     if (TraceEnabled()) {
@@ -1525,7 +1513,6 @@ absl::Status Stream::Commit() {
       }
     }
     device->EndWork(ticket);
-    device->ReleaseStaging(staging);
     // Last use of the device: ~Device waits for in_flight_ to empty.
     device->RemoveInFlight(cb);
     for (auto& sv : signals) sv.first->release();
@@ -1993,38 +1980,7 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
       std::memcpy(dst, src, size);
       return absl::OkStatus();
     }
-    // Staged: a GPU copy waits for prior work on the GPU, where a host task
-    // would make the commit that records the destination's event wait on
-    // the host until then (the hold rule), and with it XLA's Execute of
-    // everything consuming the buffer. A destination outside the device's
-    // allocations keeps the host task's plain memcpy.
-    absl::StatusOr<BufferRef> d = device_->Resolve(dst);
-    bool stage = d.ok() && d->offset + size <= d->buffer->length();
-    if (stage &&
-        device_->staging_bytes_.fetch_add(size) + size > kMaxStagingBytes) {
-      device_->staging_bytes_.fetch_sub(size);
-      stage = false;
-    }
-    if (stage) {
-      MTL::Buffer* staging = device_->device_->newBuffer(
-          src, size, MTL::ResourceStorageModeShared);
-      absl::Status s = EnsureCommandBuffer();
-      if (staging != nullptr && s.ok()) {
-        // Owned by the command buffer from here: Commit's handler releases
-        // it, also if encoding fails.
-        pending_staging_.push_back(staging);
-        device_->staged_h2d_copies_.fetch_add(1, std::memory_order_relaxed);
-        return EncodeCopy(*d, BufferRef{staging, 0}, size);
-      }
-      if (staging != nullptr) {
-        device_->ReleaseStaging({staging});
-      } else {
-        device_->staging_bytes_.fetch_sub(size);
-      }
-      ABSL_RETURN_IF_ERROR(s);
-    }
   }
-  device_->host_task_h2d_copies_.fetch_add(1, std::memory_order_relaxed);
   return HostCallback([dst, src, size]() {
     std::memcpy(dst, src, size);
     return absl::OkStatus();
@@ -2182,23 +2138,6 @@ __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
     const Device::KernelCacheStats k = d->kernel_cache_stats();
     out[6] = k.kernels;
     out[7] = k.source_bytes;
-    return 0;
-  }
-  return -1;
-}
-
-// Writes {host-to-device copies staged through a GPU copy, those run as
-// host tasks, staging bytes in flight} of device `ordinal` to out[0..2];
-// returns 0, or -1 if there is no such device.
-__attribute__((visibility("default"))) int metal_pjrt_transfer_stats(
-    int ordinal, uint64_t* out) {
-  using namespace metal_pjrt::rt;
-  std::lock_guard<std::mutex> lock(g_devices_mu);
-  for (Device* d : g_devices) {
-    if (d->ordinal() != ordinal) continue;
-    out[0] = d->staged_h2d_copies();
-    out[1] = d->host_task_h2d_copies();
-    out[2] = d->staging_bytes();
     return 0;
   }
   return -1;
