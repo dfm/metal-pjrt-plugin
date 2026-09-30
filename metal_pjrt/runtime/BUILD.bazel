@@ -74,6 +74,15 @@ cc_library(
     hdrs = ["constants_container.h"],
 )
 
+cc_test(
+    name = "constants_container_test",
+    srcs = ["constants_container_test.cc"],
+    deps = [
+        ":constants_container",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 # Runtime test (no XLA); needs a Metal device, so run locally.
 cc_test(
     name = "metal_runtime_test",
