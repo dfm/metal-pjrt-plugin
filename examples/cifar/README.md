@@ -23,6 +23,8 @@ uv pip install --python .venv/bin/python -e '.[examples]'     # optax
 export JAX_PLATFORMS=mtl,cpu
 .venv/bin/python examples/cifar/check.py
 .venv/bin/python examples/cifar/airbench.py --runs 5
+# per-epoch time, footprint, macOS memory pressure and the plugin's cache counters
+.venv/bin/python examples/cifar/airbench.py --runs 5 --profile-memory
 # PyTorch on MPS, in its own environment (not a dependency of this repo)
 uv venv ~/.venvs/torch && uv pip install --python ~/.venvs/torch/bin/python torch numpy
 PYTORCH_MPS_HIGH_WATERMARK_RATIO=0.8 PYTORCH_MPS_LOW_WATERMARK_RATIO=0.6 \
