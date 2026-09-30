@@ -97,7 +97,9 @@ _UNSUPPORTED = {13: "tuple", 14: "opaque", 17: "token", 21: "int4",
 
 # callback_id -> weakref to the wrapped callable.
 _table: dict[int, weakref.ref] = {}
-_table_lock = threading.Lock()
+# Reentrant: _drop runs wherever the callable's last reference dies, which
+# can be a garbage collection on a thread that already holds the lock.
+_table_lock = threading.RLock()
 _SALT = secrets.randbits(31) << 32
 _counter = itertools.count(1)
 
@@ -128,6 +130,8 @@ def _view(buf: _Buffer):
 
 def _write_error(err_ptr, capacity, msg: str):
   data = msg.encode("utf-8", "replace")[: max(capacity - 1, 0)]
+  # The cut may fall inside a character; the message must stay valid UTF-8.
+  data = data.decode("utf-8", "ignore").encode("utf-8")
   ctypes.memmove(err_ptr, data, len(data))
   ctypes.memset(err_ptr + len(data), 0, 1)
 
@@ -166,7 +170,10 @@ def _trampoline(cb_id, nargs, args, nrets, rets, err_ptr, err_cap):
     return 1
 
 
-_c_trampoline = _TRAMPOLINE_TYPE(_trampoline)  # keep alive for the process
+_c_trampoline = _TRAMPOLINE_TYPE(_trampoline)
+# Never freed: the library keeps the pointer, and a thread still executing at
+# interpreter exit can reach a callback after this module's globals are gone.
+ctypes.pythonapi.Py_IncRef(ctypes.py_object(_c_trampoline))
 
 
 # --------------------------------------------------------------------------
