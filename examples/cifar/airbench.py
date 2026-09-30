@@ -218,22 +218,33 @@ def make_train_step(tx, dtype=jnp.bfloat16):
     warmup run then compiles exactly the programs the timed runs use."""
     # No donation: after a lookahead the net and the ema share buffers
     # (and the parameters are only a few MB).
+    #
+    # The step picks its own batch (batch i of the epoch's `order`) and
+    # carries its step counters as device values: a fresh host value per
+    # step (an eager slice's indices, a Python float) made the next program
+    # wait for the GPU to drain, ~60 ms of idle GPU per step.
     @jax.jit
-    def step(params, stats, opt_state, x, y, whiten_bias_on):
+    def step(params, stats, opt_state, imgs, labels, order, i, n, whiten_bias_on):
+        bs = HYP["batch_size"]
+        idx = jax.lax.dynamic_slice(order, (i * bs,), (bs,))
+        x, y = imgs[idx], labels[idx]
         (loss, stats), grads = jax.value_and_grad(loss_fn, has_aux=True)(params, stats, x, y,
                                                                           dtype)
         updates, opt_state = tx.update(grads, opt_state, params)
         # After whiten_bias_epochs the whitening bias is frozen, as in
         # airbench (requires_grad = False: no gradient, decay or momentum).
         updates["whiten"]["b"] = updates["whiten"]["b"] * whiten_bias_on
-        return optax.apply_updates(params, updates), stats, opt_state, loss
+        return optax.apply_updates(params, updates), stats, opt_state, loss, i + 1, n + 1
     return step
 
 
 @jax.jit
-def lookahead(ema, params, stats, decay):
-    """airbench's LookaheadState.update: ema <- lerp(ema, net, 1 - decay),
-    then the net (weights and BatchNorm stats) is reset to the ema."""
+def lookahead(ema, params, stats, alpha, n):
+    """airbench's LookaheadState.update with decay alpha[n] (a device table
+    and a device step count, so no host value per call): ema <- lerp(ema,
+    net, 1 - decay), then the net (weights and BatchNorm stats) is reset to
+    the ema."""
+    decay = alpha[n]
     net = (params, stats)
     ema = jax.tree.map(lambda e, p: e + (1 - decay) * (p - e), ema, net)
     return ema, ema[0], ema[1]
@@ -275,7 +286,7 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_st
     tx = make_optimizer(total)
     step = make_train_step(tx, jnp.dtype(dtype))
     stop = total if max_steps is None else min(total, max_steps)
-    alpha = 0.95 ** 5 * (np.arange(total + 1) / total) ** 3
+    alpha = jnp.asarray(0.95 ** 5 * (np.arange(total + 1) / total) ** 3, jnp.float32)
     key = jax.random.key(seed)
 
     jax.block_until_ready(train_x)
@@ -288,28 +299,29 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_st
     # whole set every other epoch (airbench's alternating flip).
     key, k = jax.random.split(key)
     padded = first_epoch_images(train_x, k)
-    n = 0
+    n = 0                                                           # host copy of n_dev
+    n_dev = jnp.zeros((), jnp.int32)
     if EPOCH_HOOK:
         EPOCH_HOOK(seed, -1, n, params)
     for epoch in range(math.ceil(epochs)):
         key, k1, k2 = jax.random.split(key, 3)
         imgs = epoch_images(padded, k1, epoch % 2 == 1)
         order = jax.random.permutation(k2, train_x.shape[0])
-        wb = jnp.float32(epoch < HYP["whiten_bias_epochs"])
-        for i in range(steps_per_epoch):
+        wb = jnp.float32(epoch < HYP["whiten_bias_epochs"])   # host values once per epoch
+        i_dev = jnp.zeros((), jnp.int32)
+        for _ in range(steps_per_epoch):
             if n >= stop:
                 break
-            idx = order[i * bs:(i + 1) * bs]
-            params, stats, opt_state, loss = step(params, stats, opt_state, imgs[idx],
-                                                  train_y[idx], wb)
+            params, stats, opt_state, loss, i_dev, n_dev = step(
+                params, stats, opt_state, imgs, train_y, order, i_dev, n_dev, wb)
             n += 1
             if n % 5 == 0:
-                ema, params, stats = lookahead(ema, params, stats, alpha[n])
+                ema, params, stats = lookahead(ema, params, stats, alpha, n_dev)
         if log:
             log(epoch, float(loss) / bs)
         if EPOCH_HOOK:
             EPOCH_HOOK(seed, epoch, n, params)
-    ema, params, stats = lookahead(ema, params, stats, 1.0)
+    params, stats = ema               # the final update with decay 1: the net becomes the ema
     jax.block_until_ready(params)
     train_s = time.perf_counter() - t0
     t1 = time.perf_counter()
