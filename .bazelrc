@@ -39,6 +39,9 @@ common --experimental_repo_remote_exec
 # macOS: local Apple clang toolchain from apple_support.
 common:macos --config=posix
 common:macos --apple_platform_type=macos
+# The deployment target the wheel is tagged with (macosx_26_0); without it the
+# dylib's LC_BUILD_VERSION minos is the SDK's (26.5).
+common:macos --macos_minimum_os=26.0
 common:macos --linkopt=-Wl,-undefined,dynamic_lookup
 common:macos --host_linkopt=-Wl,-undefined,dynamic_lookup
 common:macos --config=clang_local
