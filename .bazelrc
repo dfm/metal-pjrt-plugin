@@ -70,6 +70,11 @@ common --jobs=3
 common --local_resources=memory=4500
 common --local_resources=cpu=6
 
+# Actions get a fixed PATH (/bin:/usr/bin:/usr/local/bin) instead of the
+# client's: PATH is part of every action key, so a shell with a different PATH
+# (another terminal or tool session, a reboot) would miss the whole disk cache.
+common --incompatible_strict_action_env
+
 # Persistent caches: survive `bazel clean`, output-base wipes and XLA re-pins.
 common --disk_cache=~/.cache/metal-pjrt-plugin/bazel-disk
 common --repository_cache=~/.cache/metal-pjrt-plugin/bazel-repo

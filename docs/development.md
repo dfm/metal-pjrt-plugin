@@ -99,7 +99,9 @@ venv and running `tests/test_smoke.py`, `test_sort.py` and
 `test_callbacks.py` from outside the checkout.
 
 A fresh clone builds with `scripts/install_dev.sh` alone (73 s from the
-shared disk cache; ~2 hours without it). Run `bazel shutdown` after a
+shared disk cache; ~2 hours without it). The action environment is strict
+(`--incompatible_strict_action_env`), so the cache survives shell and PATH
+changes. Run `bazel shutdown` after a
 build: the Bazel server holds several GB that programs then have to swap
 for. Before deleting a scratch clone, run `bazel clean --expunge`
 in it: its output base is separate (~8.5 GB).
