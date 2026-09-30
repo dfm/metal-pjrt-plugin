@@ -16,9 +16,9 @@
    meanP=.. | states"); each run's rows get the mean GPU power and
    P-state over its timed part.
 
-Acceptance (printed per phase): the JAX runs' times within ~3% of each other
-((max - min) / min), and the JAX mean below the PyTorch mean of the same
-session. Raw rows go to stdout as JSON lines, the table at the end.
+Summary (per phase): each side's mean and spread ((max - min) / min) of
+the run times, and the ratio of the means. Raw rows go to stdout as JSON
+lines, the table at the end.
 """
 import argparse, json, os, re, shlex, statistics, subprocess, sys, tempfile, time
 
@@ -131,12 +131,14 @@ def main():
                  and "train_s" in r] for k in ("jax", "torch")}
         if not t["jax"]:
             continue
-        spread = (max(t["jax"]) - min(t["jax"])) / min(t["jax"])
+        spread = lambda v: round((max(v) - min(v)) / min(v), 3)
         summ = {"phase": phase, "jax_mean_s": round(statistics.mean(t["jax"]), 1),
-                "jax_spread": round(spread, 3), "consistent": spread <= 0.03}
+                "jax_spread": spread(t["jax"])}
         if t["torch"]:
             summ.update(torch_mean_s=round(statistics.mean(t["torch"]), 1),
-                        faster=statistics.mean(t["jax"]) < statistics.mean(t["torch"]))
+                        torch_spread=spread(t["torch"]),
+                        jax_over_torch=round(statistics.mean(t["jax"])
+                                             / statistics.mean(t["torch"]), 3))
         print(json.dumps({"summary": True, **summ}))
 
 

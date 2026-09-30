@@ -15,6 +15,9 @@ run reported).
 | `airbench_data.py` | CIFAR-10 loading and the hyperparameters (numpy only, shared) |
 | `check.py` | one training step's loss and gradients against CPU (float32 and bfloat16) |
 | `torch_baseline.py` | the same algorithm in PyTorch on MPS (run from its own environment) |
+| `compare.py` | the comparison protocol: both, interleaved, with an optional GPU power sampler |
+| `conv_jax.py`, `conv_torch.py` | airbench's convolutions one at a time (forward, input and weight gradients), JAX vs PyTorch |
+| `LICENSE-airbench` | airbench's MIT license (the files above are derived from it) |
 
 ## Run it
 
@@ -56,6 +59,11 @@ this example, against PyTorch 2.14.0 on MPS running the same algorithm
 (`torch_baseline.py`, float16, as airbench runs). Spreads are sample
 standard deviations; accuracy is on the full 10,000-image test set.
 
+These two columns were not measured in one session (see below); a
+re-measurement with `compare.py` (both sides interleaved, in the same
+conditions, after an untimed warm-up run) is pending, and will replace
+them.
+
 | | JAX (mtl), bf16 | PyTorch MPS, fp16 |
 |---|---|---|
 | test accuracy (5 seeds) | 94.02% ± 0.05% (4 of 5 reached 94%) | 93.93% ± 0.11% (1 of 5) |
@@ -77,7 +85,10 @@ pattern (run 1 228 s, runs 2-5 249-284 s). Timed runs therefore compare
 fairly only at a matched thermal state; a re-timing of both sides after
 an untimed full-length warm-up run is planned. Until then: JAX and
 PyTorch reach the same accuracy (JAX slightly higher and less variable)
-in about the same time, and JAX uses 45% less memory. Runs are
+in about the same time, and JAX's peak footprint is 45% lower (3.3 vs
+5.9 GB; PyTorch's depends on its MPS allocator cap, set here with
+PYTORCH_MPS_HIGH/LOW_WATERMARK_RATIO=0.8/0.6 to stay within 8 GB; without
+a cap its cache grew past 9 GB). Runs are
 deterministic: a seed gives the same accuracy every time.
 
 Before the plugin's weight-gradient change, the conv weight gradients

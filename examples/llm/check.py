@@ -102,7 +102,9 @@ def main():
         ref = log_probs_chunked(qwen3.load_params(path, cfg, jnp.float32, cpu), ids, cfg,
                                 jnp.float32, chunk)
     if args.save_ref:
-        np.savez(args.save_ref, ids=np.array(ids), ref=ref.astype(np.float16))
+        # float32, so that mlx_baseline.py --kl-ref scores mlx-lm at the same
+        # precision as this script scores JAX
+        np.savez(args.save_ref, ids=np.array(ids), ref=ref.astype(np.float32))
     dev = jax.devices()[0]
     params = qwen3.load_params(path, cfg, jnp.bfloat16, dev, quant=args.quant)
     print(f"{len(ids)} tokens, {dev.platform} bfloat16"

@@ -77,13 +77,14 @@ model on the GPU the gradients match CPU float32 to better than 1e-4 in
 relative norm, and the loss to 1e-5 (6.67105 vs 6.67106; `gradcheck.py`),
 which isolates the plugin's own error.
 
-**Speed**, step time with gradient checkpointing, 60-step runs,
-median of 3 interleaved rounds (`compare.py`): JAX 760 ms, mlx-lm 781 ms
-(trained tokens/s 184 vs 187). One batch shape (4 x 161 tokens), median
-of 10 steps: 728 vs 824 ms with checkpointing, 626 vs 666 ms without; the
-forward pass alone 301.5 vs 302.5 ms. The machine was shared with other
-GPU jobs (serialized) and their memory, and single runs swung by up to
-50% (a slow stretch of ~900 ms steps hit each implementation once), so
+**Speed**, with gradient checkpointing, 60-step runs, median of 3
+interleaved rounds (`compare.py`): trained tokens per second, the window
+mean both sides report, JAX 184 and mlx-lm 187, i.e. the same speed
+(mlx-lm 1.6% ahead). (An earlier version of this README compared step
+times, "760 vs 781 ms", but those mixed JAX's window median with
+mlx-lm's window mean; `train.py` now reports the window mean too, and a
+re-measurement is pending.) The machine was shared with other GPU jobs
+(serialized) and their memory, and single runs swung by up to 50%, so
 only interleaved numbers are comparable.
 
 **Memory**: the JAX process peaks at a 4.0-4.1 GB footprint with gradient

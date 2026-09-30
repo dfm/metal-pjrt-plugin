@@ -5,9 +5,11 @@
 
 Each round runs a short fine-tune (`--iters` steps, no validation after
 the first) with each implementation in turn, so drift of the machine's
-state (other load, heat) hits both alike. Per run, the step time is the
-median over the report windows after the first (which holds compilation
-for JAX, kernel builds for MLX); the table shows the median over rounds,
+state (other load, heat) hits both alike. Each report window's step time
+is the window mean on both sides (1 / iterations per second, as mlx_lm.lora
+reports it); per run, the step time is the median over the report windows
+after the first (which holds compilation for JAX, kernel builds for MLX);
+the table shows the median over rounds,
 the trained tokens/s, and mlx-lm's peak Metal memory. --wrap prefixes each
 run's command, e.g. with the device lock.
 """

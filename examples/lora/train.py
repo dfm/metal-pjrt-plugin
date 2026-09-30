@@ -117,7 +117,8 @@ def main():
             w = times[-args.steps_per_report:] or [dt]
             emit(event="train", iter=it,
                  train_loss=round(statistics.fmean(losses[-args.steps_per_report:]), 4),
-                 step_ms=round(statistics.median(w) * 1e3, 2),
+                 # the window mean, as mlx_lm.lora reports (1 / it_per_sec)
+                 step_ms=round(statistics.fmean(w) * 1e3, 2),
                  it_s=round(1 / statistics.fmean(w), 2),
                  tokens_s=round(sum(ntoks[-len(w):]) / sum(w), 1))
     total = time.perf_counter() - t_train

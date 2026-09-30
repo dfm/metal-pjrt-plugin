@@ -15,6 +15,7 @@ JAX on Apple Silicon, measured against [mlx-lm](https://github.com/ml-explore/ml
 | `bench.py` | prefill and decode throughput |
 | `mlx_baseline.py` | the same measurements with mlx-lm (run from its own environment) |
 | `compare.py` | both, in interleaved rounds, as a markdown table |
+| `skinny_jax.py`, `skinny_mlx.py` | few-row bf16 GEMMs (batched decode's case), JAX vs MLX |
 
 ## Run it
 
@@ -93,7 +94,13 @@ exactly the context.
 
 Quality, on the first 512 tokens of `docs/design.md` (as of f4e2691)
 against float32 on CPU (`check.py --text-file`; mlx-lm via
-`mlx_baseline.py --kl-ref`):
+`mlx_baseline.py --kl-ref`). The reference is this example's own model
+run in float32 on the CPU, not an independent implementation: it scores
+both sides fairly only as far as `qwen3.py` itself matches Qwen3 (its
+bf16 run and mlx-lm's are equally close to it). The mlx-lm rows were
+scored against a float16-rounded copy of the reference, JAX's against
+float32; `check.py --save-ref` now writes float32, and a re-scoring is
+pending.
 
 | | KL from float32 | top-1 agreement | perplexity (float32: 64.9) |
 |---|---|---|---|
@@ -120,12 +127,15 @@ the plugin takes ~4.5 GB) next to 1.7B in bf16.
 
 Known gaps:
 
-- **Batched decode is slow in bf16.** Decoding B sequences at once should
-  cost about as much per step as one (the weights are read once); here
-  bf16 goes 13.4 -> 26.8 ms per step at B = 2 (41 at B = 8), because the
-  plugin's GEMMs with 2-64 rows run at ~23 GB/s where MLX's reach ~90
-  (reported, with a standalone repro). int8/int4 up to 4 sequences avoid
-  the GEMM (`ROWS_MAX` in `qwen3.py`): int4 does 234 tokens/s at B = 2.
+- **Batched decode** (B sequences at once) was slow in bf16 when measured
+  here: 13.4 -> 26.8 ms per step at B = 2, because the plugin's GEMMs with
+  2-64 rows ran at ~23 GB/s. The plugin has since fixed few-row GEMMs
+  (CHANGELOG.md; `skinny_jax.py` / `skinny_mlx.py` here reproduce the
+  kernel numbers in docs/performance.md): bf16 decode at B = 2 is now
+  13.9 ms per step (B = 1: 13.3), per the plugin's measurement; the other
+  numbers on this page were not re-measured. int8/int4 up to 4 sequences
+  use reductions over the stored weights (`ROWS_MAX` in `qwen3.py`):
+  int4 did 234 tokens/s at B = 2.
 - One prompt at a time: no continuous batching, no paged cache, no
   prompt caching across calls. The KV cache is allocated at `--max-len`
   up front (attention reads only a window of it).
@@ -223,9 +233,10 @@ across a night of benchmarking. Along the way:
   output rows (1024 x 3072 int4: ~24 GB/s) and mid-size int4 products
   (60-80 GB/s), where MLX's hand-written kernels get ~90. Tuning the
   reduction emitter for these would speed up every quantized model.
-- **GEMMs with 2-64 rows run at ~23 GB/s** regardless of the row count
-  (MLX: ~90 up to 8 rows), which makes batched bf16 decode slow (see
-  Known gaps). Reported with a standalone repro.
+- **GEMMs with 2-64 rows ran at ~23 GB/s** regardless of the row count
+  (MLX: ~90 up to 8 rows), which made batched bf16 decode slow. Reported
+  with a standalone repro (`skinny_jax.py`, `skinny_mlx.py`); fixed in
+  the plugin since (see Known gaps).
 - **What remains is kernel count.** An int4 decode step is ~570 kernels
   (20 per layer), and everything but the weight products (~3.8 ms) costs
   ~1 ms: norms, rope, the cache update, attention's reductions. A cheaper
