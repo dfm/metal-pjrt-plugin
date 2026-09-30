@@ -37,12 +37,14 @@ def acquire(path, argv):
     # Open without truncating: the file names the current holder, and only
     # the process that holds the lock may rewrite it.
     f = open(path, "a+")
-    t0 = time.time()
+    said = 0.0
     while True:
         try:
             fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB); break
         except BlockingIOError:
-            if time.time() - t0 < 1:
+            # At once, then every minute: a long wait should not look hung.
+            if time.time() - said >= 60:
+                said = time.time()
                 f.seek(0)
                 holder = f.read().strip() or "unknown"
                 print(f"[device_lock] waiting for {path} (held by: {holder})", file=sys.stderr, flush=True)

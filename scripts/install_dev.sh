@@ -6,6 +6,19 @@
 # else with python3.12 from PATH. Never installs into another Python.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# Before a two-hour build: the things that would only fail at its end.
+if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
+  echo "metal-pjrt-plugin builds only on Apple Silicon Macs (this is $(uname -s) $(uname -m))" >&2
+  exit 1
+fi
+if [[ "${1:-}" != "--no-build" ]]; then
+  command -v bazel >/dev/null || { echo "need bazel (brew install bazelisk)" >&2; exit 1; }
+  SDK=$(xcrun --show-sdk-version 2>/dev/null || true)
+  if [[ -z "$SDK" || "${SDK%%.*}" -lt 26 ]]; then
+    echo "need the macOS 26 SDK or later (found ${SDK:-none}): the Metal headers the plugin is built with reference symbols new in macOS 26. Update the Xcode command-line tools" >&2
+    exit 1
+  fi
+fi
 if [[ ! -x .venv/bin/python ]]; then
   if command -v uv >/dev/null; then
     uv venv --python 3.12 .venv

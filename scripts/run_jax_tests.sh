@@ -19,5 +19,5 @@ FILE=${1:?test file relative to the jax repo, e.g. tests/lax_test.py}; shift
 scripts/gpu_health.py >&2  # warn about resets / quarantined kernels
 exec scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
   JAX_ENABLE_COMPILATION_CACHE=false PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
-  .venv/bin/python -m pytest "$T/$FILE" -p jax_tests_plugin -p no:cacheprovider -n 0 \
+  .venv/bin/python -m pytest "$T/$FILE" -p jax_tests_plugin -p no:cacheprovider -p no:xdist \
   -p no:timeout -o faulthandler_timeout=${PYTEST_TIMEOUT:-180} -q --tb=no -rN "$@"

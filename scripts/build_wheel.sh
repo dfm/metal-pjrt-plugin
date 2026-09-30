@@ -5,7 +5,8 @@
 #   scripts/build_wheel.sh --no-build # wheel from the existing bazel-bin dylib
 # The wheel is py3-none-macosx_<MACOS_MIN>_arm64: pure Python plus a dylib
 # loaded through ctypes/PJRT, so it does not depend on the Python version.
-# MACOS_MIN is the oldest macOS the plugin is tested on (see the README).
+# MACOS_MIN is the dylib's deployment target (.bazelrc, --macos_minimum_os);
+# the script checks that the two agree.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MACOS_MIN=26_0
@@ -14,6 +15,11 @@ if [[ "${1:-}" != "--no-build" ]]; then
 fi
 DYLIB=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_mtl_plugin.dylib
 [[ -f "$DYLIB" ]] || { echo "missing $DYLIB" >&2; exit 1; }
+MINOS=$(otool -l "$DYLIB" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')
+if [[ "${MINOS//./_}" != "$MACOS_MIN" ]]; then
+  echo "$DYLIB is built for macOS ${MINOS:-?} or later, but the wheel would be tagged macosx_${MACOS_MIN}; rebuild it, or change MACOS_MIN and .bazelrc together" >&2
+  exit 1
+fi
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
 cp pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES "$STAGE"/
