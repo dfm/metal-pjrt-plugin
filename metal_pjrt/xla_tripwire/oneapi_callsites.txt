@@ -1,5 +1,10 @@
+xla/backends/autotuner/autotuner_cache_interface.cc: .oneapi_compute_capability()) {
 xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc: device.gpu_compute_capability().IsOneAPI();
 xla/backends/gpu/codegen/emitters/transpose.cc: bool use_scalar_ops = device.gpu_compute_capability().IsOneAPI() &&
+xla/backends/gpu/codegen/fusion_emitter.cc: int addrspace = llvm::Triple(llvm_module->getTargetTriple()).isSPIR() ? 1 : 0;
+xla/backends/gpu/codegen/llvm/llvm_emitter.cc: llvm::Triple(module->getTargetTriple()).isSPIROrSPIRV() ? 1 : 0;
+xla/backends/gpu/codegen/triton/compilation_pipeline.cc: if (auto* oneapi_cc = gpu_cc.oneapi_compute_capability()) {
+xla/backends/gpu/codegen/triton/support_legacy.cc: auto oneapi_compute_capability = gpu_version.oneapi_compute_capability();
 xla/backends/gpu/runtime/command_buffer_conversion_pass.cc: if (device_info.gpu_compute_capability().IsOneAPI()) {
 xla/backends/gpu/transforms/cudnn_fused_conv_rewriter.cc: if (!compute_capability_.IsRocm() && !compute_capability_.IsOneAPI()) {
 xla/backends/gpu/transforms/gemm_rewriter.cc: if ((gpu_version_.IsRocm() || gpu_version_.IsOneAPI()) && type == F64) {
@@ -12,14 +17,50 @@ xla/codegen/emitters/transforms/lower_tensors.cc: if (device_spec_.IsIntelGpu())
 xla/codegen/emitters/transforms/lower_to_llvm_gpu.cc: } else if (device_spec_.IsIntelGpu()) {
 xla/codegen/emitters/transforms/vectorize_loads_stores.cc: if (device_spec_.IsIntelGpu() && (IsSubByteIntOrFloatType(element_type) ||
 xla/codegen/emitters/transforms/vectorize_loads_stores.cc: if (device_spec_.IsIntelGpu() && IsSubByteIntOrFloatType(element_type)) {
+xla/pjrt/gpu/se_gpu_pjrt_client.cc: if (cc.oneapi_compute_capability() != nullptr) {
+xla/pjrt/gpu/se_gpu_pjrt_compiler_sycl_registration.cc: OneapiId(), stream_executor::sycl::kSyclPlatformId));
+xla/pjrt/gpu/se_gpu_pjrt_compiler_sycl_registration.cc: stream_executor::sycl::kSyclPlatformId, OneapiId()));
+xla/pjrt/se/local_device_state.cc: executor->GetPlatform()->id() == stream_executor::sycl::kSyclPlatformId
 xla/service/algorithm_util.cc: const bool is_sycl = gpu_compute_capability.IsOneAPI();
 xla/service/algorithm_util.cc: if (!is_cuda_ge_ampere && !is_rocm_bf16 && !is_sycl) {
 xla/service/algorithm_util.cc: return (is_cuda_ge_ampere || is_rocm_bf16 || is_sycl) &&
+xla/service/gpu/autotuning/autotune_cache_key.cc: .oneapi_compute_capability()) {
+xla/service/gpu/autotuning/config_assigner_pass.cc: stream_executor::sycl::kSyclPlatformId;
 xla/service/gpu/gpu_compiler.cc: if (gpu_version.IsOneAPI()) {
+xla/service/gpu/gpu_executable.cc: if (executor->GetPlatform()->id() == se::sycl::kSyclPlatformId) {
+xla/service/gpu/gpu_executable.cc: } else if (platform_id == se::sycl::kSyclPlatformId) {
+xla/service/gpu/gpu_transfer_manager.cc: /*id=*/stream_executor::sycl::kSyclPlatformId,
+xla/service/gpu/gpu_transfer_manager.cc: stream_executor::sycl::kSyclPlatformId, &CreateSYCLTransferManager);
+xla/service/gpu/intel_gpu_compiler.cc: : GpuCompiler(stream_executor::sycl::kSyclPlatformId, spir::TargetTriple(),
+xla/service/gpu/intel_gpu_compiler_registration.cc: stream_executor::sycl::kSyclPlatformId,
 xla/service/gpu/llvm_gpu_backend/gpu_backend_lib.cc: } else if (gpu_version.IsOneAPI()) {
+xla/service/gpu/target_util.cc: if (target_triple.isSPIROrSPIRV()) {
+xla/service/gpu/target_util.cc: } else if (target_triple.isSPIROrSPIRV()) {
+xla/service/gpu/target_util.cc: } else if (target_triple.isSPIROrSPIRV()) {
+xla/service/gpu/target_util.cc: } else if (target_triple.isSPIROrSPIRV()) {
+xla/service/llvm_ir/fused_ir_emitter.cc: int addrspace = llvm::Triple(module->getTargetTriple()).isSPIR() ? 1 : 0;
+xla/service/llvm_ir/llvm_util.cc: if (llvm::Triple(module->getTargetTriple()).isSPIROrSPIRV()) {
+xla/service/llvm_ir/llvm_util.cc: int addrspace = target.isSPIR() || target.isAMDGPU() ? 5 : 0;
+xla/service/llvm_ir/llvm_util.cc: llvm::Triple(module->getTargetTriple()).isSPIROrSPIRV() ? 64 : 128;
+xla/service/platform_util.cc: se::sycl::kSyclPlatformId,
 xla/service/restricted/hlo_runner_legacy.cc: return device_description.gpu_compute_capability().IsOneAPI();
 xla/stream_executor/abi/executable_abi_version.cc: if (device_description.gpu_compute_capability().IsOneAPI()) {
+xla/stream_executor/device_description.cc: *proto.mutable_oneapi_compute_capability() =
+xla/stream_executor/device_description.cc: *proto.mutable_oneapi_compute_capability() = ptr->ToProto();
+xla/stream_executor/device_description.cc: OneAPIComputeCapability DeviceDescription::oneapi_compute_capability() const {
+xla/stream_executor/device_description.cc: OneAPIComputeCapability(proto.oneapi_compute_capability());
+xla/stream_executor/device_description.cc: OneAPIComputeCapability::FromProto(proto.oneapi_compute_capability()));
+xla/stream_executor/device_description.cc: if (auto* ptr = gpu_compute_capability_.oneapi_compute_capability()) {
+xla/stream_executor/device_description.cc: if (auto* ptr = gpu_compute_capability_.oneapi_compute_capability()) {
+xla/stream_executor/device_description.cc: if (proto.has_oneapi_compute_capability()) {
+xla/stream_executor/device_description.cc: if (proto.has_oneapi_compute_capability()) {
+xla/stream_executor/device_description.cc: oneapi_compute_capability()->ToProto();
 xla/stream_executor/device_description.cc: } else if (IsOneAPI()) {
+xla/stream_executor/device_description.h: OneAPIComputeCapability oneapi_compute_capability() const;
 xla/stream_executor/device_description.h: bool IsOneAPI() const {
+xla/stream_executor/device_description.h: const OneAPIComputeCapability* oneapi_compute_capability() const {
+xla/stream_executor/device_description.h: if (auto ptr = oneapi_compute_capability()) {
+xla/stream_executor/stream_common.h: return parent()->GetDeviceDescription().oneapi_compute_capability();
 xla/tests/exhaustive/platform.h: bool IsGpu() const { return IsAmdGpu() || IsNvidiaGpu() || IsIntelGpu(); }
 xla/tests/exhaustive/platform.h: bool IsIntelGpu() const { return value_ == Value::kOneAPI; }
+xla/tools/xla_compile_lib.cc: } else if (platform_id == stream_executor::sycl::kSyclPlatformId) {

@@ -1,14 +1,19 @@
-"""Lists every IsOneAPI()/IsIntelGpu()/is_sycl line in the pinned XLA tree
-and compares it with oneapi_callsites.txt. The Metal platform reports a
-OneAPI compute capability, so every such branch can change what the plugin
-gets; a new one needs a look. Not a Bazel test (it would have to glob another
-repository). Run after moving the XLA pin:
+"""Lists every line of the pinned XLA tree that branches on the OneAPI
+capability or on the SYCL platform, and compares it with
+oneapi_callsites.txt. The Metal platform reports a OneAPI compute
+capability but is not the SYCL platform and targets SPIR, so it takes the
+OneAPI side of IsOneAPI() / IsIntelGpu() / is_sycl /
+oneapi_compute_capability() branches, the other side of kSyclPlatformId
+ones, and the SPIR side of isSPIR*() ones; a new branch of any kind needs a
+look. Not a Bazel test (it would have to glob another repository). Run
+after moving the XLA pin:
 
   python3 metal_pjrt/xla_tripwire/oneapi_callsites.py \
       --xla-root "$(bazel info output_base)/external/xla+" [--update]
 
 Entries are "file: line text" (whitespace collapsed, no line numbers), so
-unrelated edits do not show up. Tests are skipped.
+unrelated edits do not show up. Tests and the SYCL platform's own directory
+(xla/stream_executor/sycl, not built here) are skipped.
 """
 import argparse
 import difflib
@@ -16,13 +21,17 @@ import os
 import re
 import sys
 
-PATTERN = re.compile(r"IsOneAPI\(\)|IsIntelGpu\(\)|is_sycl")
+PATTERN = re.compile(r"IsOneAPI\(\)|IsIntelGpu\(\)|is_sycl"
+                     r"|oneapi_compute_capability\(\)|kSyclPlatformId"
+                     r"|isSPIR")
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "oneapi_callsites.txt")
 
 
 def scan(root):
     out = []
     for d, _, files in os.walk(os.path.join(root, "xla")):
+        if os.path.relpath(d, root).startswith("xla/stream_executor/sycl"):
+            continue
         for f in files:
             if not f.endswith((".cc", ".h")) or f.endswith("_test.cc"):
                 continue
