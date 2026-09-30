@@ -436,7 +436,8 @@ ENTRY e {
   absl::Status host = check("host");
   EXPECT_EQ(host.code(), absl::StatusCode::kUnimplemented);
   EXPECT_NE(host.message().find("compute_on"), std::string::npos) << host;
-  EXPECT_TRUE(check("device").ok());
+  // What JAX writes for compute_on("device") (mlir.map_compute_type).
+  EXPECT_TRUE(check("dense").ok());
 }
 
 // lax.rng_uniform: RngExpander leaves an rng-get-and-update-state, which

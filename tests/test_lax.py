@@ -146,10 +146,20 @@ case("scatter i16 / u8 / bf16 add and f16 max, repeated indices")(lambda: ref(
                jnp.zeros(16, jnp.bfloat16).at[i].add(jnp.ones(64, jnp.bfloat16)).astype(f32),
                jnp.zeros(16, jnp.float16).at[i].max(jnp.arange(64, dtype=jnp.float16)).astype(f32)),
     np.arange(64, dtype=np.int32) % 16))
-# x.at[:128].set(f(x[:128])): with static indices XLA sees a slice feeding a
-# GEMM whose result is written back over the slice, which its dynamic-slice
-# fusion would run in place (off on mtl, metal_compiler.cc).
+# f(slice of x) written back over the slice: the shape XLA's dynamic-slice
+# fusion (off on mtl, metal_compiler.cc) runs in place, the result aliasing
+# the operand. With a traced index these are a dynamic-slice and a
+# dynamic-update-slice; with static ones, a slice and a one-index scatter
+# that ScatterExpander turns into a dynamic-update-slice.
 case("slice update through a matmul")(lambda: ref(lambda x, r: x.at[:128].set(x[:128] @ r), R(256, 64), R(64, 64)))
+case("dynamic_update_slice of a matmul of the slice")(lambda: ref(
+    lambda x, r, i: lax.dynamic_update_slice(x, lax.dynamic_slice(x, (i, 0), (128, 64)) @ r, (i, 0)),
+    R(256, 64), R(64, 64), np.int32(64)))
+case("dynamic_update_slice of a conv of the slice")(lambda: ref(
+    lambda x, w, i: lax.dynamic_update_index_in_dim(
+        x, lax.conv_general_dilated(lax.dynamic_index_in_dim(x, i, 0, keepdims=False), w, (1, 1), "SAME",
+                                    dimension_numbers=("NHWC", "HWIO", "NHWC")), i, 0),
+    R(2, 8, 32, 32, 16), R(3, 3, 16, 16), np.int32(1)))
 case("lax.scatter_mul/min/max")(lambda: ref(lambda x: x.at[jnp.array([2])].mul(2.0).at[jnp.array([3])].min(-9.0).at[jnp.array([4])].max(9.0), A(64)))
 # ---- reductions ----
 for name, fn in [("reduce_sum", lambda x: jnp.sum(x, 1)), ("reduce_max", lambda x: jnp.max(x, 0)), ("reduce_min", lambda x: jnp.min(x)),
@@ -323,6 +333,8 @@ ULPS = {
     'lax.reduce column 2048x64': 1, 'lax.cumsum/cumprod/cummax': 6.1,
     'lax.reduce_window sum': 1, 'lax.dot_general f32': 4.2,
     'slice update through a matmul': 4.2, 'max_pool 3x3 stride 2 SAME grad': 2,
+    'dynamic_update_slice of a matmul of the slice': 4.2,
+    'dynamic_update_slice of a conv of the slice': 10,
     'matvec / outer': 1.5, 'conv 2d NHWC': 3.2, 'conv 2d strided NCHW': 2.3,
     'conv grad': 3.3, 'cholesky': 1.7, 'triangular_solve': 1.2,
     'lu / solve': 2.9, 'qr': 2.3, 'eigh': 6.9, 'svd': 1.7, 'inv / det': 21,
@@ -351,6 +363,8 @@ NORMWISE = {
     "lax.reduce column 2048x64", "lax.cumsum/cumprod/cummax",
     "lax.reduce_window sum", "lax.dot_general f32", "dot f16 -> f32 out",
     "slice update through a matmul",
+    "dynamic_update_slice of a matmul of the slice",
+    "dynamic_update_slice of a conv of the slice",
     "dot batched bf16", "matvec / outer", "conv 2d NHWC",
     "conv 2d strided NCHW", "conv grad", "cholesky", "triangular_solve",
     "lu / solve", "qr", "eigh", "svd", "inv / det", "fft", "rfft2",

@@ -138,10 +138,11 @@ def test_symbols_exist():
     assert {lax_fft.FftType.RFFT, lax_fft.FftType.IRFFT, lax_fft.FftType.IFFT}
     prims = (ll.lu_p, ll.geqrf_p, ll.householder_product_p, ll.eigh_p,
              ll.svd_p, lax_fft.fft_p, checkify.check_p,
-             debugging.debug_callback_p, debugging.debug_print_p)
+             debugging.debug_callback_p, debugging.debug_print_p,
+             lax_convolution.conv_general_dilated_p)
     assert [p.name for p in prims] == [
         "lu", "geqrf", "householder_product", "eigh", "svd", "fft", "check",
-        "debug_callback", "debug_print"]
+        "debug_callback", "debug_print", "conv_general_dilated"]
 
 
 def test_backend_init_failure_is_quiet_unless_selected():
