@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """conv_jax.py's measurement in PyTorch on MPS, for comparison.
 
 Needs PyTorch (not a dependency of this repo; see torch_baseline.py):

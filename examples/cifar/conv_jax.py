@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """airbench94's convolutions, one at a time: forward, input and weight gradients.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/conv_jax.py

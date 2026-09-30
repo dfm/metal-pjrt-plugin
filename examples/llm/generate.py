@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Generate text with Qwen3 in pure JAX.
 
   JAX_PLATFORMS=mtl,cpu python examples/llm/generate.py "Why is the sky blue?"

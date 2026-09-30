@@ -92,7 +92,8 @@ larger than the context (up to a quarter more, at least 256 slots),
 where mlx-lm's cache is
 exactly the context.
 
-Quality, on the first 512 tokens of `docs/design.md` (as of f4e2691)
+Quality, on the first 512 tokens of `docs/design.md` (as of 2026-09-28; the file has
+changed since, so a run today scores a different text)
 against float32 on CPU (`check.py --text-file`; mlx-lm via
 `mlx_baseline.py --kl-ref`). The reference is this example's own model
 run in float32 on the CPU, not an independent implementation: it scores

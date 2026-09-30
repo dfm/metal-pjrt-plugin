@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """LoRA fine-tuning of Qwen3 in pure JAX: data, adapters, loss, train step.
 
 The base model is examples/llm/qwen3.py's, frozen in bfloat16. Adapters

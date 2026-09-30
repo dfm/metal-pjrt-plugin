@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Check the LoRA gradients on the default backend against float32 on CPU.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/gradcheck.py

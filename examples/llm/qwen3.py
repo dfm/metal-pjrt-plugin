@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Qwen3 dense decoder in pure JAX: weights, prefill, decode and sampling.
 
 One forward function serves both prefill (T prompt tokens) and decode

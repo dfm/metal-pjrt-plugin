@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """The airbench94 comparison protocol: JAX (mtl) against PyTorch on MPS.
 
   .venv/bin/python examples/cifar/compare.py --torch-python ~/.venvs/torch/bin/python \\

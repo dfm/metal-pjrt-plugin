@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Check airbench.py's training step on the default backend against CPU.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/check.py

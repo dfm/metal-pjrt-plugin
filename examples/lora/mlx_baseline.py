@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """The same fine-tune with mlx_lm.lora, for comparison.
 
 Needs mlx-lm, which is not a dependency of this repo; run it from its own

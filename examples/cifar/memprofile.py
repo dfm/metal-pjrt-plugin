@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Memory and pressure snapshots for airbench.py --profile-memory.
 
 snapshot() returns a dict of:

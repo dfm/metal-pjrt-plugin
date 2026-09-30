@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Check the Qwen3 example on the default backend against a float32 CPU run.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/check.py [--quant int8|int4]

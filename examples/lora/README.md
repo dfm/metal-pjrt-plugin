@@ -92,7 +92,7 @@ checkpointing (mlx-lm: 2.3 GB Metal peak; 3.1 GB without checkpointing).
 Without checkpointing the JAX step needs a ~0.7-0.9 GB scratch buffer,
 which the plugin's former system memory guard refused while other
 processes held most of the 8 GB (the guard now refuses only at critical
-system memory pressure, c4bf2d6); with checkpointing it needs 122 MB. Most of the difference to mlx-lm is
+system memory pressure, since 2026-09-29); with checkpointing it needs 122 MB. Most of the difference to mlx-lm is
 compiled code: see the findings.
 
 ## What made it fast (and fit)
@@ -109,7 +109,7 @@ compiled code: see the findings.
    `((softmax - onehot) * weight) @ head` (a `jax.custom_vjp`). Nothing of
    the logits outlives its chunk and nothing is recomputed. The plain loss
    asked for a single 1.36 GB buffer (refused by the plugin's memory guard
-   as it was before c4bf2d6); a
+   as it was before 2026-09-29); a
    `jax.checkpoint`ed chunked loss fit but recomputed the logits in the
    backward pass: at 4 x 161 tokens the fused version takes the step from
    711 to 626 ms and its scratch memory from 1.05 to 0.93 GB.
@@ -137,7 +137,7 @@ compiled code: see the findings.
 - The plugin's system memory guard refused the non-checkpointed step's
   scratch buffer twice while other processes held memory. The guard then
   refused any allocation that would leave less than 512 MB of free
-  memory; since c4bf2d6 it works like PyTorch MPS's limits (a
+  memory; since 2026-09-29 it works like PyTorch MPS's limits (a
   per-process budget, refusals only at critical system memory pressure),
   so `--grad-checkpoint` is a memory/speed trade-off rather than a
   requirement on a busy 8 GB Mac.

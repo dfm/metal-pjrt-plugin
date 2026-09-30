@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Prefill and decode throughput of the Qwen3 example on the current backend.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/bench.py

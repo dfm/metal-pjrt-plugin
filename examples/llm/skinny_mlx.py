@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """skinny_jax.py's measurement in MLX, for comparison.
 
 Needs MLX (not a dependency of this repo; see mlx_baseline.py):

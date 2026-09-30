@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Few-row bf16 GEMMs on the default JAX backend (batched LLM decode's case).
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/skinny_jax.py

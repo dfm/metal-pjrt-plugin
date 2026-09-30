@@ -54,7 +54,7 @@ standard deviations (ddof=1).
 
 Measured 2026-09-29 on an M3 MacBook (10-core GPU, 8 GB), macOS 26.2,
 JAX 0.11.2 with optax, with the plugin's faster conv weight gradients
-(f0aca7b) and its PyTorch-like memory limits (c4bf2d6), both prompted by
+(2026-09-29) and its PyTorch-like memory limits (2026-09-29), both prompted by
 this example, against PyTorch 2.14.0 on MPS running the same algorithm
 (`torch_baseline.py`, float16, as airbench runs). Spreads are sample
 standard deviations; accuracy is on the full 10,000-image test set.
@@ -111,7 +111,7 @@ both backends alike.
 
 The port reproduced airbench94's accuracy on the first complete run
 (94.01%). Everything else was memory: an 8 GB Mac shared with other
-applications has 1-2 GB free, and until c4bf2d6 the plugin's memory guard
+applications has 1-2 GB free, and until 2026-09-29 the plugin's memory guard
 refused any allocation that would leave less than 512 MB of it.
 
 - **Keep the data as uint8 and normalize inside the jitted programs.**
@@ -163,14 +163,14 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
   2.5-5x the forward time (31x31, 24 -> 64 channels: 54 ms, where
   PyTorch's whole backward is 25 ms): a reduction over batch x pixels
   (~1M) into a small output. Reported with a standalone benchmark, the
-  plugin now sizes the GEMM tile and split-K together (f0aca7b): 18 ms
+  plugin now sizes the GEMM tile and split-K together (since 2026-09-29): 18 ms
   for that layer, and end to end JAX went from ~259 s to 229-259 s.
 - **The memory guard decided whether training ran at all** on a busy
   8 GB machine. It refused any allocation that would leave less than
   512 MB of free memory, so the step (0.9 GB of scratch) was refused
   whenever less than ~1.4 GB was free: 25 of 28 attempts. PyTorch MPS,
   which caps only its own allocations, ran with a 4-6 GB footprint and
-  let macOS make room. The plugin now does the same (c4bf2d6: a
+  let macOS make room. The plugin now does the same (since 2026-09-29: a
   per-process budget, refusals only at critical system memory pressure),
   and the 5 JAX seeds above ran in one go on the same busy machine.
 - **An out-of-memory error named the wrong program** (the next eager op,

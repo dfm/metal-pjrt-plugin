@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """LoRA fine-tuning of Qwen3 on WikiSQL (text to SQL), in pure JAX.
 
   JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/train.py --iters 200 --save adapters.npz --test 100

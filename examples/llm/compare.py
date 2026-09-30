@@ -1,3 +1,5 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
 """Interleaved rounds of bench.py and mlx_baseline.py; prints a markdown table.
 
   .venv/bin/python examples/llm/compare.py --wrap "scripts/device_lock.py --" \\
