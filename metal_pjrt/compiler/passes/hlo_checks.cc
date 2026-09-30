@@ -110,7 +110,28 @@ absl::Status CheckGemm(const HloInstruction& instr) {
         GemmConfig gemm,
         GemmConfig::For(&instr,
                         se::GpuComputeCapability(se::OneAPIComputeCapability())));
-    return stream_executor::metal::ValidateMatmul(gemm, e).status();
+    TF_ASSIGN_OR_RETURN(stream_executor::metal::ValidatedMatmul v,
+                        stream_executor::metal::ValidateMatmul(gemm, e));
+    // GemmRewriter's FuseVectorBiasAdd looks through a slice or a bitcast
+    // of the matmul and compares the bias with that shape's minor
+    // dimension, so (x @ w)[:, :3] + b and (x @ w).reshape(m, h, d) + b
+    // arrive with fewer bias elements than the matmul has columns. The
+    // kernels index the bias by column.
+    if (v.epi.bias) {
+      const int bias_index =
+          config.gemm_backend_config().beta() != 0.0 ? 3 : 2;
+      if (instr.operand_count() > bias_index &&
+          ShapeUtil::ElementsIn(instr.operand(bias_index)->shape()) != v.n) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: XLA fused a bias of ",
+            ShapeUtil::ElementsIn(instr.operand(bias_index)->shape()),
+            " elements into a matmul with ", v.n,
+            " output columns, through a slice or reshape of the matmul's "
+            "result. Slice or reshape the matmul's operands instead, or add "
+            "a bias as wide as the matmul before slicing or reshaping"));
+      }
+    }
+    return absl::OkStatus();
   }();
   if (s.ok()) return s;
   return absl::Status(s.code(),

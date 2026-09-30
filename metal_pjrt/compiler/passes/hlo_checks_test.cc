@@ -62,6 +62,30 @@ TEST_F(MetalHloChecksTest, UnsupportedGemmTypeNamesTheOp) {
   EXPECT_FALSE(Check(Gemm("f32", "f32", "bf16", "DEFAULT")).ok());
 }
 
+// GemmRewriter fuses a bias through a slice or bitcast of the matmul, by
+// that shape's minor dimension; MetalBlasLt needs one element per column.
+TEST_F(MetalHloChecksTest, FusedBiasNarrowerThanTheMatmul) {
+  const std::string kBiasGemm = R"(
+HloModule m
+ENTRY e {
+  a = f32[64,32]{1,0} parameter(0)
+  b = f32[32,16]{1,0} parameter(1)
+  bias = f32[$N]{0} parameter(2)
+  g = (f32[64,16]{1,0}, s8[0]{0}) custom-call(a, b, bias), custom_call_target="__cublas$$lt$$matmul", metadata={op_name="jit(f)/dot_general" source_file="model.py" source_line=12}, backend_config={"gemm_backend_config":{"alpha_real":1,"beta":0,"dot_dimension_numbers":{"lhs_contracting_dimensions":["1"],"rhs_contracting_dimensions":["0"],"lhs_batch_dimensions":[],"rhs_batch_dimensions":[]},"epilogue":"BIAS"}}
+  ROOT r = f32[64,16]{1,0} get-tuple-element(g), index=0
+})";
+  auto gemm = [&](const std::string& n) {
+    return absl::StrReplaceAll(kBiasGemm, {{"$N", n}, {"$$", "$"}});
+  };
+  EXPECT_TRUE(Check(gemm("16")).ok());
+  absl::Status narrow = Check(gemm("3"));
+  EXPECT_EQ(narrow.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(narrow.message().find("a bias of 3 elements"), std::string::npos)
+      << narrow;
+  EXPECT_NE(narrow.message().find("model.py:12"), std::string::npos)
+      << narrow;
+}
+
 // The index limits of the kernel that would run the GEMM (ValidateMatmul),
 // checked on the HLO shapes without allocating anything.
 TEST_F(MetalHloChecksTest, GemmIndexLimits) {
