@@ -94,6 +94,11 @@ def batch_norm(x, bias, stats, train, momentum, eps=1e-12):
 
 REMAT = True   # --no-remat turns it off
 
+# Called as EPOCH_HOOK(seed, epoch, steps, params) after the setup (epoch -1)
+# and after each epoch, if set (--profile-memory sets one that syncs and
+# prints a row per epoch). None: no extra synchronization.
+EPOCH_HOOK = None
+
 
 def conv_group(g, s, x, train):
     gelu = functools.partial(jax.nn.gelu, approximate=False)
@@ -284,6 +289,8 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_st
     key, k = jax.random.split(key)
     padded = first_epoch_images(train_x, k)
     n = 0
+    if EPOCH_HOOK:
+        EPOCH_HOOK(seed, -1, n, params)
     for epoch in range(math.ceil(epochs)):
         key, k1, k2 = jax.random.split(key, 3)
         imgs = epoch_images(padded, k1, epoch % 2 == 1)
@@ -300,6 +307,8 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_st
                 ema, params, stats = lookahead(ema, params, stats, alpha[n])
         if log:
             log(epoch, float(loss) / bs)
+        if EPOCH_HOOK:
+            EPOCH_HOOK(seed, epoch, n, params)
     ema, params, stats = lookahead(ema, params, stats, 1.0)
     jax.block_until_ready(params)
     train_s = time.perf_counter() - t0
@@ -307,6 +316,28 @@ def train(seed, data, epochs=HYP["epochs"], dtype=jnp.bfloat16, log=None, max_st
     acc = evaluate(params, stats, test_x, test_y, HYP["tta_level"], dtype)
     return {"seed": seed, "acc": acc, "train_s": round(train_s, 3),
             "eval_s": round(time.perf_counter() - t1, 3), "steps": n}
+
+
+def install_memory_profile():
+    """EPOCH_HOOK printing one JSON row per epoch (`epoch_s` covers the
+    epoch's steps and its augmentation, `steps_ms` = epoch_s / steps) with
+    memprofile.snapshot()'s counters; the seed of the warmup run is 0."""
+    import memprofile
+    global EPOCH_HOOK
+    last = {}
+
+    def hook(seed, epoch, steps, params):
+        jax.block_until_ready(params)
+        now = time.perf_counter()
+        row = {"profile": "epoch", "seed": seed, "epoch": epoch, "steps": steps}
+        if epoch >= 0:
+            dt = now - last["t"]
+            row["epoch_s"] = round(dt, 3)
+            row["step_ms"] = round(dt / max(steps - last["steps"], 1) * 1e3, 1)
+        last.update(t=now, steps=steps)
+        print(json.dumps({**row, **memprofile.snapshot()}), flush=True)
+
+    EPOCH_HOOK = hook
 
 
 def main():
@@ -317,6 +348,9 @@ def main():
     ap.add_argument("--epochs", type=float, default=HYP["epochs"])
     ap.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--profile-memory", action="store_true",
+                    help="print a JSON row per epoch: time, macOS pressure, footprint, "
+                         "the plugin's memory counters (syncs once per epoch)")
     ap.add_argument("--no-remat", action="store_true",
                     help="keep activations for the backward pass (7%% faster, 0.23 GB more)")
     args = ap.parse_args()
@@ -327,6 +361,8 @@ def main():
     tx_, ty_, vx_, vy_ = load_cifar10()
     data = tuple(jnp.asarray(a) for a in (tx_, ty_, vx_, vy_))
     log = (lambda e, l: print(f"  epoch {e}: loss {l:.4f}", file=sys.stderr)) if args.verbose else None
+    if args.profile_memory:
+        install_memory_profile()
 
     # Warmup: the first epoch of a full-length run, which compiles every
     # program the timed runs use (the same schedule, the same jitted step).
@@ -342,6 +378,9 @@ def main():
     for r in range(args.runs):
         row = train(args.seed + r, data, args.epochs, dtype, log)
         row["backend"] = jax.devices()[0].platform
+        if args.profile_memory:
+            import memprofile
+            row.update(memprofile.snapshot())
         rows.append(row)
         print(json.dumps(row), flush=True)
     # The timed runs must not have compiled anything new.
