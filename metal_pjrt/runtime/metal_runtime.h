@@ -393,6 +393,11 @@ class Device {
   // waited on the host for a host task, and command buffers committed while
   // still waiting on an unfinished host task (must stay 0).
   uint64_t host_task_holds() const { return host_task_holds_.load(); }
+  // Host-to-device copies staged through a GPU copy, and those run as host
+  // tasks (see Stream::MemcpyHostToDevice); staging bytes now in flight.
+  uint64_t staged_h2d_copies() const { return staged_h2d_copies_.load(); }
+  uint64_t host_task_h2d_copies() const { return host_task_h2d_copies_.load(); }
+  uint64_t staging_bytes() const { return staging_bytes_.load(); }
   uint64_t unsignaled_host_task_waits_committed() const {
     return unsignaled_host_task_waits_committed_.load();
   }
@@ -520,6 +525,12 @@ class Device {
   bool CheckInFlight(bool wait);
   std::atomic<uint64_t> host_task_holds_{0};
   std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
+  std::atomic<uint64_t> staged_h2d_copies_{0};
+  std::atomic<uint64_t> host_task_h2d_copies_{0};
+  std::atomic<uint64_t> staging_bytes_{0};
+  // Releases staging buffers of Stream::MemcpyHostToDevice and returns
+  // their bytes to staging_bytes_.
+  void ReleaseStaging(const std::vector<MTL::Buffer*>& staging);
 };
 
 // Timeline-semaphore style event: `Record` on a stream bumps and signals a
@@ -598,11 +609,18 @@ class Stream {
   // Host transfers are ordered on the stream. With unified memory they are
   // plain memcpys: done right away on the calling thread when nothing on or
   // for this stream is pending (no open command buffer, every wait already
-  // satisfied, every committed buffer and host task finished); otherwise in
-  // a host callback once prior work completes, with later stream work
-  // waiting for it (so `src` must stay unchanged until the stream gets
-  // there, as XLA guarantees; pjrt/metal_pjrt_api.cc snapshots device_put's
-  // numpy data, or waits for the copy of a large array).
+  // satisfied, every committed buffer and host task finished). Otherwise a
+  // host-to-device copy into a live allocation is staged while the device's
+  // staging buffers in flight stay within kMaxStagingBytes: `src` is copied
+  // into a new shared buffer before returning and a GPU copy is encoded,
+  // ordered like any kernel (no host task, so a commit waiting on it never
+  // holds the host).
+  // The staging buffer is released when its command buffer completes.
+  // Beyond the bound, and for device-to-host copies, the memcpy runs in a
+  // host callback once prior work completes, with later stream work waiting
+  // for it (so `src` must stay unchanged until the stream gets there, as
+  // XLA guarantees; pjrt/metal_pjrt_api.cc snapshots device_put's numpy
+  // data, or waits for the copy of a large array).
   absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
 
@@ -665,6 +683,8 @@ class Stream {
   static constexpr int kEarlyCommitIntervalUs = 500;
   // Copies and uniform fills up to this size run as compute kernels.
   static constexpr uint64_t kComputeCopyMaxBytes = 16ull << 20;
+  // Staging buffers of host-to-device copies in flight, per device.
+  static constexpr uint64_t kMaxStagingBytes = 64ull << 20;
   // Also commit once this many threads have been dispatched into one command
   // buffer (roughly tens of milliseconds of GPU work), so a batch of heavy
   // kernels cannot approach the GPU watchdog timeout, especially under
@@ -767,6 +787,10 @@ class Stream {
   // Kernels encoded into the open command buffer (for the failure
   // diagnostics and the reset log).
   std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
+  // Staging buffers of host-to-device copies encoded into the open command
+  // buffer; released (and their bytes returned to the device) when it
+  // completes or is dropped.
+  std::vector<MTL::Buffer*> pending_staging_;
   // Host work ordered on the stream: each task waits for the fence to reach
   // wait_value, runs, then signals signal_value so later GPU work proceeds.
   struct HostTask {

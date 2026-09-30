@@ -245,8 +245,19 @@ sizes.
   shrinks).
 
 **Transfers.** Host-to-device and device-to-host copies are a `memcpy` on
-the calling thread when the stream is idle, and a host task otherwise; there
-is no staging. JAX lets XLA read the source after `device_put` returns, and
+the calling thread when the stream is idle. Otherwise a host-to-device copy
+is staged: the bytes are copied into a new shared buffer before the call
+returns and a GPU copy is encoded, ordered on the stream like any kernel;
+the staging buffer is released when its command buffer completes. As a host
+task (the earlier design) the copy waited for the compute stream on the
+host, and the commit recording the destination's event held (hold rule)
+until then, so XLA's Execute of anything consuming the buffer (JAX's eager
+slicing sends its indices this way) blocked until the GPU drained: in
+airbench94 the GPU idled 60-67 ms of each 490 ms step at full clock while
+the host caught up (431 ms/step staged). What
+still runs as a host task: every device-to-host copy, and host-to-device
+copies beyond 64 MB of staging in flight per device
+(`Stream::kMaxStagingBytes`), including any single copy over 64 MB. JAX lets XLA read the source after `device_put` returns, and
 a data loader that refilled its array changed what the device got. So
 `device_put` of dense host data snapshots it into a malloc'd buffer before
 returning (as CUDA does for pageable memory), which does not block. From
