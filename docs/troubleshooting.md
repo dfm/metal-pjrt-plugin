@@ -144,6 +144,13 @@ operation and its source line:
   matmul-with-bias call whose bias is shorter than the matmul is wide.
   Slice or reshape the operands instead (`x @ w[:, :k] + b`), or add a
   bias as wide as the matmul before slicing or reshaping.
+- `Metal: the HLO rng op (jax.lax.rng_uniform) is not supported ...; use
+  jax.random: ...` XLA's stateful generator has no Metal kernel. `jax.random`
+  works.
+- `Metal: host offloading (jax.experimental.compute_on("device_host")) is
+  not supported; run that part on the CPU backend instead: ...` Move the
+  offloaded part out of the jitted function and run it with
+  `jax.default_device(jax.devices("cpu")[0])`.
 - `Metal: bf16 matmul too large: ... Split the matmul or use float32` and
   `Metal: matmul operand ... has a batch, row or column group of ...
   elements; XLA's matmul config counts them in 32 bits. Split the batch

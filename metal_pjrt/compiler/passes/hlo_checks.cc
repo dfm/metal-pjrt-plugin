@@ -242,9 +242,35 @@ bool NeedsWideAtomics(const HloInstruction& instr) {
 
 }  // namespace
 
+absl::Status CheckBeforeOptimization(const HloModule& module) {
+  for (const HloComputation* comp : module.computations()) {
+    for (const HloInstruction* instr : comp->instructions()) {
+      // kXlaComputeTypeAttr / kXlaComputeTypeHost (xla/side_effect_util.h).
+      const auto& attributes = instr->frontend_attributes().map();
+      auto type = attributes.find("_xla_compute_type");
+      if (type != attributes.end() && type->second == "host") {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: host offloading (jax.experimental.compute_on("
+            "\"device_host\")) is not supported; run that part on the CPU "
+            "backend instead: ",
+            DescribeOp(*instr)));
+      }
+    }
+  }
+  return absl::OkStatus();
+}
+
 absl::Status CheckPostGemmRewriter(const HloModule& module) {
   for (const HloComputation* comp : module.computations()) {
     for (const HloInstruction* instr : comp->instructions()) {
+      if (instr->opcode() == HloOpcode::kRng ||
+          instr->opcode() == HloOpcode::kRngGetAndUpdateState) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: the HLO rng op (jax.lax.rng_uniform) is not supported "
+            "(XLA generates it with a kernel that has no Metal translation); "
+            "use jax.random: ",
+            DescribeOp(*instr)));
+      }
       if (instr->opcode() == HloOpcode::kFft) {
         return absl::UnimplementedError(absl::StrCat(
             "Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT "

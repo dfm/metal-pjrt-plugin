@@ -413,6 +413,46 @@ ENTRY e {
   EXPECT_TRUE(CheckPostGemmRewriter(**module).ok());
 }
 
+// XLA would compile a host-offloaded region with XLA:CPU (no metal$
+// handlers there) and CHECK-fail; refused before any pass runs.
+TEST_F(MetalHloChecksTest, HostOffloadingIsRefused) {
+  const std::string kHost = R"(
+HloModule m
+f {
+  p = f32[4] parameter(0)
+  ROOT r = f32[4] negate(p)
+}
+ENTRY e {
+  x = f32[4] parameter(0)
+  ROOT c = f32[4] call(x), to_apply=f, frontend_attributes={_xla_compute_type="$T"}, metadata={op_name="jit(f)/compute_on"}
+})";
+  auto check = [&](const std::string& type) {
+    auto module = ParseAndReturnUnverifiedModule(
+        absl::StrReplaceAll(kHost, {{"$T", type}}));
+    EXPECT_TRUE(module.ok()) << module.status();
+    if (!module.ok()) return module.status();
+    return CheckBeforeOptimization(**module);
+  };
+  absl::Status host = check("host");
+  EXPECT_EQ(host.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(host.message().find("compute_on"), std::string::npos) << host;
+  EXPECT_TRUE(check("device").ok());
+}
+
+// lax.rng_uniform: RngExpander leaves an rng-get-and-update-state, which
+// XLA emits as a legacy LLVM-IR kernel.
+TEST_F(MetalHloChecksTest, RngStateIsRefused) {
+  absl::Status rng = Check(R"(
+HloModule m
+ENTRY e {
+  ROOT s = u64[2] rng-get-and-update-state(), delta=1, metadata={op_name="jit(f)/rng_uniform"}
+})");
+  EXPECT_EQ(rng.code(), absl::StatusCode::kUnimplemented);
+  EXPECT_NE(rng.message().find("jax.random"), std::string::npos) << rng;
+  EXPECT_NE(rng.message().find("jit(f)/rng_uniform"), std::string::npos)
+      << rng;
+}
+
 // After optimization, so that an fft in the dead branch of a folded
 // platform conditional (multi-platform jax.export) does not count.
 TEST_F(MetalHloChecksTest, FftIsRefusedAfterOptimization) {

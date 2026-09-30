@@ -190,6 +190,7 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     std::unique_ptr<HloModule> module, se::StreamExecutor* stream_exec,
     const CompileOptions& options) {
   ApplyMetalDefaults(module->mutable_config().mutable_debug_options());
+  TF_RETURN_IF_ERROR(CheckBeforeOptimization(*module));
   {
     // Complex64 dots become real f32 dots (MetalBlasLt has no complex GEMM),
     // before the simplifier and GemmRewriter see them.

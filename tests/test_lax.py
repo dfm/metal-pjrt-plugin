@@ -261,6 +261,7 @@ case("c64 sort 100 x 300")(lambda: ref(lambda x: (jnp.sort(x), jnp.argsort(x)), 
 case("c64 lax.sort_key_val")(lambda: ref(lambda k, v: lax.sort_key_val(k, v), CXT(8, 200), CX(8, 200), same=True))
 case("c64 sort with NaN / inf")(lambda: ref(lambda x: jnp.sort(x), np.array([1 + 1j, np.nan, 1 - 1j, np.inf, -np.inf + 2j, complex(0, np.nan), 1j, 0, -1j, 1 + 1j], np.complex64), same=True))
 case("int8 / uint8 math")(lambda: ref(lambda x: (x.astype(jnp.int8) * 2 + x.astype(jnp.uint8)).astype(f32), jnp.arange(16, dtype=jnp.int32)))
+case("lax.rng_uniform (expected unsupported)")(lambda: ref(lambda: lax.rng_uniform(np.float32(0), np.float32(1), (8,))))
 case("int4 (expected unsupported)")(lambda: ref(lambda x: x.astype(jnp.int4).astype(f32), jnp.arange(16, dtype=jnp.int32) % 7))
 case("float8 e4m3")(lambda: ref(lambda x: x.astype(jnp.float8_e4m3fn), A(16)))
 case("bf16 reduce")(lambda: ref(lambda x: jnp.sum(x.astype(jnp.bfloat16), 1), A(16, 64)))
@@ -276,6 +277,7 @@ case("concatenate 40 operands")(lambda: ref(lambda *xs: jnp.concatenate(xs), *[A
 # Known failures (strict: a pass means the entry should go).
 XFAIL = {
     "int4 (expected unsupported)": "int4 unsupported by the MSL emitter",
+    "lax.rng_uniform (expected unsupported)": "XLA's rng state kernel has no Metal translation; refused by name",
 }
 
 # Measured (METAL_TEST_REPORT_ULPS=1, M3) and doubled. CPU float32 is within
