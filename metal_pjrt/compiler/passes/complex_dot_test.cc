@@ -121,6 +121,34 @@ ENTRY e {
   EXPECT_EQ(dots.size(), 2);
 }
 
+// Two real operands with a complex64 result
+// (jnp.matmul(..., preferred_element_type=complex64)): one f32 dot and a
+// zero imaginary part.
+TEST_F(MetalComplexDotExpanderTest, RealOperandsComplexResult) {
+  auto module = ParseAndReturnVerifiedModule(R"(
+HloModule m
+ENTRY e {
+  a = f32[4,5] parameter(0)
+  b = f32[5,3] parameter(1)
+  ROOT d = c64[4,3] dot(a, b), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+})");
+  ASSERT_TRUE(module.ok()) << module.status();
+  MetalComplexDotExpander pass;
+  auto changed = RunHloPass(&pass, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_TRUE(*changed);
+  EXPECT_TRUE(verifier().Run(module->get()).ok());
+  const HloComputation* entry = (*module)->entry_computation();
+  EXPECT_EQ(entry->root_instruction()->opcode(), HloOpcode::kComplex);
+  int dots = 0;
+  for (const HloInstruction* instr : entry->instructions()) {
+    if (instr->opcode() != HloOpcode::kDot) continue;
+    EXPECT_EQ(instr->shape().element_type(), F32) << instr->ToString();
+    ++dots;
+  }
+  EXPECT_EQ(dots, 1);
+}
+
 // complex128 stays (CheckPostGemmRewriter refuses it with the f64 ops).
 TEST_F(MetalComplexDotExpanderTest, LeavesComplex128Alone) {
   auto module = ParseAndReturnVerifiedModule(R"(

@@ -9,6 +9,7 @@
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
 #include "xla/hlo/ir/hlo_opcode.h"
+#include "xla/literal_util.h"
 #include "xla/shape.h"
 #include "xla/shape_util.h"
 #include "xla/tsl/platform/errors.h"
@@ -25,9 +26,7 @@ absl::StatusOr<bool> MetalComplexDotExpander::RunImpl(
        module->MakeNonfusionComputations(execution_threads)) {
     for (HloInstruction* dot : comp->MakeInstructionPostOrder()) {
       if (dot->opcode() != HloOpcode::kDot ||
-          dot->shape().element_type() != C64 ||
-          (dot->operand(0)->shape().element_type() != C64 &&
-           dot->operand(1)->shape().element_type() != C64)) {
+          dot->shape().element_type() != C64) {
         continue;
       }
       auto add = [&](std::unique_ptr<HloInstruction> instr) {
@@ -60,8 +59,8 @@ absl::StatusOr<bool> MetalComplexDotExpander::RunImpl(
                                              dot->dot_dimension_numbers(),
                                              dot->precision_config()));
       };
-      // The real parts always exist and one operand is complex, so both
-      // sums have at least one term.
+      // The real parts always exist, so re has a term; im has none when
+      // both operands are real (preferred_element_type=complex64).
       auto sum = [&](HloOpcode op, HloInstruction* x, HloInstruction* y) {
         if (x == nullptr) return y;
         if (y == nullptr) return x;
@@ -70,6 +69,11 @@ absl::StatusOr<bool> MetalComplexDotExpander::RunImpl(
       HloInstruction* re =
           sum(HloOpcode::kSubtract, product(0, 0), product(1, 1));
       HloInstruction* im = sum(HloOpcode::kAdd, product(0, 1), product(1, 0));
+      if (im == nullptr) {
+        im = add(HloInstruction::CreateBroadcast(
+            f32,
+            add(HloInstruction::CreateConstant(LiteralUtil::Zero(F32))), {}));
+      }
       HloInstruction* result = add(HloInstruction::CreateBinary(
           dot->shape(), HloOpcode::kComplex, re, im));
       TF_RETURN_IF_ERROR(dot->ReplaceAllUsesWith(result));
