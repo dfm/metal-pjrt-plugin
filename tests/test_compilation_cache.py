@@ -106,3 +106,42 @@ def test_cache_key_fingerprints_parsed_settings():
     assert version(METAL_PJRT_DISABLE_FFT="0") == unset
     assert version(METAL_PJRT_DISABLE_FFT="1") not in (
         unset, version(METAL_PJRT_DISABLE_LAPACK="1"))
+
+
+CACHE_CHILD = r"""
+import numpy as np, jax, jax.numpy as jnp
+hits = []
+jax.monitoring.register_event_listener(
+    lambda event, **kw: hits.append(event)
+    if event == "/jax/compilation_cache/cache_hits" else None)
+def f(x):
+    # A loop (module constants), a matmul and elementwise kernels.
+    y = jax.lax.fori_loop(0, 3, lambda i, v: jnp.tanh(v @ v.T) + i, x)
+    return y.sum(0)
+x = np.linspace(-1, 1, 64 * 64, dtype=np.float32).reshape(64, 64)
+got = np.asarray(jax.jit(f)(x))
+mtl_hits = len(hits)
+with jax.default_device(jax.devices("cpu")[0]):
+    want = np.asarray(jax.jit(f)(x))
+print(mtl_hits, bool(np.abs(got - want).max() <= 1e-4 * np.abs(want).max()))
+"""
+
+
+@pytest.mark.metal
+def test_cached_executable_runs_in_a_second_process(tmp_path):
+    # The plugin drops XLA's ABI-version check so that JAX's cache works for
+    # mtl (pjrt/metal_pjrt_api.cc), which leaves the cache key as the only
+    # guard: an executable one process wrote must load, and compute the same
+    # values, in the next.
+    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu",
+               JAX_ENABLE_COMPILATION_CACHE="true",
+               JAX_COMPILATION_CACHE_DIR=str(tmp_path),
+               JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="0",
+               JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="0")
+    first = run_python(CACHE_CHILD, env)
+    assert first.returncode == 0, first.stderr[-3000:]
+    assert first.stdout.split() == ["0", "True"], first.stdout
+    second = run_python(CACHE_CHILD, env)
+    assert second.returncode == 0, second.stderr[-3000:]
+    hits, close = second.stdout.split()
+    assert int(hits) >= 1 and close == "True", second.stdout

@@ -56,6 +56,15 @@ def _():
     # subnormals are in test_subnormals_match_cpu.
     m = np.geomspace(1.2e-38, 3e38, 512).astype(np.float32)
     ref(lax.cbrt, np.concatenate([m, -m]))
+@case("lax.rem large and near-integer quotients")
+def _():
+    # The remainder is exact in float32 (the default tolerance is 0). MSL
+    # specifies fmod as x - y * trunc(x / y), which is not: 1 / 0.1f rounds
+    # to 10, so that formula gives 0 (or a small negative number with an
+    # fma) for rem(1, 0.1) instead of 0.09999999.
+    x = np.array([1.0, 100.0, 1e10, -1.0, 5.5, 1e10, 3e38], np.float32)
+    y = np.array([0.1, 0.1, 3.0, 0.1, 0.5, 7.0, 1e-3], np.float32)
+    ref(lax.rem, x, y)
 @case("lax.expm1 wide range")
 def _():
     # Up to just under log(FLT_MAX) = 88.72: the prelude's um1 * x overflowed
@@ -185,7 +194,8 @@ case("random normal")(lambda: (lambda u: np.testing.assert_(abs(float(u.std()) -
 case("random bits threefry")(lambda: ref(lambda k: jax.random.bits(k, (16,)), jax.random.PRNGKey(3), same=True))
 case("random categorical/choice")(lambda: ref(lambda k: (jax.random.categorical(k, jnp.log(jnp.arange(1.0, 11.0)), shape=(100,)),
                                                          jax.random.choice(k, 10, (100,))), jax.random.PRNGKey(4), same=True))
-case("rng_bit_generator")(lambda: (lambda r: np.testing.assert_(r[1].shape == (8,)))(lax.rng_bit_generator(jnp.zeros(4, jnp.uint32), (8,), jnp.uint32)))
+# The default algorithm is Philox on both compilers (RngBitGeneratorExpander).
+case("rng_bit_generator")(lambda: ref(lambda k: lax.rng_bit_generator(k, (8,), jnp.uint32)[1], np.arange(1, 5, dtype=np.uint32), same=True))
 # ---- misc ----
 case("lax.erf_inv grad / custom_jvp")(lambda: ref(lambda x: jax.grad(lambda v: jnp.sum(jax.nn.gelu(v)))(x), A(64)))
 case("jnp.linalg.norm")(lambda: ref(lambda x: jnp.linalg.norm(x, axis=1), A(8, 8)))
@@ -360,6 +370,43 @@ def test_small_arguments(op):
     err = (got[n:].astype(np.float64) - want[n:]) / ulp
     assert np.abs(err).max() <= 0.6
     assert abs(err.mean()) < 0.02  # Metal's own: -0.3 (exp), +0.2 (cos)
+
+
+X64_CHILD = r"""
+import numpy as np, jax, jax.numpy as jnp
+assert jax.config.jax_enable_x64
+cpu = jax.devices("cpu")[0]
+def same(fn, *args):
+    got = np.asarray(jax.jit(fn)(*args))
+    with jax.default_device(cpu):
+        want = np.asarray(jax.jit(fn)(*args))
+    return bool(got.dtype == want.dtype and
+                np.allclose(got, want, rtol=1e-5, atol=1e-6))
+def refused(fn, *args):
+    try:
+        np.asarray(jax.jit(fn)(*args))
+    except Exception as e:
+        return "Metal: " in str(e)
+    return False
+x32 = np.linspace(-2, 2, 64, dtype=np.float32)
+x64 = np.linspace(-2, 2, 64)
+print(same(lambda x: jnp.sin(x) * 2 + 1, x32),
+      same(lambda x: jnp.sum(jnp.arange(64) * 3 + x.astype(jnp.int64)), x32),
+      same(lambda x: x.reshape(8, 8)[2:6], x64),
+      refused(lambda x: x * 2, x64),
+      refused(lambda x: jnp.sin(x.astype(jnp.float32)).astype(jnp.float64).sum(), x64))
+"""
+
+
+def test_x64_enabled():
+    # With jax_enable_x64 on (conftest turns it off for every other test):
+    # float32 and int64 programs still match CPU, float64 copies work, and
+    # float64 arithmetic is refused by name rather than miscompiled.
+    import os
+    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="1")
+    out = metal_testing.run_python(X64_CHILD, env)
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert out.stdout.split() == ["True"] * 5, out.stdout
 
 
 # Subnormal inputs follow XLA:CPU, which flushes them (docs/accuracy.md):
