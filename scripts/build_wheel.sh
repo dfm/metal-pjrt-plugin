@@ -15,7 +15,7 @@ if [[ "${1:-}" != "--no-build" ]]; then
 fi
 DYLIB=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_mtl_plugin.dylib
 [[ -f "$DYLIB" ]] || { echo "missing $DYLIB" >&2; exit 1; }
-MINOS=$(otool -l "$DYLIB" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; exit}')
+MINOS=$(otool -l "$DYLIB" | awk '/LC_BUILD_VERSION/ {f=1} f && $1 == "minos" {print $2; f=0}')
 if [[ "${MINOS//./_}" != "$MACOS_MIN" ]]; then
   echo "$DYLIB is built for macOS ${MINOS:-?} or later, but the wheel would be tagged macosx_${MACOS_MIN}; rebuild it, or change MACOS_MIN and .bazelrc together" >&2
   exit 1

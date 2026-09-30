@@ -198,7 +198,7 @@
       "version": "commit aa46a4c21e440b3d416c16eca3c96df19c74f316",
       "spdx": "BSD-3-Clause",
       "used_by": "XLA's CPU backend (FFT)",
-      "note": "The ducc0 FFT component and its internal dependencies, the only ducc0 sources XLA compiles (src/ducc0/fft, and parts of src/ducc0/infra and src/ducc0/math), are dual-licensed BSD-3-Clause OR GPL-2.0-or-later. This distribution elects BSD-3-Clause. The files' headers carry copyright notices of the Max-Planck-Society (2010-2024), Peter Bell (2019-2023) and Matteo Frigo and the Massachusetts Institute of Technology (2003, 2007-14; odd-sized DCT-IV transforms), all under the terms reproduced here from fft1d_impl.h.",
+      "note": "The ducc0 FFT component and its internal dependencies, the only ducc0 sources XLA compiles (src/ducc0/fft, and parts of src/ducc0/infra and src/ducc0/math), are dual-licensed BSD-3-Clause OR GPL-2.0-or-later. This distribution elects BSD-3-Clause. The files' headers carry copyright notices of the Max-Planck-Society (2010-2024), Peter Bell (2019-2023) and Matteo Frigo and the Massachusetts Institute of Technology (2003, 2007-14; odd-sized DCT-IV transforms), all under the terms reproduced here from fft1d_impl.h. One header on the compile, infra/string_utils.h, carries only the GPL-2.0-or-later notice; threading.cc includes it for declarations, and no code from it is compiled (its callers are under DUCC0_STDCXX_LOWLEVEL_THREADING, which XLA's build does not define).",
       "in_binary": "1828 symbols defined only by the ducc archives; 1925 name ducc0::",
       "license": [
         {

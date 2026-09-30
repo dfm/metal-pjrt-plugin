@@ -13,10 +13,14 @@ if [[ "$(uname -s)-$(uname -m)" != "Darwin-arm64" ]]; then
 fi
 if [[ "${1:-}" != "--no-build" ]]; then
   command -v bazel >/dev/null || { echo "need bazel (brew install bazelisk)" >&2; exit 1; }
+  # The SDK xcode-select points at; Bazel may pick another installed Xcode,
+  # so an old one here is a warning, not an error.
   SDK=$(xcrun --show-sdk-version 2>/dev/null || true)
-  if [[ -z "$SDK" || "${SDK%%.*}" -lt 26 ]]; then
-    echo "need the macOS 26 SDK or later (found ${SDK:-none}): the Metal headers the plugin is built with reference symbols new in macOS 26. Update the Xcode command-line tools" >&2
+  if [[ -z "$SDK" ]]; then
+    echo "no macOS SDK found: install the Xcode command-line tools (xcode-select --install)" >&2
     exit 1
+  elif [[ "${SDK%%.*}" -lt 26 ]]; then
+    echo "warning: the selected macOS SDK is $SDK; the plugin needs the macOS 26 SDK or later (its Metal headers reference symbols new in macOS 26), so the link will fail unless Bazel finds a newer Xcode" >&2
   fi
 fi
 if [[ ! -x .venv/bin/python ]]; then
