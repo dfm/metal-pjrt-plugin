@@ -146,8 +146,8 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   GB/s for every M from 2 to 64. Half of that was DotMerger: the GEMMs
   share x, so it concatenated the 28 weights into one operand, a 336 MB
   copy on every call. The other half was steel's 64-row tile. p10 ms per
-  call, 3 interleaved rounds of 3 bursts of 10 (the case study's
-  `skinny_jax.py` / `skinny_mlx.py`; "chained" feeds each GEMM's output to
+  call, 3 interleaved rounds of 3 bursts of 10 (`examples/llm/skinny_jax.py`
+  / `skinny_mlx.py`; "chained" feeds each GEMM's output to
   the next, so neither side can overlap or merge them):
 
   | M | before | after | MLX | chained: before | after | MLX |
