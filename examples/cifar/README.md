@@ -23,6 +23,9 @@ uv pip install --python .venv/bin/python -e '.[examples]'     # optax
 export JAX_PLATFORMS=mtl,cpu
 .venv/bin/python examples/cifar/check.py
 .venv/bin/python examples/cifar/airbench.py --runs 5
+# at a matched thermal state (fanless Macs throttle after ~3 min): an untimed
+# full-length run first; the same flag exists in torch_baseline.py
+.venv/bin/python examples/cifar/airbench.py --runs 5 --warm-full
 # per-epoch time, footprint, macOS memory pressure and the plugin's cache counters
 .venv/bin/python examples/cifar/airbench.py --runs 5 --profile-memory
 # PyTorch on MPS, in its own environment (not a dependency of this repo)
@@ -59,10 +62,16 @@ standard deviations; accuracy is on the full 10,000-image test set.
 The two columns were measured in different conditions: PyTorch's 5 seeds
 in a quiet window (no other GPU jobs or builds), JAX's in one process on
 the busy machine, with memory pressure at "warn" for part of the run.
-There JAX's runs 2-5 took 262-271 s against 237 s for run 1, consistent
-with the plugin releasing its buffer cache on every free at warn (a
-roadmap item); in the earlier quiet window, before c4bf2d6, seeds 1 and 5
-took 229 and 259 s. So "the same speed" is conservative for JAX: JAX and
+There JAX's runs 2-5 took 262-271 s against 237 s for run 1. The cause is
+thermal, not memory: this M3 MacBook Air has no fan, and under sustained
+load its GPU holds its top performance state at ~9.2 W for about 3
+minutes (~437 ms per step), then settles near 5 W (535-560 ms per step).
+Run 1 gets most of the fast minutes; runs 2-5 run throttled. (The
+plugin's counters showed the same ~5 fresh allocations per epoch in every
+run, a flat footprint and no recompilation.) PyTorch's runs show the same
+pattern (run 1 228 s, runs 2-5 249-284 s). Timed runs therefore compare
+fairly only at a matched thermal state; a re-timing of both sides after
+an untimed full-length warm-up run is planned. Until then: JAX and
 PyTorch reach the same accuracy (JAX slightly higher and less variable)
 in about the same time, and JAX uses 45% less memory. Runs are
 deterministic: a seed gives the same accuracy every time.

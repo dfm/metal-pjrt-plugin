@@ -240,6 +240,9 @@ def main():
     ap.add_argument("--epochs", type=float, default=HYP["epochs"])
     ap.add_argument("--dtype", choices=["float16", "bfloat16", "float32"], default="float16")
     ap.add_argument("--channels-last", action="store_true")
+    ap.add_argument("--warm-full", action="store_true",
+                    help="one untimed full-length run before the timed runs (matched "
+                         "thermal state; see airbench.py)")
     args = ap.parse_args()
     global CHANNELS_LAST
     CHANNELS_LAST = args.channels_last
@@ -256,6 +259,9 @@ def main():
     t0 = time.perf_counter()
     train(0, data, min(args.epochs, 1.0), dtype)                     # warmup
     print(json.dumps({**info, "warmup_run_s": round(time.perf_counter() - t0, 2)}), flush=True)
+    if args.warm_full:
+        r = train(0, data, args.epochs, dtype)
+        print(json.dumps({**info, "warm_full_train_s": r["train_s"]}), flush=True)
     rows = []
     for r in range(args.runs):
         row = {**info, **train(args.seed + r, data, args.epochs, dtype)}

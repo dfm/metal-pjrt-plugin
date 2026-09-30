@@ -348,6 +348,9 @@ def main():
     ap.add_argument("--epochs", type=float, default=HYP["epochs"])
     ap.add_argument("--dtype", choices=["bfloat16", "float16", "float32"], default="bfloat16")
     ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("--warm-full", action="store_true",
+                    help="one untimed full-length run before the timed runs, so that they "
+                         "start at the GPU's steady (on a fanless Mac: throttled) state")
     ap.add_argument("--profile-memory", action="store_true",
                     help="print a JSON row per epoch: time, macOS pressure, footprint, "
                          "the plugin's memory counters (syncs once per epoch)")
@@ -374,6 +377,12 @@ def main():
     compiled = step._cache_size()
     print(json.dumps({"backend": jax.devices()[0].platform, "warmup_run_s": round(warm, 2)}),
           flush=True)
+    if args.warm_full:
+        t0 = time.perf_counter()
+        r = train(0, data, args.epochs, dtype)
+        print(json.dumps({"backend": jax.devices()[0].platform, "warm_full_run_s":
+                          round(time.perf_counter() - t0, 2), "warm_full_train_s": r["train_s"]}),
+              flush=True)
     rows = []
     for r in range(args.runs):
         row = train(args.seed + r, data, args.epochs, dtype, log)
