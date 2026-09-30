@@ -128,6 +128,14 @@ void ApplyMetalDefaults(DebugOptions& debug_options) {
   // [1024, 6144] GEMMs sharing x: 12.2 -> 4.9 ms (the copy is twice the
   // GEMMs' own traffic); bench/jax_bench.py unchanged (docs/performance.md).
   debug_options.set_xla_gpu_dot_merger_threshold_mb(0);
+  // No dynamic-slice fusion: DynamicSliceFusionRewriterV2 (on by default)
+  // wraps a GEMM or any FFI custom call whose operand is a slice, or whose
+  // result goes into a dynamic-update-slice, and hands the call pointers
+  // into the sliced buffers. For dus(x, f(slice(x, i)), i) the result
+  // aliases the operand, which the handlers here are not written for (a
+  // same-shape metal$conv would read input it has already overwritten).
+  // Without it XLA copies the slices.
+  debug_options.set_xla_gpu_enable_dynamic_slice_fusion(false);
   // No command buffers: XLA's conversion pass already clears the command
   // types for OneAPI-capability devices, and a software-replay
   // implementation was measured (docs/performance.md) to be a wash once the
