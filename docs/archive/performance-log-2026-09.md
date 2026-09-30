@@ -1,5 +1,9 @@
 # Performance notes
 
+> Archived: a dated log (September 2026), not maintained. Names, environment
+> variables and files in it are those of its date, and several were renamed
+> or removed since. Current numbers are in `docs/performance.md`.
+
 Methodology: `bench/jax_bench.py` (same jitted programs on every JAX backend,
 warmup, median of 10 with `block_until_ready`), `bench/mlx_bench.py` (same
 workloads in MLX with `mx.compile`), `bench/dispatch_bound.py` (fixed

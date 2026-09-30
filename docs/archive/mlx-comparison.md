@@ -1,5 +1,9 @@
 # How MLX executes, and where an XLA-based backend should land relative to it
 
+> Archived: a source read of MLX and jax-mps at the commits named below
+> (September 2026), not maintained. Both projects have moved since; what
+> follows describes those commits only.
+
 Findings from reading MLX at commit 59d600b (2026-09-17) and jax-mps at
 7fd54c6 (2026-09-15). File references are into those trees.
 

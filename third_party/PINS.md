@@ -6,7 +6,7 @@
 | XLA | 91888df6ce85102c30220e41d952065925e10886 | jax-ml/jax `MODULE.bazel` at tag `jax-v0.11.2` |
 | rules_ml_toolchain | c0eb2743b7b12b2bbcf0e1888e26d36ba6b093de | same |
 | Bazel | 8.7.0 | jax `.bazelversion` |
-| PJRT C API | 0.116 | `xla/pjrt/c/pjrt_c_api.h` at that commit |
+| PJRT C API | 0.115 | `xla/pjrt/c/pjrt_c_api.h` at that commit |
 | LLVM targets configured by XLA | AArch64, AMDGPU, ARM, NVPTX, PowerPC, RISCV, SystemZ, X86, SPIRV | `@xla//third_party/extensions:llvm.bzl` |
 
 The plugin must be built against the exact XLA commit of the jaxlib release it

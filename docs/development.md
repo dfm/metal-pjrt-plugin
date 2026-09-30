@@ -132,7 +132,10 @@ for descendants of its holder, so wrapping `scripts/run_jax_tests.sh` (which
 locks itself) in `scripts/device_lock.py` is fine.
 
 The `.bazelrc` is tuned for an 8 GB machine (3 jobs, 4.5 GB action budget,
-2.5 GB JVM). Persistent disk and repository caches live under
+2.5 GB JVM). With more memory, raise them in a `user.bazelrc` next to it
+(imported last): for example `common --jobs=8` and
+`common --local_resources=memory=20000` on 32 GB; the heavy XLA and MLIR
+translation units take 1-2 GB each. Persistent disk and repository caches live under
 `~/.cache/metal-pjrt-plugin/`, shared by every checkout of the repository,
 so a second clone rebuilds from the cache in minutes instead of hours.
 `--config=public_cache` reads JAX's public Bazel cache; hits are
@@ -168,6 +171,7 @@ ignored with a warning and the default kept.
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | run | test | `n` fails the n-th committed command buffer, default 0 (never) | runtime |
 | `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
+| `METAL_TEST_REPORT_ERRORS` | script | test | on when set to anything (even `0`), default off; print the measured FFT errors | `metal_pjrt/fft/fft_test.cc` |
 | `JAX_TESTS_DIR` | script | dev | JAX checkout with the tests, default `~/.cache/metal-pjrt/jax-tests` | `scripts/run_jax_tests.sh` |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | script | dev | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot (boolean), `bazel shutdown` first (boolean, off) | `bench/run_all.sh` |
 | `METAL_PJRT_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |

@@ -77,8 +77,9 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
   standalone softmax 8192x1024 1.24 -> 1.91 ms (MLX 0.97).
 - **XLA command buffers and Metal indirect command buffers** (removed
   bdb9c4c): measured; a wash or slower once the runtime was fixed.
-- **MPSGraph for program subsets**: what jax-metal does; opaque, a record of
-  bugs, and still about one kernel per op for scan-shaped programs.
+- **MPSGraph for program subsets**: what jax-metal does; closed source (it
+  cannot be debugged or fused into), and still about one kernel per op for
+  scan-shaped programs.
 - **An `AppleComputeCapability` upstream patch**: the tripwire test and
   post-GEMM checks guard the OneAPI branches instead. Also rejected as
   codegen routes: LLVM IR -> AIR, SPIR-V -> SPIRV-Cross.
@@ -209,7 +210,7 @@ Unscheduled directions, with enough context to pick one up cold.
   convolution and attention kernels. In the order worth trying:
   1. MPSGraph as a per-op library, as XLA:GPU uses cuDNN: a custom call
      running a fixed-shape `MPSGraphExecutable` on our `MTLBuffer`s (no
-     copies; the bug reputation is about whole-program use). Needs an
+     copies). Needs an
      `MPSCommandBuffer` over ours and an on-disk executable cache. Targets:
      conv and its grads, SDPA (macOS 15+). Days, not weeks.
   2. More MLX steel kernels (MIT; the f16/bf16 GEMM port 31a9623 shows the

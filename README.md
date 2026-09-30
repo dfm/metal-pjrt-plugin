@@ -5,8 +5,9 @@ through Metal.
 
 Its JAX platform is `"mtl"` (`jax.devices("mtl")`,
 `JAX_PLATFORMS=mtl,cpu`), not `"metal"`: that name belongs to Apple's
-closed-source `jax-metal` plugin, and the two can be installed side by
-side. MTL is Metal's own prefix (`MTLDevice`, `MTLBuffer`).
+closed-source `jax-metal` plugin, so the two do not collide. MTL is Metal's
+own prefix (`MTLDevice`, `MTLBuffer`). This project is not affiliated with
+or endorsed by Apple or Google.
 
 Status: a working minimum on one GPU. f32, f16 and bf16 programs run end to
 end, including training loops, sorting, host callbacks and linear algebra
@@ -108,10 +109,14 @@ x = jax.device_put(x, dev)   # jitted functions run where their inputs are
 With `JAX_PLATFORMS` unset, JAX still initializes every installed backend,
 this one included (it prints the "experimental" warning), but if the Metal
 device cannot be set up it fails quietly and CPU programs carry on.
-`JAX_PLATFORMS=cpu` skips the plugin entirely.
+`JAX_PLATFORMS=cpu` creates no Metal device. JAX still imports every
+installed plugin at startup, though, so the plugin library is loaded and
+its wrappers around three private JAX functions (compilation cache and
+host-callback lowering) are installed in every JAX process of the
+environment; they pass other backends straight through.
 
 Next to Apple's jax-metal, use separate virtual environments: jax-metal
-pins its own jax version.
+pins its own jax version. The two have not been tried together.
 
 ## GPU safety
 
@@ -135,8 +140,9 @@ checkout). [`docs/design.md`](docs/design.md#runtime) has the details.
 
 ## What works
 
-Every "yes" has a test in `tests/`; every "no" is a compile-time error or
-a test expected to fail, never a wrong answer. "No" errors either name the
+Each "yes" names its tests in `tests/`; a "no" is meant to be a
+compile-time error, never a wrong answer (please report one that is not).
+"No" errors either name the
 operation and its source line ("Metal: ...") or come from the kernel
 translator ("MSL emitter: unsupported ..."); see
 [`docs/troubleshooting.md`](docs/troubleshooting.md).
@@ -146,13 +152,13 @@ translator ("MSL emitter: unsupported ..."); see
 | `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | `test_lax.py`, `test_smoke.py` |
 | Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | `test_lax.py`, `test_scan.py`. A scatter-add/min/max on 64-bit elements, and any scatter on complex64, without `unique_indices=True` is refused (Metal has 32-bit atomics only) |
 | `jax.random` | yes | `test_lax.py` |
-| Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused, including few-row (small-batch decode) shapes at or above MLX's speed (`test_steel_gemm.py`, `test_epilogue.py`) |
+| Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders, f16/bf16 on native kernels with bias/activation fused, including few-row (small-batch decode) shapes within about 10% of MLX's speed (`test_steel_gemm.py`, `test_epilogue.py`; `docs/performance.md`) |
 | Matmul, integer GEMMs (int8 x int8 -> int32) and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops run (`test_lax.py`, "dot int32") |
 | Matmul, dot precision algorithms (`TF32_TF32_F32`, `F16_F16_F16`, `BF16_BF16_BF16`) | no | XLA refuses them ("Unsupported algorithm on the current device(s)"). The `BF16_BF16_F32` family works |
-| Matmul, fp8 | untested | fp8 conversions work (`test_lax.py`) |
+| Matmul, fp8 | no | refused at compile time like other matmul types; fp8 conversions work (`test_lax.py`) |
 | Matmul and sort of complex64 values | yes | a complex matmul runs as four real f32 ones on the f32 GEMM paths; sorts bit-identical to CPU (`test_lax.py`) |
 | Convolutions | yes | 1-D and 2-D f32/f16/bf16 (forward and gradients) on MLX's steel convolution kernels, near MLX's speed (`test_conv.py`); grouped, 3-D, other types and tiny ones on XLA's slow loop emitter. Complex64 convolutions work (`test_lax.py`) |
-| Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`) |
+| Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays, bit-identical to CPU (`test_sort.py`; `searchsorted` in `test_lax.py`) |
 | Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the shared memory (`test_linalg.py`). f16/bf16 linear algebra is untested |
 | `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering on mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") |
 | FFT | yes | `jnp.fft` (fft, rfft, irfft, fftn, ...) on MLX's FFT kernels, complex64 / float32, any length up to 2^24 (powers of two) or 2^23 - 1, with gradients and vmap; 0.6-1.3x MLX's time (`test_fft.py`, `bench/fft_bench.py`). Longer lengths raise NotImplementedError; complex128 is refused like float64 |
@@ -191,8 +197,8 @@ has timings).
   580 for `lgamma` and 1600 for `digamma` (CPU float32 is also far off
   for these two). Metal's `exp`, `sin` and `cos` are biased for |x| >= 0.125 (below
   that the plugin uses its own polynomials), `log` is biased everywhere
-  (about +-0.5 ulp), `tanh`, `sinh`, `cosh`, `expm1` and `erf` inherit
-  `exp`'s bias, and subnormal inputs and outputs flush, as on XLA:CPU
+  (about +-0.5 ulp), `sinh`, `cosh` and `expm1` inherit `exp`'s bias, and
+  subnormal inputs and outputs flush, as on XLA:CPU
   (`log(1e-40)` is `-inf`).
   [`docs/accuracy.md`](docs/accuracy.md) has the numbers.
 - **A GPU error ends GPU work for the process.** After the first failed GPU
@@ -219,10 +225,11 @@ has timings).
   or `jax.debug.*` call waits for all GPU work before it and runs on an XLA
   execution thread while the GPU stream is drained; callbacks in hot loops
   are slow.
-- **Unverified.** The GPU-error path is tested only with injected failures:
-  no real GPU fault or watchdog timeout was provoked, and the watchdog's
-  timeout was never measured. Coexistence with jax-metal is argued from
-  code, never tried. Tolerances and performance come from one M3 with
+- **Unverified.** The GPU-error path is tested with injected failures. The
+  one real watchdog timeout seen in development (2026-09-30, from a change
+  since reverted) was not a test, and the watchdog's timeout was never
+  measured. Coexistence with jax-metal is argued from code, never tried.
+  Tolerances and performance come from one M3 with
   macOS 26.2; other Apple GPUs or macOS versions (a different Metal
   compiler and math library) may need retuned tolerances.
 
@@ -269,7 +276,8 @@ please run the GPU tests under `scripts/device_lock.py`.
 ## License
 
 Apache-2.0 (`LICENSE`). The plugin also contains third-party code: the
-f16/bf16 matmul ("steel" and wide gemv) kernels are ported from
-[MLX](https://github.com/ml-explore/mlx) (MIT), and Apple's metal-cpp headers
-(Apache-2.0) are compiled in. Their notices are in `THIRD_PARTY_NOTICES`,
-which the wheel ships next to `LICENSE`.
+f16/bf16 matmul ("steel" and wide gemv), convolution and FFT kernels and
+their dispatch are ported from [MLX](https://github.com/ml-explore/mlx)
+(MIT), Apple's metal-cpp headers (Apache-2.0) are compiled in, and the
+library statically links XLA and its dependencies. Their notices are in
+`THIRD_PARTY_NOTICES`, which the wheel ships next to `LICENSE`.

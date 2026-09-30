@@ -34,6 +34,13 @@ below.
   Otherwise reinstall the wheel.
 - `metal-pjrt-plugin: host callbacks unavailable: ...` Callbacks will fail
   (below); the rest of the plugin works. Please report it.
+- `metal-pjrt-plugin: buffer donation unavailable: ...` and
+  `metal-pjrt-plugin: persistent compilation cache unavailable: ...` A
+  private JAX hook the plugin uses has moved (another JAX version). Programs
+  still run: `donate_argnums` then copies instead of reusing the buffer, and
+  mtl compiles are not cached. Install the pinned JAX, and please report it.
+- `Ignoring METAL_PJRT_MEMORY_FRACTION=... (not a number > 0); using 1, a
+  budget of ...` The variable did not parse; the default budget is in use.
 - `Platform 'mtl' is experimental and not all JAX functionality may be
   correctly supported!` JAX prints this for every plugin platform it does
   not know. It is expected.
@@ -67,6 +74,12 @@ Two different limits:
   shutdown`) or use smaller batches. Below critical nothing is refused;
   at the warning level the plugin logs once that GPU work may slow down
   while macOS compresses or swaps memory.
+
+`Metal: the driver could not allocate ... on device 0 (...): ... already
+allocated, recommended working set ..., maxBufferLength ...` is neither:
+the request was inside the budget and Metal itself returned no buffer
+(the machine is out of memory, or the single buffer is larger than the
+driver allows). Use smaller arrays or free memory.
 
 ## "accepts no further GPU work in this process"
 
@@ -125,6 +138,12 @@ operation and its source line:
   ...`: the program was lowered for another platform (e.g. exported with
   `jax.export` for cuda). Lower it for mtl: `jnp.fft` / `lax.fft` lower to
   the plugin's `metal$fft` there.
+- `Metal: XLA fused a bias of ... elements into a matmul with ... output
+  columns, through a slice or reshape of the matmul's result. ...`: XLA
+  merges `(x @ w)[:, :k] + b` and `(x @ w).reshape(...) + b` into one
+  matmul-with-bias call whose bias is shorter than the matmul is wide.
+  Slice or reshape the operands instead (`x @ w[:, :k] + b`), or add a
+  bias as wide as the matmul before slicing or reshaping.
 - `Metal: bf16 matmul too large: ... Split the matmul or use float32` and
   `Metal: matmul operand ... has a batch, row or column group of ...
   elements; XLA's matmul config counts them in 32 bits. Split the batch
