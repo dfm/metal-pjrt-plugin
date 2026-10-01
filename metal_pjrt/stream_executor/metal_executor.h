@@ -101,6 +101,9 @@ class MetalExecutor : public gpu::GpuExecutor {
  private:
   // Blocks on every live stream; returns the first error.
   absl::Status SynchronizeAllStreams();
+  // Device memory (Device::Allocate) for the device-side memory spaces.
+  absl::StatusOr<std::unique_ptr<MemoryAllocation>> DeviceMemoryAllocate(
+      uint64_t size);
 
   struct LoadedModule {
     int refcount = 0;

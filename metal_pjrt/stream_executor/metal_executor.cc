@@ -1,5 +1,7 @@
-#include "metal_pjrt/stream_executor/metal_executor.h"
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
 
+#include "metal_pjrt/stream_executor/metal_executor.h"
 
 #include <cstdint>
 #include <cstdlib>
@@ -148,14 +150,32 @@ void MetalExecutor::Deallocate(DeviceAddressBase* mem) {
 
 absl::StatusOr<std::unique_ptr<MemoryAllocation>>
 MetalExecutor::HostMemoryAllocate(uint64_t size) {
+  // XLA's host memory space (its host BFC pools: linearizing non-dense host
+  // arrays, pinned_host arrays; the transfer manager's staging): plain host
+  // pages the GPU can reach (pinned_host arrays take device copies), outside
+  // the device budget and buffer cache (Device::AllocateHost).
+  ABSL_ASSIGN_OR_RETURN(void* ptr, device_->AllocateHost(size));
+  return std::make_unique<GenericMemoryAllocation>(
+      ptr, size, [this](void* ptr, uint64_t size) {
+        absl::Status s = device_->DeallocateHost(ptr);
+        if (!s.ok()) {
+          LOG(ERROR) << "Metal device " << device_ordinal()
+                     << ": freeing host allocation of " << size
+                     << " bytes at " << ptr << " failed: " << s;
+        }
+      });
+}
+
+absl::StatusOr<std::unique_ptr<MemoryAllocation>>
+MetalExecutor::DeviceMemoryAllocate(uint64_t size) {
   ABSL_ASSIGN_OR_RETURN(rt::Allocation a, device_->Allocate(size));
   return std::make_unique<GenericMemoryAllocation>(
       a.ptr, size, [this](void* ptr, uint64_t size) {
         absl::Status s = device_->Deallocate(ptr);
         if (!s.ok()) {
           LOG(ERROR) << "Metal device " << device_ordinal()
-                     << ": freeing host allocation of " << size
-                     << " bytes at " << ptr << " failed: " << s;
+                     << ": freeing allocation of " << size << " bytes at "
+                     << ptr << " failed: " << s;
         }
       });
 }
@@ -166,6 +186,8 @@ MetalExecutor::CreateMemoryAllocator(MemorySpace memory_space) {
     case MemorySpace::kDevice:
     case MemorySpace::kUnified:
     case MemorySpace::kCollective:
+      return std::make_unique<GenericMemoryAllocator>(
+          [this](uint64_t size) { return DeviceMemoryAllocate(size); });
     case MemorySpace::kHost:
       return std::make_unique<GenericMemoryAllocator>(
           [this](uint64_t size) { return HostMemoryAllocate(size); });

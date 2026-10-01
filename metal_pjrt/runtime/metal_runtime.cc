@@ -18,6 +18,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/sysctl.h>
 #include <fstream>
@@ -572,6 +573,13 @@ Device::~Device() {
     entry.library->release();
   }
   for (auto& kv : allocations_) kv.second.first->release();
+  for (auto& kv : host_allocations_) {
+    if (kv.second.first != nullptr) {
+      kv.second.first->release();
+    } else {
+      munmap(reinterpret_cast<void*>(kv.first), kv.second.second);
+    }
+  }
   if (device_) device_->release();
 }
 
@@ -763,6 +771,62 @@ absl::Status Device::Deallocate(void* ptr) {
   return absl::OkStatus();
 }
 
+absl::StatusOr<void*> Device::AllocateHost(uint64_t size) {
+  const uint64_t page = static_cast<uint64_t>(getpagesize());
+  const uint64_t bytes = std::max<uint64_t>(size, 1);
+  if (bytes > std::numeric_limits<uint64_t>::max() - page) {
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal: mapping %d bytes of host memory refused (device %d)", size,
+        ordinal_));
+  }
+  const uint64_t mapped = (bytes + page - 1) / page * page;
+  void* ptr = mmap(nullptr, mapped, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANON, -1, 0);
+  if (ptr == MAP_FAILED) {
+    return absl::ResourceExhaustedError(absl::StrFormat(
+        "Metal: mapping %s of host memory failed (device %d)",
+        FormatBytes(size), ordinal_));
+  }
+  // Beyond maxBufferLength the pages stay host-only (XLA's host staging
+  // still works; a device copy of them is refused, as any pointer outside a
+  // buffer is). XLA writes through the pool's pointer without a null check
+  // (AllocateLinearizeDest), so only a failed mmap may fail here.
+  MTL::Buffer* buf = nullptr;
+  if (mapped <= info_.max_buffer_length) {
+    buf = device_->newBuffer(
+        ptr, mapped, MTL::ResourceStorageModeShared,
+        ^(void* pointer, NS::UInteger length) { munmap(pointer, length); });
+  }
+  if (buf == nullptr) {
+    LOG(WARNING) << "Metal device " << ordinal_ << ": " << FormatBytes(size)
+                 << " of host memory is not reachable by the GPU";
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  host_allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, mapped};
+  return ptr;
+}
+
+absl::Status Device::DeallocateHost(void* ptr) {
+  MTL::Buffer* buf = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = host_allocations_.find(reinterpret_cast<uintptr_t>(ptr));
+    if (it == host_allocations_.end()) {
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "Metal DeallocateHost: %p is not the start of a host allocation on "
+          "device %d",
+          ptr, ordinal_));
+    }
+    buf = it->second.first;
+    if (buf == nullptr) munmap(ptr, it->second.second);
+    host_allocations_.erase(it);
+  }
+  // Command buffers that use it hold their own references; the pages go
+  // with the last one.
+  if (buf != nullptr) buf->release();
+  return absl::OkStatus();
+}
+
 uint64_t Device::BeginWork() {
   std::lock_guard<std::mutex> lock(tickets_mu_);
   outstanding_.insert(++last_ticket_);
@@ -873,12 +937,13 @@ std::string Device::DescribeNearestAllocations(const void* ptr) const {
 absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   std::lock_guard<std::mutex> lock(mu_);
   uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-  auto it = allocations_.upper_bound(addr);
-  if (it != allocations_.begin()) {
+  for (const auto* table : {&allocations_, &host_allocations_}) {
+    auto it = table->upper_bound(addr);
+    if (it == table->begin()) continue;
     --it;
     uintptr_t base = it->first;
     uint64_t size = it->second.second;
-    if (addr >= base && addr < base + size) {
+    if (addr >= base && addr < base + size && it->second.first != nullptr) {
       return BufferRef{it->second.first, addr - base};
     }
   }

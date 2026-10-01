@@ -196,3 +196,34 @@ def test_transfer_behind_a_compute_backlog(put):
         np.asarray(chain(x, w)),
         np.asarray(chain(jax.device_put(x, cpu), jax.device_put(w, cpu))),
         atol=1e-5)
+
+
+def test_pinned_host_and_strided_puts():
+    # XLA's host memory space (pinned_host arrays; the pool that linearizes
+    # non-dense host arrays) is plain host memory the GPU can copy to and
+    # from, outside the device budget.
+    dev = jax.devices()[0]
+    pinned = jax.sharding.SingleDeviceSharding(dev, memory_kind="pinned_host")
+    x = jnp.arange(1 << 20, dtype=jnp.float32)
+    live = _memory_stats()["live"]
+    h = jax.device_put(x, pinned)
+    assert h.sharding.memory_kind == "pinned_host"
+    np.testing.assert_array_equal(np.asarray(h), np.asarray(x))
+    assert _memory_stats()["live"] == live
+    back = jax.device_put(h, jax.sharding.SingleDeviceSharding(dev))
+    np.testing.assert_array_equal(np.asarray(back), np.asarray(x))
+    np.testing.assert_array_equal(
+        np.asarray(jax.device_put(h, pinned, may_alias=False)), np.asarray(x))
+    a = np.arange(256 * 64, dtype=np.float32).reshape(256, 64)
+    np.testing.assert_array_equal(np.asarray(jax.device_put(a.T)), a.T)
+    np.testing.assert_array_equal(np.asarray(jax.device_put(a[::2, 1::3])),
+                                  a[::2, 1::3])
+
+
+def _memory_stats():
+    import metal_pjrt_plugin
+    lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
+    out = (ctypes.c_uint64 * 8)()
+    assert lib.metal_pjrt_memory_stats(0, out) == 0
+    return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure",
+                     "kernels", "kernel_msl_bytes"), out))

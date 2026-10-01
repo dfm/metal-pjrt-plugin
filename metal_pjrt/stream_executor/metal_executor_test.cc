@@ -145,6 +145,40 @@ TEST(MetalExecutorTest, AllocationFailureReturnsNull) {
             absl::StatusCode::kResourceExhausted);
 }
 
+// Host memory (XLA's host pools, transfer staging) is plain host pages the
+// GPU can reach: not a device allocation, not in the budget or the device's
+// buffer cache.
+TEST(MetalExecutorTest, HostMemoryIsNotDeviceMemory) {
+  TF_ASSERT_OK_AND_ASSIGN(Platform * platform,
+                          PlatformManager::PlatformWithName("METAL"));
+  TF_ASSERT_OK_AND_ASSIGN(StreamExecutor * executor,
+                          platform->ExecutorForDevice(0));
+  metal_pjrt::rt::Device* device =
+      static_cast<MetalExecutor*>(executor)->device();
+  const uint64_t live = device->memory_stats().live_bytes;
+  TF_ASSERT_OK_AND_ASSIGN(auto allocator,
+                          executor->CreateMemoryAllocator(MemorySpace::kHost));
+  TF_ASSERT_OK_AND_ASSIGN(auto host, allocator->Allocate(3 << 20));
+  ASSERT_NE(host->opaque(), nullptr);
+  EXPECT_EQ(reinterpret_cast<uintptr_t>(host->opaque()) % 4096, 0u);
+  std::memset(host->opaque(), 7, 3 << 20);
+  EXPECT_EQ(device->memory_stats().live_bytes, live);
+  TF_ASSERT_OK_AND_ASSIGN(metal_pjrt::rt::BufferRef ref,
+                          device->Resolve(static_cast<char*>(host->opaque()) +
+                                          100));
+  EXPECT_EQ(ref.offset, 100u);
+  EXPECT_NE(ref.buffer, nullptr);
+  EXPECT_FALSE(device->Deallocate(host->opaque()).ok());
+  void* ptr = host->opaque();
+  host.reset();
+  EXPECT_FALSE(device->Resolve(ptr).ok());
+  // The device-side spaces still allocate device memory.
+  TF_ASSERT_OK_AND_ASSIGN(auto dev_allocator, executor->CreateMemoryAllocator(
+                                                  MemorySpace::kCollective));
+  TF_ASSERT_OK_AND_ASSIGN(auto dev, dev_allocator->Allocate(1 << 20));
+  EXPECT_TRUE(device->Resolve(dev->opaque()).ok());
+}
+
 // Allocation churn as XLA produces it (the same sizes every step): after
 // the first round every allocation is a cache hit on the same buffer, no
 // buffer is released (the released count stays), and the accounting

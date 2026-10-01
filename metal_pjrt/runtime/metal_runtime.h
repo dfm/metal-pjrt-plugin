@@ -307,6 +307,16 @@ class Device {
   // a warning.
   absl::Status CheckSystemMemory(uint64_t size);
   absl::Status Deallocate(void* ptr);
+  // Host memory the GPU can also reach (XLA's host memory space: its host
+  // staging pool and pinned_host arrays, which it copies to and from with
+  // device copies): anonymous pages wrapped without copying in an
+  // MTL::Buffer. Not device memory: outside the budget, the cache and
+  // Allocate's table (Resolve finds it all the same). The pages are unmapped
+  // when the buffer goes, i.e. after DeallocateHost and once no command
+  // buffer holds it. Beyond maxBufferLength the pages are host-only.
+  // RESOURCE_EXHAUSTED only if the pages cannot be mapped.
+  absl::StatusOr<void*> AllocateHost(uint64_t size);
+  absl::Status DeallocateHost(void* ptr);
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
   // The live allocations nearest to `ptr` (below and above), for errors.
@@ -415,6 +425,8 @@ class Device {
   mutable std::mutex mu_;
   // Keyed by start address; value is the buffer and its length.
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
+  // AllocateHost's buffers, keyed as allocations_ is (length = mapped bytes).
+  std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> host_allocations_;
   uint64_t allocated_bytes_ = 0;
   uint64_t memory_budget_ = 0;
   // The free-buffer cache (see Allocate), guarded by mu_: least recently

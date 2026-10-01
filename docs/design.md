@@ -259,8 +259,14 @@ sizes.
   buffers on the calling thread). XLA's own `executable_name` payload names
   the last computation the error reached instead (each consumer of a failed
   output overwrites it).
-- Only the `pinned_host` memory kind uses XLA's host BFC pool (never
-  shrinks).
+- XLA's host memory space (its host BFC pools, which never shrink:
+  linearizing host arrays that are not dense row-major, and `pinned_host`
+  arrays) is plain anonymous host memory wrapped without copying in an
+  `MTL::Buffer` (`Device::AllocateHost`), so device copies reach it. It is
+  outside the device budget, the buffer cache and the device allocation
+  table. XLA writes through the pool's pointer unchecked
+  (`AllocateLinearizeDest`), so the only failure left is a failed `mmap`;
+  beyond maxBufferLength the pages are host-only.
 
 **Transfers.** Host-to-device and device-to-host copies are a `memcpy` on
 the calling thread when the stream is idle, and a host task otherwise; there
