@@ -1,0 +1,173 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Build and host-only tests on GitHub's arm64 macOS runners (no GPU work:
+# device tests, JAX's suite and benchmarks stay local; docs/development.md,
+# "Continuous integration").
+#
+# COST GUARD: every job runs only on a public repository
+# (`if: ${{ !github.event.repository.private }}`). macOS minutes are billed
+# on private repositories; a skipped job uses none. tests/test_packaging.py
+# fails if a job in .github/workflows lacks the guard.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "examples/**"]
+  pull_request:
+    paths-ignore: ["**.md", "docs/**", "examples/**"]
+  workflow_dispatch:
+    inputs:
+      warm_cache_only:
+        description: "Only build and save the Bazel cache (e.g. to prime it once after the repo goes public)"
+        type: boolean
+        default: false
+      public_cache:
+        description: "Also read JAX's public remote cache (--config=public_cache)"
+        type: boolean
+        default: false
+      bytes:
+        description: "Build without the bytes (--remote_download_outputs=toplevel); off: download all outputs"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ci-${{ github.ref }}
+  # A superseded pull request run is cancelled; a main run is not, so its
+  # cache save (which a cold cache depends on) always completes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  XCODE_VERSION: "26.5"           # the macOS 26.5 SDK the plugin is developed with
+  CACHE_DIR: ~/.cache/metal-pjrt-plugin   # .bazelrc's --disk_cache / --repository_cache
+  # The cache key prefix: runner image, Xcode, and everything that changes
+  # action keys wholesale. Entries are saved as PREFIX-<run id> (keys are
+  # immutable) and restored by prefix, then by the broader image/Xcode
+  # prefix for a partial hit after a re-pin.
+  CACHE_PREFIX_BASE: bazel-macos26-xcode26.5
+
+jobs:
+  build-test:
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-26
+    timeout-minutes: 350          # the job limit is 6 h; see the build step
+    permissions:
+      contents: read
+      actions: write              # to delete the superseded cache entry
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Free disk space
+        # The runner's disk holds the restored cache, the output base and
+        # the repository cache; the image ships much we do not use.
+        run: |
+          df -h /
+          for app in /Applications/Xcode_*.app; do
+            [ "$app" = "/Applications/Xcode_${XCODE_VERSION}.app" ] || sudo rm -rf "$app"
+          done
+          xcrun simctl delete all 2>/dev/null || true
+          sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Volumes \
+            /Library/Developer/CoreSimulator/Images 2>/dev/null || true
+          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
+            ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/android 2>/dev/null || true
+          df -h /
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
+          xcodebuild -version
+          xcrun --show-sdk-version
+          clang --version
+
+      - name: Cache key
+        id: key
+        run: |
+          echo "prefix=${CACHE_PREFIX_BASE}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'third_party/PINS.md', '.bazelrc') }}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Bazel caches
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ env.CACHE_DIR }}/bazel-disk
+            ${{ env.CACHE_DIR }}/bazel-repo
+          key: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
+          restore-keys: |
+            ${{ steps.key.outputs.prefix }}-
+            ${{ env.CACHE_PREFIX_BASE }}-
+
+      - name: Build
+        # A cold cache takes longer than one job allows on this runner: the
+        # step stops at 300 min and the cache is still saved (on main), so
+        # the next run continues where this one stopped.
+        timeout-minutes: 300
+        run: |
+          flags="--config=ci"
+          [ "${{ inputs.public_cache }}" = "true" ] && flags="$flags --config=public_cache"
+          [ "${{ inputs.bytes }}" = "false" ] && flags="$flags --remote_download_outputs=all"
+          echo "BAZEL_FLAGS=$flags" >> "$GITHUB_ENV"
+          bazel build $flags //metal_pjrt/...
+          df -h /
+
+      - name: Bazel tests (host only)
+        if: ${{ !inputs.warm_cache_only }}
+        run: bazel test $BAZEL_FLAGS //...       # device_tests is tagged manual
+
+      - name: Stop Bazel
+        if: ${{ always() }}
+        run: bazel shutdown || true
+
+      - uses: astral-sh/setup-uv@v6
+        if: ${{ !inputs.warm_cache_only }}
+
+      - name: Python tests (host only)
+        if: ${{ !inputs.warm_cache_only }}
+        run: |
+          scripts/install_dev.sh --no-build
+          .venv/bin/python -m pytest tests -m "not metal"
+
+      - name: Prune the disk cache
+        if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        # The disk and repository caches together must stay under the 10 GB
+        # free Actions cache quota.
+        run: |
+          python3 scripts/prune_disk_cache.py "$HOME/.cache/metal-pjrt-plugin/bazel-disk" --max-gb 7
+          du -sh "$HOME"/.cache/metal-pjrt-plugin/bazel-* || true
+
+      - name: Save Bazel caches
+        id: save
+        if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ env.CACHE_DIR }}/bazel-disk
+            ${{ env.CACHE_DIR }}/bazel-repo
+          key: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
+
+      - name: Delete superseded cache entries
+        # Only one entry fits the quota: once this run's is saved, delete the
+        # older ones instead of waiting for LRU eviction. Only after a
+        # successful save, so that a failed save never leaves no cache.
+        if: ${{ always() && steps.save.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_KEY: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
+        run: |
+          gh cache list --repo "${{ github.repository }}" --key "${CACHE_PREFIX_BASE}-" \
+              --limit 100 --json key --jq '.[].key' |
+            while read -r key; do
+              [ "$key" = "$NEW_KEY" ] || gh cache delete "$key" --repo "${{ github.repository }}"
+            done
+
+  lint:
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: actionlint
+        run: |
+          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
+          ./actionlint -color

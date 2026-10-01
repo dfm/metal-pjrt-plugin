@@ -87,6 +87,16 @@ common --repository_cache=~/.cache/metal-pjrt-plugin/bazel-repo
 common:public_cache --remote_cache="https://storage.googleapis.com/jax-bazel-cache/" --remote_upload_local_results=false
 common:public_cache --remote_timeout=120s
 
+# CI (.github/workflows/ci.yml): GitHub's arm64 macOS runners have 3 cores and
+# 7 GB of RAM, so fewer and smaller concurrent compiles than the 8 GB profile
+# above; build without the bytes against the disk cache (cache hits are not
+# copied into the output base, which keeps a warm build within the runner's
+# disk; top-level outputs such as the plugin dylib and test binaries are).
+common:ci --jobs=2
+common:ci --local_resources=memory=3500
+common:ci --remote_download_outputs=toplevel
+common:ci --color=no --curses=no --show_progress_rate_limit=60
+
 common:debug_symbols --strip=never --per_file_copt="metal_pjrt/|xla/pjrt@-g3"
 common:debug --config=debug_symbols -c fastbuild
 

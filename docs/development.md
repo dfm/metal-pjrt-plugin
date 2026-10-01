@@ -143,6 +143,53 @@ opportunistic and depend on matching action keys. Shut the Bazel server
 down (`bazel shutdown`) before measuring or running large workloads: its JVM
 holds memory that workloads then swap for.
 
+## Continuous integration
+
+`.github/workflows/ci.yml` builds the plugin and runs the host-only tests
+on GitHub's arm64 macOS runners (`macos-26`: 3 cores, 7 GB of RAM, a
+14 GB disk, no GPU work assumed): `bazel build //metal_pjrt/...`,
+`bazel test //...` (the `device_tests` suite is tagged `manual`, so it is
+not included) and `pytest tests -m "not metal"`. Everything that needs the
+Metal device stays local, under `scripts/device_lock.py`: the `metal`
+tests, `//metal_pjrt:device_tests`, JAX's own suite
+(`scripts/run_jax_tests.sh`), the benchmarks and the examples.
+
+- **Cost guard.** Every job carries
+  `if: ${{ !github.event.repository.private }}`: GitHub bills macOS
+  minutes on private repositories, and a skipped job uses none, so nothing
+  runs until the repository is public. `tests/test_packaging.py` fails if
+  a job of any workflow lacks the line.
+- **Triggers.** Pushes to `main`, pull requests, and manual runs; changes
+  only to Markdown, `docs/` or `examples/` do not start a run. A newer push
+  to a pull request cancels its running CI; runs on `main` are never
+  cancelled, so their cache saves complete.
+- **Caching.** The disk cache and the repository cache (the directories
+  of `.bazelrc`) are restored from and saved to the Actions cache, under the
+  key `bazel-macos26-xcode<X>-<hash of MODULE.bazel.lock, .bazelversion,
+  third_party/PINS.md and .bazelrc>-<run id>`, restored by the longest
+  matching prefix (an XLA re-pin falls back to the newest entry for the same
+  image and Xcode). Only runs on `main` and manual runs save; pull requests
+  only restore. Action keys do not depend on the runner because
+  `--incompatible_strict_action_env` fixes PATH and the workflow pins the
+  Xcode version (`XCODE_VERSION`, also in the key). Before saving,
+  `scripts/prune_disk_cache.py` trims the disk cache to 7 GB, least
+  recently used first (Bazel's own GC runs only while the server idles,
+  which a CI job never does), so one entry fits the free 10 GB quota; after
+  a successful save the older entries are deleted rather than left to
+  eviction.
+- **Disk and memory.** The job removes the Xcode versions, simulators,
+  Android SDK and .NET it does not use, and builds with `--config=ci`:
+  two concurrent compiles within 3.5 GB (the runner has 7 GB) and builds
+  without the bytes (`--remote_download_outputs=toplevel`), so disk-cache
+  hits are not copied into the output base; only top-level outputs (the
+  plugin library, test binaries) are. The manual run's `bytes` input turns
+  that off if it ever misbehaves.
+- **A cold cache** takes more than one job: the build step stops after 300
+  minutes, the cache is saved anyway, and the next run continues from it.
+  To prime it after the repository goes public, start the workflow by hand
+  with `warm_cache_only` (build and save only), as often as needed.
+- **No wheels**: releases are source only.
+
 ## Environment variables
 
 Every variable the plugin, tests and scripts read. Scope: "compile" ones

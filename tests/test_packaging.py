@@ -95,3 +95,27 @@ def test_license_files_in_wheel():
         (ROOT / "third_party/notices_manifest.json").read_text())
     for project in manifest["projects"]:
         assert f"\n{project['name']} ({project['url']})\n" in notices, project["name"]
+
+
+def test_ci_jobs_skip_private_repos():
+    # Cost guard (docs/development.md, "Continuous integration"): GitHub bills
+    # macOS minutes on private repositories, so every job of every workflow
+    # carries the guard and is skipped while the repository is private.
+    guard = "if: ${{ !github.event.repository.private }}"
+    workflows = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
+    assert workflows
+    for wf in workflows:
+        lines = wf.read_text().splitlines()
+        start = lines.index("jobs:") + 1
+        jobs, current = {}, None
+        for line in lines[start:]:
+            if line and not line[0].isspace() and not line.startswith("#"):
+                break                                   # the next top-level key
+            if re.match(r"^  [A-Za-z0-9_-]+:\s*$", line):
+                current = line.strip()[:-1]
+                jobs[current] = []
+            elif current is not None:
+                jobs[current].append(line.strip())
+        assert jobs, wf.name
+        for name, body in jobs.items():
+            assert guard in body, f"{wf.name}: job {name} lacks `{guard}`"
