@@ -548,10 +548,11 @@ TEST_F(ConvTest, Channels) {
 }
 
 // Output channels the implicit kernel pads (20, 24, 31 -> 32; 33 -> 64),
-// stride 1 and 2, flipped (input gradients), small and 64-wide tiles.
+// stride 1 and 2, flipped (input gradients), small and 64-wide tiles, the
+// small-channel (C = 3) loader.
 TEST_F(ConvTest, PaddedOutputChannels) {
   for (int64_t o : {20, 24, 31, 33}) {
-    for (int64_t c : {16, 64}) {
+    for (int64_t c : {3, 16, 64}) {
       Case k{2, 15, 13, c, o, 3, 3};
       k.pad_lo[0] = k.pad_lo[1] = k.pad_hi[0] = k.pad_hi[1] = 1;
       k.flip = o % 2 == 0;
@@ -572,6 +573,15 @@ TEST_F(ConvTest, PaddedOutputChannels) {
   ASSERT_THAT(plan, IsOk());
   EXPECT_EQ(plan->tile, (ConvTile{64, 32, 16, 2, 2}));
   CheckAllPaths(big);
+  // O * K within 32 bits but the padded weight's 32 * K not (K = 16 *
+  // 4194305, 256 output pixels): the general kernel, not padded.
+  Case wide{1, 1, 1, 16, 24, 1, 4194305};
+  wide.pad_lo[1] = 2097280;
+  wide.pad_hi[1] = 2097279;
+  plan = PlanConv(Params(wide, ConvType::kF32));
+  ASSERT_THAT(plan, IsOk());
+  EXPECT_EQ(plan->path, ConvPath::kGeneral);
+  EXPECT_EQ(plan->padded_o, 0);
 }
 
 // Strides, kernel dilation, asymmetric and zero padding, input dilation

@@ -28,6 +28,7 @@ HOST_TESTS = [
 DISPATCH_TESTS = HOST_TESTS + [
     "//metal_pjrt/blas:gemv_test",
     "//metal_pjrt/conv:conv_test",
+    "//metal_pjrt/ffi:pool_test",
     "//metal_pjrt/ffi:radix_sort_test",
     "//metal_pjrt/ffi:scan_test",
     "//metal_pjrt/fft:fft_test",
@@ -90,6 +91,7 @@ test_suite(
         "//metal_pjrt/blas:mps_gemm_test",
         "//metal_pjrt/blas:steel_gemm_test",
         "//metal_pjrt/conv:conv_test",
+        "//metal_pjrt/ffi:pool_test",
         "//metal_pjrt/ffi:radix_sort_test",
         "//metal_pjrt/ffi:scan_test",
         "//metal_pjrt/fft:fft_test",

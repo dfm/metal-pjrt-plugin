@@ -38,9 +38,10 @@ the plugin.
   Bluestein constants in double, host only; `fft:fft`, the Stockham, Rader,
   Bluestein and four-step kernels over contiguous complex64/float32 rows,
   in row chunks; behind `metal$fft`). Their tests, `conv_test`,
-  `fft_test`, `scan_test`, `radix_sort_test`, `small_linalg_test` (device
-  tests), `lapack_host_test` and `fft_plan_test` (host), link no XLA, so
-  they build quickly and test a kernel in isolation;
+  `fft_test`, `scan_test`, `pool_test`, `radix_sort_test`,
+  `small_linalg_test` (device tests), `lapack_host_test` and
+  `fft_plan_test` (host), link no XLA, so they build quickly and test a
+  kernel in isolation;
   `//metal_pjrt:xla_free_test` fails if an XLA dependency creeps back in
   (or a Metal one into the host tests).
 - `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,

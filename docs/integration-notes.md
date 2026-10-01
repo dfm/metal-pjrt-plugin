@@ -218,6 +218,7 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - Handlers: `metal$scan` (target of MetalScanRewriter; `tests/test_scan.py`
   also calls it through `jax.ffi.ffi_call`). The kernels behind the
   handlers are tested without XLA (`ffi:scan_test`, `ffi:radix_sort_test`,
+  `ffi:pool_test`,
   `linalg:small_linalg_test`, `linalg:lapack_host_test`); the handlers
   themselves end to end through JAX (`tests/test_scan.py`, `test_sort.py`,
   `test_linalg.py`).
@@ -257,11 +258,13 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
 - `metal$pool_max_bwd` (`ffi/pool_ffi.cc` over `ffi/pool.h`,
   `kernels/pool.metal`): the target of `MetalPoolMaxBwdRewriter`
   (`compiler/passes/pool_rewriter.h`, start of `RunHloPasses`), which takes
-  a select-and-scatter with a GE select and an add scatter over
+  a select-and-scatter with a GE select (IEEE, not TOTALORDER) and an add
+  scatter over
   non-overlapping, unpadded windows (JAX's max-pool gradient), f32/f16/bf16,
   windows on at most two adjacent dims (x viewed as [A, D1, D2, B]). One
-  thread per window and 4 (or 1) elements of B reads x and dy once and
-  writes dx once (init + dy at the window's selected element, init
+  thread per window and 4 elements of B (when B % 4 == 0 and the operands
+  are 16-byte, for f16/bf16 8-byte, aligned; else 1) reads x and dy once
+  and writes dx once (init + dy at the window's selected element, init
   elsewhere and over the partial windows VALID drops); the selection is
   the expander's (first maximum, NaN as `>=` orders it). Instead of
   SelectAndScatterExpander's reduce-window over x and one s32 iota per

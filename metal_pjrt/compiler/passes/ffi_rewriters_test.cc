@@ -152,8 +152,9 @@ TEST_F(MetalFfiRewritersTest, PoolMaxBwd) {
 
 TEST_F(MetalFfiRewritersTest, PoolMaxBwdNotRewritten) {
   MetalPoolMaxBwdRewriter pass;
-  // Overlapping windows, padding, a min pool's or GT select, another
-  // scatter, a type the kernel does not take: the expander's.
+  // Overlapping windows, padding, a min pool's or GT select, a TOTALORDER
+  // GE (orders -0 < +0 and NaNs), another scatter, a type the kernel does
+  // not take: the expander's.
   EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 3, 2), "metal$pool_max_bwd"), "");
   EXPECT_EQ(Rewrite(pass,
                     PoolBwdHlo("f32", 2, 2, "GE", "add", "pad=0_0x0_1x0_1x0_0"),
@@ -162,6 +163,9 @@ TEST_F(MetalFfiRewritersTest, PoolMaxBwdNotRewritten) {
   EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "LE"), "metal$pool_max_bwd"),
             "");
   EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "GT"), "metal$pool_max_bwd"),
+            "");
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "GE, type=TOTALORDER"),
+                    "metal$pool_max_bwd"),
             "");
   EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "GE", "maximum"),
                     "metal$pool_max_bwd"),

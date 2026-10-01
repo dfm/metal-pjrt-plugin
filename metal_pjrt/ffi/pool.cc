@@ -94,8 +94,14 @@ absl::Status RunPoolMaxBwd(rt::Device* device, rt::Stream* stream,
   prm.p2 = static_cast<uint32_t>(d2 / k2);
   prm.w1 = static_cast<uint32_t>((d1 + k1 - 1) / k1);
   prm.init = init;
-  // 4 lanes (8- or 16-byte accesses) when the unwindowed minor dims allow.
-  const int lanes = b % 4 == 0 ? 4 : 1;
+  // 4 lanes (8- or 16-byte accesses) when the unwindowed minor dims and the
+  // operands' alignment allow.
+  const uintptr_t vec_bytes = type == PoolType::kF32 ? 16 : 8;
+  bool aligned = true;
+  for (const void* ptr : {x, dy, static_cast<const void*>(dx)}) {
+    aligned = aligned && reinterpret_cast<uintptr_t>(ptr) % vec_bytes == 0;
+  }
+  const int lanes = b % 4 == 0 && aligned ? 4 : 1;
   ABSL_ASSIGN_OR_RETURN(const rt::Kernel* kernel,
                         GetPoolMaxBwdKernel(device, type, lanes));
   const uint32_t vecs = static_cast<uint32_t>(b / lanes);

@@ -546,8 +546,11 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
   const int64_t padded_c = CeilDiv(p.c, 16) * 16;
   const bool implicit_channels = idil1 && ImplicitChannelsOk(p.c);
   const bool implicit_ok = implicit_channels && ImplicitOutputOk(p, p.c);
-  // kImplicit with the weight's O rows zero-padded (ConvPlan::padded_o).
-  const bool pad_o_ok = implicit_channels && !ImplicitOutputOk(p, p.c);
+  // kImplicit with the weight's O rows zero-padded (ConvPlan::padded_o);
+  // the padded weight indexed in 32 bits too, else the general path.
+  const int64_t pad_bn = PaddedOutputTile(m, p.o, p.c).bn;
+  const bool pad_o_ok = implicit_channels && !ImplicitOutputOk(p, p.c) &&
+                        CeilDiv(p.o, pad_bn) * pad_bn * k <= kInt32Max;
   const bool pad_ok = idil1 && Stride1(p) && !ImplicitChannelsOk(p.c) &&
                       ImplicitOutputOk(p, padded_c) &&
                       (p.n * p.h * p.w + p.o * p.kh * p.kw) * padded_c <=

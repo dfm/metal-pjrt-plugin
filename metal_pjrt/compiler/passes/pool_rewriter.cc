@@ -33,7 +33,9 @@ namespace xla {
 namespace gpu {
 namespace {
 
-// `comp` is exactly `op(p0, p1)` (for kCompare, with `direction`).
+// `comp` is exactly `op(p0, p1)` (for kCompare, with `direction` and the
+// IEEE float comparison, a partial order: a TOTALORDER compare orders
+// -0 < +0 and NaNs, which the kernel does not reproduce).
 bool IsBinaryOfParams(const HloComputation* comp, HloOpcode op,
                       Comparison::Direction direction = {}) {
   const HloInstruction* root = comp->root_instruction();
@@ -44,7 +46,9 @@ bool IsBinaryOfParams(const HloComputation* comp, HloOpcode op,
     return false;
   }
   return op != HloOpcode::kCompare ||
-         root->comparison_direction() == direction;
+         (root->comparison_direction() == direction &&
+          Cast<HloCompareInstruction>(root)->order() ==
+              Comparison::Order::kPartial);
 }
 
 // The window, if `sas` is a max pool's gradient the kernel computes exactly.
