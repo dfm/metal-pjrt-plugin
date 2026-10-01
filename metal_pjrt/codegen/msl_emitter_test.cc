@@ -124,6 +124,8 @@ TEST_F(MslEmitterTest, ElementwiseLoop) {
   EXPECT_THAT(msl, HasSubstr("exp("));
   EXPECT_THAT(msl, HasSubstr("tanh("));
   EXPECT_THAT(msl, HasSubstr("xla_log1p("));
+  // arith.maximumf: IEEE 754-2019 (NaN propagates, -0 < +0), as on CPU.
+  EXPECT_THAT(msl, HasSubstr("xla_maximum("));
 }
 
 constexpr char kRangedIds[] = R"mlir(

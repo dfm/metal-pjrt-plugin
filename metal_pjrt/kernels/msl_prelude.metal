@@ -111,6 +111,21 @@ inline T xla_shfl_xor(T v, I m) { return simd_shuffle_xor(v, (ushort)m); }
 template <typename T, typename I>
 inline T xla_shfl_idx(T v, I l) { return simd_shuffle(v, (ushort)l); }
 
+// IEEE 754-2019 maximum/minimum, as XLA:CPU's llvm.maximum/minimum: a NaN
+// operand gives NaN and -0 < +0 (so relu(-0.0) = +0.0).
+template <typename T>
+inline T xla_maximum(T a, T b) {
+  if (isnan(a) || isnan(b)) return a + b;
+  if (a == b) return signbit(a) ? b : a;
+  return a > b ? a : b;
+}
+template <typename T>
+inline T xla_minimum(T a, T b) {
+  if (isnan(a) || isnan(b)) return a + b;
+  if (a == b) return signbit(a) ? a : b;
+  return a < b ? a : b;
+}
+
 // Math functions MSL does not provide. Computed in float, compile with
 // fast math disabled.
 template <typename T>

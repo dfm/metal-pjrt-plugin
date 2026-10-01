@@ -482,6 +482,33 @@ def test_pow_of_minus_inf_matches_cpu():
     np.testing.assert_array_equal(np.signbit(got), np.signbit(want))
 
 
+# max / min are IEEE 754-2019 maximum / minimum, as on CPU: a NaN operand
+# gives NaN and -0 < +0, in either operand order (relu(-0.0) = +0.0). XLA's
+# OneAPI lowering picked the lhs on ties.
+@pytest.mark.parametrize("dtype", [np.float32, np.float16, jnp.bfloat16])
+def test_max_min_signed_zero_and_nan_match_cpu(dtype):
+    v = np.array([-0.0, 0.0, np.nan, 1.0, -1.0, np.inf, -np.inf], np.float32)
+    x, y = (a.ravel().astype(dtype) for a in np.meshgrid(v, v))
+    fns = {
+        "max": lambda x, y: lax.max(x, y),
+        "min": lambda x, y: lax.min(x, y),
+        "relu": lambda x, y: jax.nn.relu(x),
+        "reduce_max": lambda x, y: jnp.max(jnp.stack([x, y]), axis=0),
+        "reduce_min": lambda x, y: jnp.min(jnp.stack([x, y]), axis=0),
+    }
+    for name, fn in fns.items():
+        got = metal_testing.run_on(metal_testing.metal(), fn, x, y).astype(np.float32)
+        want = metal_testing.run_on(metal_testing.cpu(), fn, x, y).astype(np.float32)
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(want), err_msg=name)
+        ok = ~np.isnan(want)
+        np.testing.assert_array_equal(got[ok], want[ok], err_msg=name)
+        np.testing.assert_array_equal(np.signbit(got[ok]), np.signbit(want[ok]),
+                                      err_msg=name)
+    relu = metal_testing.run_on(metal_testing.metal(), jax.nn.relu,
+                                np.array([-0.0], dtype))
+    assert not np.signbit(relu.astype(np.float32)[0])
+
+
 # Small dots (below the GEMM threshold, loop-emitted) with a bf16 dot
 # algorithm: DotAlgorithmRewriter splits them into bf16 x bf16 -> f32 dots,
 # whose products must be exact in f32 (they were rounded to bf16). The CPU

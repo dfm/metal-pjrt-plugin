@@ -89,11 +89,14 @@ void AddMslLoweringPasses(mlir::OpPassManager& pm,
   pm.addPass(xla::emitters::createMergePointersToSameSlicePass());
   pm.addPass(mlir::createCanonicalizerPass());
   pm.addPass(mlir::createCSEPass());
-  // OneAPI: explicit NaN propagation for min/max (MSL fmin/fmax, like SPIR-V,
-  // do not propagate NaN).
+  // OneAPI asks for explicit NaN propagation in min/max (MSL fmin/fmax, like
+  // SPIR-V, do not propagate NaN), but that rewrite picks the lhs on ties, so
+  // max(-0, +0) = -0 (relu(-0.0) = -0.0). Keep arith.maximumf/minimumf: the
+  // emitter maps them to the prelude's IEEE 754-2019 xla_maximum/xla_minimum
+  // (ExpandArith), like XLA:CPU's llvm.maximum/minimum.
   xla::emitters::SimplifyArithPassOptions simplify_arith_options;
   simplify_arith_options.fast_min_max_ = false;
-  simplify_arith_options.explicit_nan_propagation_ = true;
+  simplify_arith_options.explicit_nan_propagation_ = false;
   pm.addNestedPass<mlir::func::FuncOp>(
       xla::emitters::createSimplifyArithPass(simplify_arith_options));
   pm.addPass(xla::emitters::createSimplifyAffinePass());
@@ -324,6 +327,8 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"llvm.intr.nearbyint", "rint"}, {"llvm.intr.roundeven", "rint"},
       {"llvm.intr.round", "round"}, {"llvm.intr.copysign", "copysign"},
       {"llvm.intr.maxnum", "fmax"}, {"llvm.intr.minnum", "fmin"},
+      {"llvm.intr.maximum", "xla_maximum"},
+      {"llvm.intr.minimum", "xla_minimum"},
       {"llvm.intr.pow", "xla_powf"}, {"llvm.intr.ctlz", "clz"},
       {"llvm.intr.cttz", "ctz"},    {"llvm.intr.ctpop", "popcount"},
       {"llvm.intr.abs", "abs"},
@@ -645,6 +650,29 @@ absl::Status RewriteLlvmArithmetic(ModuleOp module) {
 // signed index arithmetic and index loops signed in MSL, and 16-bit
 // multiplies free of C's integer promotion.
 absl::Status ExpandArith(ModuleOp module) {
+  // Scalar float maximum/minimum -> llvm.intr.maximum/minimum, which the
+  // math table maps to the prelude's IEEE 754-2019 helpers (NaN propagates,
+  // -0 < +0). The generic expansion below picks an operand on ties.
+  llvm::SmallVector<Operation*> min_max;
+  module.walk([&](Operation* op) {
+    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MinimumFOp>(op) &&
+        mlir::isa<mlir::FloatType>(op->getResult(0).getType())) {
+      min_max.push_back(op);
+    }
+  });
+  for (Operation* op : min_max) {
+    OpBuilder b(op);
+    const Location loc = op->getLoc();
+    Value lhs = op->getOperand(0), rhs = op->getOperand(1);
+    Value r;
+    if (mlir::isa<mlir::arith::MaximumFOp>(op)) {
+      r = mlir::LLVM::MaximumOp::create(b, loc, lhs.getType(), lhs, rhs);
+    } else {
+      r = mlir::LLVM::MinimumOp::create(b, loc, lhs.getType(), lhs, rhs);
+    }
+    op->getResult(0).replaceAllUsesWith(r);
+    op->erase();
+  }
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
   mlir::arith::populateExpandMinMaxPatterns(patterns);

@@ -44,6 +44,9 @@ From a pre-release review of the whole tree.
   queued work. After a GPU failure, pending host transfers are skipped.
   The reset quarantine is now opt-in (`METAL_PJRT_QUARANTINE_STRIKES=n`),
   and a command buffer that ran over 1 s is logged with its kernels.
+- Fixed: `max` / `min` (and `relu`, max/min reductions) picked their left
+  operand on ties, so `relu(-0.0)` was `-0.0`; they now follow IEEE
+  754-2019 like XLA:CPU (-0 < +0, NaN propagates).
 
 ### 2026-09-29
 
