@@ -38,6 +38,12 @@ From a pre-release review of the whole tree.
   `jax.device_put(x, may_alias=False)` of an array still being computed,
   and the same of an empty array. Transfers now wait for earlier work on
   the CPU instead.
+- The runtime keeps one Metal command queue per device (it had one per
+  XLA stream): no command buffer ever waits on the GPU for another one, so
+  no transfer, event or copy can sit on the GPU watchdog's clock behind
+  queued work. After a GPU failure, pending host transfers are skipped.
+  The reset quarantine is now opt-in (`METAL_PJRT_QUARANTINE_STRIKES=n`),
+  and a command buffer that ran over 1 s is logged with its kernels.
 
 ### 2026-09-29
 

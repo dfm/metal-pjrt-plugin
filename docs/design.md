@@ -129,8 +129,8 @@ header comments are the reference. The policies, in the present tense:
 **Command-buffer batching.** A command buffer costs hundreds of
 microseconds of CPU and GPU-scheduler time (the driver spends ~150 us of a
 dedicated thread submitting each), so a stream packs many dispatches into
-one. It commits when the GPU has nothing of the stream's left to run and at
-least 16 ops are encoded, if 500 us have passed since its last commit;
+one. It commits when the GPU has nothing of ours left to run and at
+least 16 ops are encoded, if 500 us have passed since the last commit;
 explicit syncs commit at once. Caps keep each buffer far from the GPU
 watchdog: 1024 ops, 2^27 dispatched threads, or 2e11 GEMM flops. GEMMs
 (steel launches and MPS through `EncodeExternal`) launch few threads for
@@ -138,8 +138,10 @@ their work, so they are charged an estimate instead, `blas::GemmWork`:
 2mnk per batch, or 64 flops per byte of A, B and C for bandwidth-bound
 (GEMV-like) shapes. The budget is <= 0.1 s of GEMM on the M3 (2.0-3.1
 TFLOPS measured over f32/f16/bf16 shapes), a >= 5x margin for a throttled
-base M1 and for shapes that run less efficiently; a single larger GEMM
-gets a buffer of its own. Eight chained 4096^3 f32 GEMMs used to share one
+base M1 and for shapes that run less efficiently; an op that would take the
+open buffer over it starts a new one, and a single larger GEMM gets a
+buffer of its own. A buffer that ran longer than 1 s on the GPU is logged
+(rate-limited) with its kernels: it came close to the watchdog. Eight chained 4096^3 f32 GEMMs used to share one
 371 ms buffer; now each buffer holds two (93 ms). Two gaps remain: the
 budget splits only between dispatches, so one kernel longer than the
 watchdog still resets the GPU (one 16384^3 f32 GEMM is ~8.8e12 flops, 3-4 s
@@ -151,35 +153,30 @@ budget). Copies and uniform fills up to 16 MB run as built-in
 compute kernels so kernels and copies share one compute encoder (an encoder
 switch costs ~10 us of GPU time); larger ones use the blit engine.
 
-**Lazy waits.** Waits (`WaitForEvent`, `WaitForStream`, a host task) are
-recorded and encoded only just before the stream's next GPU work, and a
-`Synchronize` with pending waits satisfies them on the host, so no command
-buffer ever only waits (a waiting buffer counts against the watchdog).
-`RecordEvent` right after waits (XLA's zero-byte device-to-device copy:
-wait for the destination's allocation, i.e. the compute stream, then record
-the event) would commit a buffer with waits and no ops, and a copy on a
-transfer stream waits for the compute stream's backlog (e.g.
-`device_put(x, may_alias=False)` of an `x` still being computed). `Commit`
-waits on the host first for such buffers' unsignaled values: buffers
-without ops, and every buffer of a transfer stream (XLA's
-"Host-to-device", "Device-to-host #i" and "Device-to-device #i" streams,
-recognized by the name XLA gives them, `MetalStream::SetName`). Only the
-compute stream still encodes such waits (on transfers, which are short). `Device::gpu_waits_encoded()` counts buffers
-committed with a wait not yet signaled; `metal_pjrt_sync_stats` exposes it
-to tests.
-`WaitForStream(other)` waits for the highest value `other` has issued,
-including host tasks, and inherits the waits `other` has not encoded yet.
-`RecordEvent` publishes its value only once the signaling buffer is
-committed.
+**Queue (since 2026-09-30).** Each device has one Metal command queue;
+every stream encodes into its open command buffer, and buffers are
+committed in encode order. Every committed buffer ends by signaling the
+device timeline (a shared event) with its sequence number. A command
+buffer never waits on the GPU for anything (a waiting buffer counts
+against the watchdog, and a wait has no timeout): GPU work that depends on
+other GPU work is behind it in the queue, so waits on GPU work cost
+nothing, and GPU work that depends on a host task is encoded only after
+the task has run. The encoding thread waits for that on the host without
+holding the queue lock, so other streams keep encoding.
+`Device::gpu_waits_encoded()` is 0 by construction (nothing encodes a
+wait); tests check it through `metal_pjrt_sync_stats`.
 
-**Hold rule.** A command buffer that waits on a host task that has not run
-yet is not committed: `Stream::Commit` waits on the host for the task
-first, so a slow host task never sits on the GPU timeline. Host-task
-workers never take the stream lock, so this cannot deadlock with them; a
-task (or its error callback) that calls into its own stream gets
-FAILED_PRECONDITION before taking the lock.
-`Device::unsignaled_host_task_waits_committed()` counts violations and the
-runtime tests assert it stays 0.
+A stream is a handle: the timeline value of its last GPU op, the waits its
+next op must respect (`WaitForEvent`, `WaitForStream`, its own host tasks)
+and a worker thread for its host tasks. An event is a recorded work point:
+a timeline value plus host-task values. Host work (device-to-host copies,
+host-to-device copies behind pending work, XLA callbacks) runs on the
+stream's worker once everything the stream enqueued or waits for is done;
+the open buffer is committed when such a task is enqueued (and when an
+event is recorded), so no host wait depends on the next commit. Host
+transfers run inline when the stream has nothing pending. A host task (or
+its error callback) that calls into its own stream, or waits for itself
+or later work of its stream, gets FAILED_PRECONDITION.
 
 **Sticky GPU errors.** The first failed command buffer (watchdog timeout,
 page fault, out of memory, anything) or failed host task without an error
@@ -188,22 +185,21 @@ every wait, poll, host task and launch returns it, a host callback's
 `error_cb` gets it (which is how XLA fails result buffers), a host callback
 without one still runs (XLA's free memory or finish transfers), and nothing
 more is committed. The message says to restart the process. Nothing hangs: a
-failed buffer's completion handler records the error and force-signals the
-buffer's fence and events, host waits give up once the device has failed,
-and no error path CHECKs or aborts. Only resets (timeout, access revoked,
+failed buffer's completion handler records the error and force-signals its
+timeline value, waits on the GPU timeline give up once the device has
+failed, and no error path CHECKs or aborts. A transfer task skips its copy
+after a failure (XLA may already be freeing its buffers), and waiters on a
+host task wait for it to end even then. Only resets (timeout, access revoked,
 device removed) feed the reset log.
 
-**Fence before events.** Soundness (never consume a failed buffer's output)
-does not wait for completion handlers, which Metal does not order across
-queues. Every buffer signals its stream's fence before its events, so after
-a host waiter sees a signal it checks the buffers still in flight
-(`Device::CheckInFlight`): one whose fence value is signaled has run to its
-end, so its final status is waited for and an error recorded. That covers
-the buffer that signaled and every buffer on another queue it depended on
-(runtime test `EventSignalsFollowTheFenceSignal`). The wait costs nothing
-measurable; skipping it would save 6-9 us per synchronizing round trip but
-is sound only if an aborted buffer never runs its trailing signals, which
-is unverified (`docs/roadmap.md`, Next).
+**Failures seen by host waiters.** Soundness (never consume a failed
+buffer's output) does not wait for completion handlers: after a host
+waiter sees the timeline signal it checks the buffers still in flight
+(`Device::CheckInFlight`); one whose timeline value is signaled has run to
+its end, so its final status is waited for and an error recorded. The
+wait costs nothing measurable; skipping it would save 6-9 us per
+synchronizing round trip but is sound only if an aborted buffer never runs
+its trailing signal, which is unverified (`docs/roadmap.md`, Next).
 
 **Memory.** Allocations are shared-storage `MTLBuffer`s from a size-class
 cache behind XLA's pass-through `platform` allocator; a fresh buffer costs
@@ -327,8 +323,8 @@ which stages a copy.
 several the driver leaves the GPU ~10x slower per dispatch until a reboot.
 The runtime appends each reset it observes to
 `~/.cache/metal-pjrt/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR`) with the
-kernels in the buffer that timed out (none if it only waited on another
-stream; built-in fill/copy kernels are listed apart and never blamed) and
+kernels in the buffer that timed out (built-in fill/copy kernels are
+listed apart and never blamed) and
 the plugin build (diagnostics only), once per incident (a reset fails every
 buffer in flight; the first one records it). The quarantine is opt-in
 (off by default since 2026-09-30): with `METAL_PJRT_QUARANTINE_STRIKES=n`,
