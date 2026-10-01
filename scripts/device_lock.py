@@ -99,6 +99,8 @@ def run(argv, env=None):
 
 
 def main(argv):
+    if argv and argv[0] in ("-h", "--help"):
+        print(__doc__); return 0
     if argv and argv[0] == "--":
         argv = argv[1:]
     if not argv:
