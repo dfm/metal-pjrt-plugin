@@ -136,10 +136,12 @@ reboot. To stay clear of it:
 - Split very large single operations (a matmul over ~1e12 flops, a large
   convolution): one kernel can outlast the watchdog.
 
-The plugin logs every reset in `~/.cache/metal-pjrt/gpu_resets.jsonl` and
-refuses a kernel involved in two resets since boot until a reboot or until
-that file is deleted (`scripts/gpu_health.py --clear` does it in a
-checkout). [`docs/design.md`](docs/design.md#runtime) has the details.
+The plugin logs every reset in `~/.cache/metal-pjrt/gpu_resets.jsonl`
+(`scripts/gpu_health.py` summarizes it). With
+`METAL_PJRT_QUARANTINE_STRIKES=n` (off by default) it also refuses a kernel
+involved in n resets since boot until a reboot or until that file is
+deleted (`scripts/gpu_health.py --clear` does it in a checkout).
+[`docs/design.md`](docs/design.md#runtime) has the details.
 
 ## What works
 

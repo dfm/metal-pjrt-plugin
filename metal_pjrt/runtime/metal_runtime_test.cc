@@ -391,7 +391,8 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   ASSERT_NE(mkdtemp(tmpl), nullptr);
   const std::string dir = tmpl;
   setenv("METAL_PJRT_STATE_DIR", dir.c_str(), 1);
-  unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
+  // Opt-in (off by default, below).
+  setenv("METAL_PJRT_QUARANTINE_STRIKES", "2", 1);
   absl::StatusOr<std::unique_ptr<Device>> d1 = Device::Create(0);
   ASSERT_THAT(d1, IsOk());
   EXPECT_EQ((*d1)->state_dir(), dir);
@@ -476,12 +477,17 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   EXPECT_THAT((*d5)->GetKernel(kMsl, "axpy"),
               StatusIs(absl::StatusCode::kFailedPrecondition));
 
-  // Disabled by threshold 0.
+  // Disabled by threshold 0, and by default: the kernel runs again.
   setenv("METAL_PJRT_QUARANTINE_STRIKES", "0", 1);
   absl::StatusOr<std::unique_ptr<Device>> d3 = Device::Create(0);
   ASSERT_THAT(d3, IsOk());
   EXPECT_THAT((*d3)->GetKernel(kMsl, "axpy"), IsOk());
   unsetenv("METAL_PJRT_QUARANTINE_STRIKES");
+  absl::StatusOr<std::unique_ptr<Device>> d6 = Device::Create(0);
+  ASSERT_THAT(d6, IsOk());
+  EXPECT_EQ((*d6)->quarantine_strikes(), 0);
+  EXPECT_EQ((*d6)->resets_since_boot(), 2);  // still logged and counted
+  EXPECT_THAT((*d6)->GetKernel(kMsl, "axpy"), IsOk());
   unsetenv("METAL_PJRT_STATE_DIR");
   std::filesystem::remove_all(dir);
 }

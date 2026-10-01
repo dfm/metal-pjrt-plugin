@@ -415,7 +415,7 @@ class Device {
   // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
   // new key; a fix elsewhere (runtime, launch dimensions) needs --clear.
   // The state directory is METAL_PJRT_STATE_DIR or ~/.cache/metal-pjrt;
-  // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (0 disables).
+  // METAL_PJRT_QUARANTINE_STRIKES sets the threshold (default 0: off).
   void RecordReset(absl::string_view cause,
                    absl::Span<const std::shared_ptr<const KernelIdentity>>
                        kernels);
@@ -558,12 +558,16 @@ class Device {
   // Reset log state (see RecordReset); strikes_ is guarded by mu_.
   void LoadResetLog();
   std::string state_dir_;
-  int quarantine_strikes_ = 2;
+  int quarantine_strikes_ = 0;  // off unless METAL_PJRT_QUARANTINE_STRIKES
   int resets_since_boot_ = 0;
   std::unordered_map<std::string, int> strikes_;  // kernel key -> resets
   // Whether any kernel could be quarantined (strikes_ non-empty and the
   // quarantine on), so cache hits skip mu_ otherwise.
   std::atomic<bool> may_quarantine_{false};
+  // Set by the first failed buffer that records a reset: one record per
+  // incident (a reset fails every buffer in flight; the device error is
+  // sticky, so there is no second incident in this process).
+  std::atomic<bool> reset_recorded_{false};
   std::string build_;  // hex ImageUuid, recorded with each reset
   friend class Stream;
   friend class Event;

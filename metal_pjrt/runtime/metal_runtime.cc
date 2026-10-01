@@ -526,12 +526,17 @@ void Device::RecordReset(
     return;
   }
   out << line;
-  LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
-             << " with " << unique.size()
-             << " suspect kernel(s); kernels seen in " << quarantine_strikes_
-             << " resets since boot are refused until a reboot or until that "
-                "file is deleted (scripts/gpu_health.py --clear in a source "
-                "checkout)";
+  if (quarantine_strikes_ > 0) {
+    LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
+               << " with " << unique.size()
+               << " suspect kernel(s); kernels seen in " << quarantine_strikes_
+               << " resets since boot are refused until a reboot or until "
+                  "that file is deleted (scripts/gpu_health.py --clear in a "
+                  "source checkout)";
+  } else {
+    LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
+               << " with " << unique.size() << " suspect kernel(s)";
+  }
 }
 
 bool Device::WaitForCompletionHandlers() {
@@ -1725,7 +1730,10 @@ absl::Status Stream::Commit() {
       if (code == MTL::CommandBufferErrorTimeout ||
           code == MTL::CommandBufferErrorAccessRevoked ||
           code == MTL::CommandBufferErrorDeviceRemoved) {
-        device->RecordReset(error.message(), *kernels);
+        // One record per incident: a reset fails every buffer in flight.
+        if (!device->reset_recorded_.exchange(true)) {
+          device->RecordReset(error.message(), *kernels);
+        }
       }
       // Before the force-signals below, so waiters woken by them see it.
       device->SetError(error);

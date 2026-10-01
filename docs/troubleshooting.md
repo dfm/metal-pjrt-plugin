@@ -101,14 +101,16 @@ the inputs`.
 out in ... GPU watchdog resets since boot. A reboot lifts the quarantine,
 as does deleting .../.cache/metal-pjrt/gpu_resets.jsonl
 (scripts/gpu_health.py --clear in a source checkout); do that only once
-the cause is fixed ...` A kernel was involved in two GPU resets since boot,
-so the plugin refuses to run it again: each reset affects every process
-and can leave the GPU slow until a reboot. Change the program (smaller
+the cause is fixed ...` With the opt-in quarantine on
+(`METAL_PJRT_QUARANTINE_STRIKES=n`; off by default), a kernel involved in n
+GPU resets since boot is refused: each reset affects every process and can
+leave the GPU slow until a reboot. Change the program (smaller
 inputs, fewer operations per `jit`) or reboot; delete the file (or run the
 script) only once the cause is fixed. The file is under
-`METAL_PJRT_STATE_DIR` when that is set. `METAL_PJRT_QUARANTINE_STRIKES=0`
-turns the quarantine off. A reset is also logged when it happens:
-`Recorded the GPU reset in ... with ... suspect kernel(s); ...`.
+`METAL_PJRT_STATE_DIR` when that is set. Unset (or 0)
+`METAL_PJRT_QUARANTINE_STRIKES` turns the quarantine off. A reset is also
+logged when it happens, once per incident:
+`Recorded the GPU reset in ... with ... suspect kernel(s)`.
 
 ## Unsupported operations (UNIMPLEMENTED)
 

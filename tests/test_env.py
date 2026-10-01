@@ -33,7 +33,7 @@ def test_env_flag(monkeypatch, value, want):
     assert _env_flag("METAL_PJRT_ENV_TEST") is want
 
 
-@pytest.mark.parametrize("value, want", [("3", "3"), ("two", "2"), ("-1", "2")])
+@pytest.mark.parametrize("value, want", [("3", "3"), ("two", "0"), ("-1", "0")])
 def test_gpu_health_strikes(tmp_path, value, want):
     # A bad METAL_PJRT_QUARANTINE_STRIKES keeps the default instead of
     # crashing the script. An empty state dir: no reset log is touched.

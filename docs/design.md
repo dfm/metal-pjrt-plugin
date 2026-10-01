@@ -308,10 +308,12 @@ The runtime appends each reset it observes to
 `~/.cache/metal-pjrt/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR`) with the
 kernels in the buffer that timed out (none if it only waited on another
 stream; built-in fill/copy kernels are listed apart and never blamed) and
-the plugin build (diagnostics only). A kernel seen in two resets since boot
-(`METAL_PJRT_QUARANTINE_STRIKES`, 0 disables) is refused by
+the plugin build (diagnostics only), once per incident (a reset fails every
+buffer in flight; the first one records it). The quarantine is opt-in
+(off by default since 2026-09-30): with `METAL_PJRT_QUARANTINE_STRIKES=n`,
+a kernel seen in n resets since boot is refused by
 `Device::GetKernel`/`AcquireKernel` (at load time, and on later cache hits) with
-FAILED_PRECONDITION, so a compiler bug costs at most two resets, not one per
+FAILED_PRECONDITION, so a compiler bug costs at most n resets, not one per
 run; a reboot or deleting the reset log lifts it (`scripts/gpu_health.py
 --clear` does that in a source checkout; the wheel does not ship it). Strikes are not
 keyed by build (it changes on every rebuild); a changed kernel source gets

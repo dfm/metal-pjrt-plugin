@@ -9,8 +9,9 @@ The runtime appends one JSON line per reset to ~/.cache/metal-pjrt/gpu_resets.js
 (METAL_PJRT_STATE_DIR overrides the directory) with the time, the plugin build
 (LC_UUID of the dylib; diagnostics only) and the kernels that were in the
 command buffer that timed out (built-in fill/copy kernels are listed but never
-blamed). Kernels seen in two or more resets since boot are quarantined: the
-runtime refuses to load them until a reboot or --clear. A kernel whose source
+blamed). With METAL_PJRT_QUARANTINE_STRIKES=n (off by default), kernels seen
+in n or more resets since boot are quarantined: the runtime refuses to load
+them until a reboot or --clear. A kernel whose source
 changed gets a new key; after a fix outside the kernel source (runtime, launch
 dimensions), --clear. After a few resets the driver leaves the GPU slow until a reboot, so
 benchmark timings are meaningless; bench/run_all.sh runs this with --strict.
@@ -27,14 +28,14 @@ LOG = STATE_DIR / "gpu_resets.jsonl"
 
 
 def strikes_setting():
-    # Parsed like the runtime (EnvUint): a bad value keeps the default 2.
+    # Parsed like the runtime (EnvUint): a bad value keeps the default 0 (off).
     v = os.environ.get("METAL_PJRT_QUARANTINE_STRIKES", "").strip()
     if v.isascii() and v.isdigit():
         return int(v)
     if v:
         print(f"ignoring METAL_PJRT_QUARANTINE_STRIKES={v!r} (not a non-negative integer); "
-              "using 2", file=sys.stderr)
-    return 2
+              "using 0 (off)", file=sys.stderr)
+    return 0
 
 
 STRIKES = strikes_setting()
