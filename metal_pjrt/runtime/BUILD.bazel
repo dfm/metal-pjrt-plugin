@@ -30,6 +30,21 @@ cc_test(
     ],
 )
 
+# Header only, no Metal.
+cc_library(
+    name = "buffer_cache",
+    hdrs = ["buffer_cache.h"],
+)
+
+cc_test(
+    name = "buffer_cache_test",
+    srcs = ["buffer_cache_test.cc"],
+    deps = [
+        ":buffer_cache",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
 cc_library(
     name = "metal_runtime",
     srcs = [
@@ -43,6 +58,7 @@ cc_library(
     ],
     linkopts = METAL_LINKOPTS,
     deps = [
+        ":buffer_cache",
         ":env",
         "//metal_pjrt/codegen:msl_kernel",
         "//metal_pjrt/kernels:runtime_builtins",

@@ -298,7 +298,14 @@ class Device {
   // tasks hold raw pointers, and a command buffer may use it through an
   // argument buffer. Until then it stays cached (and may briefly push live +
   // cached over the budget); reuse needs no wait, being stream-ordered.
-  absl::StatusOr<Allocation> Allocate(uint64_t size);
+  //
+  // kHostWrite: for a buffer the host writes into right away, off any
+  // stream (module constants, FFT tables). It takes only a cached buffer
+  // whose release ticket has ended (no work that existed when it was freed
+  // is left, see FindCachedBuffer), else a fresh one: a reused buffer that
+  // queued GPU work still reads would see the host's bytes.
+  enum class Use { kGpu, kHostWrite };
+  absl::StatusOr<Allocation> Allocate(uint64_t size, Use use = Use::kGpu);
   // The one system-level limit, for Allocate and buffers made outside it:
   // an allocation of 1 MB or more is refused (RESOURCE_EXHAUSTED) while the
   // system is at critical memory pressure after dropping the cache (see

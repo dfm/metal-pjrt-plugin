@@ -214,7 +214,11 @@ sizes.
   whole pages above); a request reuses a cached buffer of at most min(2x,
   +2 pages) its length. Reuse is immediate, ordered by the compute stream
   as XLA assumes for its stream-ordered allocators; command buffers retain
-  what they bind.
+  what they bind. Buffers the host fills right away, off any stream
+  (module constants, FFT tables), take only a cached buffer whose work has
+  all ended (its release ticket, see `Device::BeginWork`), else a fresh
+  one: a reused buffer that queued kernels still read would see the host's
+  bytes.
 - Budget: live + cached stays within half of physical RAM, capped by the
   GPU's recommended working set, times `METAL_PJRT_MEMORY_FRACTION`. A
   miss evicts least recently freed buffers first, then fails with

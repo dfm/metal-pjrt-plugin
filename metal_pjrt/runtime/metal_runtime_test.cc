@@ -619,6 +619,42 @@ TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
   EXPECT_THAT(dev_->Deallocate(z), IsOk());
 }
 
+// A buffer the host writes right away (module constants, FFT tables) never
+// reuses a cached buffer that queued GPU work may still read; GPU use may.
+TEST_F(MetalRuntimeTest, HostWriteAllocationSkipsBuffersInUse) {
+  const uint32_t n = 1 << 20;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> s = NewStream();
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
+  for (int i = 0; i < 300; ++i) {
+    ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  }
+  ASSERT_THAT(s->Flush(), IsOk());
+  // XLA frees inputs as soon as their work is enqueued.
+  ASSERT_THAT(dev_->Deallocate(x), IsOk());
+  absl::StatusOr<Allocation> host = dev_->Allocate(n * 4, Device::Use::kHostWrite);
+  ASSERT_THAT(host, IsOk());
+  EXPECT_NE(host->ptr, x);
+  std::memset(host->ptr, 0, n * 4);  // must not reach the queued kernels
+  absl::StatusOr<Allocation> gpu = dev_->Allocate(n * 4);
+  ASSERT_THAT(gpu, IsOk());
+  EXPECT_EQ(gpu->ptr, x);  // stream-ordered reuse is fine
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(y)[0], 300.0f);
+  EXPECT_EQ(static_cast<float*>(y)[n - 1], 300.0f);
+  // Once that work has ended, a host write may take the cached buffer.
+  ASSERT_THAT(dev_->Deallocate(gpu->ptr), IsOk());
+  absl::StatusOr<Allocation> again =
+      dev_->Allocate(n * 4, Device::Use::kHostWrite);
+  ASSERT_THAT(again, IsOk());
+  EXPECT_EQ(again->ptr, x);
+  EXPECT_THAT(dev_->Deallocate(again->ptr), IsOk());
+  EXPECT_THAT(dev_->Deallocate(host->ptr), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
 // WaitForStream covers the other stream's host tasks, not only its committed
 // GPU work: XLA orders a host-to-device copy (a host task) before compute
 // on another stream exactly this way.

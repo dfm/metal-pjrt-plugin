@@ -304,7 +304,12 @@ absl::StatusOr<ModuleHandle> MetalExecutor::LoadModule(
   LoadedModule module;
   module.refcount = 1;
   for (const rt::ConstantBlob& b : blobs) {
-    DeviceAddressBase mem = Allocate(b.data.size(), 0);
+    // Written here on the host, off any stream: never a cached buffer that
+    // queued GPU work may still use.
+    absl::StatusOr<rt::Allocation> a =
+        device_->Allocate(b.data.size(), rt::Device::Use::kHostWrite);
+    DeviceAddressBase mem =
+        a.ok() ? DeviceAddressBase(a->ptr, b.data.size()) : DeviceAddressBase();
     if (mem.is_null() && !b.data.empty()) {
       // Release what this module already allocated.
       for (auto& kv : module.symbols) Deallocate(&kv.second);

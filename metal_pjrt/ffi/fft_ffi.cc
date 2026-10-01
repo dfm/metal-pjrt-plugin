@@ -78,8 +78,10 @@ absl::StatusOr<std::shared_ptr<const FftTables>> MakeTables(rt::Device* device,
   t->device = device;
   t->constants = fft::MakeFftConstants(t->plan);
   if (t->constants.size > 0) {
-    ABSL_ASSIGN_OR_RETURN(rt::Allocation a,
-                          device->Allocate(t->constants.size));
+    // Written on the host, off any stream (see Device::Use::kHostWrite).
+    ABSL_ASSIGN_OR_RETURN(
+        rt::Allocation a,
+        device->Allocate(t->constants.size, rt::Device::Use::kHostWrite));
     t->constants_device = a.ptr;
     std::memcpy(a.ptr, t->constants.bytes.data(), t->constants.size);
     std::vector<uint8_t>().swap(t->constants.bytes);

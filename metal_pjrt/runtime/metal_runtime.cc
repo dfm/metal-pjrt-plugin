@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "metal_pjrt/runtime/metal_runtime.h"
+#include "metal_pjrt/runtime/buffer_cache.h"
 #include "metal_pjrt/runtime/env.h"
 #include "metal_pjrt/runtime/system_memory.h"
 
@@ -653,7 +654,7 @@ absl::Status Device::CheckSystemMemory(uint64_t size) {
       FormatBytes(memory_budget_), ordinal_));
 }
 
-absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
+absl::StatusOr<Allocation> Device::Allocate(uint64_t size, Use use) {
   const uint64_t requested = size;
   if (size > info_.max_buffer_length) {
     return RecordRefusal(requested, absl::ResourceExhaustedError(absl::StrFormat(
@@ -669,9 +670,11 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size) {
   bool over_budget = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
-    auto it = cache_by_size_.lower_bound(length);
-    if (it != cache_by_size_.end() &&
-        it->first < std::min(2 * length, length + 2 * kPageBytes)) {
+    auto it = FindCachedBuffer(
+        cache_by_size_, length, std::min(2 * length, length + 2 * kPageBytes),
+        use == Use::kHostWrite,
+        use == Use::kHostWrite ? EndedBelow() : 0);
+    if (it != cache_by_size_.end()) {
       auto node = it->second;
       buf = node->buffer;
       length = node->size;
