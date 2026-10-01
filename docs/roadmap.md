@@ -98,7 +98,11 @@ Before the repository goes public:
 
 - A build from a clean clone with empty Bazel caches on the release commit,
   then the full suites against that library: the source build is the only
-  install path at launch.
+  install path at launch. Done 2026-10-01 on 46e7747 (a GitHub clone,
+  empty disk and repository caches, the README's steps verbatim on the 8
+  GB M3): cold build 95 min (5685 s, ~0.5 GB downloaded), 8.2 GB output
+  base + 4.5 GB disk cache; host 13/13, device_tests 13/13, pytest 905 +
+  2 xfailed, lax 996 / 13 known / 0 new. Redo on the release commit.
 - What happens when a program is stopped mid-computation (Ctrl-C,
   `kill -9`), and how long the GPU watchdog allows: both untested (README,
   "GPU safety"). Needs someone at the machine; a wrong guess resets the GPU.
