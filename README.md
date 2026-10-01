@@ -19,7 +19,8 @@ Google.
 Early, but it works. Float32, float16 and bfloat16 programs run end to
 end on one GPU: training loops, sorting, FFTs, host callbacks and float32
 linear algebra. Performance is broadly comparable to MLX and PyTorch's MPS
-backend on the workloads we've tried. Everything so far has been tested on
+backend on the workloads we've tried, with some slow spots (see
+[`docs/performance.md`](docs/performance.md)). Everything so far has been tested on
 a single machine (an M3 with 8 GB, macOS 26.2), so expect rough edges
 elsewhere, and please [report them](CONTRIBUTING.md).
 
@@ -97,13 +98,13 @@ answer. If you get a wrong answer, that's a bug, so please report it.
 | Matmul on int8 or with mixed types (e.g. f16 x f16 -> bf16) | no | |
 | Convolutions (1-D, 2-D, 3-D, grouped), with gradients | yes | 3-D and grouped ones are slow |
 | Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | |
-| FFT (`jnp.fft`) | yes | complex64 / float32 |
-| Linear algebra in float32 (`cholesky`, `solve`, `lu`, `qr`, `eigh`, `svd`, ...) | yes | runs on the CPU via Accelerate |
-| `eig`, `schur`, `hessenberg` | no | |
+| FFT (`jnp.fft`) | yes | complex64 / float32; lengths above 2^24 (powers of two) or 2^23 - 1 (others) aren't supported |
+| Linear algebra in float32 (`cholesky`, `solve`, `lu`, `qr`, `eigh`, `svd`, ...) | yes | small Cholesky, triangular solve and LU (up to 32x32) run on the GPU; larger factorizations run on the CPU (Accelerate) |
+| `eig`, `schur`, `hessenberg`, `tridiagonal` | no | |
 | `pure_callback`, `io_callback`, `jax.debug.print` | yes | synchronous, so slow in hot loops |
 | Buffer donation (`donate_argnums`) | yes | |
 | JAX's persistent compilation cache | yes | opt-in, see below |
-| float32, float16, bfloat16, integers, bool, complex64 | yes | complex LU (and so complex `solve`, `inv`) isn't supported |
+| float32, float16, bfloat16, integers, bool, complex64 | yes | complex LU, and so complex `solve`, `inv` and `det`, isn't supported |
 | float64, complex128 | no | Apple GPUs have no double type; keep float64 work on the CPU |
 | int4 / uint4 | no | |
 | Several devices (`pmap`, sharding) | no | one GPU only |
@@ -120,31 +121,33 @@ you reboot. A few habits keep you clear of it:
 - Run one GPU-heavy job at a time (`scripts/device_lock.py -- <command>`
   queues them), and keep your problems well inside memory: swapping can
   stall the GPU long enough to trip the watchdog.
-- Don't kill a process (`kill -9`, closing its terminal) while it has GPU
-  work running; let it finish or fail. Ctrl-C mid-computation is untested,
-  so avoid that too.
+- If you need to stop a GPU job, use Ctrl-C (`device_lock.py` passes it
+  to the job); never `kill -9`. Interrupting mid-computation hasn't been
+  tested thoroughly, so let jobs finish when you can.
 - Split very large single operations, like a matmul with ~10^12 flops.
 
 If something does go wrong, the first GPU error ends GPU work for that
 process: every later GPU call fails and says to restart Python. The
 machine doesn't need a reboot. The plugin logs every reset it sees to
-`~/.cache/metal-pjrt/gpu_resets.jsonl`, and `scripts/gpu_health.py`
-summarizes the log. [`docs/design.md`](docs/design.md#runtime) has the
+`~/.cache/metal-pjrt/gpu_resets.jsonl`, and `scripts/gpu_health.py` (in a
+source checkout) summarizes the log. [`docs/design.md`](docs/design.md#runtime) has the
 details, including an opt-in quarantine for kernels that cause resets.
 
 ## Good to know
 
 - **Accuracy.** Most functions agree with CPU float32 to within a few
   ulps. A few special functions are looser (`lgamma`, `digamma`,
-  `betainc`), Metal's `exp`, `log`, `sin` and `cos` are slightly biased,
-  and subnormals flush to zero, as on XLA's CPU backend.
+  `betainc`), and Metal's `exp`, `log`, `sin` and `cos` are slightly
+  biased. Some functions flush subnormal inputs and outputs to zero, as
+  XLA's CPU backend does; a few differ.
   [`docs/accuracy.md`](docs/accuracy.md) has the numbers.
 - **Memory is your RAM.** By default a process may use up to half of it
   (`METAL_PJRT_MEMORY_FRACTION` scales that). Out-of-memory errors say
   whether your process hit its budget or the whole system is short.
-- **Small linear algebra is faster on the CPU.** Factorizations run on the
-  host after the GPU finishes its queued work, so a lot of small ones are
-  better kept on the CPU.
+- **Medium-sized linear algebra is often faster on the CPU.**
+  Factorizations above 32x32 run on the CPU (Accelerate) after the GPU
+  finishes its queued work, so lots of them are often faster kept on the
+  CPU.
 - **Compilation cache.** JAX's persistent cache is off until you give it
   a directory. Since most compiles here take under a second, also lower
   JAX's threshold for caching them:

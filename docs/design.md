@@ -151,8 +151,11 @@ next op must respect, and a worker thread for host tasks (device-to-host
 copies, copies behind pending work, XLA callbacks). An event is a
 timeline value plus host-task values. The open buffer commits whenever a
 host task is enqueued or an event recorded, so no host wait depends on a
-future commit. A host task that waits on its own stream's later work gets
-FAILED_PRECONDITION.
+future commit. A host task (or its error callback) must not call into
+its own stream or wait for that stream's later work: those calls get
+FAILED_PRECONDITION instead of deadlocking. Nor may it call into any
+other stream, since an encoding thread may be waiting for the task (no
+XLA path does this; it isn't checked).
 
 ### Sticky GPU errors
 
@@ -178,9 +181,9 @@ Allocations are shared-storage `MTLBuffer`s from a size-class cache
 behind XLA's pass-through allocator. Fresh buffers cost first-touch page
 faults and training steps repeat their sizes, so caching pays.
 
-- **Size classes.** Lengths round to powers of two up to a 16 KB page,
-  whole pages above. A request reuses a cached buffer of at most twice
-  its length. Reuse is ordered by the compute stream, as XLA assumes.
+- **Size classes.** Lengths round to powers of two (at least 256 bytes)
+  up to a 16 KB page, whole pages above. A request reuses a cached buffer
+  of at most min(2x its length, its length + 2 pages, i.e. +32 KB). Reuse is ordered by the compute stream, as XLA assumes.
   Buffers the host fills right away (module constants, FFT tables) only
   take a cached buffer whose work has all ended.
 - **Budget.** Live plus cached memory stays within half of physical RAM,
@@ -209,9 +212,13 @@ faults and training steps repeat their sizes, so caching pays.
   wrong size, or twice), fail with INTERNAL and a log line, since either
   means a use after free. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` holds
   freed buffers out of reuse to catch late writes. These catch a stale
-  pointer only while its memory isn't reused. One open risk: an
-  experiment (since reverted) once saw XLA copy into freed memory, and
-  the mechanism isn't identified.
+  pointer only while its memory isn't reused: a stale write into a
+  reused buffer stays silent. Open risk: an experiment (since reverted)
+  once saw XLA copy into freed memory, mechanism unidentified; a probe
+  with only its check found 0 hits in 600 runs. Separately, one
+  wrong-value failure of
+  `test_source_mutated_right_after_device_put[False-busy-1]` on
+  2026-09-28 is unexplained and hasn't recurred.
 - **Error messages.** XLA reports every refusal as "Out of memory while
   trying to allocate N"; the plugin appends the reason (budget or
   critical pressure, with numbers) and the executable that was refused.

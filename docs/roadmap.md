@@ -95,8 +95,10 @@ made.
   disk cache; host tests 13/13, device tests 13/13, pytest 905 passed and 2
   expected failures, JAX's lax tests 996 passed with 13 known failures and
   no new ones. Redo it on the release commit.
-- **Stopping a program mid-computation** (Ctrl-C, `kill -9`), and how long
-  the GPU watchdog allows: both untested. This needs someone at the
+- **Stopping a program mid-computation**, and how long the GPU watchdog
+  allows: both untested. The advice meanwhile: stop a GPU job with Ctrl-C
+  (`device_lock.py` passes it to the job), never `kill -9`, and let jobs
+  finish when you can. This needs someone at the
   machine, because a wrong guess resets the GPU.
 - **A second Apple GPU and macOS version.** Every tolerance and
   performance number comes from one M3 on macOS 26.2; other GPUs or macOS

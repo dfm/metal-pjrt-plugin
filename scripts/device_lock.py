@@ -12,9 +12,9 @@ and, under thrashing, GPU command buffers hit the watchdog. Usage:
 
 To stop a job, press Ctrl-C in its terminal: the command gets the
 interrupt (it is in the same process group) and exits on its own terms,
-then the lock is released. Don't kill the command (kill -9, pkill) while
-it may have GPU work in flight: let it finish, or let it fail on the
-runtime's bounded waits.
+then the lock is released. Never kill the command (kill -9, pkill) while
+it may have GPU work in flight. Interrupting mid-computation hasn't been
+tested thoroughly, so let jobs finish when you can.
 
 The lock is ~/.cache/metal-pjrt/device.lock. Transition from before the
 platform was renamed (from "metal"):
