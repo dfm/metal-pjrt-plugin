@@ -280,7 +280,11 @@ sizes.
   outside the device budget, the buffer cache and the device allocation
   table. XLA writes through the pool's pointer unchecked
   (`AllocateLinearizeDest`), so the only failure left is a failed `mmap`;
-  beyond maxBufferLength the pages are host-only.
+  beyond maxBufferLength the pages are host-only. The staging pool keeps
+  about the largest non-dense put it has served and reuses it (measured
+  2026-09-30: after a 128 MB transposed `device_put` and its deletion the
+  process kept ~132 MB of host pool, and a second such put did not grow
+  it).
 
 **Transfers.** Host-to-device and device-to-host copies are a `memcpy` on
 the calling thread when the stream is idle, and a host task otherwise; there
