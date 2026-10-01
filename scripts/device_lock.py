@@ -24,7 +24,10 @@ hand) is ignored and the lock is acquired as usual.
 
 The command is never killed from here: Ctrl-C reaches it directly (same
 process group) and this script waits for it to exit (subprocess.call would
-SIGKILL it on KeyboardInterrupt, with GPU work possibly in flight). The
+SIGKILL it on KeyboardInterrupt, with GPU work possibly in flight).
+SIGTERM, SIGHUP and SIGQUIT sent to this script alone are ignored (the
+script keeps the lock until the command exits); SIGKILL of the script
+releases the lock while the command runs on. The
 lock is held by this script, not passed to the command: a daemon the
 command starts (a Bazel server, which outlives `bazel test`) would inherit
 it and hold the lock until it exits.
@@ -75,6 +78,16 @@ def held_by_ancestor():
 
 def run(argv, env=None):
     signal.signal(signal.SIGINT, lambda *_: None)  # the child handles Ctrl-C
+
+    # A termination signal to this script alone (`kill <pid>`, a tool's
+    # timeout) must not drop the lock while the command still runs GPU work:
+    # keep waiting, and leave the command alone (it is never signalled from
+    # here). Only SIGKILL of this script releases the lock early.
+    def keep_waiting(signum, _frame):
+        print(f"[device_lock] ignoring {signal.Signals(signum).name}: holding the "
+              "lock until the command exits", file=sys.stderr, flush=True)
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGQUIT):
+        signal.signal(sig, keep_waiting)
     # close_fds (the default): the lock files stay with this process.
     return subprocess.Popen(argv, env=env).wait()
 
