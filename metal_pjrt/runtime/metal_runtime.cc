@@ -1437,12 +1437,13 @@ absl::Status Stream::Commit() {
     return absl::OkStatus();
   }
   // Hold rule, plus: a buffer with no ops (RecordEvent after only waits,
-  // e.g. a zero-byte host-to-device copy behind the compute sync point)
-  // would sit on the GPU for as long as it waits, which counts against the
-  // watchdog. Wait for such a buffer's values on the host instead.
+  // e.g. a zero-byte device-to-device copy behind the compute sync point)
+  // or on a transfer stream (set_waits_on_host) would sit on the GPU for as
+  // long as it waits, which counts against the watchdog. Wait for such a
+  // buffer's values on the host instead.
   for (const PendingWait& w : pending_waits_) {
     if (w.event->signaledValue() >= w.value) continue;
-    if (!w.host_task && ops_in_cmd_ > 0) continue;
+    if (!w.host_task && ops_in_cmd_ > 0 && !waits_on_host_) continue;
     ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(w.event, w.value));
     if (w.host_task) {
       device_->host_task_holds_.fetch_add(1, std::memory_order_relaxed);
@@ -1582,6 +1583,11 @@ absl::Status Stream::Flush() {
   ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
   return Commit();
+}
+
+void Stream::set_waits_on_host(bool waits_on_host) {
+  std::lock_guard<std::mutex> lock(mu_);
+  waits_on_host_ = waits_on_host;
 }
 
 std::pair<uint64_t, uint64_t> Stream::FenceForTesting() {

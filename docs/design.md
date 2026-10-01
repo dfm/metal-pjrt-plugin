@@ -157,12 +157,16 @@ recorded and encoded only just before the stream's next GPU work, and a
 buffer ever only waits (a waiting buffer counts against the watchdog).
 `RecordEvent` right after waits (XLA's zero-byte device-to-device copy:
 wait for the destination's allocation, i.e. the compute stream, then record
-the event) would commit a
-buffer with waits and no ops; `Commit` waits for such a buffer's values on
-the host first. `Device::gpu_waits_encoded()` counts buffers committed with
-a wait not yet signaled (they wait on the GPU: a copy or kernel after
-another stream's work, e.g. `device_put(x, may_alias=False)` of a pending
-`x`); `metal_pjrt_sync_stats` exposes it to tests.
+the event) would commit a buffer with waits and no ops, and a copy on a
+transfer stream waits for the compute stream's backlog (e.g.
+`device_put(x, may_alias=False)` of an `x` still being computed). `Commit`
+waits on the host first for such buffers' unsignaled values: buffers
+without ops, and every buffer of a transfer stream (XLA's
+"Host-to-device", "Device-to-host #i" and "Device-to-device #i" streams,
+recognized by the name XLA gives them, `MetalStream::SetName`). Only the
+compute stream still encodes such waits (on transfers, which are short). `Device::gpu_waits_encoded()` counts buffers
+committed with a wait not yet signaled; `metal_pjrt_sync_stats` exposes it
+to tests.
 `WaitForStream(other)` waits for the highest value `other` has issued,
 including host tasks, and inherits the waits `other` has not encoded yet.
 `RecordEvent` publishes its value only once the signaling buffer is

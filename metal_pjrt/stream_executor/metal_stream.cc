@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <utility>
 #include <variant>
 
@@ -13,6 +14,7 @@
 #include "absl/status/status.h"
 #include "absl/status/status_macros.h"
 #include "absl/status/statusor.h"
+#include "absl/strings/match.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/stream_executor/metal_event.h"
 #include "metal_pjrt/stream_executor/metal_executor.h"
@@ -43,6 +45,13 @@ MetalStream::MetalStream(
 MetalStream::~MetalStream() {
   rt_stream_.reset();  // ~rt::Stream synchronizes
   parent()->DeallocateStream(this);
+}
+
+void MetalStream::SetName(std::string name) {
+  rt_stream_->set_waits_on_host(absl::StartsWith(name, "Host-to-device") ||
+                                absl::StartsWith(name, "Device-to-host") ||
+                                absl::StartsWith(name, "Device-to-device"));
+  StreamCommon::SetName(std::move(name));
 }
 
 absl::Status MetalStream::WaitFor(Stream* other) {

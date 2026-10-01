@@ -160,8 +160,9 @@ def test_transfer_behind_a_compute_backlog(put):
     # an event: that command buffer would sit on the GPU for the whole
     # backlog (counting against the watchdog), so the runtime waits on the
     # host instead. (A zero-byte host array needs no allocation, hence no
-    # wait.) device_put(x, may_alias=False) is a copy (an op) that
-    # waits on the GPU for x's producer, like any cross-stream consumer.
+    # wait.) device_put(x, may_alias=False) of an x still being computed is
+    # a copy on XLA's device-to-device stream, a transfer stream: it too
+    # waits for x's producer on the host, not on the GPU.
     chain = jax.jit(lambda x, w: jax.lax.fori_loop(
         0, 16, lambda i, x: jnp.tanh(x @ w), x, unroll=True))
     k = jax.random.PRNGKey(0)
@@ -184,12 +185,11 @@ def test_transfer_behind_a_compute_backlog(put):
     if put == "zero_size":
         z = jax.device_put(empty, may_alias=False)
         assert z.block_until_ready().shape == (0, 3)
-        s1 = _sync_stats()
-        assert s1["gpu_waits_encoded"] == s0["gpu_waits_encoded"], (s0, s1)
     else:
         c = jax.device_put(y, may_alias=False)
         np.testing.assert_array_equal(np.asarray(c), np.asarray(y))
-        s1 = _sync_stats()
+    s1 = _sync_stats()
+    assert s1["gpu_waits_encoded"] == s0["gpu_waits_encoded"], (s0, s1)
     assert s1["unsignaled_host_task_waits_committed"] == 0, s1
     cpu = jax.devices("cpu")[0]
     np.testing.assert_allclose(

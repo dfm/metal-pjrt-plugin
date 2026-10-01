@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <memory>
 #include <optional>
+#include <string>
 #include <variant>
 
 #include "absl/functional/any_invocable.h"
@@ -41,6 +42,13 @@ class MetalStream : public StreamCommon {
       std::optional<std::variant<StreamPriority, int>> priority);
   ~MetalStream() override;
 
+  // XLA names its streams (pjrt/se/local_device_state.cc); the transfer
+  // streams ("Host-to-device", "Device-to-host #i", "Device-to-device #i")
+  // wait on the host for their unsignaled waits before a command buffer is
+  // committed (rt::Stream::set_waits_on_host). A transfer that waits for the
+  // compute stream's backlog on the GPU counts that backlog against the
+  // watchdog.
+  void SetName(std::string name) override;
   absl::Status WaitFor(Stream* other) override;
   absl::Status WaitFor(Event* event) override;
   absl::Status RecordEvent(Event* event) override;

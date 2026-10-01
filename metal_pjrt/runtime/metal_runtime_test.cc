@@ -567,10 +567,10 @@ TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// An event recorded after only waits (XLA: a zero-byte host-to-device copy
+// An event recorded after only waits (XLA: a zero-byte device-to-device copy
 // behind the compute sync point) waits on the host: a command buffer with no
 // ops that waits for another stream's backlog would sit on the GPU for all of
-// it, counting against the watchdog.
+// it, counting against the watchdog. So does a transfer stream's copy.
 TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
   const uint32_t n = 1 << 20;
   void* x = Alloc(n * 4);
@@ -600,8 +600,23 @@ TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
   EXPECT_EQ(static_cast<float*>(y)[0], static_cast<float>(kLaunches));
   EXPECT_EQ(static_cast<float*>(y)[n - 1], static_cast<float>(kLaunches));
   ASSERT_THAT(b->Synchronize(), IsOk());
+
+  // A transfer stream's copy behind the backlog waits on the host too.
+  void* z = Alloc(n * 4);
+  b->set_waits_on_host(true);
+  for (int i = 0; i < kLaunches; ++i) {
+    ASSERT_THAT(Axpy(a.get(), x, y, n, 1.0f, n / 256), IsOk());
+  }
+  ASSERT_THAT(a->Flush(), IsOk());
+  ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+  ASSERT_THAT(b->MemcpyDeviceToDevice(z, y, n * 4), IsOk());
+  ASSERT_THAT(b->Synchronize(), IsOk());
+  EXPECT_EQ(dev_->gpu_waits_encoded(), gpu_waits);
+  EXPECT_EQ(static_cast<float*>(z)[0], 2.0f * kLaunches);
+  EXPECT_EQ(static_cast<float*>(z)[n - 1], 2.0f * kLaunches);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
+  EXPECT_THAT(dev_->Deallocate(z), IsOk());
 }
 
 // WaitForStream covers the other stream's host tasks, not only its committed

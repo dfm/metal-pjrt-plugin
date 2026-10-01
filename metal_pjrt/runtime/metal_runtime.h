@@ -661,6 +661,11 @@ class Stream {
   std::pair<uint64_t, uint64_t> FenceForTesting();
   // Commit any open work without waiting.
   absl::Status Flush();
+  // A transfer stream's command buffers wait on the host for every wait not
+  // yet signaled before they are committed, so they never wait on the GPU
+  // (behind another stream's backlog, which counts against the watchdog).
+  // Off by default: the compute stream keeps its waits on the GPU.
+  void set_waits_on_host(bool waits_on_host);
 
   // Command buffer batching. Each command buffer costs a fixed amount of
   // CPU and GPU-scheduler time (hundreds of microseconds on an M3), so
@@ -765,6 +770,8 @@ class Stream {
     bool host_task = false;
   };
   std::vector<PendingWait> pending_waits_;
+  // See set_waits_on_host. Guarded by mu_.
+  bool waits_on_host_ = false;
   // Waits requested (WaitForEvent/WaitForStream/HostCallback) but not yet
   // encoded. A command buffer that only waits still counts its waiting time
   // against the GPU watchdog, so waits are encoded lazily, right before the
