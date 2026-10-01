@@ -30,9 +30,11 @@ comes from it.
   (`xcode-select --install`; full Xcode is not needed), Homebrew, `bazelisk`
   (`brew install bazelisk`; it fetches the Bazel version in `.bazelversion`,
   8.7.0), `uv` (`brew install uv`), and the time and disk for a first build
-  of XLA: about 2 hours on an 8 GB M3, ~8.5 GB of Bazel output plus a disk
-  cache (`~/.cache/metal-pjrt-plugin/`) that grows with rebuilds. The cache
-  is shared by every checkout, so a second clone builds in minutes.
+  of XLA: about 1.5-2 hours on an 8 GB M3 (95 minutes measured from a clean
+  clone on 2026-10-01; ~15k actions), ~8 GB of Bazel output plus a disk
+  cache (~4.5 GB after a first build; `~/.cache/metal-pjrt-plugin/`) that
+  grows with rebuilds. The cache is shared by every checkout, so a second
+  clone builds in minutes.
   Running the plugin needs no developer tools: the Metal framework compiles
   its kernels at run time.
 

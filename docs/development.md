@@ -185,7 +185,9 @@ tests, `//metal_pjrt:device_tests`, JAX's own suite
   hits are not copied into the output base; only top-level outputs (the
   plugin library, test binaries) are. The manual run's `bytes` input turns
   that off if it ever misbehaves.
-- **A cold cache** takes more than one job: the build step stops after 300
+- **A cold cache** takes more than one job: a cold build measured 95 minutes
+  on an 8 GB M3 (2026-10-01) and GitHub's 3-core M1 runners are slower, so
+  the build step's 300-minute timeout stays; it stops after 300
   minutes, the cache is saved anyway, and the next run continues from it.
   To prime it after the repository goes public, start the workflow by hand
   with `warm_cache_only` (build and save only), as often as needed.

@@ -20,6 +20,11 @@ cd "$(dirname "$0")/.."
 T=${JAX_TESTS_DIR:-$HOME/.cache/metal-pjrt/jax-tests}
 FILE=${1:?test file relative to the jax repo, e.g. tests/lax_test.py}; shift
 scripts/gpu_health.py >&2  # warn about resets / quarantined kernels
+if ! .venv/bin/python -c "import absl, hypothesis" 2>/dev/null; then
+  echo "run_jax_tests.sh: JAX's tests need absl-py and hypothesis in .venv:" >&2
+  echo "  uv pip install --python .venv/bin/python absl-py hypothesis" >&2
+  exit 2
+fi
 exec scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
   JAX_ENABLE_COMPILATION_CACHE=false PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
   .venv/bin/python -m pytest "$T/$FILE" -p jax_tests_plugin -p no:cacheprovider -p no:xdist \
