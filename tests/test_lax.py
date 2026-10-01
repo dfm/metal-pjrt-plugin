@@ -456,6 +456,40 @@ def test_x64_enabled():
     assert out.stdout.split() == ["True"] * 5, out.stdout
 
 
+SCATTER64_CHILD = r"""
+import numpy as np, jax
+jax.config.update("jax_enable_x64", True)
+dev = jax.devices("mtl")[0]
+f = jax.jit(lambda x, i, u: x.at[i].set(u))
+torn = wrong = 0
+for dt in (np.int64, np.uint64):
+    for slots in (1, 64):
+        for r in range(3):
+            rng = np.random.default_rng(r)
+            idx = rng.integers(0, slots, 1 << 20).astype(np.int32)
+            k = rng.permutation(1 << 20).astype(np.uint64) + np.uint64(1)
+            upd = ((k << np.uint64(32)) | k).astype(dt)
+            y = np.asarray(f(*jax.device_put((np.zeros(slots, dt), idx, upd), dev)))
+            y = y.view(np.uint64)
+            torn += int(((y >> np.uint64(32)) != (y & np.uint64(0xffffffff))).sum())
+            wrong += sum(int(y[s]) not in set(upd[idx == s].view(np.uint64).tolist())
+                         for s in range(slots))
+print(torn, wrong)
+"""
+
+
+def test_scatter_64bit_overwrite_with_repeated_indices():
+    # An overwrite scatter does no read-modify-write, so XLA stores 64-bit
+    # elements with plain stores, also where indices repeat (as on CUDA).
+    # They must not tear: 2^20 updates with equal 32-bit halves into 1 or 64
+    # slots leave every slot holding one of its updates, whole.
+    import os
+    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="1")
+    out = metal_testing.run_python(SCATTER64_CHILD, env)
+    assert out.returncode == 0, out.stderr[-3000:]
+    assert out.stdout.split() == ["0", "0"], out.stdout
+
+
 # Subnormal inputs follow XLA:CPU, which flushes them (docs/accuracy.md):
 # log(1e-40) = -inf and cbrt(1e-40) = 1e-40 on both. (Odd functions that
 # return x for tiny x, e.g. sin / tan / log1p, keep a subnormal on mtl where
