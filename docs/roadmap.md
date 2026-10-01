@@ -195,6 +195,14 @@ Unscheduled directions, with enough context to pick one up cold.
   (`metal$conv`; cnn fwd+bwd 5.5 -> 1.56 ms p10, MLX 1.42). Not yet:
   grouped / depthwise, Winograd, 3-D, negative low padding (sliced), and
   small convolutions under 4 Mflop (loop emitter).
+- **Grouped-convolution kernel gradients**: batch-group convolutions are
+  converted to ordinary ones first (ConvolutionGroupConverter, as on
+  XLA:CPU), so they are correct; the converted kernel gradient of a
+  grouped (non-depthwise) convolution is a 3-spatial-dim dilated
+  convolution that runs on the loop emitter (slow but correct). A faster
+  path (a grouped `metal$conv` or a direct batch-group kernel) is future
+  work. Measured 2026-09-30: grad wrt w of x f32[8,32,32,64], 3x3, groups
+  4: 2.26 ms p10 vs 1.44 ms dense (4x the flops, on `metal$conv`).
 - **Upstream: donation for plugin platforms.** JAX hard-codes the
   platforms that get buffer donation (`mlir._platforms_with_donation`); the
   plugin appends "mtl" to the private list at initialization (pinned by
