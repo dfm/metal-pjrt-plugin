@@ -1,67 +1,58 @@
-# Accuracy notes
+# Accuracy
 
-For users: most functions agree with CPU float32 to a few ulps, a few
-(`lgamma`, `digamma`, `betainc`, `reduce_prod`) need wide tolerances, and
-Metal's `exp`, `sin`, `cos` and `log` carry a small bias; the known gaps are
-listed below.
+Most functions agree with CPU float32 to within a few ulps. A few special
+functions need wide tolerances, and Metal's `exp`, `sin`, `cos` and `log`
+carry a small bias.
 
 ## Policy
 
-mtl matches XLA:CPU. Where Metal's math library and XLA:CPU disagree, the
-plugin follows CPU, unless its own result is simply closer to CPU than
-Metal's builtin would be (the small-argument `exp` / `sin` / `cos`
-polynomials and `cbrt`'s Newton step, below). Subnormal inputs and outputs
-follow CPU's flushing: `log(1e-40) = -inf`, `cbrt(1e-40) = 1e-40` and
-`exp(-100) = 0`, as on CPU (and as with CUDA's ftz), not numpy's values.
-The remaining differences are known gaps, listed next.
+mtl matches XLA:CPU. Where Metal's math library disagrees with CPU, the
+plugin follows CPU, or uses its own code where that is closer to CPU
+(the small-argument `exp` / `sin` / `cos` polynomials and `cbrt`, below).
+Subnormals flush, as on CPU and CUDA's ftz: `log(1e-40) = -inf`,
+`cbrt(1e-40) = 1e-40`, `exp(-100) = 0`.
 
-How accuracy is measured: `tests/metal_testing.py` (f64 CPU reference, ulps
-of the output dtype, `METAL_TEST_REPORT_ULPS=1` prints every comparison with
-the CPU float32 error next to it). Tolerances are about twice the measured
-error. Machine: M3 10-core GPU, macOS 26.2; another GPU or macOS version (a
-different Metal compiler and math library) may need retuned tolerances.
+Errors are measured against a float64 CPU reference in ulps of the output
+dtype (`tests/metal_testing.py`), with tolerances about twice the measured
+error; `METAL_TEST_REPORT_ULPS=1` prints them next to CPU float32's. All
+numbers come from an M3 on macOS 26.2. Other GPUs or macOS versions may
+need retuned tolerances.
 
 ## Known gaps
 
-Open, not being fixed right now:
-
-- tinygp's parallel (quasisep-par) solver mean at n = 200000 is ~1% off
-  (1.7e5-2.0e5 ulps normwise against the float64 sequential solver; CPU
-  float32 gives NaN there); cause unknown. The tests no longer run tinygp
-  (`bench/tinygp_bench.py` still times it).
-- exp / sin / cos keep Metal's bias for |x| >= 0.125 (the prelude's
-  polynomials cover only smaller arguments): on [0.125, 1) mean +0.11 ulps
-  for exp(-x), -0.10 for sin, -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0,
-  max 0.8 / 0.6 / 0.5); exp on 1 .. 10 +0.37 (table below).
-- sinh / cosh and the prelude's `xla_expm1` still use Metal's biased `exp`.
-  f32 `tanh` and `erf` do not: XLA expands them to rational approximations
-  before the kernel translator (f16 `tanh` is Metal's builtin; f16 `erf` is
-  the same rational, in the prelude).
-- Metal's `log` is biased everywhere, by about +-0.5 ulps (+ below 1, -
-  above), max ~2.5 ulps (~2.6 for `log2`, which is `log` times 1/ln 2).
-- The widest test tolerances (`tests/test_lax.py`, measured error doubled):
-  `lgamma` 580 and `digamma` 1600 ulps (CPU float32 536 / 770: the inputs
-  straddle digamma's root, where the error is relative to a tiny result),
+- **`exp`, `sin`, `cos` for |x| >= 0.125** keep Metal's bias. On
+  [0.125, 1) the mean error is +0.11 ulps for exp(-x), -0.10 for sin,
+  -0.01 for cos (max 1.4 / 2.6 / 2.2; CPU ~0, max 0.8 / 0.6 / 0.5). On
+  1..10, exp is +0.37.
+- **`sinh`, `cosh`, `expm1`** use Metal's biased `exp`. f32 `tanh` and
+  `erf` don't (XLA expands them to rational approximations); f16 `tanh`
+  is Metal's builtin.
+- **`log`** is biased by about +-0.5 ulps everywhere (positive below 1,
+  negative above), max ~2.5 ulps (~2.6 for `log2`).
+- **Widest test tolerances** (`tests/test_lax.py`): `lgamma` 580 and
+  `digamma` 1600 ulps (CPU float32 536 / 770, near digamma's root),
   `reduce_prod` 93, `betainc` 38.
-- Subnormals where CPU and Metal flush differently (`tests/test_lax.py`
-  `test_subnormals_match_cpu` pins the ones that agree):
-  - `sin`, `tan`, `sinh`, `asinh` and `log1p` of a subnormal return it
-    unchanged on mtl; CPU gives +-0.
-  - `pow` flushes a subnormal exponent on mtl (`pow(0, 1e-40) = 1`,
+- **Subnormals that flush differently** (`test_subnormals_match_cpu` pins
+  the cases that agree):
+  - `sin`, `tan`, `sinh`, `asinh`, `log1p` return a subnormal input
+    unchanged; CPU gives +-0.
+  - `pow` flushes a subnormal exponent (`pow(0, 1e-40) = 1`,
     `pow(inf, 1e-40) = 1`, `pow(-0.5, 1e-40) = 1`; CPU 0, inf, NaN) and a
     subnormal base (`pow(1e-40, 0.5) = 0`, CPU 1e-20; `pow(1e-40, 1) =
     1e-40`, CPU 0).
-  - `rem(x, 1e-40)` is NaN on mtl (a flushed divisor), +-0 on CPU.
-  - `atan2(1e-40, 0)` is 0 on mtl, 1e-40 on CPU.
-- `atan2(+-0, negative)` is float32(pi) = 3.1415927 on mtl (correctly
-  rounded), one ulp below on CPU (3.1415925).
+  - `rem(x, 1e-40)` is NaN; CPU gives +-0.
+  - `atan2(1e-40, 0)` is 0; CPU gives 1e-40.
+- **`atan2(+-0, negative)`** is float32(pi) = 3.1415927, correctly rounded;
+  CPU gives one ulp less.
+- **tinygp's parallel solver** (quasisep-par) at n = 200000 gives a mean
+  ~1% off (1.7e5-2.0e5 ulps normwise; CPU float32 gives NaN). Cause
+  unknown. `bench/tinygp_bench.py` still times it.
 
 ## Metal's biased math functions
 
-Metal's float32 `exp`, `sin`, `cos` and `log` are *biased*: their errors do
-not average to zero. `bench/math_bias.py` prints the signed error per |x|
-decade (mean signed / mean absolute / max ulps, 2^18 log-uniform samples
-per row); Metal's own functions, against CPU (XLA's polynomials):
+Metal's float32 `exp`, `sin`, `cos` and `log` have errors that don't
+average to zero. Signed error per decade of |x| from `bench/math_bias.py`
+(mean signed / mean absolute / max ulps):
 
 | fn | \|x\| | Metal | CPU |
 |---|---|---|---|
@@ -74,82 +65,43 @@ per row); Metal's own functions, against CPU (XLA's polynomials):
 | log | 1e-4 .. 1 | +0.47 .. +0.52 / 0.55 / 1.9 | +0.00 / 0.25 / 0.6 |
 | log | 1 .. 10 | -0.51 / 0.56 / 2.5 | -0.00 / 0.28 / 1.2 |
 
-A third of an ulp is harmless for one call, but a long recursion that
-multiplies by the same biased value every step accumulates it coherently.
-That is how it was found: tinygp's sequential quasisep gradient at n = 20000
-was 896 ulps normwise against CPU's 103, with the error entering in the
-Cholesky scan's `exp` / `cos` / `sin` of arguments ~1e-3. Ruled out by
-A/B: the `metal$scan` rewriter, the GEMM backend, XLA's excess precision,
-and Metal's math mode (`mathMode = Safe` + `mathFloatingPointFunctions =
-Precise` is bitwise identical to the `fastMathEnabled = false` in use).
-Division, sqrt, rsqrt and multiply are correctly rounded and nothing is
-contracted into an FMA.
-
-Repro:
+A third of an ulp is harmless in one call, but a long recursion that
+multiplies by the same biased value adds it up: tinygp's sequential
+gradient at n = 20000 was 896 ulps off (CPU 103). Division, `sqrt`,
+`rsqrt` and multiplication are correctly rounded, nothing is contracted
+into an FMA, and Metal's safe/precise math modes give identical results.
 
     scripts/device_lock.py -- .venv/bin/python bench/math_bias.py exp- sin cos
 
-## Fixed in the MSL prelude
+## Fixes in the MSL prelude
 
-- **Small |x| exp / sin / cos** (2026-09-27). The prelude's `xla_exp` /
-  `xla_sin` / `xla_cos` (float overloads; half and vectors call Metal's)
-  evaluate a degree-6 / 7 / 6 Taylor polynomial with `fma` for |x| < 0.125
-  (truncation < 1e-9 relative) and call Metal's function elsewhere; `sin`
-  returns x for |x| < 1e-4, which keeps `sin(-0) = -0`. On |x| < 0.125 the
-  bias is gone (mean ~0.00, mean abs 0.25, max 0.50-0.56, as CPU). tinygp
-  normwise ulps before -> after (CPU): quasisep n=20000 gradient 896 -> 103
-  (103), value 115 -> 41 (41); quasisep-par n=20000 gradient 977 -> 114
-  (97); quasisep-par n=200000 value / gradient 1200 / 2290 -> 79 / 303
-  (243 / 1040). The polynomial is faster than Metal's functions on
-  ALU-bound code (8 rounds of exp+sin+cos over 4M: 1.81 -> 1.22-1.25 ms)
-  and costs nothing measurable elsewhere.
-- **cbrt** (2026-09-27). `pow(|x|, 1/3)` was 7-12 ulps off away from 1 (1/3
-  rounds up in float). The prelude's `xla_cbrt` adds one Newton step: max
-  1.28 ulps against float64 over FLT_MIN..3e38 (CPU 0.5; `lax.cbrt wide
-  range` in `tests/test_lax.py`). Zeros, subnormals, infinities and NaN
-  are returned unchanged, as XLA:CPU does (`cbrt(1e-40) = 1e-40` on both).
-- **pow of -inf**. `xla_powf` (which gives NaN for a negative base and a
-  non-integer exponent) returned NaN for `pow(-inf, 0.5)`; it now gives
-  `pow(inf, y)` there (inf, or 0 for a negative exponent), as CPU.
+- **Small-|x| `exp` / `sin` / `cos`** (2026-09-27): for |x| < 0.125 the
+  float versions use Taylor polynomials with `fma`, which removes the bias
+  there (mean ~0.00, max ~0.5 ulps, as CPU) and is no slower. tinygp's
+  n = 20000 gradient went from 896 to 103 ulps (CPU 103).
+- **`cbrt`** (2026-09-27): a Newton step on `pow(|x|, 1/3)` brings it from
+  7-12 ulps to max 1.28 (CPU 0.5).
+- **`pow(-inf, y)`** for non-integer y now gives `pow(inf, y)`, as CPU,
+  not NaN.
 
-## Other changes that moved errors
+## Other paths
 
-- Convolutions on `metal$conv` (MLX's steel kernels) accumulate f16/bf16
-  in f32 and round once, as MLX does: <= 0.5 ulps normwise in
-  `tests/test_conv.py` (forward and both gradients, the same as CPU). f32
-  is within CPU float32's accumulation error (forward <= 5.7 ulps normwise,
-  CPU <= 6.0; gradients <= 10.7, CPU up to 38.7: the weight gradient sums
-  N * oH * oW products). The loop emitter, which still takes small,
-  grouped and 3-D convolutions, is less accurate in f16: an f16 weight
-  gradient it ran measured 2.6 ulps against CPU's 0.47.
-
-- FFTs run on `metal$fft` (MLX's kernels) instead of the dense DFT: in
-  `tests/test_fft.py`, max |error| / max |numpy float64| is at most 1.2 x
-  2^-24 log2 n over every plan (Stockham, Rader, fused and multi-upload
-  Bluestein, four-step; fft, ifft, rfft, non-Hermitian irfft, n = 1 to 2^20)
-  and 0.94 x for the multi-dimensional transforms; the per-plan device test
-  (`fft:fft_test`, double reference) measures <= 5.4 x 2^-24 log2 n
-  normwise to the RMS up to 2^24. The Rader and Bluestein constants are
-  computed in double with exact angle reduction, which fixes two MLX
-  inaccuracies (an unreduced chirp angle, ~1e-2 off near 2^23, and bin 0's
-  imaginary part leaking into a fused-Bluestein irfft of non-Hermitian
-  input, 4-13% of RMS off in MLX itself at n = 47). `tests/test_linalg.py`'s
-  FFT cases measure 1.3-3.0 ulps normwise (CPU float32 0.8-1.5).
-
-- softmax in f16 runs as XLA's fusions since the `metal$softmax` rewriter
-  was deleted (2026-09-27): 9.5 ulps max over `tests/test_scan.py`'s shapes,
-  the same as CPU, against 5.0 with the rewriter (which accumulated in
-  f32); f16 log_softmax 1.0 vs 0.55. f32 (30.6, CPU 30.3) and bf16 (0.5)
-  are unchanged.
-- f16/bf16 GEMMs with 2..8 rows on the wide gemv (f32 accumulation, one
-  rounding like steel): <= 0.5 ulps normwise on test_steel_gemm's few-row
-  cases (bias + gelu <= 0.5, CPU 0.45-0.97); f32 output 0.5-1.5 ulps of f32
-  (CPU 1-7).
-- GEMM epilogues fused into steel (2026-09-27) round once: f16/bf16 bias and
-  activation lose the intermediate rounding of D (normwise ulps f16 bias
-  0.74 -> 0.50, bf16 bias+gelu 0.71 -> 0.48, test_steel_gemm "+bias relu"
-  0.61-0.93 -> 0.34-0.50). f32 epilogue GEMMs (MPS + second pass) are
-  bitwise identical to a fused f32 kernel.
-- bf16 and f8 conversions round exactly (0 ulps against CPU); a round trip
-  f32 -> bf16 -> f32 inside one jit is removed by XLA's excess-precision
-  simplification, as on CUDA (`docs/op-coverage.md`).
+- **Convolutions** on `metal$conv` accumulate f16/bf16 in f32 and round
+  once: <= 0.5 ulps normwise, as CPU. f32 is within CPU's own error
+  (forward <= 5.7 ulps, CPU 6.0; gradients <= 10.7, CPU up to 38.7). The
+  loop emitter (small, grouped, 3-D) is less accurate in f16: 2.6 ulps on
+  one weight gradient, CPU 0.47.
+- **FFTs** (`metal$fft`): max |error| / max |value| <= 1.2 x 2^-24 log2 n
+  over every plan in `tests/test_fft.py` (n up to 2^20), <= 5.4 x 2^-24
+  log2 n per plan up to 2^24 in `fft:fft_test`. The plugin computes the
+  Rader and Bluestein constants in double, which fixes two inaccuracies in
+  MLX itself (near n = 2^23, and non-Hermitian irfft at n = 47).
+- **f16 softmax** runs as plain XLA fusions: 9.5 ulps max, as CPU; f16
+  log_softmax 1.0 (CPU 0.55).
+- **Few-row f16/bf16 GEMMs** and **fused GEMM epilogues** accumulate in
+  f32 and round once: <= 0.5 ulps normwise. f32 epilogue GEMMs are
+  bitwise identical to a fused kernel.
+- **bf16 and f8 conversions** round exactly. A f32 -> bf16 -> f32 round
+  trip inside one `jit` is removed by XLA's excess-precision
+  simplification, as on CUDA
+  ([`op-coverage.md`](op-coverage.md#element-types)).
