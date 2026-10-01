@@ -71,6 +71,10 @@ def main():
                     help="after the alternating phase, a second phase: JAX's --runs runs in "
                          "one process, then PyTorch's in one process (shows run-over-run "
                          "accumulation that fresh processes hide)")
+    ap.add_argument("--jax-variants", default="jax=",
+                    help="JAX arms as NAME=EXTRA_ARGS pairs separated by ';', each run in "
+                         "turn with airbench.py's extra arguments, e.g. "
+                         "'remat=;noremat=--no-remat' (default: one arm, 'jax')")
     ap.add_argument("--log", default=os.path.join(tempfile.gettempdir(), "airbench_gpu_samples.txt"),
                     help="where the sampler writes (default: a temporary file)")
     args = ap.parse_args()
@@ -79,8 +83,9 @@ def main():
     tenv = {**os.environ, "PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.8",
             "PYTORCH_MPS_LOW_WATERMARK_RATIO": "0.6"}
     extra = ["--epochs", str(args.epochs)] if args.epochs else []
-    jax_cmd = lambda seed, n=1: wrap + [sys.executable, os.path.join(HERE, "airbench.py"),
-                                        "--runs", str(n), "--seed", str(seed)] + extra
+    variants = [v.split("=", 1) for v in args.jax_variants.split(";") if v]
+    jax_cmd = lambda seed, n=1, more=(): wrap + [sys.executable, os.path.join(HERE, "airbench.py"),
+                                                 "--runs", str(n), "--seed", str(seed)] + extra + list(more)
     torch_cmd = lambda seed, n=1: wrap + [args.torch_python,
                                           os.path.join(HERE, "torch_baseline.py"),
                                           "--runs", str(n), "--seed", str(seed)] + extra
@@ -110,7 +115,9 @@ def main():
         if rc:
             sys.exit(f"warm-up run failed: {err}")
         print(json.dumps({"warmup_run": True, "wall_s": round(time.time() - t0, 1)}), flush=True)
-        arms = [("jax", jax_cmd, env)] + ([("torch", torch_cmd, tenv)] if args.torch_python else [])
+        arms = [(name, lambda seed, n=1, more=tuple(shlex.split(v)): jax_cmd(seed, n, more), env)
+                for name, v in variants]
+        arms += [("torch", torch_cmd, tenv)] if args.torch_python else []
         for seed in range(1, args.runs + 1):
             for name, cmd, e in arms:
                 record(name, "alternating", *run(cmd(seed), e)[:3])
@@ -128,20 +135,20 @@ def main():
         print(f"| {r['phase']} | {r['impl']} | {r.get('seed', '')} | {r.get('train_s', 'error')} "
               f"| {r.get('acc', '')} | {r.get('gpu_w', '')} | {r.get('mean_pstate', '')} |")
     print()
+    names = [n for n, _ in variants] + ["torch"]
+    spread = lambda v: round((max(v) - min(v)) / min(v), 3)
     for phase in ("alternating", "one-process"):
         t = {k: [r["train_s"] for r in rows if r["impl"] == k and r["phase"] == phase
-                 and "train_s" in r] for k in ("jax", "torch")}
-        if not t["jax"]:
-            continue
-        spread = lambda v: round((max(v) - min(v)) / min(v), 3)
-        summ = {"phase": phase, "jax_mean_s": round(statistics.mean(t["jax"]), 1),
-                "jax_spread": spread(t["jax"])}
-        if t["torch"]:
-            summ.update(torch_mean_s=round(statistics.mean(t["torch"]), 1),
-                        torch_spread=spread(t["torch"]),
-                        jax_over_torch=round(statistics.mean(t["jax"])
-                                             / statistics.mean(t["torch"]), 3))
-        print(json.dumps({"summary": True, **summ}))
+                 and "train_s" in r] for k in names}
+        summ = {"phase": phase}
+        for k, v in t.items():
+            if v:
+                summ[f"{k}_mean_s"] = round(statistics.mean(v), 1)
+                summ[f"{k}_spread"] = spread(v)
+                if t["torch"] and k != "torch":
+                    summ[f"{k}_over_torch"] = round(statistics.mean(v) / statistics.mean(t["torch"]), 3)
+        if len(summ) > 1:
+            print(json.dumps({"summary": True, **summ}))
 
 
 if __name__ == "__main__":
