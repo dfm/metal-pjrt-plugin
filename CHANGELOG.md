@@ -6,6 +6,33 @@ describe the present only. Dates in parentheses are when a change was made.
 
 ## Unreleased
 
+### 2026-09-30
+
+From a pre-release review of the whole tree.
+
+- Fixed: `jax.grad` with respect to the kernel of a grouped or depthwise
+  convolution was wrong (relative error ~0.5). JAX expresses that gradient
+  as a convolution with `batch_group_count`, which XLA's loop emitter sums
+  over every batch group (on CUDA cuDNN takes these). They are now
+  converted to ordinary convolutions first, as on XLA:CPU.
+- Fixed: `expm1` returned `inf` for x between 84.3 and 88.72.
+- XLA's dynamic-slice fusion is off: `x.at[:n].set(x[:n] @ r)` compiled to
+  a matmul writing in place over its own operand.
+- Refused by name at compile time, where they failed later or worse:
+  host offloading (`jax.experimental.compute_on("device_host")`, a process
+  abort), `jax.lax.rng_uniform`, and a matmul bias that XLA fused through a
+  slice or reshape of the matmul's result.
+- Complex64 convolutions are expanded into real ones (JAX's cpu/gpu rule),
+  so they reach the convolution kernels; a complex64-result matmul of two
+  real operands works.
+- Licensing: the kernel prelude's `erfc` (from Numerical Recipes) is gone;
+  `THIRD_PARTY_NOTICES` carries the license text of every project linked
+  into the library (`scripts/gen_third_party_notices.py`); every source
+  file has an SPDX header; the copyright holder is "The metal-pjrt-plugin
+  Authors" (`AUTHORS`).
+- `docs/archive/` is no longer in the tree, and the docs cite dates
+  instead of commit hashes.
+
 ### 2026-09-29
 
 - Memory limits work like PyTorch MPS: the per-process budget (half of

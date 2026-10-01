@@ -71,7 +71,9 @@ def _():
 @case("lax.expm1 wide range")
 def _():
     # Up to just under log(FLT_MAX) = 88.72: the prelude's um1 * x overflowed
-    # from 84.3 on and returned inf.
+    # from 84.3 on and returned inf. The tolerance (5) is not twice this
+    # sample's error but a bound from a sweep of 3M float32 values on
+    # [-104, 89]: 4.32 ulps at most (at x = 2.79; 3.85 above x = 17).
     ref(lax.expm1, np.linspace(-20, 88.5, 512, dtype=np.float32))
 @case("lax.erf f16")
 def _():
@@ -149,14 +151,16 @@ case("scatter i16 / u8 / bf16 add and f16 max, repeated indices")(lambda: ref(
                jnp.zeros(16, jnp.bfloat16).at[i].add(jnp.ones(64, jnp.bfloat16)).astype(f32),
                jnp.zeros(16, jnp.float16).at[i].max(jnp.arange(64, dtype=jnp.float16)).astype(f32)),
     np.arange(64, dtype=np.int32) % 16))
-# f(slice of x) written back over the slice: the shape XLA's dynamic-slice
-# fusion (off on mtl, metal_compiler.cc) runs in place, the result aliasing
-# the operand. With a traced index these are a dynamic-slice and a
-# dynamic-update-slice; with static ones, a slice and a one-index scatter
-# that ScatterExpander turns into a dynamic-update-slice.
+# f(slice of x) written back over the slice. With static indices (a slice
+# and a one-index scatter that ScatterExpander turns into a
+# dynamic-update-slice) XLA's dynamic-slice fusion, forced on, makes the
+# GEMM the hero of a fusion that reads slice(x) and writes in place into x:
+# operand and result overlap (checked in the compiled HLO, 2026-09-30). The
+# fusion is off on mtl (metal_compiler.cc). The two traced-index forms below
+# did not form it; they are here as plain correctness cases.
 case("slice update through a matmul")(lambda: ref(lambda x, r: x.at[:128].set(x[:128] @ r), R(256, 64), R(64, 64)))
 case("dynamic_update_slice of a matmul of the slice")(lambda: ref(
-    lambda x, r, i: lax.dynamic_update_slice(x, lax.dynamic_slice(x, (i, 0), (128, 64)) @ r, (i, 0)),
+    lambda x, r, i: lax.dynamic_update_slice(x, lax.dynamic_slice(x, (i, jnp.zeros_like(i)), (128, 64)) @ r, (i, jnp.zeros_like(i))),
     R(256, 64), R(64, 64), np.int32(64)))
 case("dynamic_update_slice of a conv of the slice")(lambda: ref(
     lambda x, w, i: lax.dynamic_update_index_in_dim(
@@ -325,7 +329,7 @@ ULPS = {
     'lax.atan': 2.5, 'lax.sinh': 2.9, 'lax.cosh': 1.9, 'lax.asinh': 3.2,
     'lax.acosh': 3, 'lax.atanh': 3.4, 'lax.sqrt': 1, 'lax.rsqrt': 1,
     'lax.cbrt': 1.7, 'lax.cbrt wide range': 2.8, 'lax.erf': 3.8, 'lax.erfc': 11, 'lax.erf_inv': 4.3,
-    'lax.expm1 wide range': 4.3, 'lax.erf f16': 1,
+    'lax.expm1 wide range': 5, 'lax.erf f16': 1,
     'lax.lgamma': 580, 'lax.digamma': 1600, 'lax.square': 1,
     'lax.reciprocal': 1, 'lax.bessel_i0e': 2.7, 'lax.bessel_i1e': 5,
     'lax.igamma': 5.9, 'lax.igammac': 26, 'lax.polygamma': 17, 'lax.zeta': 2,

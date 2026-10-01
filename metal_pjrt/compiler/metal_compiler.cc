@@ -135,9 +135,10 @@ void ApplyMetalDefaults(DebugOptions& debug_options) {
   // wraps a GEMM or any FFI custom call whose operand is a slice, or whose
   // result goes into a dynamic-update-slice, and hands the call pointers
   // into the sliced buffers. For dus(x, f(slice(x, i)), i) the result
-  // aliases the operand, which the handlers here are not written for (a
-  // same-shape metal$conv would read input it has already overwritten).
-  // Without it XLA copies the slices.
+  // aliases the operand, which the handlers here are not written for:
+  // x.at[:n].set(x[:n] @ r) compiled to a GEMM reading slice(x) and writing
+  // in place into x (seen in the HLO with the fusion forced on). Without it
+  // XLA copies the slices.
   debug_options.set_xla_gpu_enable_dynamic_slice_fusion(false);
   // No command buffers: XLA's conversion pass already clears the command
   // types for OneAPI-capability devices, and a software-replay
