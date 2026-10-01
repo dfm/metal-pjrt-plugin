@@ -98,10 +98,10 @@ against float32 on CPU (`check.py --text-file`; mlx-lm via
 `mlx_baseline.py --kl-ref`). The reference is this example's own model
 run in float32 on the CPU, not an independent implementation: it scores
 both sides fairly only as far as `qwen3.py` itself matches Qwen3 (its
-bf16 run and mlx-lm's are equally close to it). The mlx-lm rows were
-scored against a float16-rounded copy of the reference, JAX's against
-float32; `check.py --save-ref` now writes float32, and a re-scoring is
-pending.
+bf16 run and mlx-lm's are equally close to it). Both sides are scored
+against the same float32 reference (re-scored 2026-10-01 with mlx-lm
+0.31.3 / MLX 0.32.3; an earlier float16-rounded copy of the reference
+gave the same values at this precision).
 
 | | KL from float32 | top-1 agreement | perplexity (float32: 64.9) |
 |---|---|---|---|
