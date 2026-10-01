@@ -1,3 +1,6 @@
+// Copyright 2026 The metal-pjrt-plugin Authors
+// SPDX-License-Identifier: Apache-2.0
+
 // Thin C++ runtime over Metal (via metal-cpp), independent of XLA (it depends
 // only on absl) so it can be unit-tested standalone. The StreamExecutor adapter translates this API into
 // XLA's abstractions.

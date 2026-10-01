@@ -292,8 +292,8 @@ unavoidable: Metal has no per-kernel timeout.
 
 ## How this differs from MLX
 
-`docs/archive/mlx-comparison.md` has the source-level read (MLX 59d600b,
-jax-mps 7fd54c6). In short: MLX is an eager interpreter over a lazy graph;
+From a source-level read of MLX and jax-mps (September 2026): MLX is an
+eager interpreter over a lazy graph;
 `mx.compile` fuses only elementwise chains, every call re-walks the graph
 and encodes primitive by primitive, and memory comes from a caching
 allocator with no planning. Its kernels (steel GEMM, Winograd conv, fused
@@ -308,7 +308,7 @@ attention inference, quantized matmul) and on compile latency.
 The original milestones (build XLA's GPU compiler on macOS without CUDA; a
 StreamExecutor platform; MLIR -> EmitC -> MSL codegen; GEMM via MPS and
 steel; a Python package run against JAX's tests and benchmarks) are all
-done; `docs/archive/` has the record. Standing risks:
+done. Standing risks:
 
 - Building XLA on an 8 GB laptop: low concurrency, a shared disk cache and
   JAX's public remote cache keep rebuilds to minutes; a cold build takes
