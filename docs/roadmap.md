@@ -174,6 +174,23 @@ made.
   ahead broadly. Concerns: encoding into the single queue through
   `MPSCommandBuffer`, per-shape compile latency and caching, charging opaque
   kernels against the watchdog budget, and closed source.
+- **GPU linear algebra beyond 32x32**, to avoid the host sync, not for raw
+  speed. Measured 2026-10-01 against PyTorch 2.14.1's MPS kernels:
+  Accelerate wins or ties up to n = 1024, including batched 256 x 64^2
+  Cholesky and LU (0.55 vs 1.15 ms); PyTorch's GPU Cholesky reaches parity
+  only at n = 1024. The one clear GPU win is batched small SVD by one-sided
+  Jacobi (1.8-2.4x). Our real cost above 32x32 is the full GPU sync inside
+  jitted programs. If pursued: extend our GPU Cholesky and LU past 32x32
+  along PyTorch's blocked right-looking design (a register- or
+  threadgroup-resident panel factor, staged row swaps, TRSM, a
+  `simdgroup_matrix` Schur/SYRK update, the batch on a grid dimension, a
+  streaming pivot search for tall panels; PyTorch's
+  `aten/src/ATen/native/mps/kernels/LinearAlgebra.metal`, BSD-3, so a
+  notice if ported); batched Jacobi SVD and eigh for small matrices (one
+  threadgroup per matrix, circle-method rotations); and choose GPU or CPU
+  on batch x size, not size alone. Not worth copying: their QR (an O(n^4)
+  orgqr and an apparent barrier bug) or their per-matrix batching of
+  `MPSMatrixSolveTriangular`.
 - **Winograd convolutions** (not now, 2026-10-01): about 2% of the
   airbench step, forward only. MLX's F(6,3) Winograd runs airbench94's
   15x15 64->256 forward (bf16, N = 1024) in 16.34 ms against 22.45 ms here,
