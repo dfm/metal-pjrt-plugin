@@ -1,372 +1,273 @@
 # Design: Metal as a fourth XLA:GPU platform
 
-For contributors changing the compiler or the runtime: how the plugin is
-put together and the policies the runtime follows. Users want the README.
+For contributors changing the compiler or the runtime. Users should start
+with the README.
 
-## The production GPU plugin, and what changes for Metal
+## The idea
 
-The JAX CUDA backend is four layers, and only the bottom two are CUDA-specific:
+JAX's CUDA backend has four layers, and only the bottom two are
+CUDA-specific: the PJRT C API shim, the client
+(`se_gpu_pjrt_client.cc`), the StreamExecutor platform (allocation,
+streams, events, kernel launch, BLAS/DNN plug points) and a
+`GpuCompiler` subclass, whose base class owns the whole HLO pipeline. So
+Metal support is:
 
-1. **C API shim** (`xla/pjrt/c/pjrt_c_api_gpu_internal.cc`): parses client
-   options, picks the platform name from a compile-time macro (CUDA, ROCm or
-   SYCL), and chains the PJRT extensions (FFI, custom call, profiler, stream,
-   layouts, memory descriptions, cross-host transfers, shardings, ABI version).
-2. **Client** (`xla/pjrt/gpu/se_gpu_pjrt_client.cc`): per-device
-   `LocalDeviceState`, allocators, host memory spaces, async dispatch. Only
-   NCCL collectives and fabric handles are CUDA-specific.
-3. **StreamExecutor platform** (`xla/stream_executor/<platform>/`): allocate,
-   memcpy, streams, events, kernel launch, device description, plus the optional
-   BLAS/DNN interfaces that cuBLAS and cuDNN plug into.
-4. **Compiler subclass** of `GpuCompiler`: overrides post-layout-assignment
-   passes, autotuning passes, target triple/data layout, and the final
-   LLVM-IR-to-binary step. The base class owns the entire HLO pipeline.
+- `stream_executor/metal/`: `MetalPlatform` and `MetalExecutor`, over an
+  XLA-free runtime ([Runtime](#runtime)). Streams map to command queues,
+  events to `MTLSharedEvent`, memory to shared-storage `MTLBuffer`s.
+  XLA's `CommandBuffer` (CUDA graphs) is deliberately not implemented: a
+  replay version measured as a wash and was removed
+  ([`performance.md`](performance.md), "Measured and rejected").
+- `MetalCompiler : GpuCompiler`, with Triton, cuDNN passes, autotuning and
+  collectives off.
+- XLA's GPU C API shim built for Metal, behind the plugin's own small
+  `GetPjrtApi` (`pjrt/metal_pjrt_api.cc`), which drops the ABI-version
+  extension so JAX's persistent cache works and finishes with
+  `device_put`'s host data before returning.
+- The Python package `metal_pjrt_plugin`, modeled on `jax_plugins/cuda`.
 
-Metal support is therefore:
+Like Intel's out-of-tree SYCL backend, the device reports a OneAPI
+compute capability, so XLA takes its generic non-NVIDIA branches.
+`metal_pjrt/xla_tripwire` fails when a pin bump changes any of them
+([`integration-notes.md`](integration-notes.md)).
 
-- `stream_executor/metal/`: `MetalPlatform`, `MetalExecutor`, streams as
-  `MTLCommandQueue`, events as `MTLSharedEvent`, shared-storage `MTLBuffer`s,
-  kernel launch from an `MTLLibrary`, over an XLA-free runtime layer
-  (`metal_pjrt/runtime/`, "Runtime" below). XLA's `CommandBuffer`
-  (its CUDA-graph abstraction) is deliberately not implemented: a
-  software-replay version was built, measured to be a wash once the
-  runtime's per-launch overhead was fixed, and removed to keep the platform
-  small (`docs/performance.md`, "Measured and rejected").
-- `MetalCompiler : GpuCompiler` with Triton, cuDNN passes, autotuning and
-  collectives disabled.
-- XLA's GPU C API shim built for Metal (patch 0001 names the platform),
-  behind the plugin's own small `GetPjrtApi` (`pjrt/metal_pjrt_api.cc`),
-  which drops the ABI-version extension so JAX's persistent cache works and
-  is done with `device_put`'s host data before returning.
-- The Python package `metal_pjrt_plugin`, modeled on JAX's
-  `jax_plugins/cuda`: a top-level package found through its `jax_plugins`
-  entry point, like `jax_cuda12_plugin`.
+## What loading the plugin changes in JAX
 
-Intel's extension for OpenXLA did exactly this for SYCL out of tree. The
-device reports a OneAPI compute capability, so XLA takes its generic
-non-NVIDIA branches; `metal_pjrt/xla_tripwire` fails when a pin bump
-changes any of them (`docs/integration-notes.md`).
+The plugin uses private `jax._src` APIs, so it's built for exactly
+`jax==0.11.2`/`jaxlib==0.11.2` and warns at discovery on anything else.
+
+With `JAX_PLATFORMS` unset, JAX initializes every installed backend, this
+one included; if the Metal device can't be set up, it fails quietly and
+CPU programs carry on. `JAX_PLATFORMS=cpu` creates no Metal device, but
+JAX still imports the plugin. So in every JAX process in the environment
+the plugin library is loaded and changes JAX's private state:
+
+- wraps three functions (the compilation-cache check and host-callback
+  lowering), passing other backends straight through;
+- registers lowering rules for "mtl" only;
+- adds "mtl" to the platforms that support buffer donation;
+- marks the "mtl" backend as allowed to fail quietly.
 
 ## Codegen
 
-`GpuCompiler` bottoms out in LLVM IR and there is no LLVM Metal target. The
-in-tree Intel compiler shows the shape of the plumbing (LLVM IR -> SPIR-V via
-`spirv_backend.cc`), but two facts rule out "translate the final IR":
-
-- SPIRV-Cross only consumes shader-flavored SPIR-V; the LLVM backend emits
-  OpenCL-flavored kernel SPIR-V for pointer-based kernels.
-- MSL has no `goto` and no labeled statements (verified on this machine), so
-  turning a CFG back into C requires reconstructing structured control flow.
+There's no LLVM Metal target, and translating final LLVM IR is out:
+SPIRV-Cross only reads shader-flavored SPIR-V, and MSL has no `goto`, so
+a CFG would need its structure rebuilt.
 
 XLA's MLIR emitters keep `scf.for`/`scf.if` structure until the
-second-to-last lowering pass, and MLIR ships an EmitC dialect with a C++
-printer. So the kernel path is: `MetalCompiler` supplies its own
-`KernelCompiler` (`MetalKernelCompiler`, via a virtual
-`GpuCompiler::CreateKernelCompiler` factory that is our one small codegen
-patch to XLA), whose `CompileMlirToLlvm` runs the
-lowering pipeline up to (not including) SCFToControlFlow, converts what
-remains (func/scf/arith/math/vector/gpu plus the LLVM-dialect memory ops that
-LowerTensors introduced) to EmitC, and prints MSL. The text rides to
-`CompileTargetBinary` inside a stub LLVM module and becomes the kernel
-"binary"; the executor compiles it with `newLibraryWithSource` at load time.
-The binary's first line, `#include <metal_pjrt/msl_prelude.metal>`, stands
-for the ~9 KB prelude of helpers, which the runtime puts back before
-compiling: XLA keeps two copies of every kernel thunk's binary for the
-executable's life (the thunk's and its serialized form, one per thunk even
-where thunks share a kernel), so a full prelude in each was ~40 MB of a
-Qwen3-0.6B train step's ~270 MB (`docs/performance.md`, host memory).
-MSL dumps (`--xla_dump_to`) have the prelude expanded, so a dumped `.metal`
-file compiles on its own with `xcrun metal`.
-Details and the exact contract are in `docs/integration-notes.md`.
+second-to-last lowering pass, and MLIR has an EmitC dialect with a C++
+printer. So `MetalCompiler` supplies its own `MetalKernelCompiler`
+(through a virtual `GpuCompiler::CreateKernelCompiler`, our one codegen
+patch to XLA). It runs the lowering pipeline up to SCFToControlFlow,
+converts the rest to EmitC, and prints MSL. The text rides to
+`CompileTargetBinary` in a stub LLVM module and becomes the kernel
+"binary", which the executor compiles with `newLibraryWithSource` at load
+time.
 
-Runtime shader compilation works with command-line tools only (verified:
-192 ms for a trivial kernel). No cache of our own is needed across processes:
-Metal's system shader cache keys on the source, so the same MSL compiles in
-~1.3 ms in a later process (186 ms the first time). Within a
-process every kernel (emitted, FFI, steel, MPS staging, built-ins) comes
-from one cache in `rt::Device` (`GetKernel`), keyed by the MSL source, the
-function name and any function constants. Library kernels (FFI, steel, MPS
-staging, built-ins) stay for the process; kernels the compiler emitted are
-counted (`AcquireKernel`, taken by the StreamExecutor's `LoadKernel` and
-dropped with the thunk that owns it), so a dropped executable takes its
-pipelines, libraries and cached MSL text with it (~40 KB per kernel). XLA compilation
-itself is cached across processes by JAX's persistent compilation cache
-when the user turns it on (`docs/integration-notes.md`, PJRT client).
+The binary starts with `#include <metal_pjrt/msl_prelude.metal>` in place
+of a ~9 KB helper prelude, which the runtime pastes back before
+compiling. XLA keeps two copies of every kernel's binary, so inlining the
+prelude cost ~40 MB of host memory in a Qwen3-0.6B train step. MSL dumps
+(`--xla_dump_to`) have it expanded, so a dumped `.metal` file compiles on
+its own with `xcrun metal`.
+
+Shaders compile at run time with only the command-line tools installed.
+Metal's system shader cache keys on the source, so a kernel compiled in
+one process compiles in ~1 ms in the next; we keep no cache of our own
+across processes. Within a process every kernel comes from one cache in
+`rt::Device` (`GetKernel`), keyed by source, function name and constants.
+Library kernels live for the process; emitted kernels are
+reference-counted (`AcquireKernel`) and go away with the executable that
+owns them.
 
 ## Library ops
 
-`GpuCompiler` rewrites dots into library custom calls (on OneAPI every one
-is `__cublas$lt$matmul`), and the StreamExecutor BLAS interface is the plug
-point. f32 GEMMs run on Metal Performance Shaders' matrix kernels (a bias
-or activation epilogue is a second MSL pass); f16/bf16 GEMMs run on "steel"
-kernels ported from MLX (MIT), with the epilogue applied in their store, and
-2..8 rows of x W^T with K >= 512 (small-batch LLM decode) on MLX's wide
-gemv, which streams the weight once per <= 5 rows.
-There is no DNN library: convolutions of 4 Mflop and more (1-D and 2-D,
-f32/f16/bf16, ungrouped) go to `metal$conv`, MLX's steel convolution kernels
-(`metal_pjrt/conv`), through the plugin's own rewriter in
-`OptimizeHloConvolutionCanonicalization` (CUDA's cuDNN canonicalization
-hook); the rest run as XLA-emitted loop kernels.
-Other custom calls follow CUDA's shape, where CUDA also has a library call:
-XLA's SortRewriter targets an MSL radix sort, dense linear algebra goes to
-Accelerate LAPACK on the shared buffers (GPU kernels up to 32x32), Python
-callbacks to an FFI handler (`docs/callbacks.md`). The one Metal-only
-rewrite is `metal$scan` for minor-dimension cumulative ops (1.4-3.2x).
-MPSGraph is not used: it is what Apple's jax-metal compiles whole programs
-with, and it is opaque and has a record of bugs.
+`GpuCompiler` rewrites dots into `__cublas$lt$matmul` custom calls, and
+the StreamExecutor BLAS interface is the plug point:
 
-## Deliberately off
+- **f32 GEMMs** run on Metal Performance Shaders; a bias or activation
+  epilogue is a second MSL pass.
+- **f16/bf16 GEMMs** run on "steel" kernels ported from MLX, with the
+  epilogue fused into the store. Small-batch decode shapes (2-8 rows, K
+  >= 512) use MLX's wide gemv.
+- **Convolutions** of 4 Mflop and up (1-D and 2-D, ungrouped,
+  f32/f16/bf16) go to `metal$conv`, MLX's steel convolution kernels,
+  rewritten in the hook CUDA uses for cuDNN. Everything else is an
+  XLA-emitted loop kernel. There is no DNN library.
+- **Sort, linear algebra and callbacks** follow CUDA's shape: an MSL
+  radix sort, Accelerate LAPACK on the shared buffers (GPU kernels up to
+  32x32), and an FFI handler for Python callbacks
+  ([`callbacks.md`](callbacks.md)).
 
-Triton, cuDNN fusion passes, autotuning, collectives (a stub for one
-device), float64 (Metal has none: f64 arithmetic is refused at compile
-time; double-float emulation is an idea in `docs/roadmap.md`).
+The one Metal-only rewrite is `metal$scan` for minor-dimension cumulative
+ops. MPSGraph, which Apple's jax-metal uses, isn't: it's opaque and has a
+record of bugs.
+
+Deliberately off: Triton, cuDNN fusion, autotuning, collectives (a
+one-device stub) and float64, which Metal lacks; f64 arithmetic is
+refused at compile time.
 
 ## Runtime
 
-`metal_pjrt/runtime/metal_runtime.h` is the XLA-free layer every
-Metal call goes through (`rt::Device`, `rt::Stream`, `rt::Event`); its
-header comments are the reference. The policies, in the present tense:
+`metal_pjrt/runtime/metal_runtime.h` is the XLA-free layer every Metal
+call goes through (`rt::Device`, `rt::Stream`, `rt::Event`). Its header
+comments are the reference; these are the policies.
 
-**Command-buffer batching.** A command buffer costs hundreds of
-microseconds of CPU and GPU-scheduler time (the driver spends ~150 us of a
-dedicated thread submitting each), so a stream packs many dispatches into
-one. It commits when the GPU has nothing of ours left to run and at
-least 16 ops are encoded, if 500 us have passed since the last commit;
-explicit syncs commit at once. Caps keep each buffer far from the GPU
-watchdog: 1024 ops, 2^27 dispatched threads, or 2e11 GEMM flops. GEMMs
-(steel launches and MPS through `EncodeExternal`) launch few threads for
-their work, so they are charged an estimate instead, `blas::GemmWork`:
-2mnk per batch, or 64 flops per byte of A, B and C for bandwidth-bound
-(GEMV-like) shapes. The budget is <= 0.1 s of GEMM on the M3 (2.0-3.1
-TFLOPS measured over f32/f16/bf16 shapes), a >= 5x margin for a throttled
-base M1 and for shapes that run less efficiently; an op that would take the
-open buffer over it starts a new one, and a single larger GEMM gets a
-buffer of its own. A buffer that ran longer than 1 s on the GPU is logged
-(rate-limited) with its kernels: it came close to the watchdog. Eight chained 4096^3 f32 GEMMs used to share one
-371 ms buffer; now each buffer holds two (93 ms). Two gaps remain: the
-budget splits only between dispatches, so one kernel longer than the
-watchdog still resets the GPU (one 16384^3 f32 GEMM is ~8.8e12 flops, 3-4 s
-in one dispatch here); and non-GEMM heavy kernels (emitted fusions,
-especially convolutions left to XLA's loop emitter) are charged only their
-thread count, so a large convolution there can be a multi-second single
-kernel (`metal$conv` charges its flops and splits its launches at half the
-budget). Copies and uniform fills up to 16 MB run as built-in
-compute kernels so kernels and copies share one compute encoder (an encoder
-switch costs ~10 us of GPU time); larger ones use the blit engine.
+### Command-buffer batching
 
-**Queue (since 2026-09-30).** Each device has one Metal command queue;
-every stream encodes into its open command buffer, and buffers are
-committed in encode order. Every committed buffer ends by signaling the
-device timeline (a shared event) with its sequence number. A command
-buffer never waits on the GPU for anything (a waiting buffer counts
-against the watchdog, and a wait has no timeout): GPU work that depends on
-other GPU work is behind it in the queue, so waits on GPU work cost
-nothing, and GPU work that depends on a host task is encoded only after
-the task has run. The encoding thread waits for that on the host without
-holding the queue lock, so other streams keep encoding.
-Nothing encodes a GPU wait, by construction (there is no API for one).
+A command buffer costs hundreds of microseconds of CPU and scheduler time,
+so a stream packs many dispatches into one. It commits when the GPU is
+out of our work and at least 16 ops are encoded, if 500 us have passed
+since the last commit; explicit syncs commit at once.
 
-A stream is a handle: the timeline value of its last GPU op, the waits its
-next op must respect (`WaitForEvent`, `WaitForStream`, its own host tasks)
-and a worker thread for its host tasks. An event is a recorded work point:
-a timeline value plus host-task values. Host work (device-to-host copies,
-host-to-device copies behind pending work, XLA callbacks) runs on the
-stream's worker once everything the stream enqueued or waits for is done;
-the open buffer is committed when such a task is enqueued (and when an
-event is recorded), so no host wait depends on the next commit. Host
-transfers run inline when the stream has nothing pending. A host task (or
-its error callback) that calls into its own stream, or waits for itself
-or later work of its stream, gets FAILED_PRECONDITION.
+Caps keep each buffer far from the GPU watchdog: 1024 ops, 2^27 threads,
+or 2e11 GEMM flops. GEMMs are charged an estimate (`blas::GemmWork`)
+rather than their thread count. The budget is about 0.1 s of GEMM on an
+M3, a >= 5x margin for slower GPUs. A single larger GEMM gets a buffer of
+its own, and a buffer that runs over 1 s is logged with its kernels.
 
-**Sticky GPU errors.** The first failed command buffer (watchdog timeout,
-page fault, out of memory, anything) or failed host task without an error
-callback sets the device's error, as a CUDA context error does. From then on
-every wait, poll, host task and launch returns it, a host callback's
-`error_cb` gets it (which is how XLA fails result buffers), a host callback
-without one still runs (XLA's free memory or finish transfers), and nothing
-more is committed. The message says to restart the process. Nothing hangs: a
-failed buffer's completion handler records the error and force-signals its
-timeline value, waits on the GPU timeline give up once the device has
-failed, and no error path CHECKs or aborts. A transfer task skips its copy
-after a failure (XLA may already be freeing its buffers), and waiters on a
-host task wait for it to end even then, also when their GPU part has
-failed. Only resets (timeout, access revoked,
-device removed) feed the reset log.
+Two gaps remain. The budget only splits between dispatches, so one kernel
+longer than the watchdog still resets the GPU (a 16384^3 f32 GEMM takes
+3-4 s here). And heavy non-GEMM kernels, like large convolutions left to
+the loop emitter, are charged only their thread count; `metal$conv`
+charges its flops and splits its launches.
 
-**Failures seen by host waiters.** Soundness (never consume a failed
-buffer's output) does not wait for completion handlers: after a host
-waiter sees the timeline signal it checks the buffers still in flight
-(`Device::CheckInFlight`); one whose timeline value is signaled has run to
-its end, so its final status is waited for and an error recorded. The
-wait costs nothing measurable; skipping it would save 6-9 us per
-synchronizing round trip but is sound only if an aborted buffer never runs
-its trailing signal, which is unverified (`docs/roadmap.md`, Next).
+### Queue
 
-**Memory.** Allocations are shared-storage `MTLBuffer`s from a size-class
-cache behind XLA's pass-through `platform` allocator; a fresh buffer costs
-~60 us per MB in first-touch page faults, and training steps repeat their
-sizes.
+Since 2026-09-30, each device has one Metal command queue. Every stream
+encodes into the open command buffer, buffers commit in encode order, and
+each ends by signaling the device timeline (a shared event) with its
+sequence number.
 
-- Lengths are rounded (powers of two from 256 bytes up to a 16 KB page,
-  whole pages above); a request reuses a cached buffer of at most min(2x,
-  +2 pages) its length. Reuse is immediate, ordered by the compute stream
-  as XLA assumes for its stream-ordered allocators; command buffers retain
-  what they bind. Buffers the host fills right away, off any stream
-  (module constants, FFT tables), take only a cached buffer whose work has
-  all ended (its release ticket, see `Device::BeginWork`), else a fresh
-  one: a reused buffer that queued kernels still read would see the host's
-  bytes.
-- Budget: live + cached stays within half of physical RAM, capped by the
-  GPU's recommended working set, times `METAL_PJRT_MEMORY_FRACTION`. A
-  miss evicts least recently freed buffers first, then fails with
-  RESOURCE_EXHAUSTED. The compiler sees the recommended working set as the
-  device size, so compiled programs do not vary with load.
-- System memory: the budget is the limit, as PyTorch MPS caps its own
-  allocations and otherwise lets macOS page. The only system-level refusal
-  is at critical memory pressure (`kern.memorystatus_vm_pressure_level`,
-  read per allocation of 1 MB or more; critical is where jetsam starts
-  killing processes): the cache is dropped and the level read again; if
-  cached buffers are still held by work in flight, the allocation waits
-  (at most 1 s; not after a device error, nor inside an external encode
-  such as MPS's, which holds the queue lock) for that work, drops the cache
-  and reads once more, then fails with RESOURCE_EXHAUSTED. MPS's internal
-  staging copies bypass the cache but get the same check. The first
-  allocation at warning or worse logs a warning. A stricter guard (refuse
-  below 512 MB of free pages) existed because swapping wedged the GPU on
-  2026-09-25 (two processes each allowed 70% of the working set, ~100 MB
-  free, workers killed mid-GPU-work); low free pages are macOS's normal
-  state, and it refused 25 of 28 airbench94 runs at 50-70% free. That
-  wedge is now covered by the half-of-RAM budget, bounded waits instead
-  of kills, and the GPU reset log.
-- Release tickets: every command buffer holds a work ticket from creation
-  to completion, every host task from enqueue to its end. A cached buffer
-  is released (evicted, trimmed or dropped) only once all work that existed
-  when it was freed has ended, since host tasks hold raw pointers and
-  argument buffers hold GPU addresses.
-- Host transfers check their device side: a copy to or from a pointer that
-  is not inside a live allocation fails with INTERNAL and a log line naming
-  the nearest allocations. XLA keeps a transfer's buffer alive until the
-  copy is done, so this means the allocation table lost a buffer XLA still
-  holds (a use after free); writing through the pointer would corrupt
-  whatever reused the memory.
-- Frees check their pointer: freeing anything but the start of a live
-  allocation (unknown, interior, already freed: the last 1024 frees are
-  remembered to name a double free) or with a size other than the one
-  allocated is INTERNAL, logged with a backtrace, and nothing is cached.
-  (XLA's own allocator path frees without a size; the size is checked
-  where one is passed: module constants, FFT tables, XLA's memory
-  allocators.) A new buffer at an address that is still a live key is
-  logged. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` (debugging) keeps freed
-  buffers out of reuse until 64 later frees and 100 ms have passed, and
-  reports a pointer into one with the backtrace of its free.
-- Stale transfer pointers: a watched risk, not closed (2026-09-30).
-  - Seen only with an experiment that staged busy host-to-device copies as
-    GPU copies: Resolve failed for copy destinations (2 of 7 runs of
-    `test_source_mutated_right_after_device_put[False-idle-1]`), i.e. XLA
-    apparently copying into memory that was no longer allocated.
-  - A probe with that experiment's check alone (resolve the destination
-    of every host-to-device copy enqueued on a busy stream, log, continue
-    on the normal path) found 0 failures in 600 runs of that test on two
-    later trees (before and after XLA's host memory moved out of the
-    device allocator; busy enqueues in every run), and 0 in 50 runs of all
-    of test_transfers.
-  - The mechanism is not identified. A control run on the experiment's
-    parent tree was not done (a multi-hour rebuild); it is left for the
-    owner.
-  - The tripwires (the unresolved-pointer INTERNAL; frees checked for
-    start, size where known and double frees, with generations; the debug
-    free quarantine) catch a stale pointer only while its memory is not
-    live: a stale write into a buffer that has been reused stays silent.
-  - The unresolved-pointer check has been live on every host transfer
-    through every full gate since it landed (2026-09-30), with no
-    INTERNAL.
-  - One wrong-value failure of
-    `test_source_mutated_right_after_device_put[False-busy-1]` on
-    2026-09-28 predates the experiment and is not explained by it; it has
-    not recurred (~15.6k puts since).
-- Idle trim and pressure: a libdispatch timer, armed only while the cache
-  is not empty, releases buffers unused for 2 s, so an idle process gives
-  its memory back; a `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning releases
-  them all, and frees release directly until the level is normal.
-- XLA reports every refusal as "Out of memory while trying to allocate N";
-  the plugin's `PJRT_Error_Message` appends the runtime's reason (budget or
-  critical system memory pressure, with the numbers) so it reaches Python, with the executable
-  whose allocation was refused (its wrapped `PJRT_LoadedExecutable_Execute`
-  names refusals made during the call; XLA allocates an execution's
-  buffers on the calling thread). XLA's own `executable_name` payload names
-  the last computation the error reached instead (each consumer of a failed
-  output overwrites it).
-- XLA's host memory space (its host BFC pools, which never shrink:
-  linearizing host arrays that are not dense row-major, and `pinned_host`
-  arrays) is plain anonymous host memory wrapped without copying in an
-  `MTL::Buffer` (`Device::AllocateHost`), so device copies reach it. It is
-  outside the device budget, the buffer cache and the device allocation
-  table. XLA writes through the pool's pointer unchecked
-  (`AllocateLinearizeDest`), so the only failure left is a failed `mmap`;
-  beyond maxBufferLength the pages are host-only. The staging pool keeps
-  about the largest non-dense put it has served and reuses it (measured
-  2026-09-30: after a 128 MB transposed `device_put` and its deletion the
-  process kept ~132 MB of host pool, and a second such put did not grow
-  it).
+**A command buffer never waits on the GPU.** A waiting buffer counts
+against the watchdog, and a GPU wait has no timeout. GPU work that
+depends on other GPU work is simply behind it in the queue. GPU work that
+depends on a host task is encoded only after the task has run; the
+encoding thread waits on the host without holding the queue lock. There
+is no API for encoding a GPU wait.
 
-**Transfers.** Host-to-device and device-to-host copies are a `memcpy` on
-the calling thread when the stream is idle, and a host task otherwise; there
-is no staging. (Staging a busy stream's copy as a GPU blit was tried and
-reverted: its command buffer waited on the GPU for XLA's allocation event,
-i.e. the whole compute backlog, which counts against the watchdog and reset
-the GPU. A GPU-side wait has no timeout.) JAX lets XLA read the source after `device_put` returns, and
-a data loader that refilled its array changed what the device got. So
-`device_put` of dense host data snapshots it into a malloc'd buffer before
-returning (as CUDA does for pageable memory), which does not block. From
-min(256 MB, max(16 MB, reclaimable memory / 8)) up it hands XLA the
-caller's data instead and waits until XLA is done with it: no second host copy (512 MB:
-peak footprint +512 MB instead of +1041 MB), but the caller waits behind
-already queued GPU work (the copy waits for XLA's allocation event on the
-compute stream). Strided and sub-byte inputs take XLA's synchronous path,
-which stages a copy.
+A stream is a handle: the timeline value of its last op, the waits its
+next op must respect, and a worker thread for host tasks (device-to-host
+copies, copies behind pending work, XLA callbacks). An event is a
+timeline value plus host-task values. The open buffer commits whenever a
+host task is enqueued or an event recorded, so no host wait depends on a
+future commit. A host task that waits on its own stream's later work gets
+FAILED_PRECONDITION.
 
-**Reset log and quarantine.** A watchdog reset hits every process, and after
-several the driver leaves the GPU ~10x slower per dispatch until a reboot.
-The runtime appends each reset it observes to
-`~/.cache/metal-pjrt/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR`) with the
-kernels in the buffer that timed out (built-in fill/copy kernels are
-listed apart and never blamed) and
-the plugin build (diagnostics only), once per incident (a reset fails every
-buffer in flight; the first one records it). The quarantine is opt-in
-(off by default since 2026-09-30): with `METAL_PJRT_QUARANTINE_STRIKES=n`,
-a kernel seen in n resets since boot is refused by
-`Device::GetKernel`/`AcquireKernel` (at load time, and on later cache hits) with
-FAILED_PRECONDITION, so a compiler bug costs at most n resets, not one per
-run; a reboot or deleting the reset log lifts it (`scripts/gpu_health.py
---clear` does that in a source checkout; the wheel does not ship it). Strikes are not
-keyed by build (it changes on every rebuild); a changed kernel source gets
-a new key anyway. The first reset of a non-terminating kernel is
-unavoidable: Metal has no per-kernel timeout.
+### Sticky GPU errors
+
+The first failed command buffer (watchdog timeout, page fault, anything)
+or failed host task sets the device's error, like a CUDA context error.
+From then on every wait, poll, host task and launch returns it, nothing
+more is committed, and the message says to restart the process. Host
+callbacks still run, since XLA uses them to free memory and fail result
+buffers.
+
+Nothing hangs: a failed buffer's completion handler force-signals its
+timeline value, timeline waits give up once the device has failed, and no
+error path aborts. Host waiters don't rely on completion handlers to
+avoid consuming a failed buffer's output: after seeing the timeline
+signal, they check the buffers still in flight
+(`Device::CheckInFlight`). Skipping that check would save a few
+microseconds but is sound only if an aborted buffer never signals, which
+is unverified ([`roadmap.md`](roadmap.md)).
+
+### Memory
+
+Allocations are shared-storage `MTLBuffer`s from a size-class cache
+behind XLA's pass-through allocator. Fresh buffers cost first-touch page
+faults and training steps repeat their sizes, so caching pays.
+
+- **Size classes.** Lengths round to powers of two up to a 16 KB page,
+  whole pages above. A request reuses a cached buffer of at most twice
+  its length. Reuse is ordered by the compute stream, as XLA assumes.
+  Buffers the host fills right away (module constants, FFT tables) only
+  take a cached buffer whose work has all ended.
+- **Budget.** Live plus cached memory stays within half of physical RAM,
+  capped by the GPU's recommended working set, times
+  `METAL_PJRT_MEMORY_FRACTION`. A miss evicts the least recently freed
+  buffers, then fails with RESOURCE_EXHAUSTED. The compiler always sees
+  the working set as the device size, so programs don't vary with load.
+- **Critical pressure.** Like PyTorch MPS, the plugin caps its own
+  allocations and otherwise lets macOS page. The one system-level refusal
+  is at critical memory pressure (where jetsam starts killing processes),
+  checked on allocations of 1 MB or more. The plugin drops its cache,
+  waits up to 1 s for in-flight work holding cached buffers, and if the
+  level is still critical fails with RESOURCE_EXHAUSTED. The first
+  allocation at warning level logs a warning. (A stricter free-pages
+  guard, added after swapping wedged the GPU on 2026-09-25, refused most
+  ordinary training runs and was replaced by the budget, bounded waits
+  and the reset log.)
+- **Release tickets.** Every command buffer and host task holds a work
+  ticket until it ends. A cached buffer is released only once all work
+  that existed when it was freed has ended, since host tasks hold raw
+  pointers and argument buffers hold GPU addresses.
+- **Idle trim.** Buffers unused for 2 s are released, so an idle process
+  gives memory back; a memory-pressure warning releases them all.
+- **Tripwires.** A host copy to a pointer outside any live allocation,
+  and a free of anything but the start of a live allocation (or with the
+  wrong size, or twice), fail with INTERNAL and a log line, since either
+  means a use after free. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` holds
+  freed buffers out of reuse to catch late writes. These catch a stale
+  pointer only while its memory isn't reused. One open risk: an
+  experiment (since reverted) once saw XLA copy into freed memory, and
+  the mechanism isn't identified.
+- **Error messages.** XLA reports every refusal as "Out of memory while
+  trying to allocate N"; the plugin appends the reason (budget or
+  critical pressure, with numbers) and the executable that was refused.
+- **Host memory.** XLA's host pools (for linearizing non-dense arrays and
+  `pinned_host`) are anonymous host memory wrapped as `MTLBuffer`s
+  (`Device::AllocateHost`), outside the budget and the cache. They never
+  shrink.
+
+### Transfers
+
+Host copies are a `memcpy` on the calling thread when the stream is idle,
+and a host task otherwise. There's no GPU staging: a staged copy waited on
+the GPU for XLA's allocation event and reset the GPU.
+
+JAX lets XLA read the source after `device_put` returns, so a data loader
+that refilled its array could change what the device got. So
+`device_put` of dense host data **snapshots it** into a malloc'd buffer
+before returning, as CUDA does for pageable memory. Above min(256 MB,
+max(16 MB, reclaimable memory / 8)) it instead hands XLA the caller's
+data and waits until XLA is done, which avoids a second large host copy.
+Strided and sub-byte inputs take XLA's synchronous staging path.
+
+### Reset log and quarantine
+
+A watchdog reset hits every process, and several can leave the GPU slow
+until a reboot. The runtime appends each reset it sees to
+`~/.cache/metal-pjrt/gpu_resets.jsonl` (`METAL_PJRT_STATE_DIR` moves it),
+once per incident, with the kernels in the buffer that timed out
+(built-in copy and fill kernels are never blamed).
+
+With `METAL_PJRT_QUARANTINE_STRIKES=n` (off by default), a kernel seen in
+n resets since boot is refused with FAILED_PRECONDITION, so a compiler
+bug costs at most n resets. A reboot or deleting the log lifts it
+(`scripts/gpu_health.py --clear` in a checkout). The first reset from a
+kernel that never terminates is unavoidable: Metal has no per-kernel
+timeout.
 
 ## How this differs from MLX
 
-From a source-level read of MLX and jax-mps (September 2026): MLX is an
-eager interpreter over a lazy graph;
-`mx.compile` fuses only elementwise chains, every call re-walks the graph
-and encodes primitive by primitive, and memory comes from a caching
-allocator with no planning. Its kernels (steel GEMM, Winograd conv, fused
-inference attention, quantized matmul) are hand-tuned. An XLA backend wins
-where fusion and a static executable matter (reductions fused with
-producers, optimizer updates, layer-norm backward, static buffer
-assignment) and trails where MLX has tuned library kernels (convolutions,
-attention inference, quantized matmul) and on compile latency.
+From reading the MLX and jax-mps sources (September 2026): MLX is an
+eager interpreter over a lazy graph. `mx.compile` fuses only elementwise
+chains, each call re-encodes primitive by primitive, and memory comes
+from a caching allocator without planning. Its kernels (GEMM,
+convolution, attention, quantized matmul) are hand-tuned.
 
-## History and risks
+An XLA backend has the edge where fusion and a static executable matter:
+reductions fused with producers, optimizer updates, static buffer
+assignment. It's behind where MLX has tuned library kernels and on
+compile latency.
 
-The original milestones (build XLA's GPU compiler on macOS without CUDA; a
-StreamExecutor platform; MLIR -> EmitC -> MSL codegen; GEMM via MPS and
-steel; a Python package run against JAX's tests and benchmarks) are all
-done. Standing risks:
+## Risks
 
-- Building XLA on an 8 GB laptop: low concurrency, a shared disk cache and
-  JAX's public remote cache keep rebuilds to minutes; a cold build takes
-  ~2 hours.
-- CUDA coupling in `xla/service/gpu` and XLA's OneAPI branches: three
-  patches against the pinned XLA (`third_party/xla/patches`) and the
-  tripwire test on every pin bump.
-- MSL codegen gaps: 32-bit atomics only, no f64, 32 KB threadgroup memory,
-  32-wide SIMD, launch-dimension mapping.
+- **Building XLA on an 8 GB laptop.** A cold build takes about 1.5-2
+  hours; a shared local disk cache keeps rebuilds to minutes. (JAX's
+  public remote cache had no hits for this build, measured 2026-10-01.)
+- **CUDA coupling** in XLA's GPU code: three patches against the pinned
+  XLA (`third_party/xla/patches`) and a tripwire test on every pin bump.
+- **MSL limits**: 32-bit atomics only, no f64, 32 KB threadgroup memory,
+  32-wide SIMD.

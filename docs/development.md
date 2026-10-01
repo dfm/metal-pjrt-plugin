@@ -1,70 +1,51 @@
 # Development
 
-How the repository is laid out, how to build and test it, and the knobs and
-state the scripts use. The user-facing README covers installing and using
-the plugin.
+Layout, building, testing, and the knobs and state the scripts use. For
+installing and using the plugin, see the README.
 
 ## Layout
 
-- `MODULE.bazel`, `.bazelrc`: Bazel 8 / bzlmod setup mirroring jax-ml/jax at
-  `jax-v0.11.2`, pinned to the same XLA commit jaxlib 0.11.2 was built from
-  (`third_party/PINS.md` lists the pins and how to move them).
-- `third_party/`: root-module patches (abseil, protobuf, grpc) copied from
-  JAX, and the plugin's XLA patches (`third_party/xla/patches`).
-- `metal_pjrt/runtime/`: XLA-free C++ layer over Metal (metal-cpp):
-  device, streams, events, kernels, allocations. Has a standalone device test.
+- `MODULE.bazel`, `.bazelrc`: Bazel 8 / bzlmod, mirroring jax-ml/jax at
+  `jax-v0.11.2` and the same XLA commit (`third_party/PINS.md` lists the
+  pins and how to move them).
+- `third_party/`: patches copied from JAX (abseil, protobuf, grpc) and
+  the plugin's XLA patches (`third_party/xla/patches`).
+- `metal_pjrt/runtime/`: an XLA-free C++ layer over Metal (metal-cpp):
+  device, streams, events, kernels, allocations.
 - `metal_pjrt/stream_executor/`: the StreamExecutor platform.
-- `metal_pjrt/compiler/`: `MetalCompiler : GpuCompiler` and the
-  registrations (compiler, transfer manager, collectives stub, PJRT compiler).
-- `metal_pjrt/codegen/`: MLIR -> EmitC -> MSL kernel emitter and
-  `MetalKernelCompiler`, the `KernelCompiler` that `MetalCompiler` hands to
-  XLA's emitters.
-- `metal_pjrt/blas/`: GEMM via Metal Performance Shaders (f32) and
-  MSL "steel" kernels (f16/bf16, applying BlasLt epilogues in their store),
-  with MLX's wide gemv (`blas:gemv`, no XLA) for 2..8 rows of x W^T.
+- `metal_pjrt/compiler/`: `MetalCompiler : GpuCompiler` and its
+  registrations.
+- `metal_pjrt/codegen/`: the MLIR -> EmitC -> MSL kernel emitter
+  (`MetalKernelCompiler`).
+- `metal_pjrt/blas/`: GEMMs on Metal Performance Shaders (f32) and MSL
+  "steel" kernels (f16/bf16, with fused epilogues), plus MLX's wide gemv
+  for 2..8 rows.
 - `metal_pjrt/linalg/`: Cholesky, triangular solve and LAPACK-backed
-  decompositions as FFI custom calls (Accelerate, or GPU kernels for small
-  matrices).
+  decompositions (Accelerate, or GPU kernels for small matrices).
 - `metal_pjrt/ffi/`: FFI helpers and the scan, radix sort and Python
   callback handlers.
-- The handlers are thin adapters (XLA types, attributes, the stream's
-  device) over libraries with no XLA: `ffi:scan`, `ffi:radix_sort`,
-  `linalg:small_linalg` (GPU, on `rt::Device`/`rt::Stream`) and
-  `linalg:lapack_host` (Accelerate on host pointers). `metal_pjrt/conv/`
-  (`conv:conv`, MLX's steel convolutions: path choice, implicit-GEMM
-  kernels, unfold + GEMM, the weight gradient as patches x dY with split-K
-  parts, launches bounded in flops) is one too, behind `metal$conv`, and
-  so is `metal_pjrt/fft/` (`fft:fft_plan`, MLX's FFT plan and its Rader and
-  Bluestein constants in double, host only; `fft:fft`, the Stockham, Rader,
-  Bluestein and four-step kernels over contiguous complex64/float32 rows,
-  in row chunks; behind `metal$fft`). Their tests, `conv_test`,
-  `fft_test`, `scan_test`, `pool_test`, `radix_sort_test`,
-  `small_linalg_test` (device tests), `lapack_host_test` and
-  `fft_plan_test` (host), link no XLA, so they build quickly and test a
-  kernel in isolation;
-  `//metal_pjrt:xla_free_test` fails if an XLA dependency creeps back in
-  (or a Metal one into the host tests).
-- `metal_pjrt/kernels/`: the hand-written MSL as `.metal` files (steel GEMM,
-  steel convolutions, FFTs, radix sort, scan, small linear algebra, MPS staging, the runtime's
-  fill/copy kernels, the emitter's prelude). A genrule (`embed_msl.bzl`)
-  embeds each as a char array in the dylib; they are compiled at run time
-  (`newLibraryWithSource`: the command-line tools have no offline `metal`
-  compiler), so nothing ships besides the dylib, and the dylib's LC_UUID,
-  which keys the compilation cache, covers them. `kernels_test` (a device
-  test) compiles every source and creates a pipeline for every kernel the
-  plugin can ask for.
-- `metal_pjrt/pjrt/`: the plugin dylib target and its `GetPjrtApi`.
-- `metal_pjrt/xla_tripwire/`: snapshots of the XLA code the plugin
-  relies on (`xla_tripwire_test`, host-only) and a list of every OneAPI branch
-  in XLA (`oneapi_callsites.py`); run both after moving the XLA pin.
-  `tests/test_jax_private_api.py` (host-only) is the same for the private
-  JAX APIs the Python package calls or replaces.
-- `metal_pjrt_plugin/`: the Python package (dist `metal-pjrt-plugin`, found
-  by JAX through its `jax_plugins` entry point `mtl`), modeled on
+- `metal_pjrt/conv/`, `metal_pjrt/fft/`: MLX's convolutions and FFTs,
+  behind `metal$conv` and `metal$fft`.
+- `metal_pjrt/kernels/`: the hand-written MSL, embedded in the dylib and
+  compiled at run time (the command-line tools have no offline `metal`
+  compiler). The dylib's LC_UUID, which keys the compilation cache, covers
+  them. `kernels_test` compiles every one.
+- `metal_pjrt/pjrt/`: the plugin dylib and its `GetPjrtApi`.
+- `metal_pjrt/xla_tripwire/`: snapshots of the XLA code the plugin relies
+  on (`xla_tripwire_test`) and a list of XLA's OneAPI branches
+  (`oneapi_callsites.py`); run both after moving the XLA pin.
+  `tests/test_jax_private_api.py` does the same for private JAX APIs.
+- `metal_pjrt_plugin/`: the Python package (entry point `mtl`), modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
-- `tests/`: pytest suite (below); `scripts/jax_known_failures/`: the expected
+- `tests/`: the pytest suite; `scripts/jax_known_failures/`: expected
   failures of JAX's own tests.
-- `bench/`: benchmarks (Python, and the C++ dispatch microbenchmark).
+- `bench/`: benchmarks.
+
+The FFI handlers are thin adapters over libraries with no XLA dependency
+(`ffi:scan`, `ffi:radix_sort`, `linalg:small_linalg`,
+`linalg:lapack_host`, `conv:conv`, `fft:fft_plan`, `fft:fft`), whose
+tests build quickly and test one kernel in isolation.
+`//metal_pjrt:xla_free_test` keeps XLA out of them.
 
 ## Building and testing
 
@@ -80,184 +61,143 @@ bench/run_all.sh                                               # benchmarks vs c
 scripts/build_wheel.sh                                         # dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
 ```
 
-`install_dev.sh` creates `.venv` with uv, or without it with `python3.12`
-(JAX 0.11.2 needs Python 3.12+). `run_jax_tests.sh` needs a checkout of
-JAX's tests at the pinned version and the two packages they import, once:
+`install_dev.sh` creates `.venv` (with uv, or `python3.12`), installs the
+package editable with its `test` extra, and links the dylib from
+`bazel-bin`. Tests and scripts set `JAX_PLATFORMS=mtl,cpu` themselves.
+
+`run_jax_tests.sh` needs JAX's tests at the pinned version, once:
 
 ```
 git clone --depth 1 --branch jax-v0.11.2 https://github.com/jax-ml/jax ~/.cache/metal-pjrt/jax-tests
 uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/python -m pip install
 ```
 
-(`JAX_TESTS_DIR` points it at another checkout.)
+### Build times and caches
 
-The wheel is pure Python plus the dylib (a copy, not the link), so it is
-tagged `py3-none-macosx_26_0_arm64` and depends on `jax==0.11.2` and
-`jaxlib==0.11.2`; `metal_pjrt_plugin/__init__.py` warns at plugin discovery when
-either version differs (`_JAX_VERSION`, checked against `pyproject.toml` by
-`tests/test_packaging.py`). Checked by installing it with `uv` into a fresh
-venv and running `tests/test_smoke.py`, `test_sort.py` and
-`test_callbacks.py` from outside the checkout.
+A cold build took 95 minutes on an 8 GB M3 (2026-10-01). The disk and
+repository caches in `~/.cache/metal-pjrt-plugin/` are shared by every
+checkout, so later clones build in about a minute, and the strict action
+environment (`--incompatible_strict_action_env`) keeps them valid across
+shell and PATH changes. `--config=public_cache` exists but has no entries
+for this build (see CI below).
 
-A fresh clone builds with `scripts/install_dev.sh` alone (73 s from the
-shared disk cache; ~2 hours without it). The action environment is strict
-(`--incompatible_strict_action_env`), so the cache survives shell and PATH
-changes. Run `bazel shutdown` after a
-build: the Bazel server holds several GB that programs then have to swap
-for. Before deleting a scratch clone, run `bazel clean --expunge`
-in it: its output base is separate (~8.5 GB).
+Run `bazel shutdown` after building and before measuring: the server
+holds several GB. Run `bazel clean --expunge` before deleting a scratch
+clone; its ~8.5 GB output base lives elsewhere.
 
-`scripts/install_dev.sh` installs the `metal-pjrt-plugin` dist (editable,
-with the `test` extra) into `.venv`, with
-`metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib` a link into
-`bazel-bin`. The tests and scripts select the platform
-themselves (`JAX_PLATFORMS=mtl,cpu`), since mtl is not JAX's
-default backend.
+`.bazelrc` is tuned for 8 GB (3 jobs, 4.5 GB action budget, 2.5 GB JVM).
+With more memory, override it in `user.bazelrc`, e.g. `common --jobs=8`
+and `common --local_resources=memory=20000` on 32 GB.
 
-`tests/` is a pytest suite; tests that need the GPU are marked `metal` and
-refuse to run outside `scripts/device_lock.py` (`-m "not metal"` runs the
-rest anywhere). Numerics are compared with a float64 CPU reference in ulps
-of the output dtype (`tests/metal_testing.py`), with tolerances about twice
-the measured error; `METAL_TEST_REPORT_ULPS=1 ... pytest -s` prints the
-measured errors (and CPU float32's, for comparison). No test timeouts:
-killing a process with GPU work in flight can wedge the driver (for the
-same reason child processes go through `metal_testing.run_python` and
-`scripts/device_lock.py` waits for its command, never killing it), so slow
-tests get a faulthandler stack dump and GPU hangs end through the runtime's
-bounded waits.
+### The wheel
 
-Run one GPU-heavy job at a time (the scripts take a device lock): two
-processes can together over-commit memory, and a GPU stalled on swapped-out
-pages trips the watchdog (`docs/design.md`, "Runtime"). The lock is re-entrant
-for descendants of its holder, so wrapping `scripts/run_jax_tests.sh` (which
-locks itself) in `scripts/device_lock.py` is fine.
+Pure Python plus the dylib, tagged `py3-none-macosx_26_0_arm64`,
+depending on `jax==0.11.2` and `jaxlib==0.11.2`. The package warns at
+discovery on any other version (`_JAX_VERSION`, checked against
+`pyproject.toml` by `tests/test_packaging.py`).
 
-The `.bazelrc` is tuned for an 8 GB machine (3 jobs, 4.5 GB action budget,
-2.5 GB JVM). With more memory, raise them in a `user.bazelrc` next to it
-(imported last): for example `common --jobs=8` and
-`common --local_resources=memory=20000` on 32 GB; the heavy XLA and MLIR
-translation units take 1-2 GB each. Persistent disk and repository caches live under
-`~/.cache/metal-pjrt-plugin/`, shared by every checkout of the repository,
-so a second clone rebuilds from the cache in minutes instead of hours.
-`--config=public_cache` reads JAX's public Bazel cache; hits are
-opportunistic and depend on matching action keys. Shut the Bazel server
-down (`bazel shutdown`) before measuring or running large workloads: its JVM
-holds memory that workloads then swap for.
+### Tests
+
+GPU tests are marked `metal` and refuse to run outside
+`scripts/device_lock.py`; `-m "not metal"` runs the rest anywhere.
+Numerics are compared against float64 CPU in ulps, with tolerances about
+twice the measured error (`METAL_TEST_REPORT_ULPS=1 ... pytest -s` prints
+them).
+
+There are no test timeouts, because killing a process with GPU work in
+flight can wedge the driver. Slow tests get a stack dump instead, and the
+runtime's waits are bounded.
+
+Run one GPU-heavy job at a time: two processes can over-commit memory,
+and a GPU stalled on swapped pages trips the watchdog
+([`design.md`](design.md#runtime)). The device lock is re-entrant for the
+holder's descendants.
 
 ## Continuous integration
 
 `.github/workflows/ci.yml` builds the plugin and runs the host-only tests
-on GitHub's arm64 macOS runners (`macos-26`: 3 cores, 7 GB of RAM, a
-14 GB disk, no GPU work assumed): `bazel build //metal_pjrt/...`,
-`bazel test //...` (the `device_tests` suite is tagged `manual`, so it is
-not included) and `pytest tests -m "not metal"`. Everything that needs the
-Metal device stays local, under `scripts/device_lock.py`: the `metal`
-tests, `//metal_pjrt:device_tests`, JAX's own suite
-(`scripts/run_jax_tests.sh`), the benchmarks and the examples.
+on GitHub's `macos-26` arm64 runners (3 cores, 7 GB RAM, 14 GB disk):
+`bazel build //metal_pjrt/...`, `bazel test //...` (`device_tests` is
+`manual`) and `pytest tests -m "not metal"`. Anything that needs the GPU
+stays local, under `scripts/device_lock.py`.
 
-- **Cost guard.** Every job carries
-  `if: ${{ !github.event.repository.private }}`: GitHub bills macOS
-  minutes on private repositories, and a skipped job uses none, so nothing
-  runs until the repository is public. `tests/test_packaging.py` fails if
-  a job of any workflow lacks the line.
-- **Triggers.** Pushes to `main`, pull requests, and manual runs; changes
-  only to Markdown, `docs/` or `examples/` do not start a run. A newer push
-  to a pull request cancels its running CI; runs on `main` are never
-  cancelled, so their cache saves complete.
-- **Caching.** The disk cache and the repository cache (the directories
-  of `.bazelrc`) are restored from and saved to the Actions cache, under the
-  key `bazel-macos26-xcode<X>-<hash of MODULE.bazel.lock, .bazelversion,
-  third_party/PINS.md and .bazelrc>-<run id>`, restored by the longest
-  matching prefix (an XLA re-pin falls back to the newest entry for the same
-  image and Xcode). Only runs on `main` and manual runs save; pull requests
-  only restore. Action keys do not depend on the runner because
-  `--incompatible_strict_action_env` fixes PATH and the workflow pins the
-  Xcode version (`XCODE_VERSION`, also in the key). Before saving,
+- **Cost guard.** Every job has
+  `if: ${{ !github.event.repository.private }}`, since GitHub bills macOS
+  minutes on private repositories. `tests/test_packaging.py` fails if a
+  job lacks it.
+- **Triggers.** Pushes to `main`, pull requests and manual runs, except
+  changes only to Markdown, `docs/` or `examples/`. A newer push cancels a
+  pull request's run; `main` runs are never cancelled.
+- **Caching.** The disk and repository caches go in the Actions cache,
+  keyed `bazel-macos26-xcode<X>-<hash of MODULE.bazel.lock, .bazelversion,
+  third_party/PINS.md and .bazelrc>-<run id>` and restored by longest
+  prefix. Only `main` and manual runs save. The workflow pins Xcode
+  (`XCODE_VERSION`), and the strict action environment fixes PATH, so
+  action keys don't depend on the runner. Before saving,
   `scripts/prune_disk_cache.py` trims the disk cache to 7 GB, least
-  recently used first (Bazel's own GC runs only while the server idles,
-  which a CI job never does), so one entry fits the free 10 GB quota; after
-  a successful save the older entries are deleted rather than left to
-  eviction.
-- **Disk and memory.** The job removes the Xcode versions, simulators,
-  Android SDK and .NET it does not use, and builds with `--config=ci`:
-  two concurrent compiles within 3.5 GB (the runner has 7 GB) and builds
-  without the bytes (`--remote_download_outputs=toplevel`), so disk-cache
-  hits are not copied into the output base; only top-level outputs (the
-  plugin library, test binaries) are. The manual run's `bytes` input turns
-  that off if it ever misbehaves.
-- **A cold cache** takes more than one job: a cold build measured 95 minutes
-  on an 8 GB M3 (2026-10-01) and GitHub's 3-core M1 runners are slower, so
-  the build step's 300-minute timeout stays; it stops after 300
-  minutes, the cache is saved anyway, and the next run continues from it.
-  To prime it after the repository goes public, start the workflow by hand
-  with `warm_cache_only` (build and save only), as often as needed.
-- **No remote cache.** JAX's public cache (`--config=public_cache`) had no
-  entries for this build (2026-09-30: 0 hits of 189 LLVM and 325 XLA
-  compile actions): JAX's public CI writes to it from Linux only, and the
-  macOS actions here use Xcode's clang, so their keys never match.
-- **No wheels**: releases are source only.
+  recently used first, to fit the free 10 GB quota (Bazel's own GC only
+  runs when the server is idle). Older entries are deleted after a
+  successful save.
+- **Disk and memory.** The job deletes unused Xcodes, simulators, Android
+  and .NET, and builds with `--config=ci`: two jobs within 3.5 GB, and
+  without the bytes (`--remote_download_outputs=toplevel`). The manual
+  run's `bytes` input turns that off.
+- **Cold cache.** A cold build exceeds one job, so the build step stops
+  at 300 minutes, saves the cache, and the next run continues. To prime it
+  once the repository is public, run the workflow by hand with
+  `warm_cache_only`.
+- **No remote cache.** JAX's public cache had no entries for this build
+  (2026-09-30: 0 hits of 189 LLVM and 325 XLA actions): it's written from
+  Linux only, and these macOS actions use Xcode's clang.
+- **No wheels.** Releases are source only.
 
 ## Environment variables
 
-Every variable the plugin, tests and scripts read. Scope: "compile" ones
-change the compiled program, are read once per process and are part of
-the persistent-cache key (`PluginVersion` in
-`stream_executor/metal_executor.cc`); "run" ones are read by the runtime;
-"script" ones only by the scripts, tests or benchmarks. Audience: "user"
-knobs are for anyone running the plugin, "dev" for working on it, "test"
-for tests of the plugin itself, "internal" are set by the scripts.
-
-Booleans are off when unset, empty, `0`, `false`, `no` or `off` (any case)
-and on for anything else, in C++ (`EnvFlag`, `metal_pjrt/runtime/env.h`),
-Python (`metal_pjrt_plugin._env_flag`) and the bench script alike. A number
-that does not parse (or a size in MB too large to count in bytes) is
-ignored with a warning and the default kept.
+"compile" variables change the compiled program and are part of the
+persistent-cache key; "run" ones are read by the runtime; "script" ones
+only by scripts and tests. Booleans are off when unset, empty, `0`,
+`false`, `no` or `off` (any case). A number that doesn't parse is ignored
+with a warning.
 
 | variable | scope | audience | values and default | read in |
 |---|---|---|---|---|
-| `METAL_PJRT_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Above 1 is allowed (with a warning), up to the working set | runtime, at device creation |
-| `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `conv` (the `metal$conv` rewriter; every convolution then takes the loop emitter), `pool` (the `metal$pool_max_bwd` rewriter; max-pool gradients then take XLA's select-and-scatter expansion), `all`; other names are ignored with a warning | compiler |
-| `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
-| `METAL_PJRT_DISABLE_FFT` | compile | dev | boolean, default off; on: every FFT axis lowers to the dense DFT instead of `metal$fft` | `_lowerings.py` (the compiler reads it only for the cache key) |
-| `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
-| `METAL_PJRT_DEBUG_FREE_QUARANTINE` | run | dev | boolean, default off; on: freed device buffers are not reused until 64 later frees and 100 ms have passed, and a pointer into one is reported with the backtrace of its free (hunting use-after-free) | runtime, at device creation |
-| `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
+| `METAL_PJRT_MEMORY_FRACTION` | run | user | number > 0, default 1: scales the memory budget (half of RAM, capped by the GPU's recommended working set); beyond it allocations fail with RESOURCE_EXHAUSTED. Values above 1 are allowed (with a warning), up to the working set | runtime, at device creation |
+| `METAL_PJRT_DISABLE_REWRITES` | compile | dev | comma list, default empty: `scan` (the `metal$scan` rewriter), `cubsort` (XLA's SortRewriter and the radix sort; every sort then takes the bitonic network), `conv` (the `metal$conv` rewriter; every convolution then takes the loop emitter), `pool` (the `metal$pool_max_bwd` rewriter; max-pool gradients then take XLA's select-and-scatter expansion), `all`. Other names are ignored with a warning | compiler |
+| `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off. On: no LAPACK or small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
+| `METAL_PJRT_DISABLE_FFT` | compile | dev | boolean, default off. On: every FFT axis lowers to the dense DFT instead of `metal$fft` | `_lowerings.py` (the compiler reads it only for the cache key) |
+| `METAL_PJRT_TRACE` | run | dev | boolean, default off. On: one log line per committed command buffer (op count, GPU time) | runtime |
+| `METAL_PJRT_DEBUG_FREE_QUARANTINE` | run | dev | boolean, default off. On: freed device buffers aren't reused until 64 later frees and 100 ms have passed, and a pointer into one is reported with the backtrace of its free (for hunting use-after-free bugs) | runtime, at device creation |
+| `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not of the device lock, below) | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel (refused until a reboot or `scripts/gpu_health.py --clear`), default 0 (off) | runtime, `scripts/gpu_health.py` |
-| `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
+| `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` that is snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | run | test | `n` fails the n-th committed command buffer, default 0 (never) | runtime |
-| `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
-| `METAL_TEST_REPORT_ERRORS` | script | test | on when set to anything (even `0`), default off; print the measured FFT errors | `metal_pjrt/fft/fft_test.cc` |
+| `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off: print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
+| `METAL_TEST_REPORT_ERRORS` | script | test | on when set to anything (even `0`), default off: print the measured FFT errors | `metal_pjrt/fft/fft_test.cc` |
 | `JAX_TESTS_DIR` | script | dev | JAX checkout with the tests, default `~/.cache/metal-pjrt/jax-tests` | `scripts/run_jax_tests.sh` |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | script | dev | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot (boolean), `bazel shutdown` first (boolean, off) | `bench/run_all.sh` |
 | `METAL_PJRT_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |
 | `BENCH_OUT`, `BENCH_LABEL` | script | internal | set by `bench/run_all.sh`: the JSONL file and the backend label of the rows | `bench/*.py` |
 
-Other tools' variables the scripts set or check:
+Variables of other tools:
 
-- `JAX_PLATFORMS` (JAX): `mtl,cpu` selects the plugin (it is not JAX's
-  default backend). `tests/conftest.py` and `scripts/run_jax_tests.sh`
-  set it.
-- `JAX_NUM_GENERATED_CASES` (JAX's tests): generated cases per test in
-  `scripts/run_jax_tests.sh`, default 3 (the known-failures list assumes
-  3).
+- `JAX_PLATFORMS`: `mtl,cpu` selects the plugin. `tests/conftest.py` and
+  `scripts/run_jax_tests.sh` set it.
+- `JAX_NUM_GENERATED_CASES`: cases per test in `scripts/run_jax_tests.sh`,
+  default 3 (the known-failures list assumes 3).
 - `PYTEST_TIMEOUT` (`scripts/run_jax_tests.sh`): seconds before a slow
-  test's stack dump, default 180; the test is not stopped.
-- `XLA_FLAGS` (XLA): `tests/conftest.py` refuses to run with it set, as it
-  does with any `METAL_PJRT_*` setting other than `METAL_PJRT_STATE_DIR`,
-  `METAL_PJRT_TRACE` and `METAL_PJRT_DEVICE_LOCK_HELD`. The plugin forces
-  `xla_gpu_enable_triton_gemm=false` and `xla_gpu_dot_merger_threshold_mb=0`
-  whatever `XLA_FLAGS` says (DotMerger would copy every weight matrix that
-  shares an input on each call; `docs/integration-notes.md`).
+  test's stack dump, default 180. The test isn't stopped.
+- `XLA_FLAGS`: `tests/conftest.py` refuses to run with it set, or with
+  any `METAL_PJRT_*` setting other than `METAL_PJRT_STATE_DIR`,
+  `METAL_PJRT_TRACE` and `METAL_PJRT_DEVICE_LOCK_HELD`. The plugin always
+  forces `xla_gpu_enable_triton_gemm=false` and
+  `xla_gpu_dot_merger_threshold_mb=0`
+  ([`integration-notes.md`](integration-notes.md)).
 
 ## State
 
-Two directories:
-
-- `~/.cache/metal-pjrt/`: the plugin's and scripts' state (GPU reset log,
-  device lock, JAX test checkout). `METAL_PJRT_STATE_DIR` moves the reset
-  log only; `scripts/device_lock.py` always uses
-  `~/.cache/metal-pjrt/device.lock`, since the GPU is one per machine. The
-  lock script also takes the pre-rename `~/.cache/jax_metal` lock until the
-  next pin bump (`CHANGELOG.md`).
-- `~/.cache/metal-pjrt-plugin/`: Bazel's disk and repository caches, shared
-  by every checkout (above).
+- `~/.cache/metal-pjrt/`: GPU reset log, device lock, JAX test checkout.
+  `METAL_PJRT_STATE_DIR` moves only the reset log. Until the next pin bump
+  the lock script also takes the pre-rename `~/.cache/jax_metal` lock
+  ([`CHANGELOG.md`](../CHANGELOG.md)).
+- `~/.cache/metal-pjrt-plugin/`: Bazel's shared disk and repository
+  caches.
