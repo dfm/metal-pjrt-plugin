@@ -129,6 +129,20 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   GEMM loads patches straight from the input); it would save only the
   unfold, at most a third of the 31x31 layer's time and under 17%
   elsewhere, for a new loader and kernel variant (~200 lines).
+- airbench94 training step with one command queue per device (2026-09-30;
+  bf16, batch 1024; the GPU at its top performance state throughout, so
+  full clock; GPU time from the command buffers' start/end with
+  `METAL_PJRT_TRACE=1`, 6 epochs after a 1-epoch warm-up): 428-432 ms per
+  step, the GPU busy 99.2-100% of it (0.2-3.3 ms idle per step), 6.3-6.4
+  command buffers per step. With a queue per stream (2026-09-30 morning,
+  same method): 489-496 ms, 87% busy, 60-67 ms idle per step, 31 command
+  buffers. The GPU time per step (~428 ms) did not change: the gain was
+  the GPU waiting for the host at the start of each step, gone because a
+  transfer no longer waits on the host for the compute stream. Staging
+  busy host-to-device copies as GPU copies, which had removed the same gap
+  (431-436 ms), is no longer needed. When the machine throttles (after ~3
+  minutes at full clock on a fanless Mac) the step time follows energy per
+  step instead, which this does not change.
 - Small convolutions stay on the loop emitter: under 4 Mflop a custom call
   plus a separate relu kernel lost to the loop emitter's one fused kernel
   (forward + relu, bursts of 30, p10 ms, two interleaved runs: 0.3-2.4
