@@ -261,6 +261,23 @@ sizes.
   logged. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` (debugging) keeps freed
   buffers out of reuse until 64 later frees and 100 ms have passed, and
   reports a pointer into one with the backtrace of its free.
+- Stale transfer pointers (2026-09-30): an experiment that staged busy
+  host-to-device copies as GPU copies saw intermittent Resolve failures
+  for copy destinations, i.e. XLA apparently copying into memory that was
+  no longer allocated. A probe with that experiment's check (resolve the
+  destination of every host-to-device copy enqueued on a busy stream,
+  log, then continue on the normal path), run on the trees before and
+  after XLA's host memory moved out of the device allocator, found 0
+  failures in 200 + 200 runs of the test that had shown them, with busy
+  enqueues in every run (and 0 in 50 runs of all of test_transfers): the
+  failures came from the experiment's staged path. Tripwires stay: a host
+  transfer to or from a pointer outside a live allocation is INTERNAL,
+  frees are checked against the live table (start, size where known,
+  generation; double frees named), and the debug free quarantine above.
+  One wrong-value failure of
+  `test_source_mutated_right_after_device_put[False-busy-1]` on
+  2026-09-28 predates the experiment and is not explained by it; it has
+  not recurred (~15.6k puts since) with the tripwires in place.
 - Idle trim and pressure: a libdispatch timer, armed only while the cache
   is not empty, releases buffers unused for 2 s, so an idle process gives
   its memory back; a `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning releases
