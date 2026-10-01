@@ -25,8 +25,9 @@ namespace metal {
 
 class MetalExecutor;
 
-// A stream is one MTLCommandQueue (see runtime/metal_runtime.h for the
-// command-buffer batching policy).
+// A stream is a handle on the device's single MTLCommandQueue (see
+// runtime/metal_runtime.h for the ordering contract and the command-buffer
+// batching policy).
 //
 // Errors: any GPU failure, or failed host callback without an error_cb, is
 // sticky for the device (see metal_runtime.h): BlockHostUntilDone returns it

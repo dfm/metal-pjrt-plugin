@@ -308,6 +308,9 @@ absl::Status MetalBlasLt::MatmulPlan::ExecuteOnStream(
   ABSL_RETURN_IF_ERROR(Bind(device_, b, "B", &p.b));
   ABSL_RETURN_IF_ERROR(Bind(device_, d, "D", &p.c));
 
+  // Profiling times from host to host. The device has one queue, so work
+  // other streams enqueue between the two waits is timed too (autotuning
+  // normally runs with the device otherwise idle).
   auto start = std::chrono::steady_clock::now();
   if (profile_result != nullptr) {
     ABSL_RETURN_IF_ERROR(stream->BlockHostUntilDone());

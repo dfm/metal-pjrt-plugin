@@ -447,9 +447,6 @@ class Device {
   // RecordReset counts too).
   int resets_since_boot() const { return resets_since_boot_; }
 
-  // Command buffers committed with an encoded GPU wait: 0 by construction
-  // (nothing encodes one), kept as the invariant tests check.
-  uint64_t gpu_waits_encoded() const { return 0; }
   // GPU ops whose encoding waited on the host for a host task.
   uint64_t encode_host_waits() const { return encode_host_waits_.load(); }
 
@@ -541,7 +538,8 @@ class Device {
   // Buffers freed while work was in flight (e.g. the previous step's) stay
   // cached until that work ends, so if some remain, waits (bounded by
   // kRefusalWait, not after a device error) for the work outstanding now,
-  // drops the cache and reads once more. Returns whether still critical.
+  // drops the cache and reads once more (no wait under the queue lock, i.e.
+  // inside EncodeExternal). Returns whether still critical.
   bool CriticalAfterReleasingCache();
   static constexpr std::chrono::seconds kRefusalWait{1};
   // libdispatch sources on memory_queue_: the memory-pressure source and a
@@ -630,6 +628,9 @@ class Device {
   // The last committed buffer's timeline value; the open buffer's is one
   // more. Written under q_mu_, read anywhere.
   std::atomic<uint64_t> committed_{0};
+  // After a device error the open buffer stays open (its ticket
+  // outstanding, so buffers freed meanwhile stay cached) until a wait
+  // commits it.
   MTL::CommandBuffer* cmd_ = nullptr;
   uint64_t cmd_ticket_ = 0;  // BeginWork for cmd_
   std::atomic<uint64_t> open_ticket_{0};  // cmd_ticket_ while cmd_ is open
@@ -760,7 +761,9 @@ class Stream {
   // for it (GPU work is encoded only after it ran). A task must not wait for
   // its own stream: every method of that stream called from the task (or
   // its `on_error`), and host waits on the task or later work of its stream,
-  // return FailedPreconditionError instead of deadlocking.
+  // return FailedPreconditionError instead of deadlocking. Nor may a task
+  // call into any other stream: an encoding thread may be host-waiting for
+  // the task, a cycle (no XLA path does this; it is not checked).
   //
   // After a failure (the device's sticky error), a task with `on_error` does
   // not run and `on_error` gets the error; one without it still runs (XLA's

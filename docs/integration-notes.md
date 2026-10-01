@@ -24,9 +24,9 @@ platform id or a SPIR target against a golden list. Both have an `--update` mode
   not been tried together).
   The StreamExecutor, FFI and XLA-internal names stay "METAL"/"metal": they
   live in registries private to our dylib (it exports only `GetPjrtApi`,
-  the callback trampoline and three testing hooks, `metal_pjrt_memory_stats`,
-  `metal_pjrt_sync_stats` and `metal_pjrt_testing_memory_pressure`, used by
-  `tests/test_memory.py` and `tests/test_transfers.py` via ctypes; the hooks are unstable, test-only and not an API), so they cannot
+  the callback trampoline and two testing hooks, `metal_pjrt_memory_stats`
+  and `metal_pjrt_testing_memory_pressure`, used by `tests/test_memory.py`
+  and `tests/test_donation.py` via ctypes; the hooks are unstable, test-only and not an API), so they cannot
   collide with another plugin.
   JAX looks lowerings up by `backend.platform`, i.e. `MetalName()`, so
   `register_plugin`'s name and every `PLATFORM` in `metal_pjrt_plugin`

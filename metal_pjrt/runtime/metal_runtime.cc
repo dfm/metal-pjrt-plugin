@@ -121,6 +121,10 @@ struct HostTaskContext {
 };
 thread_local HostTaskContext current_host_task;
 
+// Set while this thread runs an EncodeExternal callback, which holds the
+// device's queue lock: nothing may wait for GPU work there.
+thread_local bool t_holds_queue = false;
+
 absl::Status CheckNotWaitingOnOwnHostTask(const MTL::SharedEvent* ev,
                                           uint64_t v) {
   if (ev == nullptr || ev != current_host_task.fence ||
@@ -692,7 +696,9 @@ bool Device::CriticalAfterReleasingCache() {
     std::lock_guard<std::mutex> lock(mu_);
     if (cached_bytes_ == 0 || !error_.ok()) return true;
   }
-  {
+  // Under the queue lock (an allocation inside EncodeExternal, e.g. MPS
+  // staging) a wait would stall every encode and commit: refuse instead.
+  if (!t_holds_queue) {
     std::unique_lock<std::mutex> lock(tickets_mu_);
     const uint64_t last = last_ticket_;
     // The open command buffer's ticket ends only after a commit, which this
@@ -1472,16 +1478,19 @@ absl::Status Device::WaitForPoint(const WorkPoint& p) {
   for (const auto& [fence, value] : p.hosts) {
     ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(fence, value));
   }
-  ABSL_RETURN_IF_ERROR(CommitThrough(p.t));
-  if (p.t > 0) ABSL_RETURN_IF_ERROR(WaitForValueOnHost(this, timeline_, p.t));
+  absl::Status status = CommitThrough(p.t);
+  if (status.ok() && p.t > 0) {
+    status = WaitForValueOnHost(this, timeline_, p.t);
+  }
   // Host tasks always end, also after a failure (they skip their work or
   // hand the error to on_error), and their waiters must not run ahead of
-  // them: a transfer's source may be freed as soon as its waiter returns.
+  // them, not even when the GPU part failed: a transfer's source may be
+  // freed as soon as its waiter returns.
   for (const auto& [fence, value] : p.hosts) {
     while (!fence->waitUntilSignaledValue(value, /*milliseconds=*/200)) {
     }
   }
-  return absl::OkStatus();
+  return status;
 }
 
 absl::Status Device::CommitThrough(uint64_t t) {
@@ -1800,7 +1809,10 @@ absl::Status Stream::BeginGpuOpLocked() {
       ABSL_RETURN_IF_ERROR(device_->WaitForPoint(hosts));
     }
   }
-  // GPU work waited for is ahead in the queue.
+  // GPU work waited for is ahead in the queue. Folded into gpu_pos_ (not
+  // dropped) in case this op's encode fails: later host tasks on the stream
+  // must still wait for it.
+  gpu_pos_ = std::max(gpu_pos_, waits_.t);
   waits_ = WorkPoint();
   return absl::OkStatus();
 }
@@ -2090,7 +2102,10 @@ absl::Status Stream::EncodeExternal(
   ABSL_RETURN_IF_ERROR(device_->MakeRoomLocked(flops));
   ABSL_RETURN_IF_ERROR(device_->EnsureCommandBufferLocked());
   device_->EndEncoderLocked();
-  ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(device_->cmd_)));
+  t_holds_queue = true;
+  absl::Status status = encode(static_cast<void*>(device_->cmd_));
+  t_holds_queue = false;
+  ABSL_RETURN_IF_ERROR(status);
   return FinishGpuOpLocked(0, flops);
 }
 
@@ -2353,23 +2368,6 @@ __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
     const Device::KernelCacheStats k = d->kernel_cache_stats();
     out[6] = k.kernels;
     out[7] = k.source_bytes;
-    return 0;
-  }
-  return -1;
-}
-
-// Writes up to n of {gpu_waits_encoded (always 0), encode_host_waits} of
-// device `ordinal` to out; returns
-// 0, or -1 if there is no such device. A separate hook so callers of
-// metal_pjrt_memory_stats keep their 8-slot buffers.
-__attribute__((visibility("default"))) int metal_pjrt_sync_stats(
-    int ordinal, uint64_t* out, int n) {
-  using namespace metal_pjrt::rt;
-  std::lock_guard<std::mutex> lock(g_devices_mu);
-  for (Device* d : g_devices) {
-    if (d->ordinal() != ordinal) continue;
-    const uint64_t v[] = {d->gpu_waits_encoded(), d->encode_host_waits()};
-    for (int i = 0; i < n && i < 2; ++i) out[i] = v[i];
     return 0;
   }
   return -1;

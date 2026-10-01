@@ -143,14 +143,6 @@ def test_device_puts_do_not_leak_host_port_refs():
     assert grew <= 0, f"{grew} host port send refs leaked by 220 device_puts"
 
 
-def _sync_stats():
-    import metal_pjrt_plugin
-    lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
-    out = (ctypes.c_uint64 * 2)()
-    assert lib.metal_pjrt_sync_stats(0, out, 2) == 0
-    return dict(zip(("gpu_waits_encoded", "encode_host_waits"), out))
-
-
 @pytest.mark.parametrize("put", ["zero_size", "copy"])
 def test_transfer_behind_a_compute_backlog(put):
     # ~1 s of short GEMM chains queued on the compute stream, then a transfer
@@ -177,15 +169,12 @@ def test_transfer_behind_a_compute_backlog(put):
     y = x
     for _ in range(int(1.0 / one)):
         y = chain(y, w)
-    s0 = _sync_stats()
     if put == "zero_size":
         z = jax.device_put(empty, may_alias=False)
         assert z.block_until_ready().shape == (0, 3)
     else:
         c = jax.device_put(y, may_alias=False)
         np.testing.assert_array_equal(np.asarray(c), np.asarray(y))
-    s1 = _sync_stats()
-    assert s1["gpu_waits_encoded"] == s0["gpu_waits_encoded"], (s0, s1)
     cpu = jax.devices("cpu")[0]
     np.testing.assert_allclose(
         np.asarray(chain(x, w)),

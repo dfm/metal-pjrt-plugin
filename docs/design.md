@@ -163,8 +163,7 @@ other GPU work is behind it in the queue, so waits on GPU work cost
 nothing, and GPU work that depends on a host task is encoded only after
 the task has run. The encoding thread waits for that on the host without
 holding the queue lock, so other streams keep encoding.
-`Device::gpu_waits_encoded()` is 0 by construction (nothing encodes a
-wait); tests check it through `metal_pjrt_sync_stats`.
+Nothing encodes a GPU wait, by construction (there is no API for one).
 
 A stream is a handle: the timeline value of its last GPU op, the waits its
 next op must respect (`WaitForEvent`, `WaitForStream`, its own host tasks)
@@ -189,7 +188,8 @@ failed buffer's completion handler records the error and force-signals its
 timeline value, waits on the GPU timeline give up once the device has
 failed, and no error path CHECKs or aborts. A transfer task skips its copy
 after a failure (XLA may already be freeing its buffers), and waiters on a
-host task wait for it to end even then. Only resets (timeout, access revoked,
+host task wait for it to end even then, also when their GPU part has
+failed. Only resets (timeout, access revoked,
 device removed) feed the reset log.
 
 **Failures seen by host waiters.** Soundness (never consume a failed
@@ -226,7 +226,8 @@ sizes.
   read per allocation of 1 MB or more; critical is where jetsam starts
   killing processes): the cache is dropped and the level read again; if
   cached buffers are still held by work in flight, the allocation waits
-  (at most 1 s, not after a device error) for that work, drops the cache
+  (at most 1 s; not after a device error, nor inside an external encode
+  such as MPS's, which holds the queue lock) for that work, drops the cache
   and reads once more, then fails with RESOURCE_EXHAUSTED. MPS's internal
   staging copies bypass the cache but get the same check. The first
   allocation at warning or worse logs a warning. A stricter guard (refuse
