@@ -40,7 +40,8 @@ step("fresh g(f(x))", lambda: g(f(x)), want + 1)
 """
 
 
-@pytest.mark.parametrize("n", range(9))
+# The program commits 5 command buffers (one queue per device): fail each.
+@pytest.mark.parametrize("n", range(6))
 def test_injected_command_buffer_failure(n):
     env = dict(os.environ, JAX_PLATFORMS="mtl",
                METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
@@ -51,8 +52,8 @@ def test_injected_command_buffer_failure(n):
     assert out.returncode == 0 and len(lines) == 5, (out.returncode, lines, out.stderr[-2000:])
     assert not [l for l in lines if "WRONG" in l], lines
     raised = ["RAISED" in l for l in lines]
-    # n > 0: the injected failure must surface (the program commits more
-    # than 8 command buffers) and stay; n == 0: nothing may fail.
+    # n > 0: the injected failure must surface and stay; n == 0: nothing
+    # may fail.
     if n == 0:
         assert not any(raised), lines
     else:

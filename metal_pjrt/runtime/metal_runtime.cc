@@ -315,6 +315,14 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
               << "): memory budget " << FormatBytes(budget) << ", "
               << FormatBytes(ReclaimableMemoryBytes()) << " reclaimable now";
   }  // All Apple GPUs; confirmed per-pipeline on creation.
+  dev->queue_ = d->newCommandQueue();
+  dev->timeline_ = d->newSharedEvent();
+  if (dev->queue_ == nullptr || dev->timeline_ == nullptr) {
+    return absl::InternalError(absl::StrFormat(
+        "Metal: creating the command queue or its timeline event failed on "
+        "device %d (%s)",
+        ordinal, info.name));
+  }
   dev->LoadResetLog();
   dev->StartMemorySources();
   {
@@ -555,6 +563,16 @@ bool Device::WaitForCompletionHandlers() {
 }
 
 Device::~Device() {
+  {
+    // Streams commit their work when destroyed; anything left is dropped.
+    std::lock_guard<std::mutex> lock(q_mu_);
+    if (cmd_ != nullptr) {
+      EndEncoderLocked();
+      cmd_->release();
+      cmd_ = nullptr;
+      EndWork(cmd_ticket_);
+    }
+  }
   if (!WaitForCompletionHandlers()) {
     LOG(ERROR) << "Metal device " << ordinal_
                << " destroyed with command buffers whose completion "
@@ -562,7 +580,8 @@ Device::~Device() {
   }
   {
     std::lock_guard<std::mutex> lock(g_devices_mu);
-    g_devices.erase(std::find(g_devices.begin(), g_devices.end(), this));
+    auto it = std::find(g_devices.begin(), g_devices.end(), this);
+    if (it != g_devices.end()) g_devices.erase(it);
   }
   if (memory_queue_ != nullptr) {
     auto timer = static_cast<dispatch_source_t>(trim_timer_);
@@ -602,6 +621,9 @@ Device::~Device() {
       munmap(reinterpret_cast<void*>(kv.first), kv.second.second);
     }
   }
+  for (MTL::SharedEvent* f : host_fences_) f->release();
+  if (timeline_) timeline_->release();
+  if (queue_) queue_->release();
   if (device_) device_->release();
 }
 
@@ -1095,12 +1117,11 @@ void Device::SetError(const absl::Status& why) {
                    why.message()));
 }
 
-void Device::AddInFlight(MTL::CommandBuffer* cb, MTL::SharedEvent* fence,
-                         uint64_t value, absl::Status injected) {
+void Device::AddInFlight(MTL::CommandBuffer* cb, uint64_t value,
+                         absl::Status injected) {
   cb->retain();
-  fence->retain();
   std::lock_guard<std::mutex> lock(in_flight_mu_);
-  in_flight_.push_back({cb, fence, value, std::move(injected)});
+  in_flight_.push_back({cb, value, std::move(injected)});
 }
 
 void Device::RemoveInFlight(MTL::CommandBuffer* cb) {
@@ -1114,7 +1135,6 @@ void Device::RemoveInFlight(MTL::CommandBuffer* cb) {
     in_flight_.erase(it);
   }
   f.cb->release();
-  f.fence->release();
 }
 
 bool Device::CheckInFlight(bool wait) {
@@ -1128,7 +1148,7 @@ bool Device::CheckInFlight(bool wait) {
       if (st == MTL::CommandBufferStatusCompleted && f.injected.ok()) continue;
       const bool settled = st == MTL::CommandBufferStatusCompleted ||
                          st == MTL::CommandBufferStatusError;
-      if (settled || f.fence->signaledValue() >= f.value) {
+      if (settled || timeline_->signaledValue() >= f.value) {
         f.cb->retain();
         ended.push_back(f);
       }
@@ -1388,78 +1408,289 @@ absl::StatusOr<const Kernel*> Device::BuiltinKernel(Builtin kind) {
   return slot;
 }
 
-absl::StatusOr<std::unique_ptr<Stream>> Device::CreateStream() {
-  MTL::CommandQueue* q = device_->newCommandQueue();
-  if (q == nullptr) {
-    return absl::InternalError(absl::StrFormat(
-        "Metal newCommandQueue failed on device %d (%s)", ordinal_,
-        info_.name));
+// ---------------------------------------------------------------------------
+// Work points and events
+
+void WorkPoint::Merge(const WorkPoint& other) {
+  t = std::max(t, other.t);
+  for (const auto& [fence, value] : other.hosts) {
+    auto it = std::find_if(hosts.begin(), hosts.end(),
+                           [f = fence](const auto& h) { return h.first == f; });
+    if (it == hosts.end()) {
+      hosts.emplace_back(fence, value);
+    } else {
+      it->second = std::max(it->second, value);
+    }
   }
+}
+
+bool Device::PointDone(const WorkPoint& p) const {
+  if (p.t > committed_.load() || timeline_->signaledValue() < p.t) {
+    return false;
+  }
+  for (const auto& [fence, value] : p.hosts) {
+    if (fence->signaledValue() < value) return false;
+  }
+  return true;
+}
+
+absl::Status Device::WaitForPoint(const WorkPoint& p) {
+  for (const auto& [fence, value] : p.hosts) {
+    ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(fence, value));
+  }
+  ABSL_RETURN_IF_ERROR(CommitThrough(p.t));
+  if (p.t > 0) ABSL_RETURN_IF_ERROR(WaitForValueOnHost(this, timeline_, p.t));
+  // Host tasks always end, also after a failure (they skip their work or
+  // hand the error to on_error), and their waiters must not run ahead of
+  // them: a transfer's source may be freed as soon as its waiter returns.
+  for (const auto& [fence, value] : p.hosts) {
+    while (!fence->waitUntilSignaledValue(value, /*milliseconds=*/200)) {
+    }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status Device::CommitThrough(uint64_t t) {
+  if (t <= committed_.load()) return absl::OkStatus();
+  std::lock_guard<std::mutex> lock(q_mu_);
+  if (t <= committed_.load()) return absl::OkStatus();
+  return CommitLocked();
+}
+
+absl::StatusOr<std::unique_ptr<Stream>> Device::CreateStream() {
   MTL::SharedEvent* fence = device_->newSharedEvent();
   if (fence == nullptr) {
-    q->release();
     return absl::InternalError(absl::StrFormat(
         "Metal newSharedEvent failed creating a stream fence on device %d",
         ordinal_));
   }
-  return std::unique_ptr<Stream>(new Stream(this, q, fence));
+  {
+    std::lock_guard<std::mutex> lock(q_mu_);
+    host_fences_.push_back(fence);
+  }
+  return std::unique_ptr<Stream>(new Stream(this, fence));
 }
 
 absl::StatusOr<std::unique_ptr<Event>> Device::CreateEvent() {
-  MTL::SharedEvent* ev = device_->newSharedEvent();
-  if (ev == nullptr) {
-    return absl::InternalError(absl::StrFormat(
-        "Metal newSharedEvent failed creating an event on device %d",
-        ordinal_));
-  }
-  return std::unique_ptr<Event>(new Event(this, ev));
+  return std::unique_ptr<Event>(new Event(this));
 }
 
-// ---------------------------------------------------------------------------
-// Event
-
-Event::~Event() { event_->release(); }
-
-bool Event::IsComplete() const {
-  uint64_t v;
-  {
-    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(mu_));
-    v = value_;
-  }
-  return event_->signaledValue() >= v;
+WorkPoint Event::point() const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return point_;
 }
+
+bool Event::IsComplete() const { return device_->PointDone(point()); }
 
 absl::Status Event::WaitOnHost() {
-  uint64_t v;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    v = value_;
-  }
-  if (v == 0) return device_->error();
-  // A failed command buffer force-signals its events (see Stream::Commit),
-  // and the wait gives up once the device has failed, so this cannot hang.
-  ABSL_RETURN_IF_ERROR(WaitForValueOnHost(device_, event_, v));
+  ABSL_RETURN_IF_ERROR(device_->WaitForPoint(point()));
   device_->CheckInFlight(/*wait=*/true);
   return device_->error();
 }
 
 absl::StatusOr<bool> Event::Poll() {
-  uint64_t v;
-  {
-    std::lock_guard<std::mutex> lock(mu_);
-    v = value_;
-  }
-  if (v != 0 && event_->signaledValue() < v) return false;
+  if (!device_->PointDone(point())) return false;
   if (!device_->CheckInFlight(/*wait=*/false)) return false;
   ABSL_RETURN_IF_ERROR(device_->error());
   return true;
 }
 
 // ---------------------------------------------------------------------------
+// The queue
+
+absl::Status Device::EnsureCommandBufferLocked() {
+  // Checked for an open buffer too: after an error no more work goes into
+  // it (CommitLocked drops it).
+  ABSL_RETURN_IF_ERROR(error());
+  if (cmd_ != nullptr) return absl::OkStatus();
+  // Retained references: XLA frees device buffers as soon as the host no
+  // longer needs them and relies on the driver to keep memory alive until
+  // enqueued GPU work completes (as CUDA does). Metal only does that for
+  // retained command buffers; unretained ones fault with
+  // kIOGPUCommandBufferCallbackErrorInvalidResource.
+  // Callers are XLA threads without an autorelease pool; without one the
+  // autoreleased command buffer would stay referenced until thread exit.
+  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+  cmd_ = queue_->commandBuffer();
+  if (cmd_ != nullptr) cmd_->retain();
+  pool->release();
+  if (cmd_ == nullptr) {
+    return absl::InternalError(absl::StrCat(
+        "Metal commandBuffer creation failed on device ", ordinal_));
+  }
+  cmd_ticket_ = BeginWork();
+  ops_in_cmd_ = 0;
+  threads_in_cmd_ = 0;
+  flops_in_cmd_ = 0;
+  return absl::OkStatus();
+}
+
+absl::Status Device::EnsureComputeEncoderLocked() {
+  ABSL_RETURN_IF_ERROR(EnsureCommandBufferLocked());
+  if (enc_ == nullptr) {
+    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
+    enc_ = cmd_->computeCommandEncoder(MTL::DispatchTypeSerial);
+    if (enc_ != nullptr) enc_->retain();
+    pool->release();
+    if (enc_ == nullptr) {
+      return absl::InternalError("Metal computeCommandEncoder creation failed");
+    }
+  }
+  return absl::OkStatus();
+}
+
+void Device::EndEncoderLocked() {
+  if (enc_ != nullptr) {
+    enc_->endEncoding();
+    enc_->release();
+    enc_ = nullptr;
+  }
+}
+
+namespace {
+// B1: a command buffer that ran longer than this is logged (rate-limited)
+// with its kernels: it came close to the GPU watchdog.
+constexpr double kSlowCommandBufferMs = 1000;
+constexpr int64_t kSlowLogIntervalS = 10;
+std::atomic<int64_t> last_slow_log_s{0};
+}  // namespace
+
+absl::Status Device::CommitLocked() {
+  if (cmd_ == nullptr) return absl::OkStatus();
+  EndEncoderLocked();
+  const uint64_t v = committed_.load() + 1;
+  auto reset_open = [this]() {
+    cmd_->release();
+    cmd_ = nullptr;
+    ops_in_cmd_ = 0;
+    threads_in_cmd_ = 0;
+    flops_in_cmd_ = 0;
+  };
+  if (!error().ok()) {
+    // The error is sticky and the GPU may have been reset: drop the buffer
+    // instead of committing it, and end it as a failed buffer's handler
+    // does, so waiters on its value wake up (and then see the error).
+    pending_kernels_.clear();
+    inject_error_ = absl::OkStatus();
+    reset_open();
+    EndWork(cmd_ticket_);
+    committed_.store(v);
+    if (timeline_->signaledValue() < v) timeline_->setSignaledValue(v);
+    return absl::OkStatus();
+  }
+  absl::Status injected_error = std::move(inject_error_);
+  inject_error_ = absl::OkStatus();
+  // METAL_PJRT_FAIL_COMMAND_BUFFER=n fails the n-th command buffer this
+  // process commits (testing error handling end to end).
+  static const uint64_t fail_at = EnvUint("METAL_PJRT_FAIL_COMMAND_BUFFER", 0);
+  static std::atomic<uint64_t> commits{0};
+  if (fail_at != 0 && commits.fetch_add(1) + 1 == fail_at) {
+    injected_error = absl::InternalError(absl::StrFormat(
+        "command buffer %d failed (METAL_PJRT_FAIL_COMMAND_BUFFER)", fail_at));
+  }
+  // The buffer ends by signaling the timeline. An injected failure signals
+  // nothing: its handler force-signals, as for a buffer the GPU aborted.
+  if (injected_error.ok()) cmd_->encodeSignalEvent(timeline_, v);
+  auto kernels =
+      std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
+          std::move(pending_kernels_));
+  pending_kernels_.clear();
+  const int traced_ops = ops_in_cmd_;
+  const uint64_t ticket = cmd_ticket_;
+  MTL::SharedEvent* timeline = timeline_;
+  Device* device = this;
+  AddInFlight(cmd_, v, injected_error);
+  cmd_->addCompletedHandler([device, timeline, v, traced_ops, kernels,
+                             injected_error,
+                             ticket](MTL::CommandBuffer* cb) {
+    const double gpu_ms = (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
+    if (TraceEnabled()) {
+      LOG(ERROR) << "[metal-trace] cb#" << v << " ops=" << traced_ops
+                 << " gpu_ms=" << gpu_ms;
+    }
+    if (gpu_ms > kSlowCommandBufferMs) {
+      const int64_t now = static_cast<int64_t>(std::time(nullptr));
+      int64_t last = last_slow_log_s.load();
+      if (now - last >= kSlowLogIntervalS &&
+          last_slow_log_s.compare_exchange_strong(last, now)) {
+        std::string names;
+        for (const auto& k : *kernels) absl::StrAppend(&names, " ", k->name);
+        LOG(WARNING) << "Metal: a command buffer ran " << gpu_ms
+                     << " ms on the GPU, close to the watchdog that resets "
+                        "it; its kernels:"
+                     << names;
+      }
+    }
+    absl::Status error = injected_error;
+    const bool failed = cb->status() == MTL::CommandBufferStatusError;
+    if (failed) error = CommandBufferError(cb, device->ordinal());
+    if (!error.ok()) {
+      LOG(ERROR) << error.message();
+      if (VLOG_IS_ON(1)) {
+        std::string names;
+        for (const auto& k : *kernels) absl::StrAppend(&names, " ", k->name);
+        VLOG(1) << "  ops in buffer: " << traced_ops
+                << ", gpu time ms: " << gpu_ms << ", kernels:" << names;
+      }
+      LogMemoryState(device);
+      // Watchdog timeouts and revoked/removed devices mean the GPU was
+      // reset underneath us: record the suspects.
+      const long code = failed && cb->error() ? cb->error()->code() : 0;
+      if (code == MTL::CommandBufferErrorTimeout ||
+          code == MTL::CommandBufferErrorAccessRevoked ||
+          code == MTL::CommandBufferErrorDeviceRemoved) {
+        // One record per incident: a reset fails every buffer in flight.
+        if (!device->reset_recorded_.exchange(true)) {
+          device->RecordReset(error.message(), *kernels);
+        }
+      }
+      // Before the force-signal, so waiters woken by it see the error.
+      device->SetError(error);
+      if (timeline->signaledValue() < v) timeline->setSignaledValue(v);
+    }
+    device->EndWork(ticket);
+    // Last use of the device: ~Device waits for in_flight_ to empty.
+    device->RemoveInFlight(cb);
+  });
+  cmd_->commit();
+  committed_.store(v);
+  last_commit_time_ = std::chrono::steady_clock::now();
+  reset_open();  // AddInFlight holds its own reference
+  return absl::OkStatus();
+}
+
+absl::Status Device::MakeRoomLocked(uint64_t flops) {
+  const uint64_t f = std::min(flops, Stream::kMaxFlopsPerCommandBuffer);
+  if (cmd_ != nullptr && f > 0 && flops_in_cmd_ > 0 &&
+      flops_in_cmd_ + f > Stream::kMaxFlopsPerCommandBuffer) {
+    return CommitLocked();
+  }
+  return absl::OkStatus();
+}
+
+absl::Status Device::FinishOpLocked(uint64_t work, uint64_t flops) {
+  threads_in_cmd_ += work;
+  flops_in_cmd_ += std::min(flops, Stream::kMaxFlopsPerCommandBuffer);
+  ++ops_in_cmd_;
+  if (ops_in_cmd_ >= Stream::kMaxOpsPerCommandBuffer ||
+      threads_in_cmd_ >= Stream::kMaxThreadsPerCommandBuffer ||
+      flops_in_cmd_ >= Stream::kMaxFlopsPerCommandBuffer) {
+    return CommitLocked();
+  }
+  if (ops_in_cmd_ >= Stream::kEarlyCommitOps &&
+      timeline_->signaledValue() >= committed_.load() &&
+      std::chrono::steady_clock::now() - last_commit_time_ >=
+          std::chrono::microseconds(Stream::kEarlyCommitIntervalUs)) {
+    return CommitLocked();
+  }
+  return absl::OkStatus();
+}
+
+// ---------------------------------------------------------------------------
 // Stream
 
-Stream::Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence)
-    : device_(device), queue_(queue), fence_(fence) {
+Stream::Stream(Device* device, MTL::SharedEvent* host_fence)
+    : device_(device), host_fence_(host_fence) {
   worker_ = std::thread([this]() { WorkerLoop(); });
 }
 
@@ -1475,18 +1706,6 @@ Stream::~Stream() {
   }
   work_cv_.notify_all();
   if (worker_.joinable()) worker_.join();
-  if (enc_) {
-    enc_->endEncoding();
-    enc_->release();
-  }
-  if (cmd_) {
-    cmd_->release();
-    device_->EndWork(cmd_ticket_);
-  }
-  for (auto& sv : pending_signals_) sv.first->release();
-  for (MTL::CommandBuffer* cb : in_flight_) cb->release();
-  fence_->release();
-  queue_->release();
 }
 
 void Stream::WorkerLoop() {
@@ -1499,12 +1718,8 @@ void Stream::WorkerLoop() {
       task = std::move(work_.front());
       work_.pop_front();
     }
-    // The waits give up once the device has failed.
-    absl::Status status = WaitForValueOnHost(device_, fence_, task.wait_value);
-    for (auto& [ev, value] : task.extra_waits) {
-      if (status.ok()) status = WaitForValueOnHost(device_, ev, value);
-      ev->release();
-    }
+    // The GPU wait gives up once the device has failed.
+    absl::Status status = device_->WaitForPoint(task.after);
     if (status.ok()) {
       device_->CheckInFlight(/*wait=*/true);
       status = device_->error();
@@ -1513,7 +1728,7 @@ void Stream::WorkerLoop() {
     // the error. Without one, the task runs anyway (XLA's callbacks without
     // an error callback free memory or complete transfers).
     // on_error runs as the task too: it must not call into this stream.
-    current_host_task = {fence_, task.signal_value};
+    current_host_task = {host_fence_, task.value};
     if (!status.ok() && task.on_error) {
       task.on_error(status);
     } else {
@@ -1525,328 +1740,144 @@ void Stream::WorkerLoop() {
       }
     }
     current_host_task = {};
-    // A failed command buffer may have force-signaled the fence past this
-    // value meanwhile; never move it backwards.
-    if (fence_->signaledValue() < task.signal_value) {
-      fence_->setSignaledValue(task.signal_value);
-    }
+    host_fence_->setSignaledValue(task.value);
     task.fn = nullptr;  // drops what it captured before the ticket ends
     device_->EndWork(task.ticket);
   }
 }
 
-absl::Status Stream::EnsureCommandBuffer() {
-  // Checked for an open buffer too: after an error on another stream, no
-  // more work goes into it (Commit drops it).
-  ABSL_RETURN_IF_ERROR(device_->error());
-  if (cmd_ != nullptr) {
-    FlushDeferredWaits();
-    return absl::OkStatus();
+WorkPoint Stream::CurrentLocked() const {
+  WorkPoint p = waits_;
+  p.t = std::max(p.t, gpu_pos_);
+  return p;
+}
+
+absl::Status Stream::BeginGpuOpLocked() {
+  if (!waits_.hosts.empty()) {
+    WorkPoint hosts;
+    hosts.hosts = waits_.hosts;
+    if (!device_->PointDone(hosts)) {
+      device_->encode_host_waits_.fetch_add(1, std::memory_order_relaxed);
+      // Not holding the queue lock: other streams keep encoding meanwhile.
+      // The tasks' own GPU dependencies were committed when they were
+      // enqueued, so they can run.
+      ABSL_RETURN_IF_ERROR(device_->WaitForPoint(hosts));
+    }
   }
-  // Retained references: XLA frees device buffers as soon as the host no
-  // longer needs them and relies on the driver to keep memory alive until
-  // enqueued GPU work completes (as CUDA does). Metal only does that for
-  // retained command buffers; unretained ones fault with
-  // kIOGPUCommandBufferCallbackErrorInvalidResource.
-  // Callers are XLA threads without an autorelease pool; without one the
-  // autoreleased command buffer would stay referenced until thread exit.
-  NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-  cmd_ = queue_->commandBuffer();
-  if (cmd_ != nullptr) cmd_->retain();
-  pool->release();
-  if (cmd_ == nullptr) {
-    return absl::InternalError(absl::StrCat(
-        "Metal commandBuffer creation failed on device ", device_->ordinal()));
-  }
-  cmd_ticket_ = device_->BeginWork();
-  ops_in_cmd_ = 0;
-  threads_in_cmd_ = 0;
-  flops_in_cmd_ = 0;
-  FlushDeferredWaits();
+  // GPU work waited for is ahead in the queue.
+  waits_ = WorkPoint();
   return absl::OkStatus();
 }
 
-void Stream::FlushDeferredWaits() {
-  if (deferred_waits_.empty()) return;
-  EndEncoder();
-  for (const PendingWait& w : deferred_waits_) {
-    cmd_->encodeWait(w.event, w.value);
-    pending_waits_.push_back(w);
-  }
-  deferred_waits_.clear();
+absl::Status Stream::FinishGpuOpLocked(uint64_t work, uint64_t flops) {
+  gpu_pos_ = device_->committed_.load() + 1;  // the open buffer
+  return device_->FinishOpLocked(work, flops);
 }
 
-absl::Status Stream::EnsureComputeEncoder() {
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  if (enc_ == nullptr) {
-    NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
-    enc_ = cmd_->computeCommandEncoder(MTL::DispatchTypeSerial);
-    if (enc_ != nullptr) enc_->retain();
-    pool->release();
-    if (enc_ == nullptr) {
-      return absl::InternalError("Metal computeCommandEncoder creation failed");
-    }
-  }
-  return absl::OkStatus();
-}
-
-void Stream::EndEncoder() {
-  if (enc_ != nullptr) {
-    enc_->endEncoding();
-    enc_->release();
-    enc_ = nullptr;
-  }
-}
-
-absl::Status Stream::Commit() {
-  if (cmd_ == nullptr) return absl::OkStatus();
-  if (!device_->error().ok()) {
-    // The error is sticky and the GPU may have been reset: drop the buffer
-    // instead of committing it, and end it as a failed buffer's handler
-    // does, so waiters on its values wake up (and then see the error).
-    // An earlier buffer still in flight may later signal the fence to a
-    // lower value (see WaitForValueOnHost: host waits check the error).
-    EndEncoder();
-    const uint64_t v = ++fence_value_;
-    last_committed_fence_value_ = v;
-    if (fence_->signaledValue() < v) fence_->setSignaledValue(v);
-    for (auto& sv : pending_signals_) {
-      if (sv.first->signaledValue() < sv.second) {
-        sv.first->setSignaledValue(sv.second);
-      }
-      sv.first->release();
-    }
-    pending_signals_.clear();
-    pending_waits_.clear();
-    pending_kernels_.clear();
-    inject_error_ = absl::OkStatus();
-    cmd_->release();
-    cmd_ = nullptr;
-    device_->EndWork(cmd_ticket_);
-    ops_in_cmd_ = 0;
-    threads_in_cmd_ = 0;
-    flops_in_cmd_ = 0;
-    return absl::OkStatus();
-  }
-  // Hold rule, plus: a buffer with no ops (RecordEvent after only waits,
-  // e.g. a zero-byte device-to-device copy behind the compute sync point)
-  // or on a transfer stream (set_waits_on_host) would sit on the GPU for as
-  // long as it waits, which counts against the watchdog. Wait for such a
-  // buffer's values on the host instead.
-  for (const PendingWait& w : pending_waits_) {
-    if (w.event->signaledValue() >= w.value) continue;
-    if (!w.host_task && ops_in_cmd_ > 0 && !waits_on_host_) continue;
-    ABSL_RETURN_IF_ERROR(CheckNotWaitingOnOwnHostTask(w.event, w.value));
-    if (w.host_task) {
-      device_->host_task_holds_.fetch_add(1, std::memory_order_relaxed);
-    }
-    ABSL_RETURN_IF_ERROR(WaitForValueOnHost(device_, w.event, w.value));
-  }
-  EndEncoder();
-  absl::Status injected_error = std::move(inject_error_);
-  inject_error_ = absl::OkStatus();
-  // METAL_PJRT_FAIL_COMMAND_BUFFER=n fails the n-th command buffer this
-  // process commits (testing error handling end to end).
-  static const uint64_t fail_at = EnvUint("METAL_PJRT_FAIL_COMMAND_BUFFER", 0);
-  static std::atomic<uint64_t> commits{0};
-  if (fail_at != 0 && commits.fetch_add(1) + 1 == fail_at) {
-    injected_error = absl::InternalError(absl::StrFormat(
-        "command buffer %d failed (METAL_PJRT_FAIL_COMMAND_BUFFER)", fail_at));
-  }
-  // Every command buffer ends by signaling the stream timeline, so
-  // Synchronize/WaitForStream have a value to wait on, then its events.
-  // Invariant: the fence signal comes BEFORE the event signals. A waiter
-  // that sees an event value then knows the buffer's fence value is
-  // signaled, i.e. the buffer ran to its end, which is what makes
-  // Device::CheckInFlight wait for (and check) that buffer's status.
-  // An injected failure encodes no signals: its handler force-signals them.
-  const uint64_t v = ++fence_value_;
-  std::vector<std::pair<MTL::SharedEvent*, uint64_t>> signals;
-  signals.swap(pending_signals_);
-  if (injected_error.ok()) {
-    cmd_->encodeSignalEvent(fence_, v);
-    for (auto& sv : signals) cmd_->encodeSignalEvent(sv.first, sv.second);
-  }
-  std::vector<PendingWait> waits;
-  waits.swap(pending_waits_);
-  bool waits_on_gpu = false;
-  for (const PendingWait& w : waits) {
-    w.event->retain();
-    if (w.event->signaledValue() >= w.value) continue;
-    waits_on_gpu = true;
-    if (w.host_task) {
-      device_->unsignaled_host_task_waits_committed_.fetch_add(
-          1, std::memory_order_relaxed);
-    }
-  }
-  if (waits_on_gpu) {
-    device_->gpu_waits_encoded_.fetch_add(1, std::memory_order_relaxed);
-  }
-  auto kernels =
-      std::make_shared<const std::vector<std::shared_ptr<const KernelIdentity>>>(
-          std::move(pending_kernels_));
-  pending_kernels_.clear();
-  MTL::SharedEvent* fence = fence_;
-  fence->retain();
-  const int traced_ops = ops_in_cmd_;
-  // The handler must not touch `this`: after a failure ~Stream stops
-  // waiting for in-flight buffers, whose handlers may run later.
-  Device* device = device_;
-  const void* self = this;
-  const uint64_t ticket = cmd_ticket_;
-  device->AddInFlight(cmd_, fence_, v, injected_error);
-  cmd_->addCompletedHandler([device, self, v, fence, signals, waits,
-                             traced_ops, kernels, injected_error,
-                             ticket](MTL::CommandBuffer* cb) {
-    if (TraceEnabled()) {
-      LOG(ERROR) << "[metal-trace] stream " << self << " cb#" << v
-                 << " ops=" << traced_ops << " gpu_ms="
-                 << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3;
-    }
-    absl::Status error = injected_error;
-    const bool failed = cb->status() == MTL::CommandBufferStatusError;
-    if (failed) error = CommandBufferError(cb, device->ordinal());
-    if (!error.ok()) {
-      LOG(ERROR) << error.message();
-      // Diagnostics (--v=1): a timeout on a buffer with little GPU work
-      // usually means it sat on a wait whose signal never came. Say which.
-      if (VLOG_IS_ON(1)) {
-        for (const PendingWait& w : waits) {
-          VLOG(1) << "  this command buffer waited on " << w.kind
-                  << " event " << w.event << " for value " << w.value
-                  << "; its signaled value is now "
-                  << w.event->signaledValue();
-        }
-        std::string names;
-        for (const auto& k : *kernels) absl::StrAppend(&names, " ", k->name);
-        VLOG(1) << "  ops in buffer: " << traced_ops << ", gpu time ms: "
-                << (cb->GPUEndTime() - cb->GPUStartTime()) * 1e3
-                << ", kernels:" << names;
-      }
-      LogMemoryState(device);
-      // Watchdog timeouts and revoked/removed devices mean the GPU was
-      // reset underneath us: record the suspects (quarantine).
-      const long code = failed && cb->error() ? cb->error()->code() : 0;
-      if (code == MTL::CommandBufferErrorTimeout ||
-          code == MTL::CommandBufferErrorAccessRevoked ||
-          code == MTL::CommandBufferErrorDeviceRemoved) {
-        // One record per incident: a reset fails every buffer in flight.
-        if (!device->reset_recorded_.exchange(true)) {
-          device->RecordReset(error.message(), *kernels);
-        }
-      }
-      // Before the force-signals below, so waiters woken by them see it.
-      device->SetError(error);
-      if (fence->signaledValue() < v) fence->setSignaledValue(v);
-      for (auto& sv : signals) {
-        if (sv.first->signaledValue() < sv.second) {
-          sv.first->setSignaledValue(sv.second);
-        }
-      }
-    }
-    device->EndWork(ticket);
-    // Last use of the device: ~Device waits for in_flight_ to empty.
-    device->RemoveInFlight(cb);
-    for (auto& sv : signals) sv.first->release();
-    for (auto& w : waits) w.event->release();
-    fence->release();
-  });
-  cmd_->commit();
-  last_commit_time_ = std::chrono::steady_clock::now();
-  // Keep the (retained) buffer until it completes; prune finished ones.
-  in_flight_.push_back(cmd_);
-  cmd_ = nullptr;
-  ops_in_cmd_ = 0;
-  threads_in_cmd_ = 0;
-  flops_in_cmd_ = 0;
-  last_committed_fence_value_ = v;
-  std::vector<MTL::CommandBuffer*> still_running;
-  for (MTL::CommandBuffer* cb : in_flight_) {
-    MTL::CommandBufferStatus st = cb->status();
-    if (st == MTL::CommandBufferStatusCompleted ||
-        st == MTL::CommandBufferStatusError) {
-      cb->release();
-    } else {
-      still_running.push_back(cb);
-    }
-  }
-  in_flight_.swap(still_running);
-  return absl::OkStatus();
-}
-
-absl::Status Stream::Flush() {
-  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
-  std::lock_guard<std::mutex> lock(mu_);
-  return Commit();
-}
-
-void Stream::set_waits_on_host(bool waits_on_host) {
-  std::lock_guard<std::mutex> lock(mu_);
-  waits_on_host_ = waits_on_host;
-}
-
-std::pair<uint64_t, uint64_t> Stream::FenceForTesting() {
-  std::lock_guard<std::mutex> lock(mu_);
-  return {last_committed_fence_value_, fence_->signaledValue()};
-}
-
-void Stream::FailNextCommandBufferForTesting(absl::Status error) {
-  std::lock_guard<std::mutex> lock(mu_);
-  inject_error_ = std::move(error);
+bool Stream::IdleLocked() {
+  // CheckInFlight: a buffer that ran to its end may still have failed (its
+  // handler not run yet); an inline copy must not read its output.
+  return device_->error().ok() && device_->PointDone(CurrentLocked()) &&
+         device_->CheckInFlight(/*wait=*/false);
 }
 
 absl::Status Stream::RefuseOwnHostTask() const {
-  // Checked before taking mu_: a Commit on another thread may hold it while
-  // it waits (hold rule) for this very task, and the task would block on it.
-  if (current_host_task.fence != fence_) return absl::OkStatus();
+  // Checked before taking mu_: the task may be what another thread holding
+  // mu_ is waiting for.
+  if (current_host_task.fence != host_fence_) return absl::OkStatus();
   return absl::FailedPreconditionError(
       "a host task called into its own Metal stream; it could wait for "
       "itself");
 }
 
+absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
+                                  std::function<void(absl::Status)> on_error) {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  std::lock_guard<std::mutex> lock(mu_);
+  HostTask task{CurrentLocked(), std::move(fn), std::move(on_error),
+                ++host_value_, device_->BeginWork()};
+  // The task waits for this on the host: commit the open buffer if it holds
+  // some of it. After a failure that drops the buffer, which is fine: the
+  // task is enqueued anyway and sees the error.
+  absl::Status committed = device_->CommitThrough(task.after.t);
+  if (!committed.ok()) LOG(ERROR) << committed;
+  // Later work on the stream waits for the task (which waits for the rest).
+  waits_ = WorkPoint();
+  waits_.hosts.emplace_back(host_fence_, task.value);
+  {
+    std::lock_guard<std::mutex> wlock(work_mu_);
+    work_.push_back(std::move(task));
+  }
+  work_cv_.notify_one();
+  return absl::OkStatus();
+}
+
+absl::Status Stream::RecordEvent(Event* event) {
+  if (event == nullptr) {
+    return absl::InvalidArgumentError("RecordEvent: null event");
+  }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  std::lock_guard<std::mutex> lock(mu_);
+  WorkPoint p = CurrentLocked();
+  // Committed now so the event completes without waiting for the next
+  // commit (pollers do not commit).
+  ABSL_RETURN_IF_ERROR(device_->CommitThrough(p.t));
+  std::lock_guard<std::mutex> elock(event->mu_);
+  event->point_ = std::move(p);
+  return absl::OkStatus();
+}
+
+absl::Status Stream::WaitForEvent(Event* event) {
+  if (event == nullptr) {
+    return absl::InvalidArgumentError("WaitForEvent: null event");
+  }
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  WorkPoint p = event->point();
+  std::lock_guard<std::mutex> lock(mu_);
+  waits_.Merge(p);
+  return absl::OkStatus();
+}
+
+absl::Status Stream::WaitForStream(Stream* other) {
+  if (other == nullptr) {
+    return absl::InvalidArgumentError("WaitForStream: null stream");
+  }
+  if (other == this) return absl::OkStatus();
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  ABSL_RETURN_IF_ERROR(other->RefuseOwnHostTask());
+  WorkPoint p;
+  {
+    std::lock_guard<std::mutex> olock(other->mu_);
+    p = other->CurrentLocked();
+  }
+  std::lock_guard<std::mutex> lock(mu_);
+  waits_.Merge(p);
+  return absl::OkStatus();
+}
+
 absl::Status Stream::Synchronize() {
   ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
-  ABSL_RETURN_IF_ERROR(Commit());
-  // Wait for completion (not just the fence signal) so resources referenced
-  // by these command buffers may be freed by the caller right away.
-  for (MTL::CommandBuffer* cb : in_flight_) {
-    // Bounded wait: after a failure (a reset), committed work may never run.
-    while (true) {
-      MTL::CommandBufferStatus st = cb->status();
-      if (st == MTL::CommandBufferStatusCompleted ||
-          st == MTL::CommandBufferStatusError) {
-        break;
-      }
-      // Read the fence before the error: a fence moved by a failure's
-      // force-signal comes with the error already set.
-      const bool ended = fence_->signaledValue() >= last_committed_fence_value_;
-      if (!device_->error().ok()) break;  // abandon it
-      if (ended) {
-        // The buffer's last action (the fence signal) has run, so its status
-        // flips to Completed as soon as the completion handler fires; waiting
-        // for that cannot hang. (A timed sleep here cost ~1 ms per
-        // Synchronize and dominated sync-heavy programs.)
-        cb->waitUntilCompleted();
-        break;
-      }
-      fence_->waitUntilSignaledValue(last_committed_fence_value_, 200);
-    }
-    cb->release();
-  }
-  in_flight_.clear();
-  // Waits not yet encoded are satisfied on the host instead of by a
-  // wait-only command buffer (which would count against the GPU watchdog).
-  absl::Status status;
-  for (const PendingWait& w : deferred_waits_) {
-    if (!status.ok()) break;
-    status = CheckNotWaitingOnOwnHostTask(w.event, w.value);
-    if (status.ok()) status = WaitForValueOnHost(device_, w.event, w.value);
-  }
-  deferred_waits_.clear();
-  ABSL_RETURN_IF_ERROR(status);
+  ABSL_RETURN_IF_ERROR(device_->WaitForPoint(CurrentLocked()));
+  // Wait for completion (not just the timeline signal) so resources
+  // referenced by the work may be freed by the caller right away.
   device_->CheckInFlight(/*wait=*/true);
   return device_->error();
+}
+
+absl::Status Stream::Flush() {
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
+  std::lock_guard<std::mutex> lock(device_->q_mu_);
+  return device_->CommitLocked();
+}
+
+std::pair<uint64_t, uint64_t> Stream::FenceForTesting() {
+  return {device_->committed_.load(), device_->timeline_->signaledValue()};
+}
+
+void Stream::FailNextCommandBufferForTesting(absl::Status error) {
+  std::lock_guard<std::mutex> lock(device_->q_mu_);
+  device_->inject_error_ = std::move(error);
 }
 
 bool UsesArgumentBuffer(const std::string& msl_source,
@@ -1876,24 +1907,6 @@ uint32_t DeclaredMaxThreadsPerThreadgroup(const std::string& msl_source,
     return 0;
   }
   return n;
-}
-
-absl::Status Stream::FinishOp(uint64_t work, uint64_t flops) {
-  threads_in_cmd_ += work;
-  flops_in_cmd_ += std::min(flops, kMaxFlopsPerCommandBuffer);
-  ++ops_in_cmd_;
-  if (ops_in_cmd_ >= kMaxOpsPerCommandBuffer ||
-      threads_in_cmd_ >= kMaxThreadsPerCommandBuffer ||
-      flops_in_cmd_ >= kMaxFlopsPerCommandBuffer) {
-    return Commit();
-  }
-  if (ops_in_cmd_ >= kEarlyCommitOps &&
-      fence_->signaledValue() >= last_committed_fence_value_ &&
-      std::chrono::steady_clock::now() - last_commit_time_ >=
-          std::chrono::microseconds(kEarlyCommitIntervalUs)) {
-    return Commit();
-  }
-  return absl::OkStatus();
 }
 
 namespace {
@@ -1961,26 +1974,30 @@ absl::Status Stream::Launch(const Kernel& kernel, Dim3 threadgroups,
     }
     refs[i] = *ref;
   }
-  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
-  enc_->setComputePipelineState(kernel.pso());
-  pending_kernels_.push_back(kernel.identity());
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  ABSL_RETURN_IF_ERROR(device_->MakeRoomLocked(flops));
+  ABSL_RETURN_IF_ERROR(device_->EnsureComputeEncoderLocked());
+  MTL::ComputeCommandEncoder* enc = device_->enc_;
+  enc->setComputePipelineState(kernel.pso());
+  device_->pending_kernels_.push_back(kernel.identity());
   for (size_t i = 0; i < args.size(); ++i) {
     const KernelArg& a = args[i];
     if (a.is_buffer) {
-      enc_->setBuffer(refs[i].buffer, refs[i].offset,
-                      static_cast<NS::UInteger>(i));
-    } else {
-      enc_->setBytes(a.bytes.data(), a.bytes.size(),
+      enc->setBuffer(refs[i].buffer, refs[i].offset,
                      static_cast<NS::UInteger>(i));
+    } else {
+      enc->setBytes(a.bytes.data(), a.bytes.size(),
+                    static_cast<NS::UInteger>(i));
     }
   }
   if (threadgroup_memory_bytes > 0) {
-    enc_->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);
+    enc->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);
   }
-  enc_->dispatchThreadgroups(
+  enc->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(LaunchWork(threadgroups, threads), flops);
+  return FinishGpuOpLocked(LaunchWork(threadgroups, threads), flops);
 }
 
 absl::Status Stream::LaunchWithArgumentBuffer(
@@ -2003,24 +2020,28 @@ absl::Status Stream::LaunchWithArgumentBuffer(
       resident.push_back(ref->buffer);
     }
   }
-  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
-  enc_->setComputePipelineState(kernel.pso());
-  pending_kernels_.push_back(kernel.identity());
-  enc_->setBytes(addrs.data(), addrs.size() * sizeof(uint64_t), 0);
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  ABSL_RETURN_IF_ERROR(device_->MakeRoomLocked(flops));
+  ABSL_RETURN_IF_ERROR(device_->EnsureComputeEncoderLocked());
+  MTL::ComputeCommandEncoder* enc = device_->enc_;
+  enc->setComputePipelineState(kernel.pso());
+  device_->pending_kernels_.push_back(kernel.identity());
+  enc->setBytes(addrs.data(), addrs.size() * sizeof(uint64_t), 0);
   // Buffers reached only through GPU addresses must be made resident (and
   // visible to hazard tracking) explicitly.
   if (!resident.empty()) {
-    enc_->useResources(
+    enc->useResources(
         reinterpret_cast<const MTL::Resource* const*>(resident.data()),
         resident.size(), MTL::ResourceUsageRead | MTL::ResourceUsageWrite);
   }
   if (threadgroup_memory_bytes > 0) {
-    enc_->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);
+    enc->setThreadgroupMemoryLength(threadgroup_memory_bytes, 0);
   }
-  enc_->dispatchThreadgroups(
+  enc->dispatchThreadgroups(
       MTL::Size(threadgroups.x, threadgroups.y, threadgroups.z),
       MTL::Size(threads.x, threads.y, threads.z));
-  return FinishOp(LaunchWork(threadgroups, threads), flops);
+  return FinishGpuOpLocked(LaunchWork(threadgroups, threads), flops);
 }
 
 absl::Status Stream::EncodeExternal(
@@ -2028,10 +2049,13 @@ absl::Status Stream::EncodeExternal(
     uint64_t flops) {
   ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   std::lock_guard<std::mutex> lock(mu_);
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  EndEncoder();
-  ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(cmd_)));
-  return FinishOp(0, flops);
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  ABSL_RETURN_IF_ERROR(device_->MakeRoomLocked(flops));
+  ABSL_RETURN_IF_ERROR(device_->EnsureCommandBufferLocked());
+  device_->EndEncoderLocked();
+  ABSL_RETURN_IF_ERROR(encode(static_cast<void*>(device_->cmd_)));
+  return FinishGpuOpLocked(0, flops);
 }
 
 namespace {
@@ -2060,22 +2084,26 @@ absl::Status Stream::MemcpyDeviceToDevice(void* dst, const void* src,
   if (!s.ok()) return Annotate(s.status(), absl::StrCat(what, " source"));
   ABSL_RETURN_IF_ERROR(CheckRange(*d, size, absl::StrCat(what, " destination")));
   ABSL_RETURN_IF_ERROR(CheckRange(*s, size, absl::StrCat(what, " source")));
-  return EncodeCopy(*d, *s, size);
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  uint64_t work = 0;
+  ABSL_RETURN_IF_ERROR(device_->EncodeCopyLocked(*d, *s, size, &work));
+  return FinishGpuOpLocked(work);
 }
 
 // One-dimensional dispatch of a built-in kernel over n elements: buffers
-// 0..k-1 then the element count at index k. Caller holds mu_.
-absl::Status Stream::EncodeBuiltin(Device::Builtin kind,
-                                   absl::Span<const BufferRef> buffers,
-                                   const void* bytes, size_t bytes_len,
-                                   uint64_t n64) {
+// 0..k-1 then the element count at index k.
+absl::Status Device::EncodeBuiltinLocked(Builtin kind,
+                                         absl::Span<const BufferRef> buffers,
+                                         const void* bytes, size_t bytes_len,
+                                         uint64_t n64, uint64_t* work) {
   if (n64 > std::numeric_limits<uint32_t>::max()) {
     return absl::UnimplementedError(absl::StrFormat(
         "built-in kernel over %d elements exceeds the 32-bit limit", n64));
   }
-  ABSL_ASSIGN_OR_RETURN(const Kernel* kernel, device_->BuiltinKernel(kind));
+  ABSL_ASSIGN_OR_RETURN(const Kernel* kernel, BuiltinKernel(kind));
   const uint32_t n = static_cast<uint32_t>(n64);
-  ABSL_RETURN_IF_ERROR(EnsureComputeEncoder());
+  ABSL_RETURN_IF_ERROR(EnsureComputeEncoderLocked());
   enc_->setComputePipelineState(kernel->pso());
   pending_kernels_.push_back(kernel->identity());
   NS::UInteger slot = 0;
@@ -2085,17 +2113,20 @@ absl::Status Stream::EncodeBuiltin(Device::Builtin kind,
   const uint32_t group =
       std::min<uint32_t>(n, kernel->max_total_threads_per_threadgroup());
   enc_->dispatchThreads(MTL::Size(n, 1, 1), MTL::Size(group, 1, 1));
-  return FinishOp(n);
+  *work = n;
+  return absl::OkStatus();
 }
 
-absl::Status Stream::EncodeCopy(BufferRef dst, BufferRef src, uint64_t size) {
-  if (size <= kComputeCopyMaxBytes) {
+absl::Status Device::EncodeCopyLocked(BufferRef dst, BufferRef src,
+                                      uint64_t size, uint64_t* work) {
+  if (size <= Stream::kComputeCopyMaxBytes) {
     const bool vec = size % 16 == 0 && dst.offset % 16 == 0 && src.offset % 16 == 0;
-    return EncodeBuiltin(vec ? Device::Builtin::kCopy16 : Device::Builtin::kCopy8,
-                         {src, dst}, nullptr, 0, vec ? size / 16 : size);
+    return EncodeBuiltinLocked(vec ? Builtin::kCopy16 : Builtin::kCopy8,
+                               {src, dst}, nullptr, 0, vec ? size / 16 : size,
+                               work);
   }
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  EndEncoder();
+  ABSL_RETURN_IF_ERROR(EnsureCommandBufferLocked());
+  EndEncoderLocked();
   // The encoder is autoreleased; XLA threads have no pool of their own.
   NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
   MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
@@ -2107,7 +2138,8 @@ absl::Status Stream::EncodeCopy(BufferRef dst, BufferRef src, uint64_t size) {
   blit->copyFromBuffer(src.buffer, src.offset, dst.buffer, dst.offset, size);
   blit->endEncoding();
   pool->release();
-  return FinishOp(size / 4);  // about one thread per word
+  *work = size / 4;  // about one thread per word
+  return absl::OkStatus();
 }
 
 absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
@@ -2120,7 +2152,12 @@ absl::Status Stream::Memset8(void* dst, uint8_t value, uint64_t size) {
   if (!d.ok()) return Annotate(d.status(), what);
   ABSL_RETURN_IF_ERROR(CheckRange(*d, size, what));
   const uint32_t v = value;
-  return EncodeFill(*d, v | v << 8 | v << 16 | v << 24, 1, size);
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  uint64_t work = 0;
+  ABSL_RETURN_IF_ERROR(device_->EncodeFillLocked(
+      *d, v | v << 8 | v << 16 | v << 24, 1, size, &work));
+  return FinishGpuOpLocked(work);
 }
 
 absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
@@ -2137,17 +2174,22 @@ absl::Status Stream::Memset32(void* dst, uint32_t value, uint64_t size) {
   absl::StatusOr<BufferRef> d = device_->Resolve(dst);
   if (!d.ok()) return Annotate(d.status(), what);
   ABSL_RETURN_IF_ERROR(CheckRange(*d, size, what));
-  return EncodeFill(*d, value, 4, size);
+  ABSL_RETURN_IF_ERROR(BeginGpuOpLocked());
+  std::lock_guard<std::mutex> q(device_->q_mu_);
+  uint64_t work = 0;
+  ABSL_RETURN_IF_ERROR(device_->EncodeFillLocked(*d, value, 4, size, &work));
+  return FinishGpuOpLocked(work);
 }
 
-absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
-                                int pattern_bytes, uint64_t size) {
+absl::Status Device::EncodeFillLocked(BufferRef dst, uint32_t pattern,
+                                      int pattern_bytes, uint64_t size,
+                                      uint64_t* work) {
   const uint8_t b = static_cast<uint8_t>(pattern & 0xff);
   const bool uniform = (pattern >> 8 & 0xff) == b &&
                        (pattern >> 16 & 0xff) == b && (pattern >> 24 & 0xff) == b;
-  if (uniform && size > kComputeCopyMaxBytes) {
-    ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-    EndEncoder();
+  if (uniform && size > Stream::kComputeCopyMaxBytes) {
+    ABSL_RETURN_IF_ERROR(EnsureCommandBufferLocked());
+    EndEncoderLocked();
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
     MTL::BlitCommandEncoder* blit = cmd_->blitCommandEncoder();
     if (blit == nullptr) {
@@ -2158,48 +2200,14 @@ absl::Status Stream::EncodeFill(BufferRef dst, uint32_t pattern,
     blit->fillBuffer(dst.buffer, NS::Range(dst.offset, size), b);
     blit->endEncoding();
     pool->release();
-    return FinishOp(size / 4);
+    *work = size / 4;
+    return absl::OkStatus();
   }
   // Word-granular when the range is 4-byte aligned; bytes otherwise.
   const bool words = size % 4 == 0 && dst.offset % 4 == 0;
-  return EncodeBuiltin(words ? Device::Builtin::kFill32 : Device::Builtin::kFill8,
-                       {dst}, &pattern, sizeof(pattern), words ? size / 4 : size);
-}
-
-absl::Status Stream::HostCallback(std::function<absl::Status()> fn,
-                                  std::function<void(absl::Status)> on_error) {
-  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
-  std::lock_guard<std::mutex> lock(mu_);
-  // 1. Commit everything so far; it ends with a fence signal (value v). Waits
-  //    still deferred on this stream become waits of the host task itself.
-  //    After a failure the task is still enqueued: it runs or hands the
-  //    error to on_error (see the header). That includes a failure seen
-  //    while this commit held for an earlier host task: commit again (which
-  //    drops the buffer) rather than lose the task. Only the self-wait
-  //    refusal (no failure) is returned.
-  absl::Status committed = Commit();
-  if (!committed.ok()) {
-    if (device_->error().ok()) return committed;
-    ABSL_RETURN_IF_ERROR(Commit());
-  }
-  uint64_t done_value = ++fence_value_;
-  uint64_t after_prior = last_committed_fence_value_;
-  HostTask task{after_prior, std::move(fn), std::move(on_error), done_value,
-                device_->BeginWork(), {}};
-  for (const PendingWait& w : deferred_waits_) {
-    w.event->retain();
-    task.extra_waits.emplace_back(w.event, w.value);
-  }
-  deferred_waits_.clear();
-  {
-    std::lock_guard<std::mutex> lock(work_mu_);
-    work_.push_back(std::move(task));
-  }
-  work_cv_.notify_one();
-  // 2. Later GPU work on this stream waits for the task; the wait is encoded
-  //    lazily, in front of that work (see deferred_waits_).
-  deferred_waits_.push_back({fence_, done_value, "host-callback", true});
-  return absl::OkStatus();
+  return EncodeBuiltinLocked(words ? Builtin::kFill32 : Builtin::kFill8, {dst},
+                             &pattern, sizeof(pattern),
+                             words ? size / 4 : size, work);
 }
 
 absl::Status Stream::CheckHostTransfer(const void* device_ptr, uint64_t size,
@@ -2229,34 +2237,22 @@ absl::Status Stream::MemcpyHostToDevice(void* dst, const void* src,
         size));
   }
   ABSL_RETURN_IF_ERROR(CheckHostTransfer(dst, size, "MemcpyHostToDevice"));
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   {
-    ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);
     if (IdleLocked()) {
       std::memcpy(dst, src, size);
       return absl::OkStatus();
     }
   }
-  return HostCallback([dst, src, size]() {
-    std::memcpy(dst, src, size);
-    return absl::OkStatus();
-  });
-}
-
-bool Stream::IdleLocked() {
-  // CheckInFlight: a buffer that ran to its end may still have failed
-  // (its handler not run yet); an inline copy must not read its output.
-  if (cmd_ != nullptr || !device_->CheckInFlight(/*wait=*/false) ||
-      !device_->error().ok()) {
-    return false;
-  }
-  deferred_waits_.erase(
-      std::remove_if(deferred_waits_.begin(), deferred_waits_.end(),
-                     [](const PendingWait& w) {
-                       return w.event->signaledValue() >= w.value;
-                     }),
-      deferred_waits_.end());
-  return deferred_waits_.empty() && fence_->signaledValue() >= fence_value_;
+  // After a failure the copy is skipped (on_error): the buffers may be on
+  // their way out.
+  return HostCallback(
+      [dst, src, size]() {
+        std::memcpy(dst, src, size);
+        return absl::OkStatus();
+      },
+      [](absl::Status) {});
 }
 
 absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
@@ -2268,94 +2264,20 @@ absl::Status Stream::MemcpyDeviceToHost(void* dst, const void* src,
         size));
   }
   ABSL_RETURN_IF_ERROR(CheckHostTransfer(src, size, "MemcpyDeviceToHost"));
+  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
   {
-    ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
     std::lock_guard<std::mutex> lock(mu_);
     if (IdleLocked()) {
       std::memcpy(dst, src, size);
       return absl::OkStatus();
     }
   }
-  return HostCallback([dst, src, size]() {
-    std::memcpy(dst, src, size);
-    return absl::OkStatus();
-  });
-}
-
-absl::Status Stream::RecordEvent(Event* event) {
-  if (event == nullptr) {
-    return absl::InvalidArgumentError("RecordEvent: null event");
-  }
-  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
-  std::lock_guard<std::mutex> lock(mu_);
-  ABSL_RETURN_IF_ERROR(EnsureCommandBuffer());
-  uint64_t v;
-  {
-    std::lock_guard<std::mutex> elock(event->mu_);
-    v = ++event->next_value_;
-  }
-  event->event_->retain();  // released by Commit's handler (or ~Stream)
-  pending_signals_.emplace_back(event->event_, v);  // encoded by Commit
-  // Commit so a host or another stream waiting on the event can make
-  // progress, and publish the value only then: Commit may first wait for a
-  // host task (hold rule), and a wait on the value before its signaling
-  // buffer is committed would sit on the GPU. Waiters on a published value
-  // therefore never wait for unfinished host work.
-  ABSL_RETURN_IF_ERROR(Commit());
-  std::lock_guard<std::mutex> elock(event->mu_);
-  event->value_ = std::max(event->value_, v);
-  return absl::OkStatus();
-}
-
-absl::Status Stream::WaitForEvent(Event* event) {
-  if (event == nullptr) {
-    return absl::InvalidArgumentError("WaitForEvent: null event");
-  }
-  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
-  std::lock_guard<std::mutex> lock(mu_);
-  uint64_t v;
-  {
-    std::lock_guard<std::mutex> elock(event->mu_);
-    v = event->value_;
-  }
-  if (v == 0) return absl::OkStatus();
-  deferred_waits_.push_back({event->event_, v, "event"});
-  return absl::OkStatus();
-}
-
-absl::Status Stream::WaitForStream(Stream* other) {
-  if (other == nullptr) {
-    return absl::InvalidArgumentError("WaitForStream: null stream");
-  }
-  if (other == this) return absl::OkStatus();
-  ABSL_RETURN_IF_ERROR(RefuseOwnHostTask());
-  ABSL_RETURN_IF_ERROR(other->RefuseOwnHostTask());
-  // Wait for the highest value `other` has issued: after its Commit that is
-  // either its last command buffer or a host task enqueued after it (whose
-  // value is signaled by the host, hence the hold rule applies). Values are
-  // monotonic in stream order: later work waits for earlier host tasks.
-  // Also inherit the waits `other` has not encoded yet (it may have launched
-  // nothing since it was told to wait): waiting for `other` means waiting
-  // for everything it is ordered after. Same lifetime rule as any deferred
-  // wait (the events' owners outlive the wait).
-  uint64_t v;
-  bool host_task;
-  std::vector<PendingWait> inherited;
-  {
-    std::lock_guard<std::mutex> olock(other->mu_);
-    ABSL_RETURN_IF_ERROR(other->Commit());
-    v = other->fence_value_;
-    host_task = v > other->last_committed_fence_value_;
-    for (const PendingWait& w : other->deferred_waits_) {
-      if (w.event != other->fence_) inherited.push_back(w);  // else <= v
-    }
-  }
-  std::lock_guard<std::mutex> lock(mu_);
-  deferred_waits_.insert(deferred_waits_.end(), inherited.begin(),
-                         inherited.end());
-  if (v == 0) return absl::OkStatus();
-  deferred_waits_.push_back({other->fence_, v, "stream", host_task});
-  return absl::OkStatus();
+  return HostCallback(
+      [dst, src, size]() {
+        std::memcpy(dst, src, size);
+        return absl::OkStatus();
+      },
+      [](absl::Status) {});
 }
 
 }  // namespace rt
@@ -2400,8 +2322,8 @@ __attribute__((visibility("default"))) int metal_pjrt_memory_stats(
   return -1;
 }
 
-// Writes up to n of {gpu_waits_encoded, host_task_holds,
-// unsignaled_host_task_waits_committed} of device `ordinal` to out; returns
+// Writes up to n of {gpu_waits_encoded (always 0), encode_host_waits} of
+// device `ordinal` to out; returns
 // 0, or -1 if there is no such device. A separate hook so callers of
 // metal_pjrt_memory_stats keep their 8-slot buffers.
 __attribute__((visibility("default"))) int metal_pjrt_sync_stats(
@@ -2410,9 +2332,8 @@ __attribute__((visibility("default"))) int metal_pjrt_sync_stats(
   std::lock_guard<std::mutex> lock(g_devices_mu);
   for (Device* d : g_devices) {
     if (d->ordinal() != ordinal) continue;
-    const uint64_t v[] = {d->gpu_waits_encoded(), d->host_task_holds(),
-                          d->unsignaled_host_task_waits_committed()};
-    for (int i = 0; i < n && i < 3; ++i) out[i] = v[i];
+    const uint64_t v[] = {d->gpu_waits_encoded(), d->encode_host_waits()};
+    for (int i = 0; i < n && i < 2; ++i) out[i] = v[i];
     return 0;
   }
   return -1;

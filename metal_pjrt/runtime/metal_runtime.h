@@ -6,10 +6,24 @@
 // XLA's abstractions.
 //
 // Model:
-//   Device   one MTL::Device + allocator bookkeeping + the kernel cache
-//   Stream   one MTL::CommandQueue; work is encoded into an open command buffer
-//            that is committed at sync points or when an op budget is reached
-//   Event    a value on an MTL::SharedEvent (timeline semaphore)
+//   Device   one MTL::Device + allocator bookkeeping + the kernel cache, and
+//            the device's one MTL::CommandQueue: GPU work of every stream is
+//            encoded into its open command buffer, committed at sync points
+//            or when a budget is reached. Each committed buffer ends by
+//            signaling the device timeline (an MTL::SharedEvent) with its
+//            sequence number, so a timeline value names all GPU work up to
+//            that buffer.
+//   Stream   a handle on the queue: the timeline value of its last GPU op,
+//            the waits its next op must respect, and a worker thread for its
+//            host tasks (each signals the stream's host fence when done).
+//   Event    a WorkPoint: a timeline value plus host-task values.
+//
+// No command buffer ever waits on the GPU: GPU work that depends on other
+// GPU work is behind it in the one queue, and GPU work that depends on a
+// host task is encoded only once the task has run (the encoding thread
+// waits on the host, without holding the queue lock). Host tasks wait on
+// the host for the timeline, and the work they wait for is committed
+// before they are enqueued.
 //
 // Device memory is plain MTL::Buffer with shared storage (unified memory), so
 // a "device pointer" is the buffer's contents() address. XLA hands us raw
@@ -250,6 +264,15 @@ struct FunctionConstant {
 class Event;
 class Stream;
 
+// A position in a device's work: GPU work up to device timeline value `t`
+// (0: none) and host tasks up to `value` on their stream's host fence.
+struct WorkPoint {
+  uint64_t t = 0;
+  std::vector<std::pair<MTL::SharedEvent*, uint64_t>> hosts;
+  // Both this and `other`.
+  void Merge(const WorkPoint& other);
+};
+
 class Device {
  public:
   static absl::StatusOr<std::unique_ptr<Device>> Create(int ordinal);
@@ -408,8 +431,7 @@ class Device {
   // and again. Every reset observed by this process is appended to
   // <state dir>/gpu_resets.jsonl with the time, the plugin build (ImageUuid,
   // diagnostics only) and the kernels that were in the command buffer that
-  // timed out (none when that buffer only waited on another stream; built-in
-  // kernels are listed separately and never blamed). Kernels seen in
+  // timed out (built-in kernels are listed separately and never blamed). Kernels seen in
   // `quarantine_strikes()` or more resets since boot are refused by
   // GetKernel until a reboot or until the log is cleared
   // (scripts/gpu_health.py --clear). A kernel whose source changes gets a
@@ -424,17 +446,21 @@ class Device {
   // Resets recorded since the machine booted (by any process).
   int resets_since_boot() const { return resets_since_boot_; }
 
-  // Hold-rule counters (see Stream::Commit): command buffers whose commit
-  // waited on the host for a host task, and command buffers committed while
-  // still waiting on an unfinished host task (must stay 0).
-  uint64_t host_task_holds() const { return host_task_holds_.load(); }
-  uint64_t unsignaled_host_task_waits_committed() const {
-    return unsignaled_host_task_waits_committed_.load();
-  }
-  // Command buffers committed with an encoded wait whose value was not yet
-  // signaled, i.e. that may wait on the GPU (for another stream's work).
-  // Buffers without ops never do (Stream::Commit waits on the host).
-  uint64_t gpu_waits_encoded() const { return gpu_waits_encoded_.load(); }
+  // Command buffers committed with an encoded GPU wait: 0 by construction
+  // (nothing encodes one), kept as the invariant tests check.
+  uint64_t gpu_waits_encoded() const { return 0; }
+  // GPU ops whose encoding waited on the host for a host task.
+  uint64_t encode_host_waits() const { return encode_host_waits_.load(); }
+
+  // Waits on the host until `p` is done, committing the open command
+  // buffer first if `p` includes work in it. A failure on the GPU ends the
+  // wait with the device error; host tasks always end (after a failure they
+  // skip or report, see Stream::HostCallback), so their values are waited
+  // for even then. FailedPrecondition when a host task would wait for
+  // itself or later work of its stream.
+  absl::Status WaitForPoint(const WorkPoint& p);
+  // Non-blocking: whether `p` is done (committed and signaled).
+  bool PointDone(const WorkPoint& p) const;
 
  private:
   Device() = default;
@@ -572,64 +598,100 @@ class Device {
   friend class Stream;
   friend class Event;
   // Committed command buffers whose completion handler has not run yet
-  // (retained, with their stream fence, retained, and the fence value they
-  // end by signaling; `injected` is FailNextCommandBufferForTesting's error,
-  // which counts as the buffer's status). Completion handlers remove
-  // theirs; they never block.
+  // (retained, with the timeline value they end by signaling; `injected` is
+  // FailNextCommandBufferForTesting's error, which counts as the buffer's
+  // status). Completion handlers remove theirs; they never block.
   struct InFlight {
     MTL::CommandBuffer* cb;
-    MTL::SharedEvent* fence;
     uint64_t value;
     absl::Status injected;
   };
   std::mutex in_flight_mu_;
   std::vector<InFlight> in_flight_;
-  void AddInFlight(MTL::CommandBuffer* cb, MTL::SharedEvent* fence,
-                   uint64_t value, absl::Status injected);
+  void AddInFlight(MTL::CommandBuffer* cb, uint64_t value,
+                   absl::Status injected);
   void RemoveInFlight(MTL::CommandBuffer* cb);
   // Called by host waiters after they saw a signal: sets error() if any
-  // in-flight command buffer has failed. A buffer whose fence value is
+  // in-flight command buffer has failed. A buffer whose timeline value is
   // signaled has run to its end, so with `wait` its final status is waited
   // for (Metal sets it before running handlers); without, returns false if
   // some such status is not final yet. This covers every buffer the waiter
-  // depends on, on any queue, without waiting for handlers (which Metal
-  // does not order across queues): a buffer that ran its signals signaled
-  // its fence first (see Stream::Commit), and one that did not is
-  // force-signaled by its handler after the error is recorded.
+  // depends on without waiting for handlers: one that did not run to its
+  // signal is force-signaled by its handler after the error is recorded.
   bool CheckInFlight(bool wait);
-  std::atomic<uint64_t> host_task_holds_{0};
-  std::atomic<uint64_t> unsignaled_host_task_waits_committed_{0};
-  std::atomic<uint64_t> gpu_waits_encoded_{0};
+  std::atomic<uint64_t> encode_host_waits_{0};
+
+  // The queue. Guarded by q_mu_; lock order Stream::mu_ -> q_mu_ -> the
+  // other device locks. Nothing waits while holding q_mu_.
+  std::mutex q_mu_;
+  MTL::CommandQueue* queue_ = nullptr;
+  MTL::SharedEvent* timeline_ = nullptr;
+  // The last committed buffer's timeline value; the open buffer's is one
+  // more. Written under q_mu_, read anywhere.
+  std::atomic<uint64_t> committed_{0};
+  MTL::CommandBuffer* cmd_ = nullptr;
+  uint64_t cmd_ticket_ = 0;  // BeginWork for cmd_
+  MTL::ComputeCommandEncoder* enc_ = nullptr;
+  int ops_in_cmd_ = 0;
+  uint64_t threads_in_cmd_ = 0;
+  uint64_t flops_in_cmd_ = 0;
+  std::chrono::steady_clock::time_point last_commit_time_{};
+  // Kernels encoded into the open buffer (failure diagnostics, reset log).
+  std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
+  absl::Status inject_error_;  // Stream::FailNextCommandBufferForTesting
+  // Streams' host fences, kept while the device lives: work points
+  // (events, other streams' waits) may name them after their stream is gone.
+  std::vector<MTL::SharedEvent*> host_fences_;
+  // Queue operations; caller holds q_mu_.
+  absl::Status EnsureCommandBufferLocked();
+  absl::Status EnsureComputeEncoderLocked();
+  void EndEncoderLocked();
+  // Commits the open buffer. After a device error nothing is committed: the
+  // buffer is dropped and its timeline value force-signaled, as a failed
+  // buffer's handler does.
+  absl::Status CommitLocked();
+  // Before encoding an op of `flops`: commits first if it would take the
+  // open buffer over kMaxFlopsPerCommandBuffer.
+  absl::Status MakeRoomLocked(uint64_t flops);
+  // Accounts one encoded op and commits per the batching policy (see
+  // Stream::kMaxOpsPerCommandBuffer).
+  absl::Status FinishOpLocked(uint64_t work, uint64_t flops);
+  absl::Status EncodeBuiltinLocked(Builtin kind,
+                                   absl::Span<const BufferRef> buffers,
+                                   const void* bytes, size_t bytes_len,
+                                   uint64_t n, uint64_t* work);
+  absl::Status EncodeCopyLocked(BufferRef dst, BufferRef src, uint64_t size,
+                                uint64_t* work);
+  absl::Status EncodeFillLocked(BufferRef dst, uint32_t pattern,
+                                int pattern_bytes, uint64_t size,
+                                uint64_t* work);
+  // Commits the open buffer if timeline value `t` is its.
+  absl::Status CommitThrough(uint64_t t);
 };
 
-// Timeline-semaphore style event: `Record` on a stream bumps and signals a
-// value; waiting (on host or another stream) targets that value.
+// An event is a recorded WorkPoint: everything enqueued on the stream
+// before RecordEvent. Waiting for it on another stream makes that stream's
+// later work wait (see Stream::WaitForEvent).
 class Event {
  public:
-  ~Event();
   Event(const Event&) = delete;
   Event& operator=(const Event&) = delete;
-  // True once the last recorded value has been signaled (also on failure).
+  // True once the recorded work is done (also on failure).
   bool IsComplete() const;
   // Non-blocking: false while pending, true once complete, or the device's
   // sticky error.
   absl::StatusOr<bool> Poll();
-  // Block the host until complete. Safe from host tasks: a value is
-  // published only once its signaling buffer is committed, and committed
-  // buffers never wait for unfinished host tasks.
+  // Block the host until complete (see Device::WaitForPoint).
   absl::Status WaitOnHost();
 
  private:
   friend class Device;
   friend class Stream;
-  Event(Device* device, MTL::SharedEvent* ev) : device_(device), event_(ev) {}
+  explicit Event(Device* device) : device_(device) {}
+  WorkPoint point() const;
   Device* device_;
-  MTL::SharedEvent* event_;
-  // Last recorded value whose signaling buffer is committed; 0 means never
-  // recorded. next_value_ is the last value handed out by RecordEvent.
-  uint64_t value_ = 0;
-  uint64_t next_value_ = 0;
-  std::mutex mu_;
+  mutable std::mutex mu_;
+  WorkPoint point_;  // empty until recorded
 };
 
 class Stream {
@@ -654,15 +716,15 @@ class Stream {
   static constexpr size_t kMaxArgumentBufferArgs = 4096 / sizeof(uint64_t);
 
   // Encode work produced outside this runtime (e.g. Metal Performance
-  // Shaders) into the stream's open command buffer, in order with all other
-  // stream work. Ends the current compute encoder, then calls `encode` with the
+  // Shaders) into the device's open command buffer, in order with all other
+  // work. Ends the current compute encoder, then calls `encode` with the
   // raw MTL::CommandBuffer* (as void*, so Objective-C++ callers can bridge it
   // to id<MTLCommandBuffer>). `encode` must create, use and end its own
-  // encoders, also when it returns an error (the stream opens its next
-  // encoder on the same buffer, and two open encoders are invalid; what it
-  // did encode stays in the buffer), and must not commit the buffer or call
-  // back into this stream (the stream lock is held). Counts as one op toward kMaxOpsPerCommandBuffer
-  // and `flops` toward kMaxFlopsPerCommandBuffer.
+  // encoders, also when it returns an error (the next op opens its encoder
+  // on the same buffer, and two open encoders are invalid; what it did
+  // encode stays in the buffer), and must not commit the buffer or call
+  // back into the runtime (the queue lock is held). Counts as one op toward
+  // kMaxOpsPerCommandBuffer and `flops` toward kMaxFlopsPerCommandBuffer.
   absl::Status EncodeExternal(
       std::function<absl::Status(void* mtl_command_buffer)> encode,
       uint64_t flops);
@@ -676,13 +738,12 @@ class Stream {
   absl::Status Memset32(void* dst, uint32_t value, uint64_t size);
 
   // Host transfers are ordered on the stream. With unified memory they are
-  // plain memcpys: done right away on the calling thread when nothing on or
-  // for this stream is pending (no open command buffer, every wait already
-  // satisfied, every committed buffer and host task finished); otherwise in
-  // a host callback once prior work completes, with later stream work
-  // waiting for it (so `src` must stay unchanged until the stream gets
-  // there, as XLA guarantees; pjrt/metal_pjrt_api.cc snapshots device_put's
-  // numpy data, or waits for the copy of a large array).
+  // plain memcpys: done right away on the calling thread when everything
+  // the stream has enqueued or waits for is done; otherwise as a host task
+  // (so `src` must stay unchanged until the stream gets there, as XLA
+  // guarantees; pjrt/metal_pjrt_api.cc snapshots device_put's numpy data,
+  // or waits for the copy of a large array). After a device failure the
+  // task skips the copy (XLA may already be freeing its buffers).
   absl::Status MemcpyHostToDevice(void* dst, const void* src, uint64_t size);
   absl::Status MemcpyDeviceToHost(void* dst, const void* src, uint64_t size);
   // The device side of a host transfer must be `size` bytes inside a live
@@ -692,50 +753,44 @@ class Stream {
   absl::Status CheckHostTransfer(const void* device_ptr, uint64_t size,
                                  absl::string_view what);
 
-  // Run `fn` on the host once all previously enqueued work has completed;
-  // subsequent stream work waits for it to finish. GPU work that waits for a
-  // host task is committed only after the task has run (see Commit), so a
-  // slow task never counts against the GPU watchdog. A task must not wait
-  // for its own stream: every method of that stream called from the task
-  // (or its `on_error`), Event::WaitOnHost and commits of other streams
-  // that would wait for the running task (or later work on its stream)
+  // Run `fn` on the stream's worker thread once everything enqueued on the
+  // stream (or that it waits for) is done; later work on the stream waits
+  // for it (GPU work is encoded only after it ran). A task must not wait for
+  // its own stream: every method of that stream called from the task (or
+  // its `on_error`), and host waits on the task or later work of its stream,
   // return FailedPreconditionError instead of deadlocking.
   //
   // After a failure (the device's sticky error), a task with `on_error` does
   // not run and `on_error` gets the error; one without it still runs (XLA's
   // plain callbacks free memory or complete transfers). Either way it is
-  // enqueued and HostCallback returns OK, also when the failure shows up
-  // while enqueueing it. If `fn` itself fails, its error goes to `on_error`
-  // when given (handled there), else it becomes the device's sticky error.
+  // enqueued and HostCallback returns OK. If `fn` itself fails, its error
+  // goes to `on_error` when given (handled there), else it becomes the
+  // device's sticky error.
   absl::Status HostCallback(
       std::function<absl::Status()> fn,
       std::function<void(absl::Status)> on_error = nullptr);
 
+  // Records everything enqueued on (and waited for by) the stream so far.
   absl::Status RecordEvent(Event* event);
+  // Later work on this stream waits for the event's work / for everything
+  // currently enqueued on `other` (and what `other` waits for).
   absl::Status WaitForEvent(Event* event);
-  // Make this stream wait for everything currently enqueued on `other`,
-  // including its host tasks and the waits it has not encoded yet.
   absl::Status WaitForStream(Stream* other);
 
-  // Commit any open work and block until the stream is idle. Returns the
+  // Block until everything enqueued on the stream is done. Returns the
   // device's sticky error, if any (see the file comment).
   absl::Status Synchronize();
 
   // Testing only: the next committed command buffer is treated as failed
-  // with `error`. Its work runs but its signals do not; its completion
-  // handler records the error and force-signals them, as for a buffer the
-  // GPU aborted.
+  // with `error`. Its work runs but its timeline signal does not; its
+  // completion handler records the error and force-signals it, as for a
+  // buffer the GPU aborted.
   void FailNextCommandBufferForTesting(absl::Status error);
-  // Testing only: the fence value the last committed command buffer
-  // signals, and the fence's signaled value now.
+  // Testing only: the last committed buffer's timeline value, and the
+  // timeline's signaled value now.
   std::pair<uint64_t, uint64_t> FenceForTesting();
-  // Commit any open work without waiting.
+  // Commit the device's open command buffer without waiting.
   absl::Status Flush();
-  // A transfer stream's command buffers wait on the host for every wait not
-  // yet signaled before they are committed, so they never wait on the GPU
-  // (behind another stream's backlog, which counts against the watchdog).
-  // Off by default: the compute stream keeps its waits on the GPU.
-  void set_waits_on_host(bool waits_on_host);
 
   // Command buffer batching. Each command buffer costs a fixed amount of
   // CPU and GPU-scheduler time (hundreds of microseconds on an M3), so
@@ -768,109 +823,51 @@ class Stream {
   // byte for bandwidth-bound ones; see blas::GemmWork). That leaves a >= 5x
   // margin for the slowest supported GPU (a base M1, 2-3x slower when
   // throttled) and for shapes steel runs less efficiently, well under the
-  // watchdog. A single larger GEMM still gets a buffer of its own.
+  // watchdog. An op that would take the buffer over it starts a new buffer;
+  // a single larger GEMM gets a buffer of its own.
   static constexpr uint64_t kMaxFlopsPerCommandBuffer = 200'000'000'000ull;
 
  private:
   friend class Device;
-  Stream(Device* device, MTL::CommandQueue* queue, MTL::SharedEvent* fence);
+  Stream(Device* device, MTL::SharedEvent* host_fence);
 
   absl::Status LaunchWithArgumentBuffer(const Kernel& kernel,
                                         Dim3 threadgroups, Dim3 threads,
                                         absl::Span<const KernelArg> args,
                                         uint32_t threadgroup_memory_bytes,
                                         uint64_t flops);
-  // Encoders for already-resolved work. Caller holds mu_.
-  absl::Status EncodeBuiltin(Device::Builtin kind,
-                             absl::Span<const BufferRef> buffers,
-                             const void* bytes, size_t bytes_len, uint64_t n);
-  absl::Status EncodeCopy(BufferRef dst, BufferRef src, uint64_t size);
-  absl::Status EncodeFill(BufferRef dst, uint32_t pattern, int pattern_bytes,
-                          uint64_t size);
-  // Account one encoded op of `work` thread-equivalents and commit the
-  // command buffer if the batching policy says so. Caller holds mu_.
-  absl::Status FinishOp(uint64_t work, uint64_t flops = 0);
-
-  // Ensure an open command buffer/encoder exist.
-  absl::Status EnsureCommandBuffer();
-  absl::Status EnsureComputeEncoder();
-  void EndEncoder();
-  // Commit the current command buffer (if any). Hold rule: if the buffer
-  // waits on a host-task value that is not signaled yet, first wait for it
-  // on the host (it ends when the task completes or the device fails), so no
-  // committed buffer ever sits on the GPU waiting for host work. Host-task
-  // workers never take mu_, so waiting here while holding it cannot deadlock
-  // with them. After a device error nothing is committed: the buffer is
-  // dropped and its signals are force-signaled, as a failed buffer's are.
-  absl::Status Commit();
-  // FailedPreconditionError when called from a host task (or its on_error)
-  // of this stream; checked before taking mu_ (see the .cc).
-  absl::Status RefuseOwnHostTask() const;
-  Device* device_;
-  MTL::CommandQueue* queue_;
-  MTL::SharedEvent* fence_;      // private timeline for this stream
-  uint64_t fence_value_ = 0;     // last value signaled on fence_
-  uint64_t last_committed_fence_value_ = 0;
-  MTL::CommandBuffer* cmd_ = nullptr;
-  uint64_t cmd_ticket_ = 0;  // Device::BeginWork for cmd_
-  MTL::ComputeCommandEncoder* enc_ = nullptr;
-  int ops_in_cmd_ = 0;
-  uint64_t threads_in_cmd_ = 0;
-  uint64_t flops_in_cmd_ = 0;
-  std::chrono::steady_clock::time_point last_commit_time_{};
-  // FailNextCommandBufferForTesting.
-  absl::Status inject_error_;
-  // Committed but possibly still executing command buffers (retained).
-  // Synchronize waits for their completion, not just the fence signal, so
-  // callers may free resources immediately afterwards.
-  std::vector<MTL::CommandBuffer*> in_flight_;
-  std::mutex mu_;
-  // Events the open command buffer signals, encoded by Commit after the
-  // fence signal (so a signaled event means the buffer has run to its end;
-  // see Device::CheckInFlight). On failure they are force-signaled so
-  // waiters wake up instead of hanging. Retained (the Event may go away
-  // before a failed Commit is retried).
-  std::vector<std::pair<MTL::SharedEvent*, uint64_t>> pending_signals_;
-  // Waits encoded into the open command buffer (hold rule, diagnostics).
-  struct PendingWait {
-    MTL::SharedEvent* event;
-    uint64_t value;
-    const char* kind;
-    // The value is signaled by a host task (of any stream), not by GPU work.
-    bool host_task = false;
-  };
-  std::vector<PendingWait> pending_waits_;
-  // See set_waits_on_host. Guarded by mu_.
-  bool waits_on_host_ = false;
-  // Waits requested (WaitForEvent/WaitForStream/HostCallback) but not yet
-  // encoded. A command buffer that only waits still counts its waiting time
-  // against the GPU watchdog, so waits are encoded lazily, right before the
-  // next GPU work on this stream; a host-side Synchronize or host task waits
-  // for them on the host instead. Events are not retained: their owners
-  // (Event objects, other streams) outlive the stream, and stream fences are
-  // released only in ~Stream after work has drained.
-  std::vector<PendingWait> deferred_waits_;
-  // Encode deferred waits into the open command buffer. Caller holds mu_ and
-  // has an open command buffer; any open encoder is ended first.
-  void FlushDeferredWaits();
-  // True when nothing on or for this stream is pending (see
-  // MemcpyHostToDevice); drops deferred waits that are already satisfied.
+  // Before encoding a GPU op: waits on the host for the host tasks the
+  // stream waits for (not holding the queue lock), then clears its waits.
+  // Caller holds mu_.
+  absl::Status BeginGpuOpLocked();
+  // After encoding an op into the open buffer (caller holds mu_ and the
+  // queue lock): the stream's position is that buffer; then the batching
+  // policy.
+  absl::Status FinishGpuOpLocked(uint64_t work, uint64_t flops = 0);
+  // Everything enqueued on or waited for by the stream. Caller holds mu_.
+  WorkPoint CurrentLocked() const;
+  // True when CurrentLocked() is done (host transfers then run inline).
   // Caller holds mu_.
   bool IdleLocked();
-  // Kernels encoded into the open command buffer (for the failure
-  // diagnostics and the reset log).
-  std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
-  // Host work ordered on the stream: each task waits for the fence to reach
-  // wait_value, runs, then signals signal_value so later GPU work proceeds.
+  // FailedPreconditionError when called from a host task (or its on_error)
+  // of this stream; checked before taking mu_.
+  absl::Status RefuseOwnHostTask() const;
+
+  Device* device_;
+  MTL::SharedEvent* host_fence_;  // owned by the device
+  std::mutex mu_;
+  uint64_t gpu_pos_ = 0;    // timeline value of the stream's last GPU op
+  WorkPoint waits_;         // what the next op must wait for
+  uint64_t host_value_ = 0;  // last host task value issued
+
+  // Host work ordered on the stream: each task waits for `after`, runs,
+  // then signals `value` on the host fence.
   struct HostTask {
-    uint64_t wait_value;
+    WorkPoint after;
     std::function<absl::Status()> fn;
     std::function<void(absl::Status)> on_error;
-    uint64_t signal_value;
+    uint64_t value;
     uint64_t ticket = 0;  // Device::BeginWork
-    // Cross-stream waits that were pending when the task was enqueued: the
-    // task also waits for these (retained events).
-    std::vector<std::pair<MTL::SharedEvent*, uint64_t>> extra_waits;
   };
   void WorkerLoop();
   std::thread worker_;

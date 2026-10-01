@@ -492,10 +492,9 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   std::filesystem::remove_all(dir);
 }
 
-// Waits are encoded lazily: a stream that only waits (for another stream,
-// or for a host task) never commits a wait-only command buffer, and
-// Synchronize / host tasks honor pending waits on the host.
-TEST_F(MetalRuntimeTest, DeferredWaits) {
+// Waits across streams: Synchronize, events and host tasks of a stream that
+// waits for another honor that stream's work.
+TEST_F(MetalRuntimeTest, WaitsAcrossStreams) {
   const uint32_t n = 1 << 18;
   const uint32_t groups = (n + 255) / 256;
   void* x = Alloc(n * 4);
@@ -518,8 +517,7 @@ TEST_F(MetalRuntimeTest, DeferredWaits) {
 
   // XLA's device-to-host pattern: wait for the compute stream, then copy on
   // the transfer stream (a host task), then block. The task must wait for
-  // the compute stream's work even though no command buffer was committed
-  // on s2 for it.
+  // the compute stream's work, which s2 never encoded anything behind.
   for (int i = 0; i < 300; ++i) ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, groups), IsOk());
   ASSERT_THAT(s2->WaitForStream(s.get()), IsOk());
   ASSERT_THAT(s2->MemcpyDeviceToHost(out.data(), y, n * 4), IsOk());
@@ -528,7 +526,7 @@ TEST_F(MetalRuntimeTest, DeferredWaits) {
   EXPECT_EQ(out[n - 1], 600.0f);
 
   // A host task followed by GPU work on the same stream: the work waits for
-  // the task (wait encoded lazily in front of it).
+  // the task.
   std::atomic<int> ran{0};
   ASSERT_THAT(s->HostCallback([&]() {
     static_cast<float*>(y)[0] = 1000.0f;
@@ -545,9 +543,9 @@ TEST_F(MetalRuntimeTest, DeferredWaits) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// Hold rule: GPU work waiting on a slow host task is committed only after
-// the task has run, so no command buffer waits on host work on the GPU.
-TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
+// GPU work behind a slow host task is encoded only after the task has run,
+// so no command buffer waits on host work on the GPU.
+TEST_F(MetalRuntimeTest, GpuWorkAfterAHostTaskWaitsOnTheHost) {
   const uint32_t n = 1 << 16;
   void* x = Alloc(n * 4);
   void* y = Alloc(n * 4);
@@ -555,32 +553,33 @@ TEST_F(MetalRuntimeTest, HoldRuleKeepsHostWaitsOffTheGpu) {
   ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
   ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
-  const uint64_t holds = dev_->host_task_holds();
+  const uint64_t holds = dev_->encode_host_waits();
   ASSERT_THAT(s->HostCallback([y]() {
     std::this_thread::sleep_for(std::chrono::milliseconds(200));
     static_cast<float*>(y)[0] = 100.0f;
     return absl::OkStatus();
   }), IsOk());
-  // Encoded behind the task; its commit waits for the task on the host.
+  // Encoded only once the task has run.
   ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
   ASSERT_THAT(s->Flush(), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_EQ(static_cast<float*>(y)[0], 101.0f);
   EXPECT_EQ(static_cast<float*>(y)[n - 1], 1.0f);
-  EXPECT_GT(dev_->host_task_holds(), holds);
-  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_GT(dev_->encode_host_waits(), holds);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// An event recorded after only waits (XLA: a zero-byte device-to-device copy
-// behind the compute sync point) waits on the host: a command buffer with no
-// ops that waits for another stream's backlog would sit on the GPU for all of
-// it, counting against the watchdog. So does a transfer stream's copy.
-TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
+// Work of another stream behind a backlog never waits on the GPU: an event
+// recorded after only waits (XLA: a zero-byte device-to-device copy behind
+// the compute sync point) needs no command buffer at all, and a copy behind
+// the backlog is simply later in the one queue.
+TEST_F(MetalRuntimeTest, WorkBehindABacklogNeverWaitsOnTheGpu) {
   const uint32_t n = 1 << 20;
   void* x = Alloc(n * 4);
   void* y = Alloc(n * 4);
+  void* z = Alloc(n * 4);
   std::unique_ptr<Stream> a = NewStream();
   std::unique_ptr<Stream> b = NewStream();
   absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
@@ -588,38 +587,23 @@ TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
   ASSERT_THAT(a->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
   ASSERT_THAT(a->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(a->Synchronize(), IsOk());
-  const uint64_t gpu_waits = dev_->gpu_waits_encoded();
   // A backlog of short kernels (~0.1 ms each; the thread cap commits a
   // buffer every 128 of them).
   const int kLaunches = 1000;
   for (int i = 0; i < kLaunches; ++i) {
     ASSERT_THAT(Axpy(a.get(), x, y, n, 1.0f, n / 256), IsOk());
   }
-  ASSERT_THAT(a->Flush(), IsOk());
+  const uint64_t committed_before = a->FenceForTesting().first;
   ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
-  ASSERT_THAT(b->RecordEvent(e->get()), IsOk());
-  // The wait was satisfied on the host before the buffer was committed.
-  const auto [committed, signaled] = a->FenceForTesting();
-  EXPECT_GE(signaled, committed);
-  EXPECT_EQ(dev_->gpu_waits_encoded(), gpu_waits);
+  ASSERT_THAT(b->RecordEvent(e->get()), IsOk());  // commits a's open buffer
+  EXPECT_LE(b->FenceForTesting().first, committed_before + 1);
+  ASSERT_THAT(b->MemcpyDeviceToDevice(z, y, n * 4), IsOk());
   ASSERT_THAT((*e)->WaitOnHost(), IsOk());
   EXPECT_EQ(static_cast<float*>(y)[0], static_cast<float>(kLaunches));
-  EXPECT_EQ(static_cast<float*>(y)[n - 1], static_cast<float>(kLaunches));
   ASSERT_THAT(b->Synchronize(), IsOk());
-
-  // A transfer stream's copy behind the backlog waits on the host too.
-  void* z = Alloc(n * 4);
-  b->set_waits_on_host(true);
-  for (int i = 0; i < kLaunches; ++i) {
-    ASSERT_THAT(Axpy(a.get(), x, y, n, 1.0f, n / 256), IsOk());
-  }
-  ASSERT_THAT(a->Flush(), IsOk());
-  ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
-  ASSERT_THAT(b->MemcpyDeviceToDevice(z, y, n * 4), IsOk());
-  ASSERT_THAT(b->Synchronize(), IsOk());
-  EXPECT_EQ(dev_->gpu_waits_encoded(), gpu_waits);
-  EXPECT_EQ(static_cast<float*>(z)[0], 2.0f * kLaunches);
-  EXPECT_EQ(static_cast<float*>(z)[n - 1], 2.0f * kLaunches);
+  EXPECT_EQ(static_cast<float*>(z)[0], static_cast<float>(kLaunches));
+  EXPECT_EQ(static_cast<float*>(z)[n - 1], static_cast<float>(kLaunches));
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
   EXPECT_THAT(dev_->Deallocate(z), IsOk());
@@ -751,7 +735,7 @@ TEST_F(MetalRuntimeTest, WaitForStreamCoversHostTasks) {
   ASSERT_THAT(a->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
   ASSERT_THAT(a->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(a->Synchronize(), IsOk());
-  const uint64_t holds = dev_->host_task_holds();
+  const uint64_t holds = dev_->encode_host_waits();
   for (int round = 0; round < 2; ++round) {
     // Round 1 also has GPU work committed on `a` before the task.
     if (round == 1) ASSERT_THAT(Axpy(a.get(), x, y, n, 0.0f, n / 256), IsOk());
@@ -768,8 +752,8 @@ TEST_F(MetalRuntimeTest, WaitForStreamCoversHostTasks) {
     EXPECT_EQ(static_cast<float*>(y)[0], 6.0f + round) << round;
     EXPECT_EQ(static_cast<float*>(y)[n - 1], 6.0f + round) << round;
   }
-  EXPECT_GT(dev_->host_task_holds(), holds);
-  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_GT(dev_->encode_host_waits(), holds);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   ASSERT_THAT(a->Synchronize(), IsOk());
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
@@ -789,7 +773,7 @@ TEST_F(MetalRuntimeTest, WaitForStreamIncludesTheOtherStreamsWaits) {
   std::unique_ptr<Stream> c = NewStream();
   ASSERT_THAT(c->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(c->Synchronize(), IsOk());
-  const uint64_t holds = dev_->host_task_holds();
+  const uint64_t holds = dev_->encode_host_waits();
   for (int round = 1; round <= 2; ++round) {
     // Round 2: `a` also has committed work of its own.
     if (round == 2) ASSERT_THAT(a->Memset32(z, 0, n * 4), IsOk());
@@ -808,8 +792,8 @@ TEST_F(MetalRuntimeTest, WaitForStreamIncludesTheOtherStreamsWaits) {
     EXPECT_EQ(static_cast<float*>(z)[n - 1], 100.0f * round) << round;
     ASSERT_THAT(a->Synchronize(), IsOk());
   }
-  EXPECT_GT(dev_->host_task_holds(), holds);
-  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_GT(dev_->encode_host_waits(), holds);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
   EXPECT_THAT(dev_->Deallocate(z), IsOk());
 }
@@ -831,33 +815,30 @@ TEST_F(MetalRuntimeTest, HostTaskWaitingOnItsOwnStreamFails) {
     for (int i = 0; i < 2000 && !go.load(); ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
-    // `b` waits for this task; committing its work from here would wait for
-    // the task itself.
+    // `b` waits for this task; encoding its work from here would wait for
+    // the task itself, as would waiting for the event recorded after it.
     commit_status = Axpy(b.get(), x, y, n, 1.0f, n / 256);
-    if (commit_status.ok()) commit_status = b->Flush();
-    // The event recorded after this task is not published until its buffer
-    // is committed, so waiting for it returns at once.
     event_status = e->WaitOnHost();
     return absl::OkStatus();
   }), IsOk());
   ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+  ASSERT_THAT(a->RecordEvent(e), IsOk());  // includes the task
   go = true;
-  ASSERT_THAT(a->RecordEvent(e), IsOk());
   ASSERT_THAT(a->Synchronize(), IsOk());
   EXPECT_THAT(sync_status, StatusIs(absl::StatusCode::kFailedPrecondition));
   EXPECT_THAT(commit_status, StatusIs(absl::StatusCode::kFailedPrecondition));
-  EXPECT_THAT(event_status, IsOk());
+  EXPECT_THAT(event_status, StatusIs(absl::StatusCode::kFailedPrecondition));
   EXPECT_THAT(e->WaitOnHost(), IsOk());
   // The work refused inside the task is committed later from outside it.
   EXPECT_THAT(b->Synchronize(), IsOk());
-  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
 // A host task (or its on_error) calling into its own stream is refused
-// before it takes the stream lock: here the main thread's Flush holds that
-// lock while it waits (hold rule) for the task, so taking it would hang.
+// before it takes the stream lock: here the main thread's Axpy holds that
+// lock while it waits for the task, so taking it would hang.
 TEST_F(MetalRuntimeTest, HostTaskCallingIntoItsOwnStreamIsRefused) {
   const uint32_t n = 1 << 12;
   void* x = Alloc(n * 4);
@@ -875,9 +856,8 @@ TEST_F(MetalRuntimeTest, HostTaskCallingIntoItsOwnStreamIsRefused) {
     return absl::DataLossError("handled by on_error");
   }, [&](absl::Status) { on_error_status = s->Memset32(x, 0, n * 4); }),
               IsOk());
-  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
   flushing = true;
-  ASSERT_THAT(s->Flush(), IsOk());
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_THAT(memset_status, StatusIs(absl::StatusCode::kFailedPrecondition));
   EXPECT_THAT(callback_status,
@@ -889,26 +869,68 @@ TEST_F(MetalRuntimeTest, HostTaskCallingIntoItsOwnStreamIsRefused) {
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// Commit encodes a buffer's fence signal before its event signals, so an
-// event value seen on the host implies the buffer's fence value is signaled
-// (Device::CheckInFlight relies on it).
-TEST_F(MetalRuntimeTest, EventSignalsFollowTheFenceSignal) {
-  const uint32_t n = 1 << 16;
+// Work a host task (or a device-to-host copy) waits for is committed when
+// the task is enqueued: it runs without a sync, also when the open buffer
+// holds fewer ops than an early commit needs.
+TEST_F(MetalRuntimeTest, HostTasksDoNotWaitForTheNextCommit) {
+  const uint32_t n = 1 << 12;
   void* x = Alloc(n * 4);
   void* y = Alloc(n * 4);
   std::unique_ptr<Stream> s = NewStream();
-  absl::StatusOr<std::unique_ptr<Event>> e = dev_->CreateEvent();
-  ASSERT_THAT(e, IsOk());
-  ASSERT_THAT(s->Memset32(x, 0, n * 4), IsOk());
-  for (int i = 0; i < 200; ++i) {
-    ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
-    ASSERT_THAT(s->RecordEvent(e->get()), IsOk());
-    const uint64_t fence_value = s->FenceForTesting().first;
-    while (!(*e)->IsComplete()) {
-    }
-    ASSERT_GE(s->FenceForTesting().second, fence_value) << i;
-  }
+  ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());  // open buffer
+  std::atomic<float> seen{-1.0f};
+  ASSERT_THAT(s->HostCallback([&]() {
+    seen = static_cast<float*>(y)[n - 1];
+    return absl::OkStatus();
+  }), IsOk());
+  std::vector<float> out(n, -1.0f);
+  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(s->MemcpyDeviceToHost(out.data(), y, n * 4), IsOk());
+  for (int i = 0; i < 2000 && (seen.load() < 0 || out[n - 1] < 0); ++i) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  EXPECT_EQ(seen.load(), 1.0f);
+  EXPECT_EQ(out[n - 1], 2.0f);
+  ASSERT_THAT(s->Synchronize(), IsOk());
+  EXPECT_THAT(dev_->Deallocate(x), IsOk());
+  EXPECT_THAT(dev_->Deallocate(y), IsOk());
+}
+
+// A stream waiting on the host for another stream's host task does not hold
+// the queue: other streams keep encoding and completing meanwhile.
+TEST_F(MetalRuntimeTest, HostWaitsDoNotHoldTheQueue) {
+  const uint32_t n = 1 << 12;
+  void* x = Alloc(n * 4);
+  void* y = Alloc(n * 4);
+  std::unique_ptr<Stream> a = NewStream();
+  std::unique_ptr<Stream> b = NewStream();
+  std::unique_ptr<Stream> c = NewStream();
+  ASSERT_THAT(c->Memset32(x, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(c->Memset32(y, 0, n * 4), IsOk());
+  ASSERT_THAT(c->Synchronize(), IsOk());
+  ASSERT_THAT(a->HostCallback([]() {
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    return absl::OkStatus();
+  }), IsOk());
+  ASSERT_THAT(b->WaitForStream(a.get()), IsOk());
+  std::thread blocked([&]() {  // waits ~500 ms in the encode
+    EXPECT_THAT(Axpy(b.get(), x, x, n, 1.0f, n / 256), IsOk());
+  });
+  std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_THAT(Axpy(c.get(), x, y, n, 1.0f, n / 256), IsOk());
+  ASSERT_THAT(c->Synchronize(), IsOk());
+  const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                      std::chrono::steady_clock::now() - t0)
+                      .count();
+  EXPECT_LT(ms, 250);
+  EXPECT_EQ(static_cast<float*>(y)[0], 1.0f);
+  blocked.join();
+  ASSERT_THAT(b->Synchronize(), IsOk());
+  EXPECT_EQ(static_cast<float*>(x)[0], 2.0f);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
@@ -1131,49 +1153,30 @@ TEST_F(MetalRuntimeTest, GpuErrorIsStickyForTheDevice) {
     EXPECT_THAT(st->Synchronize(), StatusIs(absl::StatusCode::kInternal,
                                             HasSubstr("injected fault")));
   }
-  EXPECT_EQ(dev_->unsignaled_host_task_waits_committed(), 0u);
+  EXPECT_EQ(dev_->gpu_waits_encoded(), 0u);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// A failure that shows up while HostCallback's commit holds for an earlier
-// host task (the device error, seen by the hold's wait) must not lose the
-// new task: without on_error it still runs (XLA relies on it to free memory).
-TEST_F(MetalRuntimeTest, HostTaskEnqueuedWhenTheHoldSeesAFailure) {
+// After a failure a transfer task skips its copy (XLA may already be
+// freeing its buffers), and waiters on it still wait for it to end.
+TEST_F(MetalRuntimeTest, TransferTaskSkipsItsCopyAfterAFailure) {
   const uint32_t n = 1 << 12;
   void* x = Alloc(n * 4);
-  void* y = Alloc(n * 4);
+  float* y = static_cast<float*>(Alloc(n * 4));
   std::unique_ptr<Stream> s = NewStream();
-  std::unique_ptr<Stream> s2 = NewStream();
   ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());
+  ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
-  std::atomic<bool> release{false};
-  ASSERT_THAT(s->HostCallback([&release]() {
-    for (int i = 0; i < 200 && !release.load(); ++i) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    }
-    return absl::OkStatus();
-  }), IsOk());
-  // GPU work behind the task: the next commit holds for the task.
-  ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
-  std::thread fail([&]() {
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    s2->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
-    EXPECT_THAT(Axpy(s2.get(), x, x, n, 1.0f, n / 256), IsOk());
-    EXPECT_FALSE(s2->Synchronize().ok());
-  });
-  // Holds for the first task, which runs until released: the hold's wait
-  // (200 ms slices) sees the failure first.
-  bool ran = false;
-  EXPECT_THAT(s->HostCallback([&ran]() {
-    ran = true;
-    return absl::OkStatus();
-  }), IsOk());
-  release = true;
-  fail.join();
+  s->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
+  ASSERT_THAT(Axpy(s.get(), x, x, n, 1.0f, n / 256), IsOk());
+  // Not idle: the copy is a host task behind the failing buffer.
+  std::vector<float> src(n, 5.0f);
+  ASSERT_THAT(s->MemcpyHostToDevice(y, src.data(), n * 4), IsOk());
   EXPECT_THAT(s->Synchronize(), StatusIs(absl::StatusCode::kInternal,
                                          HasSubstr("injected fault")));
-  EXPECT_TRUE(ran);
+  EXPECT_EQ(y[0], 0.0f);
+  EXPECT_EQ(y[n - 1], 0.0f);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
@@ -1201,30 +1204,33 @@ TEST_F(MetalRuntimeTest, FlopsBudgetCommits) {
   EXPECT_EQ(s->FenceForTesting().first, committed);  // still open
   ASSERT_THAT(launch(Stream::kMaxFlopsPerCommandBuffer / 2), IsOk());
   EXPECT_GT(s->FenceForTesting().first, committed);  // budget reached
+  // An op that would take the open buffer over the budget starts a new
+  // one: the first is committed before it is encoded, and it stays open.
+  const uint64_t before = s->FenceForTesting().first;
+  ASSERT_THAT(launch(Stream::kMaxFlopsPerCommandBuffer / 4 * 3), IsOk());
+  EXPECT_EQ(s->FenceForTesting().first, before);
+  ASSERT_THAT(launch(Stream::kMaxFlopsPerCommandBuffer / 2), IsOk());
+  EXPECT_EQ(s->FenceForTesting().first, before + 1);
   ASSERT_THAT(s->Synchronize(), IsOk());
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());
 }
 
-// Work encoded before another stream's failure is never committed: the open
-// command buffer is dropped (its fence and events force-signaled), and no
+// Work encoded before a failure elsewhere is never committed: the open
+// command buffer is dropped (its timeline value force-signaled), and no
 // more work goes into it.
 TEST_F(MetalRuntimeTest, NothingIsCommittedAfterTheStickyError) {
   const uint32_t n = 1 << 12;
   float* x = static_cast<float*>(Alloc(n * 4));
   float* y = static_cast<float*>(Alloc(n * 4));
   std::unique_ptr<Stream> s = NewStream();
-  std::unique_ptr<Stream> s2 = NewStream();
   ASSERT_THAT(s->Memset32(x, 0x3f800000u, n * 4), IsOk());  // 1.0f
   ASSERT_THAT(s->Memset32(y, 0, n * 4), IsOk());
   ASSERT_THAT(s->Synchronize(), IsOk());
-  // One launch stays in s's open command buffer (below the commit caps).
+  // One launch stays in the open command buffer (below the commit caps).
   ASSERT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256), IsOk());
-
-  s2->FailNextCommandBufferForTesting(absl::InternalError("injected fault"));
-  ASSERT_THAT(Axpy(s2.get(), x, x, n, 1.0f, n / 256), IsOk());
-  EXPECT_THAT(s2->Synchronize(), StatusIs(absl::StatusCode::kInternal,
-                                          HasSubstr("injected fault")));
+  // Another buffer failed meanwhile (as its completion handler reports it).
+  dev_->SetError(absl::InternalError("injected fault"));
 
   // The open buffer takes no more work, and ending it commits nothing.
   EXPECT_THAT(Axpy(s.get(), x, y, n, 1.0f, n / 256),
@@ -1234,8 +1240,7 @@ TEST_F(MetalRuntimeTest, NothingIsCommittedAfterTheStickyError) {
                                          HasSubstr("injected fault")));
   const auto [committed, signaled] = s->FenceForTesting();
   EXPECT_GE(signaled, committed);  // waiters on the dropped buffer wake up
-  // Never ran on the GPU (the injected buffer did: it only fails on report).
-  EXPECT_EQ(y[0], 0.0f);
+  EXPECT_EQ(y[0], 0.0f);  // never ran on the GPU
   EXPECT_EQ(y[n - 1], 0.0f);
   EXPECT_THAT(dev_->Deallocate(x), IsOk());
   EXPECT_THAT(dev_->Deallocate(y), IsOk());

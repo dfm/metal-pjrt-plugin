@@ -146,23 +146,19 @@ def test_device_puts_do_not_leak_host_port_refs():
 def _sync_stats():
     import metal_pjrt_plugin
     lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
-    out = (ctypes.c_uint64 * 3)()
-    assert lib.metal_pjrt_sync_stats(0, out, 3) == 0
-    return dict(zip(("gpu_waits_encoded", "host_task_holds",
-                     "unsignaled_host_task_waits_committed"), out))
+    out = (ctypes.c_uint64 * 2)()
+    assert lib.metal_pjrt_sync_stats(0, out, 2) == 0
+    return dict(zip(("gpu_waits_encoded", "encode_host_waits"), out))
 
 
 @pytest.mark.parametrize("put", ["zero_size", "copy"])
 def test_transfer_behind_a_compute_backlog(put):
     # ~1 s of short GEMM chains queued on the compute stream, then a transfer
-    # that XLA orders after it. A zero-byte device-to-device copy only waits
-    # (for the destination's allocation, i.e. the compute stream) and records
-    # an event: that command buffer would sit on the GPU for the whole
-    # backlog (counting against the watchdog), so the runtime waits on the
-    # host instead. (A zero-byte host array needs no allocation, hence no
-    # wait.) device_put(x, may_alias=False) of an x still being computed is
-    # a copy on XLA's device-to-device stream, a transfer stream: it too
-    # waits for x's producer on the host, not on the GPU.
+    # that XLA orders after it: a zero-byte device-to-device copy (only waits
+    # for the destination's allocation, then records an event) and
+    # device_put(x, may_alias=False) of an x still being computed. Neither
+    # may wait on the GPU (that counts against the watchdog): with one queue
+    # per device they are simply behind the backlog.
     chain = jax.jit(lambda x, w: jax.lax.fori_loop(
         0, 16, lambda i, x: jnp.tanh(x @ w), x, unroll=True))
     k = jax.random.PRNGKey(0)
@@ -190,7 +186,6 @@ def test_transfer_behind_a_compute_backlog(put):
         np.testing.assert_array_equal(np.asarray(c), np.asarray(y))
     s1 = _sync_stats()
     assert s1["gpu_waits_encoded"] == s0["gpu_waits_encoded"], (s0, s1)
-    assert s1["unsignaled_host_task_waits_committed"] == 0, s1
     cpu = jax.devices("cpu")[0]
     np.testing.assert_allclose(
         np.asarray(chain(x, w)),
