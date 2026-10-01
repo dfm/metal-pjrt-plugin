@@ -94,12 +94,25 @@ The maintainer's standing decisions; `CHANGELOG.md` has when each was made.
 
 ## Next
 
-Still on hold:
+Before the repository goes public:
 
-- macOS CI (and a remote cache).
-- The minimum macOS version the wheel declares.
-- Full third-party notices for the statically linked XLA dependencies:
-  before a release, alongside CI.
+- A build from a clean clone with empty Bazel caches on the release commit,
+  then the full suites against that library: the source build is the only
+  install path at launch.
+- What happens when a program is stopped mid-computation (Ctrl-C,
+  `kill -9`), and how long the GPU watchdog allows: both untested (README,
+  "GPU safety"). Needs someone at the machine; a wrong guess resets the GPU.
+- The suites on a second Apple GPU and macOS version: every tolerance was
+  measured on one M3.
+- CI (`.github/workflows/ci.yml`) has never run: its jobs are skipped on a
+  private repository, so its first run is the one after publication, a cold
+  build on a hosted runner.
+- `bench/results/table.md` predates the platform rename and has no MLX
+  version: regenerate it on the release commit or drop it.
+
+Decided (2026-09-30): the launch is source only (no wheel on a release, no
+PyPI); the deployment target is macOS 26.0; `THIRD_PARTY_NOTICES` carries
+the license texts of everything linked into the library.
 
 Small-M bf16/f16 GEMM: done (2026-09-29: MLX's wide gemv for 2..8 rows, a
 16-row steel tile to 48, DotMerger off). 28 independent [M,1024]x[1024,6144]
