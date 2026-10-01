@@ -443,7 +443,8 @@ class Device {
                        kernels);
   const std::string& state_dir() const { return state_dir_; }
   int quarantine_strikes() const { return quarantine_strikes_; }
-  // Resets recorded since the machine booted (by any process).
+  // Resets recorded since the machine booted (by any process; this one's
+  // RecordReset counts too).
   int resets_since_boot() const { return resets_since_boot_; }
 
   // Command buffers committed with an encoded GPU wait: 0 by construction
@@ -631,6 +632,7 @@ class Device {
   std::atomic<uint64_t> committed_{0};
   MTL::CommandBuffer* cmd_ = nullptr;
   uint64_t cmd_ticket_ = 0;  // BeginWork for cmd_
+  std::atomic<uint64_t> open_ticket_{0};  // cmd_ticket_ while cmd_ is open
   MTL::ComputeCommandEncoder* enc_ = nullptr;
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;

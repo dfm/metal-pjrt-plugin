@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <unistd.h>
+#include <fcntl.h>
+#include <pwd.h>
 #include <sys/mman.h>
 #include <sys/time.h>
 #include <sys/sysctl.h>
@@ -387,10 +389,13 @@ absl::string_view JsonField(absl::string_view line, absl::string_view field) {
   return e == absl::string_view::npos ? "" : line.substr(p, e - p);
 }
 
-int64_t BootTimeSeconds() {
+// When the machine booted; nullopt if the kernel does not say.
+std::optional<int64_t> BootTimeSeconds() {
   struct timeval tv;
   size_t len = sizeof(tv);
-  if (sysctlbyname("kern.boottime", &tv, &len, nullptr, 0) != 0) return 0;
+  if (sysctlbyname("kern.boottime", &tv, &len, nullptr, 0) != 0) {
+    return std::nullopt;
+  }
   return tv.tv_sec;
 }
 
@@ -443,8 +448,14 @@ void Device::LoadResetLog() {
   if (dir != nullptr && dir[0] != '\0') {
     state_dir_ = dir;
   } else {
+    // HOME, else the account's home directory (never the working
+    // directory: the log must be one file per user).
     const char* home = std::getenv("HOME");
-    std::string base = absl::StrCat(home != nullptr ? home : ".", "/.cache");
+    if (home == nullptr || home[0] == '\0') {
+      const struct passwd* pw = getpwuid(getuid());
+      home = pw != nullptr ? pw->pw_dir : "/tmp";
+    }
+    std::string base = absl::StrCat(home, "/.cache");
     state_dir_ = absl::StrCat(base, "/metal-pjrt");
   }
   quarantine_strikes_ = static_cast<int>(std::min<uint64_t>(
@@ -452,7 +463,13 @@ void Device::LoadResetLog() {
       std::numeric_limits<int>::max()));
   std::ifstream in(ResetLogPath(state_dir_));
   if (!in) return;
-  const int64_t boot = BootTimeSeconds();
+  const std::optional<int64_t> boot = BootTimeSeconds();
+  if (!boot) {
+    LOG(WARNING) << "Unknown boot time (sysctl kern.boottime failed): GPU "
+                    "resets in "
+                 << ResetLogPath(state_dir_) << " are not counted";
+    return;
+  }
   std::string line;
   std::lock_guard<std::mutex> lock(mu_);
   while (std::getline(in, line)) {
@@ -461,7 +478,7 @@ void Device::LoadResetLog() {
     // substring scan is enough; no JSON parser in the runtime.
     int64_t when = 0;
     absl::SimpleAtoi(JsonField(line, "time"), &when);
-    if (when < boot) continue;
+    if (when < *boot) continue;
     // Strikes count per boot (the driver's state resets with it), for any
     // plugin build: builds change with every unrelated rebuild, and a kernel
     // whose code changed has a new key anyway. "build" is for diagnostics.
@@ -525,15 +542,24 @@ void Device::RecordReset(
                           JsonEscape(unique[i]->name));
   }
   line += "]}\n";
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    ++resets_since_boot_;
+  }
   std::error_code ec;
   std::filesystem::create_directories(state_dir_, ec);
-  std::ofstream out(ResetLogPath(state_dir_), std::ios::app);
-  if (!out) {
-    LOG(ERROR) << "Could not append the GPU reset record to "
-               << ResetLogPath(state_dir_);
+  // One write with O_APPEND: lines from processes that saw the same reset
+  // do not interleave.
+  const std::string path = ResetLogPath(state_dir_);
+  const int fd = open(path.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
+  const bool written =
+      fd >= 0 && write(fd, line.data(), line.size()) ==
+                     static_cast<ssize_t>(line.size());
+  if (fd >= 0) close(fd);
+  if (!written) {
+    LOG(ERROR) << "Could not append the GPU reset record to " << path;
     return;
   }
-  out << line;
   if (quarantine_strikes_ > 0) {
     LOG(ERROR) << "Recorded the GPU reset in " << ResetLogPath(state_dir_)
                << " with " << unique.size()
@@ -669,8 +695,16 @@ bool Device::CriticalAfterReleasingCache() {
   {
     std::unique_lock<std::mutex> lock(tickets_mu_);
     const uint64_t last = last_ticket_;
+    // The open command buffer's ticket ends only after a commit, which this
+    // thread may be the one to make (an allocation inside EncodeExternal):
+    // it is not waited for (what it references is not released anyway).
+    const uint64_t open = open_ticket_.load();
     tickets_cv_.wait_for(lock, kRefusalWait, [&] {
-      return outstanding_.empty() || *outstanding_.begin() > last;
+      for (uint64_t t : outstanding_) {
+        if (t > last) break;
+        if (t != open) return false;
+      }
+      return true;
     });
   }
   TrimCache(std::chrono::steady_clock::duration::zero());
@@ -1519,6 +1553,7 @@ absl::Status Device::EnsureCommandBufferLocked() {
         "Metal commandBuffer creation failed on device ", ordinal_));
   }
   cmd_ticket_ = BeginWork();
+  open_ticket_.store(cmd_ticket_);
   ops_in_cmd_ = 0;
   threads_in_cmd_ = 0;
   flops_in_cmd_ = 0;
@@ -1562,6 +1597,7 @@ absl::Status Device::CommitLocked() {
   auto reset_open = [this]() {
     cmd_->release();
     cmd_ = nullptr;
+    open_ticket_.store(0);
     ops_in_cmd_ = 0;
     threads_in_cmd_ = 0;
     flops_in_cmd_ = 0;

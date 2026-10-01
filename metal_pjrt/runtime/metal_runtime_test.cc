@@ -403,6 +403,7 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
 
   // Two resets blaming axpy (the second with a duplicate and a null entry).
   (*d1)->RecordReset("first \"timeout\"", {(*k1)->identity()});
+  EXPECT_EQ((*d1)->resets_since_boot(), 1);
   (*d1)->RecordReset("second", {(*k1)->identity(), (*k1)->identity(), nullptr});
   std::ifstream in(dir + "/gpu_resets.jsonl");
   std::string line;
@@ -490,6 +491,17 @@ TEST_F(MetalRuntimeTest, ResetLogAndQuarantine) {
   EXPECT_THAT((*d6)->GetKernel(kMsl, "axpy"), IsOk());
   unsetenv("METAL_PJRT_STATE_DIR");
   std::filesystem::remove_all(dir);
+
+  // Without HOME the log goes under the account's home, never the working
+  // directory.
+  const char* home = std::getenv("HOME");
+  const std::string saved = home != nullptr ? home : "";
+  unsetenv("HOME");
+  absl::StatusOr<std::unique_ptr<Device>> d7 = Device::Create(0);
+  if (!saved.empty()) setenv("HOME", saved.c_str(), 1);
+  ASSERT_THAT(d7, IsOk());
+  EXPECT_EQ((*d7)->state_dir().rfind("/", 0), 0u) << (*d7)->state_dir();
+  EXPECT_THAT((*d7)->state_dir(), HasSubstr("/.cache/metal-pjrt"));
 }
 
 // Waits across streams: Synchronize, events and host tasks of a stream that
