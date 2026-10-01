@@ -74,7 +74,7 @@ def main():
     ap.add_argument("--jax-variants", default="jax=",
                     help="JAX arms as NAME=EXTRA_ARGS pairs separated by ';', each run in "
                          "turn with airbench.py's extra arguments, e.g. "
-                         "'remat=;noremat=--no-remat' (default: one arm, 'jax')")
+                         "'noremat=;remat=--remat' (default: one arm, 'jax')")
     ap.add_argument("--log", default=os.path.join(tempfile.gettempdir(), "airbench_gpu_samples.txt"),
                     help="where the sampler writes (default: a temporary file)")
     args = ap.parse_args()

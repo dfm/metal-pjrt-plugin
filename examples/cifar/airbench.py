@@ -97,7 +97,7 @@ def batch_norm(x, bias, stats, train, momentum, eps=1e-12):
     return y.astype(x.dtype), new
 
 
-REMAT = True   # --no-remat turns it off
+REMAT = False   # --remat turns it on
 
 # Called as EPOCH_HOOK(seed, epoch, steps, params) after the setup (epoch -1)
 # and after each epoch, if set (--profile-memory sets one that syncs and
@@ -121,11 +121,11 @@ def forward(params, stats, x, train, dtype=jnp.bfloat16):
     x = conv(x, params["whiten"]["w"], "VALID") + params["whiten"]["b"].astype(dtype)
     x = gelu(x)
     new_stats = []
-    # The backward pass recomputes each group from its input instead of
-    # keeping every intermediate: the step's scratch at batch 1024 goes from
-    # 1.17 to 0.94 GB for 7% more time per step (--no-remat turns it off;
-    # the plugin's memory guard, before c4bf2d6, refused the larger step on
-    # an 8 GB machine shared with other applications).
+    # With --remat the backward pass recomputes each group from its input
+    # instead of keeping every intermediate: the step's scratch at batch
+    # 1024 goes from 1.17 to 0.94 GB, for a run 27% longer (242 vs 190 s on
+    # an M3, 2026-10-01). Without it the run fits the plugin's default
+    # memory budget on an 8 GB Mac.
     group = jax.checkpoint(conv_group, static_argnums=(3,)) if REMAT and train else conv_group
     for g, s in zip(params["groups"], stats):
         x, s12 = group(g, s, x, train)
@@ -371,11 +371,12 @@ def main():
     ap.add_argument("--profile-memory", action="store_true",
                     help="print a JSON row per epoch: time, macOS pressure, footprint, "
                          "the plugin's memory counters (syncs once per epoch)")
-    ap.add_argument("--no-remat", action="store_true",
-                    help="keep activations for the backward pass (7%% faster, 0.23 GB more)")
+    ap.add_argument("--remat", action="store_true",
+                    help="recompute activations in the backward pass: 0.23 GB less scratch, "
+                         "a run ~27%% longer")
     args = ap.parse_args()
     global REMAT
-    REMAT = not args.no_remat
+    REMAT = args.remat
     dtype = jnp.dtype(args.dtype)
 
     tx_, ty_, vx_, vy_ = load_cifar10()

@@ -33,7 +33,7 @@ export JAX_PLATFORMS=mtl,cpu
 # alternating, 5 runs each, optionally with a GPU power/P-state sampler
 .venv/bin/python examples/cifar/compare.py --torch-python ~/.venvs/torch/bin/python \
     --wrap "scripts/device_lock.py --" [--sampler PATH] [--one-process] \
-    [--jax-variants "remat=;noremat=--no-remat"]   # several JAX arms, interleaved
+    [--jax-variants "noremat=;remat=--remat"]   # several JAX arms, interleaved
 # per-epoch time, footprint, macOS memory pressure and the plugin's cache counters
 .venv/bin/python examples/cifar/airbench.py --runs 5 --profile-memory
 # PyTorch on MPS, in its own environment (not a dependency of this repo)
@@ -53,49 +53,48 @@ standard deviations (ddof=1).
 
 ## Results
 
-Measured 2026-09-29 on an M3 MacBook (10-core GPU, 8 GB), macOS 26.2,
-JAX 0.11.2 with optax, with the plugin's faster conv weight gradients
-(2026-09-29) and its PyTorch-like memory limits (2026-09-29), both prompted by
-this example, against PyTorch 2.14.0 on MPS running the same algorithm
-(`torch_baseline.py`, float16, as airbench runs). Spreads are sample
-standard deviations; accuracy is on the full 10,000-image test set.
+Measured 2026-10-01 on an M3 MacBook Air (10-core GPU, 8 GB, no fan),
+macOS 26.2, JAX 0.11.2 with optax and the plugin as of 2026-09-30, against
+PyTorch 2.14.1 on MPS running the same algorithm (`torch_baseline.py`,
+float16, as airbench runs), all in one session with `compare.py`: an
+untimed full-length warm-up run, then the three arms alternating (3 seeds
+each, one process per run), then each arm's 3 runs in one process; the GPU
+power and performance state sampled every 10 s. Times are airbench's
+training time per run, mean ± sample standard deviation; spread is
+(max - min) / min; accuracy is on the full 10,000-image test set.
 
-These two columns were not measured in one session (see below); a
-re-measurement with `compare.py` (both sides interleaved, in the same
-conditions, after an untimed warm-up run) is pending, and will replace
-them.
+| phase | | JAX, bf16 (default) | JAX, bf16, `--remat` | PyTorch MPS, fp16 |
+|---|---|---|---|---|
+| alternating | time | 188.0 ± 1.2 s (spread 1.2%) | 239.7 ± 1.4 s (1.1%) | 219.7 ± 4.8 s (4.4%) |
+| | GPU power, mean P-state | 6.1 W, 7.9 | 6.2 W, 7.9 | 6.6 W, 7.6 |
+| one process | time | 190.5 ± 0.2 s (spread 0.2%) | 242.2 ± 0.3 s (0.2%) | 219.5 ± 1.7 s (1.6%) |
+| | GPU power, mean P-state | 5.8 W, 7.6 | 6.0 W, 7.6 | 6.6 W, 7.6 |
+| | test accuracy (seeds 1-3) | 94.03% (every seed) | 94.03% | 93.94% ± 0.03% |
 
-| | JAX (mtl), bf16 | PyTorch MPS, fp16 |
-|---|---|---|
-| test accuracy (5 seeds) | 94.02% ± 0.05% (4 of 5 reached 94%) | 93.93% ± 0.11% (1 of 5) |
-| time to train (airbench's measure) | 260 ± 13 s | 254 ± 20 s |
-| warmup (first epoch, compiling every program) | 30 s | 28 s (no compile; MPS graph setup) |
-| peak memory footprint | 3.3 GB | 5.9 GB |
-
-The two columns were measured in different conditions: PyTorch's 5 seeds
-in a quiet window (no other GPU jobs or builds), JAX's in one process on
-the busy machine, with memory pressure at "warn" for part of the run.
-There JAX's runs 2-5 took 262-271 s against 237 s for run 1. The cause is
-thermal, not memory: this M3 MacBook Air has no fan, and under sustained
-load its GPU holds its top performance state at ~9.2 W for about 3
-minutes (~437 ms per step), then settles near 5 W (535-560 ms per step).
-Run 1 gets most of the fast minutes; runs 2-5 run throttled. (The
-plugin's counters showed the same ~5 fresh allocations per epoch in every
-run, a flat footprint and no recompilation.) PyTorch's runs show the same
-pattern (run 1 228 s, runs 2-5 249-284 s). Timed runs therefore compare
-fairly only at a matched thermal state; a re-timing of both sides after
-an untimed full-length warm-up run is planned. Until then: JAX and
-PyTorch reach the same accuracy (JAX slightly higher and less variable)
-in about the same time, and JAX's peak footprint is 45% lower (3.3 vs
-5.9 GB; PyTorch's depends on its MPS allocator cap, set here with
-PYTORCH_MPS_HIGH/LOW_WATERMARK_RATIO=0.8/0.6 to stay within 8 GB; without
-a cap its cache grew past 9 GB). Runs are
+At the same GPU power, JAX trains in 0.86-0.87x PyTorch's time (13-14%
+faster), and its later runs in one process stay within 0.2% of the first.
+Accuracy is 94.03% for each of seeds 1-3 by coincidence: the seeds' final
+predictions differ on 370 test images, and each gets 9,403 right. Runs are
 deterministic: a seed gives the same accuracy every time.
 
-Before the plugin's weight-gradient change, the conv weight gradients
-took 2.5-5x the forward time and the step 545 ms (about 259 s per run);
-per layer at batch 1024 (bf16) they went from 54, 28, 53, 39 and 7 ms to
-18, 10, 26, 23 and 4.5 ms.
+The runs start at the GPU's sustained state, not its first minutes: this
+MacBook Air has no fan, and under load its GPU holds its top performance
+state (~9 W) for about 3 minutes, then settles near 6 W; the untimed
+warm-up run takes it there, and the arms alternate so that neither gets the
+fast minutes. (A single JAX run from a cool start: 161 s.)
+
+Memory: the default JAX run fits the plugin's default budget (half of RAM,
+4 GiB here; its own allocations peaked at 1.7 GB at epoch ends) with a
+peak footprint of 3.5 GB. `--remat` recomputes activations in the backward
+pass instead (0.23 GB less scratch, a run 27% longer). PyTorch's footprint
+was 3.9-5.9 GB in earlier runs (2026-09-29), with its MPS allocator capped
+by PYTORCH_MPS_HIGH/LOW_WATERMARK_RATIO=0.8/0.6 to stay within 8 GB;
+without a cap its cache grew past 9 GB.
+
+History, in one line: the first port (2026-09-29) took ~260 s per run, with
+the conv weight gradients at 2.5-5x the forward time, before the plugin's
+faster weight gradients, its PyTorch-like memory limits and its single
+command queue (2026-09-29/30).
 
 For scale, airbench94 takes about 3.8 s on an A100; the M3 is ~76x slower
 here, a ~3.5 TFLOPS GPU against a 312 TFLOPS (fp16 tensor core) one plus
@@ -122,9 +121,10 @@ refused any allocation that would leave less than 512 MB of it.
 - **Evaluate in small batches.** Test-time augmentation runs six forward
   passes per batch; at 2000 images that program needed 1.8 GB of scratch,
   at 500 images 0.45 GB.
-- **Rematerialize the conv groups** (`jax.checkpoint`): the step's scratch
-  at batch 1024 goes from 1.17 to 0.94 GB for 7% more time per step
-  (`--no-remat` turns it off). Finer checkpoints did not lower it further.
+- **Rematerialization is optional** (`--remat`, `jax.checkpoint` per conv
+  group): the step's scratch at batch 1024 goes from 1.17 to 0.94 GB, for a
+  run 27% longer. It was the default while the plugin's old memory guard
+  refused the larger step; without the guard the default run fits.
 
 Measured and not adopted: exact GELU vs the tanh approximation (no
 measurable difference), float16 instead of bfloat16 (12% slower), and
@@ -140,7 +140,7 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
 - JAX: bfloat16 compute with float32 master weights and momentum
   (airbench and the PyTorch script keep the network in fp16, BatchNorm in
   float32); images kept as uint8 and normalized inside the jitted step;
-  conv groups rematerialized in the backward pass (default; --no-remat).
+  conv groups optionally rematerialized in the backward pass (--remat).
 - PyTorch on MPS: BatchNorm casts its input to float32 (MPS's kernel
   rejects fp16 input with float32 parameters); NCHW instead of
   channels-last (channels-last grew the footprint past 9 GB);
@@ -165,7 +165,12 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
   PyTorch's whole backward is 25 ms): a reduction over batch x pixels
   (~1M) into a small output. Reported with a standalone benchmark, the
   plugin now sizes the GEMM tile and split-K together (since 2026-09-29): 18 ms
-  for that layer, and end to end JAX went from ~259 s to 229-259 s.
+  for that layer.
+- **The GPU idled ~60 ms per step** (of ~490 at full clock): every fresh
+  host value (an eager slice's indices, a Python float) made the next
+  program wait for the GPU to drain. The plugin's single command queue
+  (2026-09-30) removed the wait; the example also keeps its step counters
+  and batch selection on the device, so a step creates no host values.
 - **The memory guard decided whether training ran at all** on a busy
   8 GB machine. It refused any allocation that would leave less than
   512 MB of free memory, so the step (0.9 GB of scratch) was refused
@@ -173,6 +178,6 @@ the 7x7 and 3x3 layers, 4% of a step, not worth a custom gradient).
   which caps only its own allocations, ran with a 4-6 GB footprint and
   let macOS make room. The plugin now does the same (since 2026-09-29: a
   per-process budget, refusals only at critical system memory pressure),
-  and the 5 JAX seeds above ran in one go on the same busy machine.
+  and every run in Results ran without a refusal, in the default budget.
 - **An out-of-memory error named the wrong program** (the next eager op,
-  not the program whose allocation failed). Reported with a repro.
+  not the program whose allocation failed). Reported with a repro; fixed.

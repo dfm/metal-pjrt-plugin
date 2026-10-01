@@ -26,7 +26,7 @@ Differences from airbench94 (the same list as in README.md):
 - JAX: bfloat16 compute with float32 master weights and momentum
   (airbench and the PyTorch script keep the network in fp16, BatchNorm in
   float32); images kept as uint8 and normalized inside the jitted step;
-  conv groups rematerialized in the backward pass (default; --no-remat).
+  conv groups optionally rematerialized in the backward pass (--remat).
 - PyTorch on MPS: BatchNorm casts its input to float32 (MPS's kernel
   rejects fp16 input with float32 parameters); NCHW instead of
   channels-last (channels-last grew the footprint past 9 GB);
