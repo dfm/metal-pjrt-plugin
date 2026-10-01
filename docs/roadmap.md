@@ -107,8 +107,8 @@ Before the repository goes public:
 - CI (`.github/workflows/ci.yml`) has never run: its jobs are skipped on a
   private repository, so its first run is the one after publication, a cold
   build on a hosted runner.
-- `bench/results/table.md` predates the platform rename and has no MLX
-  version: regenerate it on the release commit or drop it.
+- `bench/results/table.md` (predated the platform rename, no MLX version):
+  dropped (2026-10-01): generated locally by `bench/run_all.sh`.
 
 Decided (2026-09-30): the launch is source only (no wheel on a release, no
 PyPI); the deployment target is macOS 26.0; `THIRD_PARTY_NOTICES` carries

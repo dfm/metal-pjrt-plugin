@@ -3,9 +3,10 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs every backend ROUNDS times, interleaved (round 1: metal, metal-gpu,
-# cpu, mlx; round 2: ...), appending to bench/results/<label>.jsonl (not
-# tracked), then writes the table (medians over rounds). Every row records
-# the commit, versions and METAL_PJRT_*/XLA knobs (bench/common.py).
+# cpu, mlx; round 2: ...), appending to bench/results/<label>.jsonl, then
+# writes the table (medians over rounds) to bench/results/table.md; neither
+# is tracked. Every row records the commit, versions and METAL_PJRT_*/XLA
+# knobs (bench/common.py).
 #   BENCH_BACKENDS="metal metal-gpu cpu mlx"  (default: all)
 #   BENCH_ROUNDS=3  BENCH_ONLY=<case substrings>
 #   BENCH_BAZEL_SHUTDOWN=1  stop this workspace's Bazel server first (its JVM

@@ -15,12 +15,12 @@ in `docs/design.md`, "Runtime".
 - `bench/run_all.sh` runs `BENCH_ROUNDS` (default 3) rounds with the
   backends (`BENCH_BACKENDS`, default `metal metal-gpu cpu mlx`) interleaved
   inside each round, and `bench/report.py` writes the median over rounds to
-  `bench/results/table.md`. Rows record the commit, JAX/MLX versions, the
-  plugin's platform version and the `METAL_PJRT_*`, `XLA_FLAGS` and
-  `JAX_PLATFORMS` settings. It refuses to run after a GPU reset since boot
-  (`scripts/gpu_health.py --strict`; `BENCH_ALLOW_DEGRADED=1` overrides): a
-  GPU that has been reset several times stays ~10x slower per dispatch
-  until a reboot.
+  `bench/results/table.md` (generated locally, not tracked). Rows record
+  the commit, JAX/MLX versions, the plugin's platform version and the
+  `METAL_PJRT_*`, `XLA_FLAGS` and `JAX_PLATFORMS` settings. It refuses
+  to run after a GPU reset since boot (`scripts/gpu_health.py --strict`;
+  `BENCH_ALLOW_DEGRADED=1` overrides): a GPU that has been reset several
+  times stays ~10x slower per dispatch until a reboot.
 - The arms keep their names from before the platform rename: `metal` runs
   `jax_bench.py` with `JAX_PLATFORMS=mtl`, `metal-gpu` the same with the
   trace below, `cpu` with `JAX_PLATFORMS=cpu`.
@@ -43,10 +43,11 @@ in `docs/design.md`, "Runtime".
 
 ## Headline numbers
 
-Historical: this table and `bench/results/table.md` (the full table) are
-from one run (3 interleaved rounds on 2026-09-27, before the platform rename
-and later runtime work; MLX's column is an older run without metadata).
-They are not regenerated; the bullets below are more recent. Medians, ms:
+Historical: this table is from one run of `bench/run_all.sh` (3
+interleaved rounds on 2026-09-27, before the platform rename and later
+runtime work; MLX's column is an older run without metadata; the full
+table is generated locally and not tracked). It is not regenerated; the
+bullets below are more recent. Medians, ms:
 
 | case | mtl | CPU | MLX |
 |---|---|---|---|
