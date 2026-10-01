@@ -151,6 +151,9 @@ operation and its source line:
 - `Metal: the HLO rng op (jax.lax.rng_uniform) is not supported ...; use
   jax.random: ...` XLA's stateful generator has no Metal kernel. `jax.random`
   works.
+- `Metal: jax.lax.mulhi on 64-bit integers is not supported ...`: XLA
+  computes it in 128-bit integers, which Metal does not have. Use 32-bit
+  operands, or run it on the CPU backend.
 - `Metal: host offloading (jax.experimental.compute_on("device_host")) is
   not supported; run that part on the CPU backend instead: ...` Move the
   offloaded part out of the jitted function and run it with

@@ -457,6 +457,26 @@ ENTRY e {
       << rng;
 }
 
+// lax.mulhi: XLA multiplies in twice the width, i128 for 64-bit operands.
+TEST_F(MetalHloChecksTest, Mulhi64IsRefused) {
+  const std::string kMulhi = R"(
+HloModule m
+ENTRY e {
+  x = $T[4] parameter(0)
+  y = $T[4] parameter(1)
+  ROOT r = $T[4] mulhi(x, y), metadata={op_name="jit(f)/mulhi"}
+})";
+  for (const char* t : {"s64", "u64"}) {
+    absl::Status s = Check(absl::StrReplaceAll(kMulhi, {{"$T", t}}));
+    EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented) << t;
+    EXPECT_NE(s.message().find("lax.mulhi"), std::string::npos) << s;
+    EXPECT_NE(s.message().find("jit(f)/mulhi"), std::string::npos) << s;
+  }
+  for (const char* t : {"s32", "u32", "s16", "u8"}) {
+    EXPECT_TRUE(Check(absl::StrReplaceAll(kMulhi, {{"$T", t}})).ok()) << t;
+  }
+}
+
 // After optimization, so that an fft in the dead branch of a folded
 // platform conditional (multi-platform jax.export) does not count.
 TEST_F(MetalHloChecksTest, FftIsRefusedAfterOptimization) {

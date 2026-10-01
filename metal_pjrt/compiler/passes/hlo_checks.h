@@ -31,6 +31,7 @@ std::string DescribeOp(const HloInstruction& instr);
 //    lax.platform_dependent), whose dead cpu branch may hold an fft.
 //  - no rng op (jax.lax.rng_uniform): XLA generates its state update with a
 //    legacy LLVM-IR kernel, which has no MSL translation.
+//  - no mulhi on 64-bit integers (XLA widens it to i128).
 // These run here rather than first in RunHloPasses because the simplifier
 // removes some such ops (e.g. f32 -> f64 -> f32 chains) from programs that
 // run. f64 here includes complex128. complex64 is supported (the emitter

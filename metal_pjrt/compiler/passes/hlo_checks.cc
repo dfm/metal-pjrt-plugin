@@ -274,6 +274,13 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
             "use jax.random: ",
             DescribeOp(*instr)));
       }
+      if (instr->opcode() == HloOpcode::kMulhi &&
+          primitive_util::BitWidth(instr->shape().element_type()) > 32) {
+        return absl::UnimplementedError(absl::StrCat(
+            "Metal: jax.lax.mulhi on 64-bit integers is not supported (XLA "
+            "computes it in 128-bit integers, which Metal does not have): ",
+            DescribeOp(*instr)));
+      }
       if (instr->opcode() == HloOpcode::kFft) {
         return absl::UnimplementedError(absl::StrCat(
             "Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT "

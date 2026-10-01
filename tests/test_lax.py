@@ -441,19 +441,22 @@ print(same(lambda x: jnp.sin(x) * 2 + 1, x32),
       same(lambda x: jnp.sum(jnp.arange(64) * 3 + x.astype(jnp.int64)), x32),
       same(lambda x: x.reshape(8, 8)[2:6], x64),
       refused(lambda x: x * 2, x64),
-      refused(lambda x: jnp.sin(x.astype(jnp.float32)).astype(jnp.float64).sum(), x64))
+      refused(lambda x: jnp.sin(x.astype(jnp.float32)).astype(jnp.float64).sum(), x64),
+      refused(lambda x: jax.lax.mulhi(x, x), np.arange(64, dtype=np.int64)),
+      same(lambda x: jax.lax.mulhi(x, x * 7919), np.arange(-32, 32, dtype=np.int32)))
 """
 
 
 def test_x64_enabled():
     # With jax_enable_x64 on (conftest turns it off for every other test):
     # float32 and int64 programs still match CPU, float64 copies work, and
-    # float64 arithmetic is refused by name rather than miscompiled.
+    # float64 arithmetic and int64 mulhi (i128 in XLA) are refused by name
+    # rather than miscompiled.
     import os
     env = dict(os.environ, JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="1")
     out = metal_testing.run_python(X64_CHILD, env)
     assert out.returncode == 0, out.stderr[-3000:]
-    assert out.stdout.split() == ["True"] * 5, out.stdout
+    assert out.stdout.split() == ["True"] * 7, out.stdout
 
 
 SCATTER64_CHILD = r"""

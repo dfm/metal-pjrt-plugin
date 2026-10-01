@@ -47,6 +47,9 @@ From a pre-release review of the whole tree.
 - Fixed: `max` / `min` (and `relu`, max/min reductions) picked their left
   operand on ties, so `relu(-0.0)` was `-0.0`; they now follow IEEE
   754-2019 like XLA:CPU (-0 < +0, NaN propagates).
+- `jax.lax.mulhi` on 64-bit integers (which XLA computes in 128-bit
+  integers) is refused by name at compile time; it failed with an obscure
+  emitter error.
 
 ### 2026-09-29
 
