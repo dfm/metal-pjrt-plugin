@@ -158,6 +158,21 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   (431-436 ms), is no longer needed. When the machine throttles (after ~3
   minutes at full clock on a fanless Mac) the step time follows energy per
   step instead, which this does not change.
+- airbench94 training step without rematerialization (2026-10-01; the
+  example's default since then; bf16, batch 1024, `METAL_PJRT_TRACE=1`,
+  the GPU at performance state 13 throughout): 308 ms of GPU time per
+  step, the GPU busy 99.9% of it, 270 ops per step. The convolutions are
+  275 ms of it (89%): forwards 86.7, input gradients 83.5 and weight
+  gradients 104.5 ms (standalone medians per layer,
+  `examples/cifar/conv_jax.py`), the weight gradients at 1.5-2.6 TFLOP/s
+  against ~3.0 for the others; the remaining ~34 ms are the pools (~8
+  ms), batch-norm statistics, GELU, the head and the optimizer. The
+  frozen whitening layer's weight gradient is never computed (its update
+  ignores the gradient, so XLA removes it). The 31x31 24->64 weight
+  gradient costs 18.2 ms in the step (with and without it, interleaved in
+  one process), the same as alone (17.97 ms p10); an earlier figure of
+  40-50 ms per step for it was a misattribution in the per-op profile of
+  the rematerialized step.
 - Small convolutions stay on the loop emitter: under 4 Mflop a custom call
   plus a separate relu kernel lost to the loop emitter's one fused kernel
   (forward + relu, bursts of 30, p10 ms, two interleaved runs: 0.3-2.4
@@ -252,6 +267,23 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   2); the case-study bench (K = 1024) and Qwen3-0.6B decode at batch 1 /
   2 / 4 / 8 (13.26 / 13.95 / 15.04 / 17.11 -> 13.26 / 13.98 / 15.11 /
   17.09) do not change (3 interleaved rounds).
+
+- int4 LLM decode (2026-10-01): Qwen3-1.7B, 4-bit weights in groups of 64
+  (`examples/llm`, `Engine(max_len=256)`, context 128, 64 tokens, 4 timed
+  repeats, 2 rounds interleaved with mlx-lm; the GPU at performance state
+  13): 11.1-11.3 ms per token (11.27-11.34 streaming, 11.14-11.25 with the
+  fused loop) vs mlx-lm 4-bit 11.6-11.7. The GPU is busy 99.6% of the
+  time (`METAL_PJRT_TRACE=1`, 571 ops and ~1 command buffer per token);
+  XLA's row reductions over the int4 weights (the matvecs) are 10.6-10.8
+  of the 11.2 ms of GPU time, at 62-96 GB/s per shape, and the other ~430
+  kernels (norms, RoPE, attention, cache updates, sampling) ~0.5 ms.
+  Reading ~0.99 GB per token at the ~90 GB/s the best shapes reach puts
+  the floor at ~10.8 ms. Not built: a dedicated quantized matvec
+  (`metal$qmv`, a port of MLX's qmv): at most ~0.4 ms per token (4%) is
+  left above that floor, and MLX's kernel, timed on the same chains of
+  matvecs, is not faster than XLA's reductions on any of the five shapes
+  (qkv, o, gate/up, down, the 151936-row head); reaching it would take a
+  pattern match on a hand-written reduce or a plugin-only lowering.
 
 - FFTs run on MLX's FFT kernels (`metal$fft`, `metal_pjrt/fft`).
   `bench/fft_bench.py` (one process; bursts of 10 calls, 15 interleaved

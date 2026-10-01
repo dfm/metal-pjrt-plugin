@@ -149,6 +149,41 @@ peak (`docs/performance.md`). Deferred: an implicit-GEMM weight gradient
 guard that refused 3 of 5 airbench94 runs at 1.1-1.4 GB free is gone:
 done, only critical memory pressure refuses now (see Decisions).
 
+Winograd convolutions: not now (2026-10-01): ~2% of the airbench step,
+forward only. MLX's F(6,3) Winograd runs airbench94's 15x15 64->256
+forward (bf16, N = 1024) in 16.34 ms vs our 22.45 (1.37x), but its 7x7
+layers only 1.04x and the 3x3 one slower; MLX has no Winograd weight or
+input gradient (ours beat its weight gradients). Ported, it would save
+~6 ms of the 308 ms step (`docs/performance.md`, the airbench94 step
+without rematerialization). The port plan, if the forward ever matters
+more: MLX v0.32.3's `conv.metal` transforms and `winograd_conv_2D_gpu`
+as a `ConvPath::kWinograd` (3x3, stride 1, C and O multiples of 32,
+output 13x13 or larger), its 64-point GEMM on our steel GEMM, the input
+chunked over N to 64 MB; ~600-700 lines with tests, 2-3 days; the
+intermediate bf16 stages lose ~2-3 bits, so it needs its own conv_test
+tolerance, a 5-seed bf16 airbench94 accuracy check and an off switch.
+
+Low priority (dfm, 2026-10-01; no work now):
+
+- Don't overfit to airbench. Further convolution work (the weight
+  gradients, ~104 ms of the step at 1.5-2.6 vs ~3.0 TFLOP/s for the
+  forward and input gradients) uses general rules and kernels, never
+  per-shape tables, and is judged on a broad convolution shape set
+  (ResNet 3x3 / 1x1, RGB stems, strided, depthwise / grouped, 1-D, batch
+  sizes, f32 / bf16) with no regressions.
+- A broader benchmark sweep: ResNet-18/50 train steps, a small transformer
+  train step, a U-Net (upsampling, transposed convolutions), with MLX and
+  torch-MPS references under the thermal protocol; their shapes become the
+  convolution shape set.
+- MPSGraph per op (as XLA:GPU uses cuDNN; option 1 of "Tuned library
+  kernels" below): a custom call running a cached fixed-shape
+  `MPSGraphExecutable` encoded into our command buffer (e.g. the conv
+  weight gradient). Measure first: torch-MPS per op (forward, input and
+  weight gradients) against ours on the shape set; prototype only if
+  MPSGraph wins broadly. Concerns: encoding into the single queue through
+  `MPSCommandBuffer`, per-shape compile latency and caching, the work
+  budget (opaque kernels: charge their flops), closed source.
+
 Memory cache at warn pressure: the pressure handler releases every cached
 buffer on each free while pressure is at warn, so the cache is off. Consider
 trimming to a fraction instead (airbench94 run 2 spent most of its time at
