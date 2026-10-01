@@ -32,6 +32,12 @@ From a pre-release review of the whole tree.
   Authors" (`AUTHORS`).
 - `docs/archive/` is no longer in the tree, and the docs cite dates
   instead of commit hashes.
+- Fixed: a transfer queued behind a long backlog of computation could keep
+  a GPU command buffer waiting for that whole backlog, which counts against
+  the GPU watchdog (a GPU reset if it runs long enough). Seen with
+  `jax.device_put(x, may_alias=False)` of an array still being computed,
+  and the same of an empty array. Transfers now wait for earlier work on
+  the CPU instead.
 
 ### 2026-09-29
 
