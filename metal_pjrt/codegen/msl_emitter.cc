@@ -650,16 +650,29 @@ absl::Status RewriteLlvmArithmetic(ModuleOp module) {
 // signed index arithmetic and index loops signed in MSL, and 16-bit
 // multiplies free of C's integer promotion.
 absl::Status ExpandArith(ModuleOp module) {
-  // Scalar float maximum/minimum -> llvm.intr.maximum/minimum, which the
-  // math table maps to the prelude's IEEE 754-2019 helpers (NaN propagates,
-  // -0 < +0). The generic expansion below picks an operand on ties.
+  // Float maximum/minimum -> llvm.intr.maximum/minimum, which the math
+  // table maps to the prelude's IEEE 754-2019 helpers (NaN propagates,
+  // -0 < +0). Scalars only: XLA emits no vector ones today, and the generic
+  // expansion below would pick an operand on ties, so a vector one is an
+  // error rather than a silent signed-zero difference.
   llvm::SmallVector<Operation*> min_max;
+  bool vector_min_max = false;
   module.walk([&](Operation* op) {
-    if (mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MinimumFOp>(op) &&
-        mlir::isa<mlir::FloatType>(op->getResult(0).getType())) {
+    if (!mlir::isa<mlir::arith::MaximumFOp, mlir::arith::MinimumFOp>(op)) {
+      return;
+    }
+    if (mlir::isa<mlir::FloatType>(op->getResult(0).getType())) {
       min_max.push_back(op);
+    } else {
+      vector_min_max = true;
     }
   });
+  if (vector_min_max) {
+    return absl::InternalError(absl::StrCat(
+        "MSL emitter: vector arith.maximumf/minimumf (no IEEE 754-2019 "
+        "lowering for vectors)",
+        kReportBug));
+  }
   for (Operation* op : min_max) {
     OpBuilder b(op);
     const Location loc = op->getLoc();

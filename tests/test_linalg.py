@@ -212,6 +212,22 @@ def test_linalg(name):
   check(fn, *args, ulps=ULPS.get(name, 0), normwise=True, name=name)
 
 
+# The eigh gradient's error is dominated by the decomposition (17.1 ulps
+# normwise with Accelerate's current LAPACK, the same as JAX's CPU backend):
+# relative to CPU float32 rather than only the loose absolute ceiling.
+@pytest.mark.parametrize("name", ["grad eigh", "eigh 64", "eigh batched vectors"])
+def test_eigh_no_less_accurate_than_cpu(name):
+  import metal_testing as mt
+  fn, *args = CHECKS[name]
+  want = mt.f64_reference(fn, *args)
+  errs = {}
+  for dev in ("metal", "cpu"):
+    got = mt.run_on(getattr(mt, dev)(), fn, *args)
+    errs[dev] = max(mt.ulp_error(np.asarray(g), np.asarray(w), np.float32, True)
+                    for g, w in zip(jax.tree.leaves(got), jax.tree.leaves(want)))
+  assert errs["metal"] <= 1.25 * errs["cpu"] + 1.0, errs
+
+
 DISABLE_LAPACK_CHILD = r"""
 import re, sys, numpy as np, jax, jax.numpy as jnp
 def f(a, b):

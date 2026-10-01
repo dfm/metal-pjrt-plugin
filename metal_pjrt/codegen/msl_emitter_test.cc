@@ -143,6 +143,23 @@ module {
   }
 })mlir";
 
+// Vector maximumf has no IEEE 754-2019 lowering (only scalars map to the
+// prelude helpers): an error, not a silent signed-zero difference.
+TEST_F(MslEmitterTest, VectorMaximumIsAnError) {
+  constexpr char kVectorMax[] = R"mlir(
+module {
+  func.func @fusion(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %a = llvm.load %arg0 : !llvm.ptr -> vector<2xf32>
+    %m = arith.maximumf %a, %a : vector<2xf32>
+    llvm.store %m, %arg1 : vector<2xf32>, !llvm.ptr
+    return
+  }
+})mlir";
+  absl::StatusOr<MslKernel> kernel = Emit(kVectorMax, "fusion");
+  EXPECT_EQ(kernel.status().code(), absl::StatusCode::kInternal);
+  EXPECT_THAT(kernel.status().message(), HasSubstr("vector arith.maximumf"));
+}
+
 TEST_F(MslEmitterTest, MaxTotalThreadsFromThreadIdRanges) {
   mlir::OwningOpRef<mlir::ModuleOp> module =
       mlir::parseSourceString<mlir::ModuleOp>(kRangedIds, &context_);
