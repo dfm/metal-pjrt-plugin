@@ -257,27 +257,31 @@ sizes.
   logged. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` (debugging) keeps freed
   buffers out of reuse until 64 later frees and 100 ms have passed, and
   reports a pointer into one with the backtrace of its free.
-- Stale transfer pointers (2026-09-30): an experiment that staged busy
-  host-to-device copies as GPU copies saw Resolve failures for copy
-  destinations (2 of 7 runs of
-  `test_source_mutated_right_after_device_put[False-idle-1]`), i.e. XLA
-  apparently copying into memory that was no longer allocated. A probe
-  with that experiment's check alone (resolve the destination of every
-  host-to-device copy enqueued on a busy stream, log, continue on the
-  normal path), on the trees before and after XLA's host memory moved out
-  of the device allocator, found 0 failures in 200 + 200 runs of that test
-  (busy enqueues in every run) and 0 in 50 runs of all of test_transfers,
-  so the failures needed the staged path; how it produced an unresolvable
-  destination was not identified. Stronger evidence: since 2026-09-30 every
-  host transfer resolves its device side and fails with INTERNAL if it is
-  not inside a live allocation, and no full test run since has hit it.
-  These tripwires (that check; frees checked for start, size where known
-  and double frees; the debug free quarantine) catch a stale pointer only
-  while its memory is not live: a stale write into a buffer that has been
-  reused stays silent. One wrong-value failure of
-  `test_source_mutated_right_after_device_put[False-busy-1]` on
-  2026-09-28 predates the experiment and is not explained by it; it has
-  not recurred (~15.6k puts since).
+- Stale transfer pointers: a watched risk, not closed (2026-09-30).
+  - Seen only with an experiment that staged busy host-to-device copies as
+    GPU copies: Resolve failed for copy destinations (2 of 7 runs of
+    `test_source_mutated_right_after_device_put[False-idle-1]`), i.e. XLA
+    apparently copying into memory that was no longer allocated.
+  - A probe with that experiment's check alone (resolve the destination
+    of every host-to-device copy enqueued on a busy stream, log, continue
+    on the normal path) found 0 failures in 600 runs of that test on two
+    later trees (before and after XLA's host memory moved out of the
+    device allocator; busy enqueues in every run), and 0 in 50 runs of all
+    of test_transfers.
+  - The mechanism is not identified. A control run on the experiment's
+    parent tree was not done (a multi-hour rebuild); it is left for the
+    owner.
+  - The tripwires (the unresolved-pointer INTERNAL; frees checked for
+    start, size where known and double frees, with generations; the debug
+    free quarantine) catch a stale pointer only while its memory is not
+    live: a stale write into a buffer that has been reused stays silent.
+  - The unresolved-pointer check has been live on every host transfer
+    through every full gate since it landed (2026-09-30), with no
+    INTERNAL.
+  - One wrong-value failure of
+    `test_source_mutated_right_after_device_put[False-busy-1]` on
+    2026-09-28 predates the experiment and is not explained by it; it has
+    not recurred (~15.6k puts since).
 - Idle trim and pressure: a libdispatch timer, armed only while the cache
   is not empty, releases buffers unused for 2 s, so an idle process gives
   its memory back; a `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning releases
