@@ -192,13 +192,13 @@ it with that dump.
 ## Memory kinds inside jit
 
 The mtl device has two memory kinds, `device` and `pinned_host` (no
-`unpinned_host`). `jax.device_put(x, s)` with `s` a `pinned_host` sharding
-works outside `jit`. Inside `jit` (or as an `out_shardings` memory kind)
-it is not honoured: the values are right, but the result comes back as a
-`device` array (`y.sharding.memory_kind == "device"`; XLA:CPU returns
-`pinned_host`). No error is raised: the compiled program looks the same as
-one that works, so there is no clean compile-time check. To keep an array
-in host memory, `device_put` it there after the jitted call.
+`unpinned_host`). `jax.device_put(x, s)` with `s` a `pinned_host` or
+`device` sharding works outside and inside `jit`, as does a `pinned_host`
+memory kind in `out_shardings`; inside `jit` the copies are XLA's host
+offloading, as on CUDA. Computing directly on a `pinned_host` array
+inside `jit` works but is slow (XLA logs "does device compute in host
+memory space. Converting into host compute"): `device_put` it to `device`
+first.
 
 ## Host callbacks
 

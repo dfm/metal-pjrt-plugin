@@ -17,7 +17,7 @@ import sys
 
 import pytest
 from jax._src import (callback, checkify, compilation_cache, compiler, config,
-                      core, debugging, dtypes, ffi)
+                      core, debugging, dispatch, dtypes, ffi)
 from jax._src import xla_bridge as xb
 from jax._src.interpreters import mlir
 from jax._src.lax import convolution as lax_convolution
@@ -89,6 +89,9 @@ SIGNATURES = {
         "rhs_dilation, dimension_numbers, feature_group_count, "
         "batch_group_count, precision, preferred_element_type, out_sharding, "
         "expand_complex_convolutions=False, **unused_kwargs)"),
+    "dispatch._tpu_gpu_device_put_lowering": (
+        dispatch._tpu_gpu_device_put_lowering,
+        "(ctx, *xs, devices, srcs, copy_semantics)"),
     "debugging.debug_callback_lowering": (
         debugging.debug_callback_lowering,
         "(ctx, *args, effect, partitioned, callback, **params)"),
@@ -142,10 +145,10 @@ def test_symbols_exist():
     prims = (ll.lu_p, ll.geqrf_p, ll.householder_product_p, ll.eigh_p,
              ll.svd_p, lax_fft.fft_p, checkify.check_p,
              debugging.debug_callback_p, debugging.debug_print_p,
-             lax_convolution.conv_general_dilated_p)
+             lax_convolution.conv_general_dilated_p, dispatch.device_put_p)
     assert [p.name for p in prims] == [
         "lu", "geqrf", "householder_product", "eigh", "svd", "fft", "check",
-        "debug_callback", "debug_print", "conv_general_dilated"]
+        "debug_callback", "debug_print", "conv_general_dilated", "device_put"]
 
 
 def test_backend_init_failure_is_quiet_unless_selected():

@@ -204,6 +204,27 @@ def test_pinned_host_and_strided_puts():
                                   a[::2, 1::3])
 
 
+def test_memory_kinds_inside_jit():
+    # device_put to a memory kind inside jit takes XLA's host offloading (as
+    # on cuda), and the result reports the kind it was put in.
+    dev = jax.devices()[0]
+    host = jax.sharding.SingleDeviceSharding(dev, memory_kind="pinned_host")
+    device = jax.sharding.SingleDeviceSharding(dev, memory_kind="device")
+    x = jax.device_put(jnp.arange(8, dtype=jnp.float32), device)
+    xh = jax.device_put(np.arange(8, dtype=np.float32), host)
+    to_host = jax.jit(lambda a: jax.device_put(a * 2, host))(x)
+    assert to_host.sharding.memory_kind == "pinned_host"
+    np.testing.assert_array_equal(np.asarray(to_host), 2 * np.arange(8))
+    to_dev = jax.jit(lambda a: jax.device_put(a, device) + 1)(xh)
+    assert to_dev.sharding.memory_kind == "device"
+    np.testing.assert_array_equal(np.asarray(to_dev), np.arange(8) + 1)
+    both = jax.jit(lambda a: (jax.device_put(a, host), a + 1))(x)
+    assert [b.sharding.memory_kind for b in both] == ["pinned_host", "device"]
+    out = jax.jit(lambda a: a * 3, out_shardings=host)(x)
+    assert out.sharding.memory_kind == "pinned_host"
+    np.testing.assert_array_equal(np.asarray(out), 3 * np.arange(8))
+
+
 def _memory_stats():
     import metal_pjrt_plugin
     lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))

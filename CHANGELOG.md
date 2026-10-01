@@ -16,6 +16,9 @@ describe the present only. Dates in parentheses are when a change was made.
   max with stride = window, VALID) run as one kernel, `metal$pool_max_bwd`,
   bit-identical to the expansion it replaces: airbench94's four pools 25.3
   -> 7.9 ms. `METAL_PJRT_DISABLE_REWRITES=pool` turns it off.
+- Fixed: `jax.device_put(x, s)` inside `jit`, with `s` a `pinned_host` (or
+  `device`) sharding, ignored the memory kind: the result came back in
+  device memory. It now lowers as on CUDA, to XLA's host offloading.
 
 ### 2026-09-30
 

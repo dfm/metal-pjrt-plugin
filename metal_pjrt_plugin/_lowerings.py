@@ -323,8 +323,19 @@ def register() -> None:
                 expand_complex_convolutions=True),
         platform=PLATFORM)
 
+  def _device_put():
+    # device_put to a memory kind inside jit as on cuda and tpu: an
+    # annotate_device_placement custom call that XLA's HostOffloader turns
+    # into the copy (the default rule drops the memory kind, so the result
+    # stayed in device memory).
+    from jax._src import dispatch
+    mlir.register_lowering(dispatch.device_put_p,
+                           dispatch._tpu_gpu_device_put_lowering,
+                           platform=PLATFORM)
+
   reg("fft", _fft)
   reg("conv_general_dilated", _conv)
+  reg("device_put", _device_put)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
   from metal_pjrt_plugin import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702
