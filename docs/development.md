@@ -188,6 +188,10 @@ tests, `//metal_pjrt:device_tests`, JAX's own suite
   minutes, the cache is saved anyway, and the next run continues from it.
   To prime it after the repository goes public, start the workflow by hand
   with `warm_cache_only` (build and save only), as often as needed.
+- **No remote cache.** JAX's public cache (`--config=public_cache`) had no
+  entries for this build (2026-09-30: 0 hits of 189 LLVM and 325 XLA
+  compile actions): JAX's public CI writes to it from Linux only, and the
+  macOS actions here use Xcode's clang, so their keys never match.
 - **No wheels**: releases are source only.
 
 ## Environment variables
@@ -215,7 +219,7 @@ ignored with a warning and the default kept.
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
 | `METAL_PJRT_DEBUG_FREE_QUARANTINE` | run | dev | boolean, default off; on: freed device buffers are not reused until 64 later frees and 100 ms have passed, and a pointer into one is reported with the backtrace of its free (hunting use-after-free) | runtime, at device creation |
 | `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
-| `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel, default 2; 0 disables | runtime, `scripts/gpu_health.py` |
+| `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel (refused until a reboot or `scripts/gpu_health.py --clear`), default 0 (off) | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |
 | `METAL_PJRT_FAIL_COMMAND_BUFFER` | run | test | `n` fails the n-th committed command buffer, default 0 (never) | runtime |
 | `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off; print every measured error (with `pytest -s`) | `tests/metal_testing.py` |

@@ -23,10 +23,6 @@ on:
         description: "Only build and save the Bazel cache (e.g. to prime it once after the repo goes public)"
         type: boolean
         default: false
-      public_cache:
-        description: "Also read JAX's public remote cache (--config=public_cache)"
-        type: boolean
-        default: false
       bytes:
         description: "Build without the bytes (--remote_download_outputs=toplevel); off: download all outputs"
         type: boolean
@@ -106,7 +102,6 @@ jobs:
         timeout-minutes: 300
         run: |
           flags="--config=ci"
-          [ "${{ inputs.public_cache }}" = "true" ] && flags="$flags --config=public_cache"
           [ "${{ inputs.bytes }}" = "false" ] && flags="$flags --remote_download_outputs=all"
           echo "BAZEL_FLAGS=$flags" >> "$GITHUB_ENV"
           bazel build $flags //metal_pjrt/...
