@@ -169,6 +169,9 @@ TEST(MetalExecutorTest, HostMemoryIsNotDeviceMemory) {
   EXPECT_EQ(ref.offset, 100u);
   EXPECT_NE(ref.buffer, nullptr);
   EXPECT_FALSE(device->Deallocate(host->opaque()).ok());
+  TF_ASSERT_OK_AND_ASSIGN(MemorySpace space,
+                          executor->GetPointerMemorySpace(host->opaque()));
+  EXPECT_EQ(space, MemorySpace::kHost);
   void* ptr = host->opaque();
   host.reset();
   EXPECT_FALSE(device->Resolve(ptr).ok());

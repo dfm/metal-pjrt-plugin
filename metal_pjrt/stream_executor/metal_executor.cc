@@ -190,7 +190,9 @@ MetalExecutor::CreateMemoryAllocator(MemorySpace memory_space) {
 
 absl::StatusOr<MemorySpace> MetalExecutor::GetPointerMemorySpace(
     const void* ptr) {
-  // Not an error: any pointer outside our allocations is host memory.
+  // Not an error: any pointer outside our device allocations is host
+  // memory, including XLA's host pools (Device::AllocateHost).
+  if (device_->IsHostMemory(ptr)) return MemorySpace::kHost;
   if (device_->Resolve(ptr).ok()) return MemorySpace::kUnified;
   return MemorySpace::kHost;
 }

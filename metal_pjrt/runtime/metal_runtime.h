@@ -335,6 +335,8 @@ class Device {
   // RESOURCE_EXHAUSTED only if the pages cannot be mapped.
   absl::StatusOr<void*> AllocateHost(uint64_t size);
   absl::Status DeallocateHost(void* ptr);
+  // Whether `ptr` lies in AllocateHost's memory.
+  bool IsHostMemory(const void* ptr) const;
   // Resolve a raw pointer (possibly interior) to its buffer and offset.
   absl::StatusOr<BufferRef> Resolve(const void* ptr) const;
   // The live allocations nearest to `ptr` (below and above), for errors.
@@ -471,8 +473,9 @@ class Device {
   bool quarantine_frees_ = false;  // set by Create
   std::deque<QuarantinedBuffer> quarantine_;
   uint64_t free_seq_ = 0;
-  // Moves quarantined buffers that have served their time into the cache.
-  void DrainQuarantineLocked();
+  // Moves quarantined buffers that have served their time into the cache
+  // (`idle`, from TrimCache: kQuarantineTime alone).
+  void DrainQuarantineLocked(bool idle = false);
   // A pointer bug: logs `msg` with a backtrace and what is known about
   // `ptr`, returns INTERNAL.
   absl::Status PointerBug(const void* ptr, const std::string& msg);

@@ -783,7 +783,8 @@ absl::Status Device::Deallocate(void* ptr, std::optional<uint64_t> size) {
       lock.unlock();
       return PointerBug(ptr, absl::StrFormat(
           "Deallocate(%p, %d bytes): the allocation there has %d bytes "
-          "(generation %d)",
+          "(generation %d); it is deliberately leaked (still counted against "
+          "the memory budget)",
           ptr, *size, a.requested, a.generation));
     }
     const LiveAllocation a = it->second;
@@ -819,10 +820,10 @@ absl::Status Device::Deallocate(void* ptr, std::optional<uint64_t> size) {
   return absl::OkStatus();
 }
 
-void Device::DrainQuarantineLocked() {
+void Device::DrainQuarantineLocked(bool idle) {
   const auto now = std::chrono::steady_clock::now();
   while (!quarantine_.empty() &&
-         free_seq_ - quarantine_.front().free_seq >= kQuarantineFrees &&
+         (idle || free_seq_ - quarantine_.front().free_seq >= kQuarantineFrees) &&
          now - quarantine_.front().freed >= kQuarantineTime) {
     QuarantinedBuffer& q = quarantine_.front();
     // Already counted in cached_bytes_.
@@ -906,6 +907,15 @@ absl::StatusOr<void*> Device::AllocateHost(uint64_t size) {
   return ptr;
 }
 
+bool Device::IsHostMemory(const void* ptr) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+  auto it = host_allocations_.upper_bound(addr);
+  if (it == host_allocations_.begin()) return false;
+  --it;
+  return addr < it->first + it->second.second;
+}
+
 absl::Status Device::DeallocateHost(void* ptr) {
   MTL::Buffer* buf = nullptr;
   {
@@ -969,6 +979,8 @@ void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
   uint64_t bytes = 0;
   {
     std::lock_guard<std::mutex> lock(mu_);
+    // Idle: quarantined buffers need not wait for later frees.
+    if (!quarantine_.empty()) DrainQuarantineLocked(/*idle=*/true);
     const auto now = std::chrono::steady_clock::now();
     // Tickets grow with free order, so the front is the first to become
     // releasable.
@@ -978,7 +990,7 @@ void Device::TrimCache(std::chrono::steady_clock::duration min_idle) {
       bytes += cache_.front().size;
       EvictLocked(cache_.begin(), &evicted);
     }
-    if (cache_.empty() && trim_armed_ && !stopping_) {
+    if (cache_.empty() && quarantine_.empty() && trim_armed_ && !stopping_) {
       dispatch_suspend(static_cast<dispatch_source_t>(trim_timer_));
       trim_armed_ = false;
     }
@@ -1045,8 +1057,16 @@ absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   if (auto it = host_allocations_.upper_bound(addr);
       it != host_allocations_.begin()) {
     --it;
-    if (addr < it->first + it->second.second && it->second.first != nullptr) {
-      return BufferRef{it->second.first, addr - it->first};
+    if (addr < it->first + it->second.second) {
+      if (it->second.first != nullptr) {
+        return BufferRef{it->second.first, addr - it->first};
+      }
+      return absl::InvalidArgumentError(absl::StrFormat(
+          "pointer %p lies in %s of host memory at %#x, too large for one "
+          "Metal buffer (maxBufferLength %s), so the GPU cannot reach it "
+          "(device %d)",
+          ptr, FormatBytes(it->second.second), it->first,
+          FormatBytes(info_.max_buffer_length), ordinal_));
     }
   }
   return absl::InvalidArgumentError(absl::StrFormat(

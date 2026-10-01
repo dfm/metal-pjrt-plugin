@@ -677,6 +677,24 @@ TEST_F(MetalRuntimeTest, FreeQuarantine) {
   EXPECT_EQ(again->ptr, a->ptr);
   EXPECT_THAT(dev.Deallocate(again->ptr, 4096), IsOk());
   EXPECT_THAT(dev.Deallocate(b->ptr, 4096), IsOk());
+  // An idle trim releases quarantined buffers once kQuarantineTime passed.
+  std::this_thread::sleep_for(Device::kQuarantineTime +
+                              std::chrono::milliseconds(20));
+  dev.TrimCache(std::chrono::seconds(0));
+  EXPECT_EQ(dev.memory_stats().cached_bytes, 0u);
+}
+
+// Host memory beyond maxBufferLength stays host-only, and says so.
+TEST_F(MetalRuntimeTest, HugeHostMemoryIsHostOnly) {
+  const uint64_t size = dev_->info().max_buffer_length + 1;
+  absl::StatusOr<void*> p = dev_->AllocateHost(size);  // pages untouched
+  ASSERT_THAT(p, IsOk());
+  EXPECT_TRUE(dev_->IsHostMemory(static_cast<char*>(*p) + 12345));
+  EXPECT_THAT(dev_->Resolve(*p),
+              StatusIs(absl::StatusCode::kInvalidArgument,
+                       HasSubstr("too large for one Metal buffer")));
+  EXPECT_THAT(dev_->DeallocateHost(*p), IsOk());
+  EXPECT_FALSE(dev_->IsHostMemory(*p));
 }
 
 // A buffer the host writes right away (module constants, FFT tables) never
