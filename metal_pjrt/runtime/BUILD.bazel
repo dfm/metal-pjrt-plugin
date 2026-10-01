@@ -111,6 +111,7 @@ cc_test(
     tags = DEVICE_TEST_TAGS,
     timeout = "eternal",
     deps = [
+        ":kernel_launch",
         ":metal_runtime",
         "//metal_pjrt/kernels:msl_prelude",
         "@com_google_absl//absl/status",

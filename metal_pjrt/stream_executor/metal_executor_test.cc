@@ -101,6 +101,20 @@ TEST(MetalExecutorTest, LoadLaunchAndCopy) {
   EXPECT_EQ(event->PollForStatus(), Event::Status::kComplete);
   for (int i = 0; i < n; i += 97) ASSERT_FLOAT_EQ(out[i], 7.0f) << i;
 
+  // Launch dimensions past 32 bits are refused (they were truncated: 2^32
+  // threadgroups became 0, 2^32 + 1 became 1).
+  const uint64_t past = (uint64_t{1} << 32) + 1;
+  EXPECT_EQ(kernel->Launch(ThreadDim(256), BlockDim(past), stream.get(),
+                           *packed).code(),
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(kernel->Launch(ThreadDim(256), BlockDim(1, past), stream.get(),
+                           *packed).code(),
+            absl::StatusCode::kInvalidArgument);
+  EXPECT_EQ(kernel->Launch(ThreadDim(past), BlockDim(1), stream.get(),
+                           *packed).code(),
+            absl::StatusCode::kInvalidArgument);
+  TF_ASSERT_OK(stream->BlockHostUntilDone());
+
   executor->Deallocate(&x);
   executor->Deallocate(&y);
 }

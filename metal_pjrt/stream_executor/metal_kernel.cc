@@ -4,6 +4,7 @@
 #include "metal_pjrt/stream_executor/metal_kernel.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <utility>
@@ -27,6 +28,32 @@ namespace stream_executor {
 namespace metal {
 
 namespace rt = metal_pjrt::rt;
+
+namespace {
+// Metal's launch dimensions are 32-bit; StreamExecutor's are 64-bit.
+absl::StatusOr<rt::Dim3> ToDim3(absl::string_view kernel,
+                                absl::string_view what, uint64_t x,
+                                uint64_t y, uint64_t z) {
+  constexpr uint64_t kMax = std::numeric_limits<uint32_t>::max();
+  if (x > kMax || y > kMax || z > kMax) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "kernel %s: %s %d x %d x %d exceed Metal's 32-bit launch dimensions",
+        kernel, what, x, y, z));
+  }
+  return rt::Dim3{static_cast<uint32_t>(x), static_cast<uint32_t>(y),
+                  static_cast<uint32_t>(z)};
+}
+
+absl::StatusOr<uint32_t> SharedBytes(absl::string_view kernel,
+                                     uint64_t bytes) {
+  if (bytes > std::numeric_limits<uint32_t>::max()) {
+    return absl::InvalidArgumentError(absl::StrFormat(
+        "kernel %s: %d bytes of threadgroup memory requested", kernel,
+        bytes));
+  }
+  return static_cast<uint32_t>(bytes);
+}
+}  // namespace
 
 absl::StatusOr<int32_t> MetalKernel::GetMaxOccupiedBlocksPerCore(
     ThreadDim threads, size_t dynamic_shared_memory_bytes) const {
@@ -54,7 +81,8 @@ absl::Status MetalKernel::PackArgs(
     const KernelArgs& args, absl::InlinedVector<rt::KernelArg, 16>& rt_args,
     uint32_t& shared_bytes) const {
   rt_args.clear();
-  shared_bytes = static_cast<uint32_t>(args.number_of_shared_bytes());
+  ABSL_ASSIGN_OR_RETURN(shared_bytes,
+                        SharedBytes(name(), args.number_of_shared_bytes()));
 
   if (auto* device_args = DynCast<KernelArgsDeviceAddressArray>(&args)) {
     rt_args.reserve(device_args->device_addr_args().size());
@@ -77,7 +105,8 @@ absl::Status MetalKernel::PackArgs(
       rt_args.push_back(rt::KernelArg::Buffer(
           *static_cast<void* const*>(arg)));
     }
-    shared_bytes = static_cast<uint32_t>(use->number_of_shared_bytes());
+    ABSL_ASSIGN_OR_RETURN(shared_bytes,
+                          SharedBytes(name(), use->number_of_shared_bytes()));
   } else {
     return absl::InvalidArgumentError(absl::StrFormat(
         "kernel %s: unsupported KernelArgs kind (expected device address "
@@ -103,12 +132,12 @@ absl::Status MetalKernel::Launch(const ThreadDim& thread_dims,
   ABSL_RETURN_IF_ERROR(PackArgs(args, rt_args, shared_bytes));
 
   auto* metal_stream = static_cast<MetalStream*>(stream);
-  rt::Dim3 groups{static_cast<uint32_t>(block_dims.x),
-                  static_cast<uint32_t>(block_dims.y),
-                  static_cast<uint32_t>(block_dims.z)};
-  rt::Dim3 threads{static_cast<uint32_t>(thread_dims.x),
-                   static_cast<uint32_t>(thread_dims.y),
-                   static_cast<uint32_t>(thread_dims.z)};
+  ABSL_ASSIGN_OR_RETURN(rt::Dim3 groups,
+                        ToDim3(name(), "threadgroups", block_dims.x,
+                               block_dims.y, block_dims.z));
+  ABSL_ASSIGN_OR_RETURN(rt::Dim3 threads,
+                        ToDim3(name(), "threads per threadgroup",
+                               thread_dims.x, thread_dims.y, thread_dims.z));
   return metal_stream->rt_stream()->Launch(*kernel_, groups, threads, rt_args,
                                            shared_bytes);
 }

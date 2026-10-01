@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Tests for the runtime layer on its own (no XLA). Needs a Metal device.
+#include "metal_pjrt/runtime/kernel_launch.h"
 #include "metal_pjrt/runtime/metal_runtime.h"
 #include "metal_pjrt/runtime/system_memory.h"
 #include "metal_pjrt/kernels/msl_prelude.metal.h"
@@ -1479,6 +1480,16 @@ TEST_F(MetalRuntimeTest, DeclaredMaxThreadsRefusesLargerThreadgroups) {
                         {KernelArg::Buffer(y)}),
               StatusIs(absl::StatusCode::kInvalidArgument,
                        HasSubstr("128 threads per threadgroup")));
+  EXPECT_THAT(s->Synchronize(), IsOk());
+  for (int i = 0; i < 256; ++i) ASSERT_EQ(y[i], 12345u) << "refused launch ran";
+  // LaunchKernel refuses too (it used to shrink the threadgroup to 64,
+  // which ran only 2 x 64 of the 2 x 128 threads asked for).
+  struct NoParams {
+    uint32_t unused;
+  };
+  EXPECT_THAT(LaunchKernel(s.get(), **k, {y}, NoParams{0}, Dim3{2, 1, 1},
+                           Dim3{128, 1, 1}),
+              StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(s->Synchronize(), IsOk());
   for (int i = 0; i < 256; ++i) ASSERT_EQ(y[i], 12345u) << "refused launch ran";
   ASSERT_THAT(s->Launch(**k, Dim3{4, 1, 1}, Dim3{64, 1, 1},
