@@ -77,15 +77,16 @@ model on the GPU the gradients match CPU float32 to better than 1e-4 in
 relative norm, and the loss to 1e-5 (6.67105 vs 6.67106; `gradcheck.py`),
 which isolates the plugin's own error.
 
-**Speed**, with gradient checkpointing, 60-step runs, median of 3
-interleaved rounds (`compare.py`): trained tokens per second, the window
-mean both sides report, JAX 184 and mlx-lm 187, i.e. the same speed
-(mlx-lm 1.6% ahead). (An earlier version of this README compared step
-times, "760 vs 781 ms", but those mixed JAX's window median with
-mlx-lm's window mean; `train.py` now reports the window mean too, and a
-re-measurement is pending.) The machine was shared with other GPU jobs
-(serialized) and their memory, and single runs swung by up to 50%, so
-only interleaved numbers are comparable.
+**Speed**, with gradient checkpointing, 60-step runs, 3 interleaved
+rounds (`compare.py`, 2026-10-01; plugin as of 2026-09-30, mlx-lm 0.31.3 /
+MLX 0.32.3): step time as the window mean on both sides (1 / iterations per
+second, as mlx_lm.lora reports it), JAX 577 / 574 / 688 ms per round
+against mlx-lm's 601 / 748 / 737 ms, i.e. JAX was faster in every round,
+by 4-23%; medians 577 vs 737 ms, trained tokens per second 242 vs 197.
+Rounds vary this much because the machine (a fanless 8 GB MacBook Air)
+throttles under sustained load; interleaving gives both sides the same
+conditions. (An earlier measurement, before the plugin's single command
+queue, had the two at the same speed: tokens/s 184 vs 187.)
 
 **Memory**: the JAX process peaks at a 4.0-4.1 GB footprint with gradient
 checkpointing (mlx-lm: 2.3 GB Metal peak; 3.1 GB without checkpointing).
