@@ -51,6 +51,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <thread>
@@ -313,7 +314,17 @@ class Device {
   // (as PyTorch MPS allows); the first allocation at warning or worse logs
   // a warning.
   absl::Status CheckSystemMemory(uint64_t size);
-  absl::Status Deallocate(void* ptr);
+  // Frees an allocation; `size`, when given, must be the size it was
+  // allocated with. A pointer that is not the start of a live allocation
+  // (unknown, interior, already freed) or a size mismatch is a plugin bug:
+  // INTERNAL, logged with a backtrace, and nothing is cached or released.
+  // METAL_PJRT_DEBUG_FREE_QUARANTINE=1 (debugging): freed buffers are not
+  // reused until kQuarantineFrees later frees and kQuarantineTime have
+  // passed, and a pointer into one is reported as such, with the
+  // backtrace of its free.
+  absl::Status Deallocate(void* ptr, std::optional<uint64_t> size = {});
+  static constexpr int kQuarantineFrees = 64;
+  static constexpr std::chrono::milliseconds kQuarantineTime{100};
   // Host memory the GPU can also reach (XLA's host memory space: its host
   // staging pool and pinned_host arrays, which it copies to and from with
   // device copies): anonymous pages wrapped without copying in an
@@ -430,8 +441,41 @@ class Device {
   DeviceInfo info_;
 
   mutable std::mutex mu_;
-  // Keyed by start address; value is the buffer and its length.
-  std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> allocations_;
+  struct LiveAllocation {
+    MTL::Buffer* buffer;
+    uint64_t length;      // the buffer's (rounded) length
+    uint64_t requested;   // the size asked for
+    uint64_t generation;  // allocation sequence number (diagnostics)
+  };
+  // Keyed by start address.
+  std::map<uintptr_t, LiveAllocation> allocations_;
+  uint64_t generation_ = 0;
+  // The last frees (address, size, generation), for telling a double free
+  // from an unknown pointer.
+  struct RecentFree {
+    uintptr_t addr;
+    uint64_t requested;
+    uint64_t generation;
+  };
+  std::deque<RecentFree> recent_frees_;
+  static constexpr size_t kRecentFrees = 1024;
+  // Debug quarantine (see Deallocate), oldest first.
+  struct QuarantinedBuffer {
+    LiveAllocation a;
+    uintptr_t addr;
+    std::chrono::steady_clock::time_point freed;
+    uint64_t free_seq;
+    uint64_t ticket;
+    std::vector<void*> free_stack;
+  };
+  bool quarantine_frees_ = false;  // set by Create
+  std::deque<QuarantinedBuffer> quarantine_;
+  uint64_t free_seq_ = 0;
+  // Moves quarantined buffers that have served their time into the cache.
+  void DrainQuarantineLocked();
+  // A pointer bug: logs `msg` with a backtrace and what is known about
+  // `ptr`, returns INTERNAL.
+  absl::Status PointerBug(const void* ptr, const std::string& msg);
   // AllocateHost's buffers, keyed as allocations_ is (length = mapped bytes).
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> host_allocations_;
   uint64_t allocated_bytes_ = 0;

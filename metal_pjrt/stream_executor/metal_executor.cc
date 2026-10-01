@@ -140,12 +140,13 @@ DeviceAddressBase MetalExecutor::Allocate(uint64_t size, int64_t memory_space) {
 
 void MetalExecutor::Deallocate(DeviceAddressBase* mem) {
   if (mem == nullptr || mem->is_null()) return;
-  absl::Status s = device_->Deallocate(mem->opaque());
-  if (!s.ok()) {
-    LOG(ERROR) << "Metal device " << device_ordinal() << ": deallocating "
-               << mem->size() << " bytes at " << mem->opaque()
-               << " failed: " << s;
-  }
+  // A failure (unknown pointer, double free, size mismatch) is logged with
+  // a backtrace by the runtime; StreamExecutor's Deallocate returns nothing.
+  // XLA's allocator path (StreamExecutorMemoryAllocator::DeallocateRaw)
+  // has no size and passes 0, so 0 means unknown here.
+  std::optional<uint64_t> size;
+  if (mem->size() != 0) size = mem->size();
+  device_->Deallocate(mem->opaque(), size).IgnoreError();
 }
 
 absl::StatusOr<std::unique_ptr<MemoryAllocation>>
@@ -156,13 +157,8 @@ MetalExecutor::HostMemoryAllocate(uint64_t size) {
   // the device budget and buffer cache (Device::AllocateHost).
   ABSL_ASSIGN_OR_RETURN(void* ptr, device_->AllocateHost(size));
   return std::make_unique<GenericMemoryAllocation>(
-      ptr, size, [this](void* ptr, uint64_t size) {
-        absl::Status s = device_->DeallocateHost(ptr);
-        if (!s.ok()) {
-          LOG(ERROR) << "Metal device " << device_ordinal()
-                     << ": freeing host allocation of " << size
-                     << " bytes at " << ptr << " failed: " << s;
-        }
+      ptr, size, [this](void* ptr, uint64_t) {
+        device_->DeallocateHost(ptr).IgnoreError();  // logged there
       });
 }
 
@@ -171,12 +167,7 @@ MetalExecutor::DeviceMemoryAllocate(uint64_t size) {
   ABSL_ASSIGN_OR_RETURN(rt::Allocation a, device_->Allocate(size));
   return std::make_unique<GenericMemoryAllocation>(
       a.ptr, size, [this](void* ptr, uint64_t size) {
-        absl::Status s = device_->Deallocate(ptr);
-        if (!s.ok()) {
-          LOG(ERROR) << "Metal device " << device_ordinal()
-                     << ": freeing allocation of " << size << " bytes at "
-                     << ptr << " failed: " << s;
-        }
+        device_->Deallocate(ptr, size).IgnoreError();  // logged there
       });
 }
 

@@ -61,7 +61,7 @@ absl::StatusOr<fft::FftType> ParseFftType(absl::string_view s) {
 struct FftTables {
   ~FftTables() {
     if (constants_device != nullptr) {
-      absl::Status s = device->Deallocate(constants_device);
+      absl::Status s = device->Deallocate(constants_device, constants.size);
       if (!s.ok()) LOG(ERROR) << "metal$fft: " << s;
     }
   }

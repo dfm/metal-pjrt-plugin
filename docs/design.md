@@ -251,6 +251,16 @@ sizes.
   copy is done, so this means the allocation table lost a buffer XLA still
   holds (a use after free); writing through the pointer would corrupt
   whatever reused the memory.
+- Frees check their pointer: freeing anything but the start of a live
+  allocation (unknown, interior, already freed: the last 1024 frees are
+  remembered to name a double free) or with a size other than the one
+  allocated is INTERNAL, logged with a backtrace, and nothing is cached.
+  (XLA's own allocator path frees without a size; the size is checked
+  where one is passed: module constants, FFT tables, XLA's memory
+  allocators.) A new buffer at an address that is still a live key is
+  logged. `METAL_PJRT_DEBUG_FREE_QUARANTINE=1` (debugging) keeps freed
+  buffers out of reuse until 64 later frees and 100 ms have passed, and
+  reports a pointer into one with the backtrace of its free.
 - Idle trim and pressure: a libdispatch timer, armed only while the cache
   is not empty, releases buffers unused for 2 s, so an idle process gives
   its memory back; a `DISPATCH_SOURCE_TYPE_MEMORYPRESSURE` warning releases

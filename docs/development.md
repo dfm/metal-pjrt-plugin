@@ -166,6 +166,7 @@ ignored with a warning and the default kept.
 | `METAL_PJRT_DISABLE_LAPACK` | compile | dev | boolean, default off; on: no LAPACK / small-matrix GPU linear algebra; XLA's expanders and JAX's generic lowerings instead | compiler and `_linalg_lowerings.py` |
 | `METAL_PJRT_DISABLE_FFT` | compile | dev | boolean, default off; on: every FFT axis lowers to the dense DFT instead of `metal$fft` | `_lowerings.py` (the compiler reads it only for the cache key) |
 | `METAL_PJRT_TRACE` | run | dev | boolean, default off; on logs one line per committed command buffer (op count, GPU time) | runtime |
+| `METAL_PJRT_DEBUG_FREE_QUARANTINE` | run | dev | boolean, default off; on: freed device buffers are not reused until 64 later frees and 100 ms have passed, and a pointer into one is reported with the backtrace of its free (hunting use-after-free) | runtime, at device creation |
 | `METAL_PJRT_STATE_DIR` | run | dev | directory of the GPU reset log, default `~/.cache/metal-pjrt` (not the device lock, below) | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_QUARANTINE_STRIKES` | run | dev | resets since boot that quarantine a kernel, default 2; 0 disables | runtime, `scripts/gpu_health.py` |
 | `METAL_PJRT_SNAPSHOT_MAX_MB` | run | test | largest `device_put` snapshotted instead of waited for, before the reclaimable/8 cap, default 256 | `pjrt/metal_pjrt_api.cc` |

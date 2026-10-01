@@ -619,6 +619,66 @@ TEST_F(MetalRuntimeTest, EventAfterOnlyWaitsWaitsOnTheHost) {
   EXPECT_THAT(dev_->Deallocate(z), IsOk());
 }
 
+// Freeing anything but the start of a live allocation, with its size, is a
+// plugin bug: INTERNAL, and nothing is cached or released.
+TEST_F(MetalRuntimeTest, DeallocateRefusesBadPointers) {
+  absl::StatusOr<Allocation> a = dev_->Allocate(5000);
+  ASSERT_THAT(a, IsOk());
+  const Device::MemoryStats before = dev_->memory_stats();
+  char* p = static_cast<char*>(a->ptr);
+  EXPECT_THAT(dev_->Deallocate(p + 16),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("not the start of a live allocation")));
+  EXPECT_THAT(dev_->Deallocate(p, 4096),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("the allocation there has 5000 bytes")));
+  int unknown = 0;
+  EXPECT_THAT(dev_->Deallocate(&unknown),
+              StatusIs(absl::StatusCode::kInternal));
+  const Device::MemoryStats same = dev_->memory_stats();
+  EXPECT_EQ(same.live_bytes, before.live_bytes);
+  EXPECT_EQ(same.cached_bytes, before.cached_bytes);
+  EXPECT_THAT(dev_->Resolve(p), IsOk());
+  EXPECT_THAT(dev_->Deallocate(p, 5000), IsOk());
+  const uint64_t cached = dev_->memory_stats().cached_bytes;
+  EXPECT_THAT(dev_->Deallocate(p, 5000),
+              StatusIs(absl::StatusCode::kInternal, HasSubstr("double free")));
+  EXPECT_EQ(dev_->memory_stats().cached_bytes, cached);  // not cached twice
+}
+
+// METAL_PJRT_DEBUG_FREE_QUARANTINE: a freed buffer is not reused right away,
+// and a pointer into it is reported with where it was freed.
+TEST_F(MetalRuntimeTest, FreeQuarantine) {
+  setenv("METAL_PJRT_DEBUG_FREE_QUARANTINE", "1", 1);
+  absl::StatusOr<std::unique_ptr<Device>> d = Device::Create(0);
+  unsetenv("METAL_PJRT_DEBUG_FREE_QUARANTINE");
+  ASSERT_THAT(d, IsOk());
+  Device& dev = **d;
+  absl::StatusOr<Allocation> a = dev.Allocate(4096);
+  ASSERT_THAT(a, IsOk());
+  ASSERT_THAT(dev.Deallocate(a->ptr, 4096), IsOk());
+  absl::StatusOr<Allocation> b = dev.Allocate(4096);
+  ASSERT_THAT(b, IsOk());
+  EXPECT_NE(b->ptr, a->ptr);
+  EXPECT_FALSE(dev.Resolve(a->ptr).ok());
+  EXPECT_THAT(dev.Deallocate(static_cast<char*>(a->ptr) + 8),
+              StatusIs(absl::StatusCode::kInternal,
+                       HasSubstr("inside a quarantined buffer")));
+  // After kQuarantineFrees more frees and kQuarantineTime it is reusable.
+  for (int i = 0; i < Device::kQuarantineFrees; ++i) {
+    absl::StatusOr<Allocation> c = dev.Allocate(64);
+    ASSERT_THAT(c, IsOk());
+    ASSERT_THAT(dev.Deallocate(c->ptr, 64), IsOk());
+  }
+  std::this_thread::sleep_for(Device::kQuarantineTime +
+                              std::chrono::milliseconds(20));
+  absl::StatusOr<Allocation> again = dev.Allocate(4096);
+  ASSERT_THAT(again, IsOk());
+  EXPECT_EQ(again->ptr, a->ptr);
+  EXPECT_THAT(dev.Deallocate(again->ptr, 4096), IsOk());
+  EXPECT_THAT(dev.Deallocate(b->ptr, 4096), IsOk());
+}
+
 // A buffer the host writes right away (module constants, FFT tables) never
 // reuses a cached buffer that queued GPU work may still read; GPU use may.
 TEST_F(MetalRuntimeTest, HostWriteAllocationSkipsBuffersInUse) {
@@ -1189,7 +1249,7 @@ TEST_F(MetalRuntimeTest, ErrorCodes) {
                        HasSubstr("maxBufferLength")));
   int host = 0;
   EXPECT_THAT(dev_->Deallocate(&host),
-              StatusIs(absl::StatusCode::kInvalidArgument));
+              StatusIs(absl::StatusCode::kInternal));  // a plugin bug
   EXPECT_THAT(dev_->Resolve(&host),
               StatusIs(absl::StatusCode::kInvalidArgument));
   EXPECT_THAT(dev_->GetKernel("kernel void broken(", "broken"),

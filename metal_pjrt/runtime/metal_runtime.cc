@@ -30,6 +30,8 @@
 #include <thread>
 
 #include "absl/cleanup/cleanup.h"
+#include "absl/debugging/stacktrace.h"
+#include "absl/debugging/symbolize.h"
 #include "absl/log/log.h"
 #include "absl/log/vlog_is_on.h"
 #include "absl/status/status.h"
@@ -127,6 +129,18 @@ absl::Status CheckNotWaitingOnOwnHostTask(const MTL::SharedEvent* ev,
       "a host task of a Metal stream waited for its own stream (value %d, the "
       "task signals %d when it returns); it would deadlock",
       v, current_host_task.value));
+}
+
+// "\n    #i <symbol>" per frame.
+std::string FormatStack(const std::vector<void*>& frames) {
+  std::string out;
+  char name[512];
+  for (size_t i = 0; i < frames.size(); ++i) {
+    const char* sym =
+        absl::Symbolize(frames[i], name, sizeof(name)) ? name : "?";
+    absl::StrAppendFormat(&out, "\n    #%d %p %s", i, frames[i], sym);
+  }
+  return out;
 }
 
 // The error of a command buffer whose status is MTL::CommandBufferStatusError.
@@ -266,6 +280,7 @@ absl::StatusOr<std::unique_ptr<Device>> Device::Create(int ordinal) {
   dev->ordinal_ = ordinal;
   dev->device_ = d;
   dev->info_ = InfoOf(d);
+  dev->quarantine_frees_ = EnvFlag("METAL_PJRT_DEBUG_FREE_QUARANTINE");
   const DeviceInfo& info = dev->info_;
   {
     // A ceiling, not a reservation: buffers are only mapped when used, and
@@ -564,6 +579,7 @@ Device::~Device() {
     dispatch_release(q);
   }
   for (CachedBuffer& c : cache_) c.buffer->release();
+  for (QuarantinedBuffer& q : quarantine_) q.a.buffer->release();
   if (!allocations_.empty()) {
     LOG(ERROR) << "Metal device " << ordinal_ << " destroyed with "
                << allocations_.size() << " live allocation(s) totalling "
@@ -573,7 +589,7 @@ Device::~Device() {
     for (auto& [key, kernel] : entry.kernels) kernel->pso()->release();
     entry.library->release();
   }
-  for (auto& kv : allocations_) kv.second.first->release();
+  for (auto& kv : allocations_) kv.second.buffer->release();
   for (auto& kv : host_allocations_) {
     if (kv.second.first != nullptr) {
       kv.second.first->release();
@@ -670,6 +686,7 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size, Use use) {
   bool over_budget = false;
   {
     std::lock_guard<std::mutex> lock(mu_);
+    if (!quarantine_.empty()) DrainQuarantineLocked();
     auto it = FindCachedBuffer(
         cache_by_size_, length, std::min(2 * length, length + 2 * kPageBytes),
         use == Use::kHostWrite,
@@ -735,35 +752,63 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size, Use use) {
   void* ptr = buf->contents();
   {
     std::lock_guard<std::mutex> lock(mu_);
-    allocations_[reinterpret_cast<uintptr_t>(ptr)] = {buf, length};
+    const uintptr_t key = reinterpret_cast<uintptr_t>(ptr);
+    if (auto it = allocations_.find(key); it != allocations_.end()) {
+      // Metal handed out an address we still hold: the table is wrong.
+      LOG(ERROR) << "Metal device " << ordinal_ << ": a new " << length
+                 << "-byte buffer starts at " << ptr
+                 << ", already a live allocation (" << it->second.requested
+                 << " bytes, generation " << it->second.generation << ")";
+    }
+    allocations_[key] = {buf, length, requested, ++generation_};
   }
   return Allocation{ptr, requested};
 }
 
-absl::Status Device::Deallocate(void* ptr) {
+absl::Status Device::Deallocate(void* ptr, std::optional<uint64_t> size) {
   if (ptr == nullptr) return absl::OkStatus();
-  MTL::Buffer* buf = nullptr;
   bool under_pressure = false;
   {
-    std::lock_guard<std::mutex> lock(mu_);
-    auto it = allocations_.find(reinterpret_cast<uintptr_t>(ptr));
+    std::unique_lock<std::mutex> lock(mu_);
+    const uintptr_t key = reinterpret_cast<uintptr_t>(ptr);
+    auto it = allocations_.find(key);
     if (it == allocations_.end()) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Metal Deallocate: %p is not the start of an allocation on device %d",
-          ptr, ordinal_));
+      lock.unlock();
+      return PointerBug(ptr, absl::StrFormat(
+          "Deallocate(%p%s) is not the start of a live allocation", ptr,
+          size ? absl::StrFormat(", %d bytes", *size) : ""));
     }
-    buf = it->second.first;
-    const uint64_t length = it->second.second;
-    allocated_bytes_ -= length;
+    if (size && *size != it->second.requested) {
+      const LiveAllocation a = it->second;
+      lock.unlock();
+      return PointerBug(ptr, absl::StrFormat(
+          "Deallocate(%p, %d bytes): the allocation there has %d bytes "
+          "(generation %d)",
+          ptr, *size, a.requested, a.generation));
+    }
+    const LiveAllocation a = it->second;
+    allocated_bytes_ -= a.length;
     allocations_.erase(it);
+    recent_frees_.push_back({key, a.requested, a.generation});
+    if (recent_frees_.size() > kRecentFrees) recent_frees_.pop_front();
     uint64_t ticket;
     {
       std::lock_guard<std::mutex> tlock(tickets_mu_);
       ticket = last_ticket_;
     }
-    cache_.push_back({buf, length, std::chrono::steady_clock::now(), ticket});
-    cache_by_size_.emplace(length, std::prev(cache_.end()));
-    cached_bytes_ += length;
+    if (quarantine_frees_) {
+      QuarantinedBuffer q{a, key, std::chrono::steady_clock::now(),
+                          ++free_seq_, ticket, std::vector<void*>(32)};
+      q.free_stack.resize(absl::GetStackTrace(q.free_stack.data(), 32, 1));
+      quarantine_.push_back(std::move(q));
+      cached_bytes_ += a.length;  // counted as cached until it gets there
+      DrainQuarantineLocked();
+    } else {
+      cache_.push_back({a.buffer, a.length, std::chrono::steady_clock::now(),
+                        ticket});
+      cache_by_size_.emplace(a.length, std::prev(cache_.end()));
+      cached_bytes_ += a.length;
+    }
     if (!trim_armed_ && trim_timer_ != nullptr) {
       dispatch_resume(static_cast<dispatch_source_t>(trim_timer_));
       trim_armed_ = true;
@@ -772,6 +817,58 @@ absl::Status Device::Deallocate(void* ptr) {
   }
   if (under_pressure) TrimCache(std::chrono::steady_clock::duration::zero());
   return absl::OkStatus();
+}
+
+void Device::DrainQuarantineLocked() {
+  const auto now = std::chrono::steady_clock::now();
+  while (!quarantine_.empty() &&
+         free_seq_ - quarantine_.front().free_seq >= kQuarantineFrees &&
+         now - quarantine_.front().freed >= kQuarantineTime) {
+    QuarantinedBuffer& q = quarantine_.front();
+    // Already counted in cached_bytes_.
+    cache_.push_back({q.a.buffer, q.a.length, q.freed, q.ticket});
+    cache_by_size_.emplace(q.a.length, std::prev(cache_.end()));
+    quarantine_.pop_front();
+  }
+}
+
+absl::Status Device::PointerBug(const void* ptr, const std::string& msg) {
+  std::string known;
+  {
+    std::lock_guard<std::mutex> lock(mu_);
+    const uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
+    for (auto r = recent_frees_.rbegin(); r != recent_frees_.rend(); ++r) {
+      if (r->addr == addr) {
+        known = absl::StrFormat(
+            "; it was freed before (%d bytes, generation %d, %d frees ago): "
+            "a double free",
+            r->requested, r->generation,
+            recent_frees_.rend() - r);
+        break;
+      }
+    }
+    for (const QuarantinedBuffer& q : quarantine_) {
+      if (addr >= q.addr && addr < q.addr + q.a.length) {
+        absl::StrAppendFormat(
+            &known,
+            "; it is inside a quarantined buffer freed %d ms ago (%d bytes "
+            "at %#x, generation %d), freed at:%s",
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now() - q.freed)
+                .count(),
+            q.a.requested, q.addr, q.a.generation, FormatStack(q.free_stack));
+      }
+    }
+  }
+  void* frames[32];
+  const int depth = absl::GetStackTrace(frames, 32, 1);
+  const std::string text = absl::StrFormat(
+      "Metal device %d: %s%s (%s). This is a metal-pjrt-plugin bug; please "
+      "report it with this log",
+      ordinal_, msg, known, DescribeNearestAllocations(ptr));
+  LOG(ERROR) << text << "\n  at:"
+             << FormatStack(std::vector<void*>(frames, frames + depth));
+  return absl::InternalError(text);
 }
 
 absl::StatusOr<void*> Device::AllocateHost(uint64_t size) {
@@ -812,13 +909,12 @@ absl::StatusOr<void*> Device::AllocateHost(uint64_t size) {
 absl::Status Device::DeallocateHost(void* ptr) {
   MTL::Buffer* buf = nullptr;
   {
-    std::lock_guard<std::mutex> lock(mu_);
+    std::unique_lock<std::mutex> lock(mu_);
     auto it = host_allocations_.find(reinterpret_cast<uintptr_t>(ptr));
     if (it == host_allocations_.end()) {
-      return absl::InvalidArgumentError(absl::StrFormat(
-          "Metal DeallocateHost: %p is not the start of a host allocation on "
-          "device %d",
-          ptr, ordinal_));
+      lock.unlock();
+      return PointerBug(ptr, absl::StrFormat(
+          "DeallocateHost(%p) is not the start of a host allocation", ptr));
     }
     buf = it->second.first;
     if (buf == nullptr) munmap(ptr, it->second.second);
@@ -926,12 +1022,12 @@ std::string Device::DescribeNearestAllocations(const void* ptr) const {
     // `addr` may lie inside it (a range past its end is refused too).
     auto below = std::prev(above);
     absl::StrAppendFormat(&out, "; nearest at or below: %#x (%d bytes, %d bytes before)",
-                          below->first, below->second.second,
+                          below->first, below->second.length,
                           addr - below->first);
   }
   if (above != allocations_.end()) {
     absl::StrAppendFormat(&out, "; nearest above: %#x (%d bytes, starts %d bytes after)",
-                          above->first, above->second.second,
+                          above->first, above->second.length,
                           above->first - addr);
   }
   return out;
@@ -940,14 +1036,17 @@ std::string Device::DescribeNearestAllocations(const void* ptr) const {
 absl::StatusOr<BufferRef> Device::Resolve(const void* ptr) const {
   std::lock_guard<std::mutex> lock(mu_);
   uintptr_t addr = reinterpret_cast<uintptr_t>(ptr);
-  for (const auto* table : {&allocations_, &host_allocations_}) {
-    auto it = table->upper_bound(addr);
-    if (it == table->begin()) continue;
+  if (auto it = allocations_.upper_bound(addr); it != allocations_.begin()) {
     --it;
-    uintptr_t base = it->first;
-    uint64_t size = it->second.second;
-    if (addr >= base && addr < base + size && it->second.first != nullptr) {
-      return BufferRef{it->second.first, addr - base};
+    if (addr < it->first + it->second.length) {
+      return BufferRef{it->second.buffer, addr - it->first};
+    }
+  }
+  if (auto it = host_allocations_.upper_bound(addr);
+      it != host_allocations_.begin()) {
+    --it;
+    if (addr < it->first + it->second.second && it->second.first != nullptr) {
+      return BufferRef{it->second.first, addr - it->first};
     }
   }
   return absl::InvalidArgumentError(absl::StrFormat(
