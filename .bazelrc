@@ -78,6 +78,11 @@ common --local_resources=cpu=6
 # (another terminal or tool session, a reboot) would miss the whole disk cache.
 common --incompatible_strict_action_env
 
+# Tests see the real HOME (Bazel's test setup sets it to TEST_TMPDIR): device
+# tests read and write the GPU state under ~/.cache/metal-pjrt (the reset
+# log and quarantine), which must be the same as for every other process.
+test --test_env=HOME
+
 # Persistent caches: survive `bazel clean`, output-base wipes and XLA re-pins.
 common --disk_cache=~/.cache/metal-pjrt-plugin/bazel-disk
 common --repository_cache=~/.cache/metal-pjrt-plugin/bazel-repo

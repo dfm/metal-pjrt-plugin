@@ -25,8 +25,9 @@ hand) is ignored and the lock is acquired as usual.
 The command is never killed from here: Ctrl-C reaches it directly (same
 process group) and this script waits for it to exit (subprocess.call would
 SIGKILL it on KeyboardInterrupt, with GPU work possibly in flight). The
-command inherits the locked files, so it keeps holding the lock even if
-this script dies first.
+lock is held by this script, not passed to the command: a daemon the
+command starts (a Bazel server, which outlives `bazel test`) would inherit
+it and hold the lock until it exits.
 """
 import fcntl, os, pathlib, signal, subprocess, sys, time
 
@@ -72,9 +73,10 @@ def held_by_ancestor():
     return False
 
 
-def run(argv, env=None, keep_fds=()):
+def run(argv, env=None):
     signal.signal(signal.SIGINT, lambda *_: None)  # the child handles Ctrl-C
-    return subprocess.Popen(argv, env=env, pass_fds=keep_fds).wait()
+    # close_fds (the default): the lock files stay with this process.
+    return subprocess.Popen(argv, env=env).wait()
 
 
 def main(argv):
@@ -93,7 +95,7 @@ def main(argv):
     held.append(acquire(LOCK, argv))
     # Tells tests/conftest.py the lock is held.
     env = dict(os.environ, METAL_PJRT_DEVICE_LOCK_HELD=str(os.getpid()))
-    return run(argv, env, [f.fileno() for f in held])
+    return run(argv, env)
 
 
 if __name__ == "__main__":
