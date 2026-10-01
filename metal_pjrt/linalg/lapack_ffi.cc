@@ -45,6 +45,7 @@
 //   (singular matrices are not an error, as on CPU).
 //
 // Only f32 is supported (JAX's x64 mode is off on this backend).
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -59,6 +60,7 @@
 #include "xla/backends/gpu/ffi.h"
 #include "xla/ffi/ffi.h"
 #include "xla/ffi/ffi_api.h"
+#include "xla/xla_data.pb.h"
 
 namespace metal_pjrt {
 namespace linalg {
@@ -111,6 +113,22 @@ absl::StatusOr<MatrixDims> GetMatrixDims(const char* name,
   return d;
 }
 
+// A result buffer must have the type and element count the handler writes:
+// the handlers write through raw pointers (and copy the operand into the
+// first result), so a mismatch would be an out-of-bounds write.
+absl::Status CheckResult(const char* name, const char* what,
+                         const xffi::AnyBuffer& r, xla::PrimitiveType type,
+                         int64_t elements) {
+  if (r.element_type() != type ||
+      static_cast<int64_t>(r.element_count()) != elements) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        name, ": result ", what, " has ", r.element_count(), " elements of ",
+        xla::PrimitiveType_Name(r.element_type()), ", expected ", elements,
+        " of ", xla::PrimitiveType_Name(type)));
+  }
+  return absl::OkStatus();
+}
+
 void CopyIfDistinct(void* dst, const void* src, size_t bytes) {
   if (dst != src && bytes > 0) std::memmove(dst, src, bytes);
 }
@@ -127,6 +145,11 @@ absl::Status Cholesky(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (!d.ok()) return d.status();
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$cholesky: matrix must be square");
+  }
+  if (absl::Status s = CheckResult(kName, "l", *out, xla::F32,
+                                   a.element_count());
+      !s.ok()) {
+    return s;
   }
   absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();
@@ -159,6 +182,11 @@ absl::Status TriangularSolve(stream_executor::Stream* stream,
   if (da->rows != da->cols || da->rows != k || da->batch != db->batch) {
     return absl::InvalidArgumentError(
         "metal$triangular_solve: incompatible operand shapes");
+  }
+  if (absl::Status s = CheckResult(kName, "x", *out, xla::F32,
+                                   b.element_count());
+      !s.ok()) {
+    return s;
   }
   // TriangularSolveOptions::Transpose: 1 = NO_TRANSPOSE, 2 = TRANSPOSE,
   // 3 = ADJOINT (the same as TRANSPOSE for real types).
@@ -200,6 +228,14 @@ absl::Status Getrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   }
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
+  const int64_t k = std::min(d->rows, d->cols);
+  for (absl::Status s :
+       {CheckResult(kName, "lu", *lu, xla::F32, a.element_count()),
+        CheckResult(kName, "pivots", *pivots, xla::S32, d->batch * k),
+        CheckResult(kName, "permutation", *permutation, xla::S32,
+                    d->batch * d->rows)}) {
+    if (!s.ok()) return s;
+  }
   absl::StatusOr<ffi::MetalContext> ctx = ffi::GetMetalContext(stream);
   if (!ctx.ok()) return ctx.status();
   if (UseSmallGetrf(d->batch, d->rows, d->cols)) {
@@ -226,6 +262,12 @@ absl::Status Geqrf(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (absl::Status s = CheckF32(kName, a.element_type()); !s.ok()) return s;
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
+  for (absl::Status s :
+       {CheckResult(kName, "a", *out, xla::F32, a.element_count()),
+        CheckResult(kName, "taus", *taus, xla::F32,
+                    d->batch * std::min(d->rows, d->cols))}) {
+    if (!s.ok()) return s;
+  }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
@@ -247,6 +289,16 @@ absl::Status Orgqr(stream_executor::Stream* stream, xffi::AnyBuffer a,
     return absl::InvalidArgumentError(
         "metal$lapack_orgqr: requires m >= n >= k");
   }
+  if (absl::Status s = CheckF32(kName, taus.element_type()); !s.ok()) return s;
+  if (static_cast<int64_t>(taus.element_count()) != d->batch * k) {
+    return absl::InvalidArgumentError(
+        "metal$lapack_orgqr: taus must have batch * k elements");
+  }
+  if (absl::Status s = CheckResult(kName, "q", *out, xla::F32,
+                                   a.element_count());
+      !s.ok()) {
+    return s;
+  }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(out->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
@@ -264,6 +316,11 @@ absl::Status Syevd(stream_executor::Stream* stream, xffi::AnyBuffer a,
   if (d->rows != d->cols) {
     return absl::InvalidArgumentError("metal$lapack_syevd: matrix must be square");
   }
+  for (absl::Status s :
+       {CheckResult(kName, "v", *v, xla::F32, a.element_count()),
+        CheckResult(kName, "w", *w, xla::F32, d->batch * d->rows)}) {
+    if (!s.ok()) return s;
+  }
   if (absl::Status s = SyncStream(stream); !s.ok()) return s;
   float* x = static_cast<float*>(v->untyped_data());
   CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
@@ -271,17 +328,38 @@ absl::Status Syevd(stream_executor::Stream* stream, xffi::AnyBuffer a,
                    static_cast<int>(d->rows), lower);
 }
 
+// u and vt are null for gesdd_novec.
 absl::Status GesddImpl(stream_executor::Stream* stream, xffi::AnyBuffer a,
-                       float* x, float* s, float* u, float* vt,
+                       xffi::AnyBuffer x, xffi::AnyBuffer s,
+                       const xffi::AnyBuffer* u, const xffi::AnyBuffer* vt,
                        bool full_matrices) {
   constexpr char kName[] = "metal$lapack_gesdd";
   if (absl::Status st = CheckF32(kName, a.element_type()); !st.ok()) return st;
   absl::StatusOr<MatrixDims> d = GetMatrixDims(kName, a.dimensions());
   if (!d.ok()) return d.status();
+  const int64_t m = d->rows, n = d->cols, k = std::min(m, n);
+  for (absl::Status st :
+       {CheckResult(kName, "a", x, xla::F32, a.element_count()),
+        CheckResult(kName, "s", s, xla::F32, d->batch * k)}) {
+    if (!st.ok()) return st;
+  }
+  if (u != nullptr) {
+    const int64_t ucols = full_matrices ? m : k;
+    const int64_t vtrows = full_matrices ? n : k;
+    for (absl::Status st :
+         {CheckResult(kName, "u", *u, xla::F32, d->batch * m * ucols),
+          CheckResult(kName, "vt", *vt, xla::F32, d->batch * vtrows * n)}) {
+      if (!st.ok()) return st;
+    }
+  }
   if (absl::Status st = SyncStream(stream); !st.ok()) return st;
-  CopyIfDistinct(x, a.untyped_data(), a.size_bytes());
-  return HostGesdd(x, s, u, vt, d->batch, static_cast<int>(d->rows),
-                   static_cast<int>(d->cols), full_matrices);
+  float* xp = static_cast<float*>(x.untyped_data());
+  CopyIfDistinct(xp, a.untyped_data(), a.size_bytes());
+  return HostGesdd(
+      xp, static_cast<float*>(s.untyped_data()),
+      u != nullptr ? static_cast<float*>(u->untyped_data()) : nullptr,
+      vt != nullptr ? static_cast<float*>(vt->untyped_data()) : nullptr,
+      d->batch, static_cast<int>(m), static_cast<int>(n), full_matrices);
 }
 
 absl::Status Gesdd(stream_executor::Stream* stream, xffi::AnyBuffer a,
@@ -289,17 +367,14 @@ absl::Status Gesdd(stream_executor::Stream* stream, xffi::AnyBuffer a,
                    xffi::Result<xffi::AnyBuffer> s,
                    xffi::Result<xffi::AnyBuffer> u,
                    xffi::Result<xffi::AnyBuffer> vt, bool full_matrices) {
-  return GesddImpl(stream, a, static_cast<float*>(x->untyped_data()),
-                   static_cast<float*>(s->untyped_data()),
-                   static_cast<float*>(u->untyped_data()),
-                   static_cast<float*>(vt->untyped_data()), full_matrices);
+  xffi::AnyBuffer ub = *u, vtb = *vt;
+  return GesddImpl(stream, a, *x, *s, &ub, &vtb, full_matrices);
 }
 
 absl::Status GesddNoVec(stream_executor::Stream* stream, xffi::AnyBuffer a,
                         xffi::Result<xffi::AnyBuffer> x,
                         xffi::Result<xffi::AnyBuffer> s) {
-  return GesddImpl(stream, a, static_cast<float*>(x->untyped_data()),
-                   static_cast<float*>(s->untyped_data()), nullptr, nullptr,
+  return GesddImpl(stream, a, *x, *s, nullptr, nullptr,
                    /*full_matrices=*/false);
 }
 

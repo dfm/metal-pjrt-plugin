@@ -15,29 +15,37 @@
 #include "absl/strings/str_cat.h"
 #include "metal_pjrt/compiler/report_bug.h"
 
-// Accelerate's classic LAPACK (LP64, 32-bit integers) and CBLAS interfaces.
-// Declared here rather than through <Accelerate/Accelerate.h> to keep the
-// framework headers out of the build.
+// Accelerate's current LAPACK (3.9+, macOS 13.3+; LP64, 32-bit integers)
+// and CBLAS: the `$NEWLAPACK` symbols that <Accelerate/Accelerate.h> binds
+// with ACCELERATE_NEW_LAPACK. The unsuffixed symbols are the deprecated
+// LAPACK 3.2.1. Declared here (same signatures as vecLib's lapack.h and
+// cblas_new.h) rather than through the header, to keep the framework
+// headers out of the build.
+#define METAL_PJRT_NEW_LAPACK(sym) __asm__("_" #sym "$NEWLAPACK")
 extern "C" {
-int spotrf_(const char* uplo, const int* n, float* a, const int* lda,
-            int* info);
-int sgetrf_(const int* m, const int* n, float* a, const int* lda, int* ipiv,
-            int* info);
-int sgeqrf_(const int* m, const int* n, float* a, const int* lda, float* tau,
-            float* work, const int* lwork, int* info);
-int sorgqr_(const int* m, const int* n, const int* k, float* a, const int* lda,
-            const float* tau, float* work, const int* lwork, int* info);
-int ssyevd_(const char* jobz, const char* uplo, const int* n, float* a,
-            const int* lda, float* w, float* work, const int* lwork, int* iwork,
-            const int* liwork, int* info);
-int sgesdd_(const char* jobz, const int* m, const int* n, float* a,
-            const int* lda, float* s, float* u, const int* ldu, float* vt,
-            const int* ldvt, float* work, const int* lwork, int* iwork,
-            int* info);
+void spotrf_(const char* uplo, const int* n, float* a, const int* lda,
+             int* info) METAL_PJRT_NEW_LAPACK(spotrf);
+void sgetrf_(const int* m, const int* n, float* a, const int* lda, int* ipiv,
+             int* info) METAL_PJRT_NEW_LAPACK(sgetrf);
+void sgeqrf_(const int* m, const int* n, float* a, const int* lda,
+             float* tau, float* work, const int* lwork, int* info)
+    METAL_PJRT_NEW_LAPACK(sgeqrf);
+void sorgqr_(const int* m, const int* n, const int* k, float* a,
+             const int* lda, const float* tau, float* work, const int* lwork,
+             int* info) METAL_PJRT_NEW_LAPACK(sorgqr);
+void ssyevd_(const char* jobz, const char* uplo, const int* n, float* a,
+             const int* lda, float* w, float* work, const int* lwork,
+             int* iwork, const int* liwork, int* info)
+    METAL_PJRT_NEW_LAPACK(ssyevd);
+void sgesdd_(const char* jobz, const int* m, const int* n, float* a,
+             const int* lda, float* s, float* u, const int* ldu, float* vt,
+             const int* ldvt, float* work, const int* lwork, int* iwork,
+             int* info) METAL_PJRT_NEW_LAPACK(sgesdd);
 void cblas_strsm(int order, int side, int uplo, int transa, int diag, int m,
                  int n, float alpha, const float* a, int lda, float* b,
-                 int ldb);
+                 int ldb) METAL_PJRT_NEW_LAPACK(cblas_strsm);
 }
+#undef METAL_PJRT_NEW_LAPACK
 
 namespace metal_pjrt {
 namespace linalg {
@@ -216,10 +224,24 @@ absl::Status HostSyevd(float* x, float* w, int64_t batch, int n, bool lower) {
   for (int64_t b = 0; b < batch; ++b) {
     float* mb = x + b * int64_t{n} * n;
     float* wb = w + b * n;
-    ssyevd_(&jobz, &uplo, &n, mb, &n, wb, work.data(), &lwork, iwork.data(),
-            &liwork, &info);
+    // A non-finite input gives NaN without calling LAPACK, whose result for
+    // it is not specified (it may not converge or return garbage).
+    bool finite = true;
+    for (int j = 0; j < n && finite; ++j) {
+      for (int i = lower ? j : 0; i < (lower ? n : j + 1); ++i) {
+        if (!std::isfinite(mb[int64_t{j} * n + i])) {
+          finite = false;
+          break;
+        }
+      }
+    }
+    info = 0;
+    if (finite) {
+      ssyevd_(&jobz, &uplo, &n, mb, &n, wb, work.data(), &lwork,
+              iwork.data(), &liwork, &info);
+    }
     if (info < 0) return LapackError(kName, info);
-    if (info > 0) {
+    if (info > 0 || !finite) {
       std::fill(mb, mb + int64_t{n} * n, kNaN);
       std::fill(wb, wb + n, kNaN);
     }
@@ -264,10 +286,17 @@ absl::Status HostGesdd(float* x, float* s, float* u, float* vt,
     float* sb = s + b * k;
     float* ub = uv ? u + b * int64_t{m} * ucols : &udummy;
     float* vb = uv ? vt + b * int64_t{vtrows} * n : &vtdummy;
-    sgesdd_(&jobz, &m, &n, xb, &m, sb, ub, &ldu, vb, &ldvt, work.data(),
-            &lwork, iwork.data(), &info);
+    // LAPACK 3.10+ reports a NaN in A as an illegal argument (info = -4);
+    // a non-finite input gives NaN, as on JAX's CPU backend.
+    const bool finite = std::all_of(xb, xb + int64_t{m} * n,
+                                    [](float v) { return std::isfinite(v); });
+    info = 0;
+    if (finite) {
+      sgesdd_(&jobz, &m, &n, xb, &m, sb, ub, &ldu, vb, &ldvt, work.data(),
+              &lwork, iwork.data(), &info);
+    }
     if (info < 0) return LapackError(kName, info);
-    if (info > 0) {
+    if (info > 0 || !finite) {
       std::fill(sb, sb + k, kNaN);
       if (uv) {
         std::fill(ub, ub + int64_t{m} * ucols, kNaN);

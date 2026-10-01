@@ -297,6 +297,60 @@ TEST(LapackHostTest, Syevd) {
   EXPECT_THAT(HostSyevd(nullptr, nullptr, 2, 0, true), IsOk());
 }
 
+// A non-finite value in the triangle read gives NaN without calling LAPACK
+// (whose result for it is not specified); the other batch elements are
+// unaffected.
+TEST(LapackHostTest, SyevdNonFiniteInput) {
+  const int n = 8;
+  for (bool lower : {true, false}) {
+    SCOPED_TRACE(absl::StrCat("lower ", lower));
+    std::vector<float> a(3 * n * n, 0.0f);
+    for (int64_t e = 0; e < 3; ++e) {
+      for (int i = 0; i < n; ++i) a[e * n * n + i * n + i] = 1.0f + i;
+    }
+    // Column-major (i, j) at j * n + i; (5, 2) is in the lower triangle.
+    const int64_t off = lower ? 2 * n + 5 : 5 * n + 2;
+    a[1 * n * n + off] = std::numeric_limits<float>::infinity();
+    a[2 * n * n + off] = kNaN;
+    std::vector<float> w(3 * n);
+    ASSERT_THAT(HostSyevd(a.data(), w.data(), 3, n, lower), IsOk());
+    for (int i = 0; i < n; ++i) EXPECT_EQ(w[i], 1.0f + i);
+    for (int64_t e = 1; e < 3; ++e) {
+      for (int i = 0; i < n; ++i) EXPECT_TRUE(std::isnan(w[e * n + i]));
+      for (int i = 0; i < n * n; ++i) {
+        EXPECT_TRUE(std::isnan(a[e * n * n + i]));
+      }
+    }
+  }
+}
+
+// LAPACK 3.10+ sgesdd calls a NaN input an illegal argument; it gives NaN
+// (as on JAX's CPU backend), not an error.
+TEST(LapackHostTest, GesddNonFiniteInput) {
+  const int m = 6, n = 4, k = 4;
+  for (float bad : {kNaN, std::numeric_limits<float>::infinity()}) {
+    std::vector<float> a(2 * m * n, 0.0f);
+    for (int64_t e = 0; e < 2; ++e) {
+      for (int i = 0; i < k; ++i) a[e * m * n + i * m + i] = 1.0f + i;
+    }
+    a[m * n + 3] = bad;
+    std::vector<float> s(2 * k), u(2 * m * k), vt(2 * k * n);
+    ASSERT_THAT(HostGesdd(a.data(), s.data(), u.data(), vt.data(), 2, m, n,
+                          /*full_matrices=*/false),
+                IsOk());
+    for (int i = 0; i < k; ++i) EXPECT_EQ(s[i], 4.0f - i);
+    for (int i = 0; i < k; ++i) EXPECT_TRUE(std::isnan(s[k + i]));
+    for (int i = 0; i < m * k; ++i) EXPECT_TRUE(std::isnan(u[m * k + i]));
+    for (int i = 0; i < k * n; ++i) EXPECT_TRUE(std::isnan(vt[k * n + i]));
+    std::vector<float> s2(2 * k);
+    a[m * n + 3] = bad;
+    ASSERT_THAT(HostGesdd(a.data(), s2.data(), nullptr, nullptr, 2, m, n,
+                          false),
+                IsOk());
+    EXPECT_TRUE(std::isnan(s2[k]));
+  }
+}
+
 TEST(LapackHostTest, Gesdd) {
   std::mt19937 rng(6);
   for (auto [m, n] : {std::pair{40, 25}, {25, 40}}) {

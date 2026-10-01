@@ -50,6 +50,12 @@ From a pre-release review of the whole tree.
 - `jax.lax.mulhi` on 64-bit integers (which XLA computes in 128-bit
   integers) is refused by name at compile time; it failed with an obscure
   emitter error.
+- Host linear algebra uses Accelerate's current LAPACK (3.9+, the
+  `$NEWLAPACK` symbols) instead of the deprecated LAPACK 3.2.1; results
+  now equal JAX's CPU backend in the eigh tests. `eigh` and `svd` of an
+  input with NaN or inf return NaN without calling LAPACK. The LAPACK
+  handlers check their result buffers' types and sizes (a mismatched
+  `ffi_call` wrote past a buffer).
 
 ### 2026-09-29
 

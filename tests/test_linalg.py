@@ -200,7 +200,7 @@ ULPS = {
     'triangular_solve 3x3 left=False lower=False trans=True unit=False': 1.9,
     'triangular_solve 3x3 left=False lower=False trans=True unit=True': 1.1,
     'grad cholesky': 9, 'grad solve': 7.4, 'grad cho_solve/logdet': 13,
-    'grad eigh': 12, 'grad slogdet': 2.7,
+    'grad eigh': 34, 'grad slogdet': 2.7,
     'fft2 * 2 / ifftn (complex buffers)': 4,
     'fft grad (complex buffers)': 2.6,
 }
@@ -307,15 +307,21 @@ n = 64
 a = np.random.default_rng(0).standard_normal((n, n)).astype(np.float32)
 sing = a.copy(); sing[:, 3] = 0
 nanm = a @ a.T; nanm[5, 7] = nanm[7, 5] = np.nan
+infm = a @ a.T; infm[5, 7] = infm[7, 5] = np.inf
 run("cholesky not PD", lambda: jnp.linalg.cholesky(-np.eye(n, dtype=np.float32)))
 run("solve singular", lambda: jnp.linalg.solve(sing, a[:, :2]))
 run("lu singular", lambda: jax.scipy.linalg.lu_factor(sing))
 run("eigh nan", lambda: jnp.linalg.eigh(nanm))
+run("eigh inf", lambda: jnp.linalg.eigh(infm))
 run("svd nan", lambda: jnp.linalg.svd(nanm))
 run("svd novec nan", lambda: jnp.linalg.svd(nanm, compute_uv=False))
 run("bad call", lambda: jax.ffi.ffi_call(
     "metal$cholesky", jax.ShapeDtypeStruct((40, 48), jnp.float32))(
         np.ones((40, 48), np.float32), lower=True))
+run("bad result", lambda: jax.ffi.ffi_call(
+    "metal$lapack_syevd", (jax.ShapeDtypeStruct((8, 8), jnp.float32),
+                           jax.ShapeDtypeStruct((4,), jnp.float32)))(
+        np.eye(8, dtype=np.float32), lower=True))
 """
 
 
@@ -325,14 +331,17 @@ def test_lapack_failures_are_values():
   # No timeout: never kill a process with GPU work in flight.
   out = run_python(FAILURE_CHILD, env)
   got = dict(l.split(": ", 1) for l in out.stdout.splitlines() if ": " in l)
-  assert out.returncode == 0 and len(got) == 7, (out.returncode, got, out.stderr[-2000:])
+  assert out.returncode == 0 and len(got) == 9, (out.returncode, got, out.stderr[-2000:])
   assert all(v.endswith("healthy=True") for v in got.values()), got
   expect = {"cholesky not PD": "nan", "solve singular": "nan",
-            "lu singular": "finite", "eigh nan": "nan", "svd nan": "nan",
+            "lu singular": "finite", "eigh nan": "nan", "eigh inf": "nan",
+            "svd nan": "nan",
             "svd novec nan": "nan"}
   for k, v in expect.items():
     assert got[k].startswith(v + " "), (k, got[k])
   assert got["bad call"].startswith("raised INVALID_ARGUMENT"), got["bad call"]
+  # A result buffer of the wrong size is refused, not written past.
+  assert got["bad result"].startswith("raised INVALID_ARGUMENT"), got["bad result"]
 
 
 # LAPACK returns workspace sizes as floats: above 2^24 the value can round

@@ -1,11 +1,11 @@
 // Copyright 2026 The metal-pjrt-plugin Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Batched f32 dense linear algebra on the host with Apple Accelerate
-// (classic LAPACK, LP64, and CBLAS): the work behind the metal$cholesky,
-// metal$triangular_solve and metal$lapack_* handlers (lapack_ffi.cc), which
-// synchronize the stream and copy the input to the output before calling
-// these on the shared-memory buffers. No XLA and no Metal, so
+// Batched f32 dense linear algebra on the host with Apple Accelerate (its
+// current LAPACK, the `$NEWLAPACK` symbols, LP64, and CBLAS): the work
+// behind the metal$cholesky, metal$triangular_solve and metal$lapack_*
+// handlers (lapack_ffi.cc), which synchronize the stream and copy the input
+// to the output before calling these on the shared-memory buffers. No XLA and no Metal, so
 // lapack_host_test is a plain host test.
 //
 // Every function works in place on `x`, a batch of matrices stored back to
@@ -49,13 +49,13 @@ absl::Status HostOrgqr(float* x, const float* taus, int64_t batch, int m,
 
 // ssyevd with vectors: x[b] (n x n, the `lower` or upper triangle read)
 // := the eigenvectors, w[b] (n) the eigenvalues ascending. A failed
-// decomposition makes both NaN.
+// decomposition, or a non-finite value in the triangle read, makes both NaN.
 absl::Status HostSyevd(float* x, float* w, int64_t batch, int n, bool lower);
 
 // sgesdd: s[b] (min(m, n)) the singular values, descending; with u and vt
 // (non-null) also U (m x m if full_matrices, else m x min(m, n)) and V^T
-// (n x n, else min(m, n) x n). x is overwritten. A failed decomposition
-// makes s (and u, vt) NaN.
+// (n x n, else min(m, n) x n). x is overwritten. A failed decomposition,
+// or a non-finite input, makes s (and u, vt) NaN.
 absl::Status HostGesdd(float* x, float* s, float* u, float* vt,
                        int64_t batch, int m, int n, bool full_matrices);
 
