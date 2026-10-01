@@ -189,6 +189,17 @@ An error ending in `(metal-pjrt-plugin bug; please report it with the HLO
 from XLA_FLAGS=--xla_dump_to=<dir>)` is a bug in the plugin: please report
 it with that dump.
 
+## Memory kinds inside jit
+
+The mtl device has two memory kinds, `device` and `pinned_host` (no
+`unpinned_host`). `jax.device_put(x, s)` with `s` a `pinned_host` sharding
+works outside `jit`. Inside `jit` (or as an `out_shardings` memory kind)
+it is not honoured: the values are right, but the result comes back as a
+`device` array (`y.sharding.memory_kind == "device"`; XLA:CPU returns
+`pinned_host`). No error is raised: the compiled program looks the same as
+one that works, so there is no clean compile-time check. To keep an array
+in host memory, `device_put` it there after the jitted call.
+
 ## Host callbacks
 
 - `host callback raised: ...` Your callback raised a Python exception; its
