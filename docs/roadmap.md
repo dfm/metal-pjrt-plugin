@@ -120,7 +120,7 @@ the license texts of everything linked into the library.
 
 Small-M bf16/f16 GEMM: done (2026-09-29: MLX's wide gemv for 2..8 rows, a
 16-row steel tile to 48, DotMerger off). 28 independent [M,1024]x[1024,6144]
-GEMMs at M=2: 15.03 -> 4.47 ms p10 (MLX 4.07); Qwen3-0.6B bf16 decode at
+GEMMs at M=2: 15.03 -> 4.47 ms p10 (3.95 re-measured 2026-10-01; MLX 3.85-4.07); Qwen3-0.6B bf16 decode at
 batch 2: 26.71 -> 13.88 ms. The gemv needs K >= 512 (a sweep over batch,
 rows and K: below that the 16-row tile wins by up to 2.8x), so batched
 decode attention, 1024 x [4..8, 128] x [128, 128]^T, is 1.9-2.0x faster

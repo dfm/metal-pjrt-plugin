@@ -195,14 +195,17 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
 
   | M | before | after | MLX | chained: before | after | MLX |
   |---|---|---|---|---|---|---|
-  | 1 | 4.16 | 4.31 | 4.11 | 3.91 | 3.91 | 4.32 |
-  | 2 | 15.03 | 4.47 | 4.07 | 8.13 | 4.03 | 4.49 |
-  | 4 | 15.06 | 4.56 | 4.54 | 8.15 | 4.39 | 4.83 |
-  | 8 | 15.11 | 4.91 | 4.86 | 8.12 | 4.30 | 5.46 |
-  | 16 | 15.14 | 4.95 | 7.83 | 8.19 | 4.67 | 8.60 |
-  | 32 | 15.36 | 4.98 | 7.54 | 8.22 | 5.49 | 8.40 |
-  | 64 | 15.71 | 8.33 | 7.64 | 8.41 | 8.54 | 8.49 |
+  | 1 | 4.16 | 4.09 | 4.08 | 3.91 | 3.87 | 4.32 |
+  | 2 | 15.03 | 3.95 | 3.85 | 8.13 | 3.96 | 4.49 |
+  | 4 | 15.06 | 4.00 | 3.89 | 8.15 | 4.06 | 4.83 |
+  | 8 | 15.11 | 4.28 | 4.04 | 8.12 | 4.21 | 5.46 |
+  | 16 | 15.14 | 4.41 | 7.28 | 8.19 | 4.60 | 8.60 |
+  | 32 | 15.36 | 4.80 | 7.33 | 8.22 | 5.09 | 8.40 |
+  | 64 | 15.71 | 7.62 | 7.41 | 8.41 | 8.28 | 8.49 |
 
+  "after" and the MLX list column were re-measured on 2026-10-01 with the
+  scripts as now in the repository (single command queue; 5-12% below the
+  first "after" run); the chained MLX column is from the first run.
   M = 1 is a reduction fusion, unchanged; M = 64 keeps its 64-row tile.
   MLX runs 2..15 rows on the gemv and uses its 64-row tile from 16. Per
   kernel (`bench/gemm_bench`, 28 cycled weights), the 16-row tile is
