@@ -87,6 +87,10 @@ struct ConvTile {
 // group; `c`: input channels per group.
 ConvTile ImplicitTile(int64_t m, int64_t n, int64_t c);
 ConvTile GeneralTile(int64_t m, int64_t n, int64_t c);
+// The implicit kernel's tile for output channels it pads (n > 16 and not a
+// multiple of ImplicitTile's column tile): ImplicitTile's, with 32 columns
+// instead of 64 when that pads less (n = 24: 32, not 64).
+ConvTile PaddedOutputTile(int64_t m, int64_t n, int64_t c);
 
 // One compilable variant: the MSL (for steel, kernels/steel_conv.metal plus
 // one explicit instantiation), the function and its function constants.

@@ -547,6 +547,33 @@ TEST_F(ConvTest, Channels) {
   }
 }
 
+// Output channels the implicit kernel pads (20, 24, 31 -> 32; 33 -> 64),
+// stride 1 and 2, flipped (input gradients), small and 64-wide tiles.
+TEST_F(ConvTest, PaddedOutputChannels) {
+  for (int64_t o : {20, 24, 31, 33}) {
+    for (int64_t c : {16, 64}) {
+      Case k{2, 15, 13, c, o, 3, 3};
+      k.pad_lo[0] = k.pad_lo[1] = k.pad_hi[0] = k.pad_hi[1] = 1;
+      k.flip = o % 2 == 0;
+      if (o == 31) k.stride[0] = k.stride[1] = 2;
+      const ConvParams p = Params(k, ConvType::kF32);
+      absl::StatusOr<ConvPlan> plan = PlanConv(p);
+      ASSERT_THAT(plan, IsOk());
+      EXPECT_EQ(plan->path, ConvPath::kImplicit) << o;
+      EXPECT_EQ(plan->padded_o, o <= 32 ? 32 : 64) << o;
+      CheckAllPaths(k);
+    }
+  }
+  // 8192+ output pixels and C = 64: the 64-row tile, 32 columns.
+  Case big{40, 16, 16, 64, 24, 3, 3};
+  big.pad_lo[0] = big.pad_lo[1] = big.pad_hi[0] = big.pad_hi[1] = 1;
+  big.flip = true;
+  absl::StatusOr<ConvPlan> plan = PlanConv(Params(big, ConvType::kBF16));
+  ASSERT_THAT(plan, IsOk());
+  EXPECT_EQ(plan->tile, (ConvTile{64, 32, 16, 2, 2}));
+  CheckAllPaths(big);
+}
+
 // Strides, kernel dilation, asymmetric and zero padding, input dilation
 // with and without flip, a 1-D convolution as H = 1.
 TEST_F(ConvTest, Geometry) {
@@ -925,10 +952,31 @@ TEST_F(ConvTest, Plan) {
   ASSERT_THAT(pad_plan, IsOk());
   EXPECT_EQ(pad_plan->path, ConvPath::kPadChannels);
   EXPECT_LE(pad_plan->launch_tiles_m * 3, pad_plan->tiles_m);
-  // O % 16 == 0 but not a whole number of 32-wide tiles: general (MLX's
-  // specialized kernel would read weight rows past the buffer).
+  // O not a whole number of column tiles: the implicit kernel on the
+  // weight with its O rows zero-padded in the workspace (MLX's specialized
+  // kernel reads O % 16 weights past the buffer, the rest go general).
   Case o48{2, 16, 16, 16, 48, 3, 3};
-  EXPECT_EQ(path_of(o48), ConvPath::kGeneral);
+  EXPECT_EQ(path_of(o48), ConvPath::kImplicit);
+  absl::StatusOr<ConvPlan> o48_plan = PlanConv(Params(o48, ConvType::kF32));
+  ASSERT_THAT(o48_plan, IsOk());
+  EXPECT_EQ(o48_plan->padded_o, 64);
+  EXPECT_EQ(o48_plan->workspace_bytes, 64u * 3 * 3 * 16 * 4);
+  // airbench94's 31x31 64 -> 24 input gradient (bf16, N = 1024): 32-wide
+  // columns (24 of 32 used, not 24 of 64), flops charged for 32.
+  Case g1c1{1024, 31, 31, 64, 24, 3, 3};
+  g1c1.pad_lo[0] = g1c1.pad_lo[1] = g1c1.pad_hi[0] = g1c1.pad_hi[1] = 1;
+  g1c1.flip = true;
+  const ConvParams gp = Params(g1c1, ConvType::kBF16);
+  absl::StatusOr<ConvPlan> g1c1_plan = PlanConv(gp);
+  ASSERT_THAT(g1c1_plan, IsOk());
+  EXPECT_EQ(g1c1_plan->path, ConvPath::kImplicit);
+  EXPECT_EQ(g1c1_plan->tile, (ConvTile{64, 32, 16, 2, 2}));
+  EXPECT_EQ(g1c1_plan->padded_o, 32);
+  // Launches bounded by the true flops would cover it in one; charged for
+  // 32 columns they take two.
+  absl::StatusOr<ConvPlan> bounded = PlanConv(gp, nullptr, ConvFlops(gp));
+  ASSERT_THAT(bounded, IsOk());
+  EXPECT_LT(bounded->launch_tiles_m, bounded->tiles_m);
   // Unaligned channels, small output: explicit.
   Case small{1, 4, 4, 5, 17, 3, 3};
   EXPECT_EQ(path_of(small), ConvPath::kExplicit);

@@ -270,9 +270,10 @@ TEST_F(KernelsTest, SteelConv) {
   EXPECT_EQ(FunctionNames(kConvMiscMsl).size(), 4 + 2 * 3);
   const std::vector<conv::ConvKernelSource> all = conv::AllConvKernels();
   // Per type: implicit c1..c4 on the 3 bm-32 tiles, small/large filter on
-  // all 5 implicit tiles; general 3 tiles x ALIGN_C; pad, sum. Then the
-  // unfold's 4 vector widths.
-  EXPECT_EQ(all.size(), 3 * (3 * 4 + 5 * 2 + 3 * 2 + 2) + 4);
+  // all 6 implicit tiles (the 5 of ImplicitTile and PaddedOutputTile's
+  // 64 x 32); general 3 tiles x ALIGN_C; pad, sum. Then the unfold's 4
+  // vector widths.
+  EXPECT_EQ(all.size(), 3 * (3 * 4 + 6 * 2 + 3 * 2 + 2) + 4);
   for (const conv::ConvKernelSource& k : all) {
     ExpectKernel(k.msl.c_str(), k.function, k.constants);
   }

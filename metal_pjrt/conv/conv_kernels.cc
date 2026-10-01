@@ -43,6 +43,12 @@ ConvTile ImplicitTile(int64_t m, int64_t n, int64_t c) {
   return t;
 }
 
+ConvTile PaddedOutputTile(int64_t m, int64_t n, int64_t c) {
+  ConvTile t = ImplicitTile(m, n, c);
+  if (t.bn == 64 && (n + 31) / 32 * 32 < (n + 63) / 64 * 64) t.bn = 32;
+  return t;
+}
+
 ConvTile GeneralTile(int64_t m, int64_t n, int64_t c) {
   ConvTile t;
   t.bm = m >= 8192 && c >= 64 ? 64 : 32;
@@ -117,6 +123,8 @@ std::vector<ConvKernelSource> AllConvKernels() {
           } else {
             for (bool small : {false, true}) {
               add(ImplicitConvKernel(t, it, 0, small));
+              // Padded output channels (24 at the 64-column tile's sizes).
+              add(ImplicitConvKernel(t, PaddedOutputTile(m, 24, c), 0, small));
             }
           }
           for (bool align : {false, true}) {

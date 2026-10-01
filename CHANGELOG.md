@@ -6,6 +6,13 @@ describe the present only. Dates in parentheses are when a change was made.
 
 ## Unreleased
 
+### 2026-10-01
+
+- Convolutions whose output channels do not fill a kernel column tile
+  (e.g. 24) take the specialized implicit-GEMM kernel, with the weight's
+  rows zero-padded in the workspace, instead of the general one: the
+  airbench94 31x31 64->24 input gradient 20.7 -> 12.8 ms.
+
 ### 2026-09-30
 
 From a pre-release review of the whole tree.

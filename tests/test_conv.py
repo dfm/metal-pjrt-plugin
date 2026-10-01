@@ -52,6 +52,10 @@ CASES = [
     ("nchw", (16, 8, 18, 20), (16, 8, 3, 3),
      dict(window_strides=(1, 2), padding=((1, 0), (2, 1)),
           rhs_dilation=(2, 1), dimension_numbers=NCHW)),
+    # airbench94's first 3x3 layer: its input gradient (64 -> 24 channels)
+    # takes the implicit kernel with the weight's O padded to 32.
+    ("airbench g1c1 (input grad O=24)", (8, 31, 31, 24), (3, 3, 24, 64),
+     dict(window_strides=(1, 1), padding="SAME", dimension_numbers=NHWC)),
     ("1d", (16, 256, 16), (5, 16, 32),
      dict(window_strides=(2,), padding="SAME",
           dimension_numbers=("NWC", "WIO", "NWC"))),

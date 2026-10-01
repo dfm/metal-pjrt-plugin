@@ -129,6 +129,12 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   GEMM loads patches straight from the input); it would save only the
   unfold, at most a third of the 31x31 layer's time and under 17%
   elsewhere, for a new loader and kernel variant (~200 lines).
+- Output channels that do not fill a column tile (2026-10-01): the
+  specialized implicit-GEMM kernel on the weight with its rows zero-padded
+  to a whole tile (32 wide when that pads less) instead of the general
+  kernel. airbench94's 31x31 64->24 input gradient (bf16, N = 1024, p10 of
+  5 interleaved rounds): 20.66 -> 12.79 ms; its forward and weight
+  gradient unchanged (13.8, 18.0 ms).
 - airbench94 training step with one command queue per device (2026-09-30;
   bf16, batch 1024; the GPU at its top performance state throughout, so
   full clock; GPU time from the command buffers' start/end with

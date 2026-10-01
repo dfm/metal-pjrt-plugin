@@ -19,9 +19,13 @@
 // PlanConv picks one of MLX's paths (conv.cpp dispatch_conv_2D_gpu, without
 // Winograd and grouped convolutions for now):
 //   kImplicit    specialized implicit GEMM: no input dilation, C <= 4 or
-//                C % 16 == 0, and O <= 16 or O a multiple of the column tile
-//                (MLX also takes other O % 16 == 0, reading weight rows past
-//                the end of the buffer; those go to kGeneral here);
+//                C % 16 == 0. O <= 16 or a multiple of the column tile
+//                as is; any other O with the weight copied into the
+//                workspace with its rows zero-padded to a whole column tile
+//                (PaddedOutputTile), because the kernel's weight loader
+//                reads whole tiles (its stores are bounded by O). MLX takes
+//                O % 16 == 0 unpadded, reading past the weight buffer, and
+//                the rest to its general kernel;
 //   kPadChannels the input and weight copied with C zero-padded to a
 //                multiple of 16 into the workspace, then kImplicit (stride 1,
 //                no dilation of the input, >= 256 output pixels, >= 9 taps);
@@ -97,6 +101,7 @@ struct ConvPlan {
   bool small_filter = false; // kImplicit: kH, kW <= 16
   bool align_c = false;      // kGeneral: C % tile.bk == 0
   int64_t padded_c = 0;      // kPadChannels
+  int64_t padded_o = 0;      // kImplicit with O zero-padded weight rows
   int64_t unfold_rows = 0;   // kExplicit, kWeightGrad: output pixels per chunk
   int64_t splits = 0;        // kWeightGrad: parts per chunk (f32 partials)
   int64_t split_rows = 0;    // kWeightGrad: rows per part

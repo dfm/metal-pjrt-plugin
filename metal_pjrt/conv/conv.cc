@@ -68,9 +68,9 @@ uint64_t WgradPartialsOffset(int64_t unfold_rows, int64_t k, int64_t item) {
 // The flops a path's kernels execute: kPadChannels runs over the padded
 // channels.
 uint64_t PlannedFlops(const ConvParams& p, const ConvPlan& plan) {
-  if (plan.path != ConvPath::kPadChannels) return ConvFlops(p);
   ConvParams padded = p;
-  padded.c = plan.padded_c;
+  if (plan.path == ConvPath::kPadChannels) padded.c = plan.padded_c;
+  if (plan.padded_o > 0) padded.o = plan.padded_o;
   return ConvFlops(padded);
 }
 
@@ -544,8 +544,10 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
 
   const bool idil1 = NoInputDilation(p);
   const int64_t padded_c = CeilDiv(p.c, 16) * 16;
-  const bool implicit_ok =
-      idil1 && ImplicitChannelsOk(p.c) && ImplicitOutputOk(p, p.c);
+  const bool implicit_channels = idil1 && ImplicitChannelsOk(p.c);
+  const bool implicit_ok = implicit_channels && ImplicitOutputOk(p, p.c);
+  // kImplicit with the weight's O rows zero-padded (ConvPlan::padded_o).
+  const bool pad_o_ok = implicit_channels && !ImplicitOutputOk(p, p.c);
   const bool pad_ok = idil1 && Stride1(p) && !ImplicitChannelsOk(p.c) &&
                       ImplicitOutputOk(p, padded_c) &&
                       (p.n * p.h * p.w + p.o * p.kh * p.kw) * padded_c <=
@@ -555,7 +557,7 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
   ConvPath path;
   if (force != nullptr) {
     path = *force;
-    const bool ok = path == ConvPath::kImplicit      ? implicit_ok
+    const bool ok = path == ConvPath::kImplicit      ? implicit_ok || pad_o_ok
                     : path == ConvPath::kPadChannels ? pad_ok
                     : path == ConvPath::kWeightGrad  ? false
                                                      : true;
@@ -564,7 +566,7 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
     }
   } else if (pad_ok && out_large && p.kh * p.kw >= 9) {
     path = ConvPath::kPadChannels;
-  } else if (implicit_ok) {
+  } else if (implicit_ok || pad_o_ok) {
     path = ConvPath::kImplicit;
   } else if ((p.c % 16 == 0 && p.o % 16 == 0) || out_large) {
     path = ConvPath::kGeneral;
@@ -580,6 +582,12 @@ absl::StatusOr<ConvPlan> PlanConv(const ConvParams& p, const ConvPath* force,
     case ConvPath::kImplicit: {
       const int64_t c = path == ConvPath::kPadChannels ? padded_c : p.c;
       plan.tile = ImplicitTile(m, p.o, c);
+      if (path == ConvPath::kImplicit && !implicit_ok) {
+        plan.tile = PaddedOutputTile(m, p.o, c);
+        plan.padded_o = CeilDiv(p.o, plan.tile.bn) * plan.tile.bn;
+        plan.workspace_bytes =
+            static_cast<uint64_t>(plan.padded_o * p.kh * p.kw * c * item);
+      }
       plan.n_channels = c <= 4 ? static_cast<int>(c) : 0;
       plan.small_filter = plan.n_channels == 0 && p.kh <= 16 && p.kw <= 16;
       if (path == ConvPath::kPadChannels) {
@@ -677,8 +685,20 @@ absl::Status RunConv(rt::Device* device, rt::Stream* stream,
   const void* weight = b;
   if (OutPixels(p) == 0 || p.o == 0) return absl::OkStatus();
   switch (plan.path) {
-    case ConvPath::kImplicit:
-      return RunImplicit(device, stream, p, plan, p.c, in, weight, out);
+    case ConvPath::kImplicit: {
+      if (plan.padded_o == 0) {
+        return RunImplicit(device, stream, p, plan, p.c, in, weight, out);
+      }
+      // The weight with its O rows zero-padded to whole column tiles.
+      const uint64_t row = static_cast<uint64_t>(p.kh * p.kw * p.c) *
+                           ItemSize(p.type);
+      char* wt_p = static_cast<char*>(workspace);
+      ABSL_RETURN_IF_ERROR(
+          stream->MemcpyDeviceToDevice(wt_p, weight, p.o * row));
+      ABSL_RETURN_IF_ERROR(stream->Memset8(wt_p + p.o * row, 0,
+                                           (plan.padded_o - p.o) * row));
+      return RunImplicit(device, stream, p, plan, p.c, in, wt_p, out);
+    }
     case ConvPath::kPadChannels: {
       const int64_t cp = plan.padded_c;
       char* in_p = static_cast<char*>(workspace);
