@@ -1,7 +1,8 @@
 // Copyright 2026 The metal-pjrt-plugin Authors
 // SPDX-License-Identifier: Apache-2.0
 
-// Pattern tests for MetalScanRewriter and MetalConvRewriter.
+// Pattern tests for MetalScanRewriter, MetalPoolMaxBwdRewriter and
+// MetalConvRewriter.
 #include <memory>
 #include <string>
 #include <vector>
@@ -10,6 +11,7 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_replace.h"
 #include "metal_pjrt/compiler/passes/conv_rewriter.h"
+#include "metal_pjrt/compiler/passes/pool_rewriter.h"
 #include "metal_pjrt/compiler/passes/scan_rewriter.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_module.h"
@@ -108,6 +110,64 @@ struct ConvCall {
   std::string operand0, operand1, result;  // shapes, without layouts
   bool reverse_left = false;               // a kReverse still in the module
 };
+
+// JAX's max-pool gradient: select-and-scatter of dy over x with a GE
+// select and an add scatter ($W: the window, $P: its padding).
+constexpr char kPoolBwd[] = R"(
+HloModule m
+sel { a = $T[] parameter(0)  b = $T[] parameter(1)  ROOT c = pred[] compare(a, b), direction=$DIR }
+add { a = $T[] parameter(0)  b = $T[] parameter(1)  ROOT r = $T[] @SC(a, b) }
+ENTRY e {
+  x = $T[8,31,31,16]{3,2,1,0} parameter(0)
+  dy = $T[8,$O,$O,16]{3,2,1,0} parameter(1)
+  init = $T[] constant(0)
+  ROOT dx = $T[8,31,31,16]{3,2,1,0} select-and-scatter(x, dy, init), window={size=1x$Wx$Wx1 stride=1x$Sx$Sx1 $P}, select=sel, scatter=add
+})";
+
+std::string PoolBwdHlo(const std::string& t, int w, int s,
+                       const std::string& dir = "GE",
+                       const std::string& scatter = "add",
+                       const std::string& pad = "") {
+  const int o = (31 - w) / s + 1 + (pad.empty() ? 0 : 1);
+  return absl::StrReplaceAll(
+      kPoolBwd, {{"$T", t}, {"$W", absl::StrCat(w)}, {"$S", absl::StrCat(s)},
+                 {"$O", absl::StrCat(o)}, {"$DIR", dir},
+                 {"@SC", scatter}, {"$P", pad}});
+}
+
+TEST_F(MetalFfiRewritersTest, PoolMaxBwd) {
+  for (const char* t : {"f32", "f16", "bf16"}) {
+    MetalPoolMaxBwdRewriter pass;
+    // The raw config is JSON: '<' and '>' come escaped.
+    std::string cfg = absl::StrReplaceAll(
+        Rewrite(pass, PoolBwdHlo(t, 2, 2), "metal$pool_max_bwd"),
+        {{"\\u003c", "<"}, {"\\u003e", ">"}});
+    EXPECT_NE(cfg.find("window = array<i64: 1, 2, 2, 1>"), std::string::npos)
+        << cfg;
+    EXPECT_NE(cfg.find("init = 0x00000000 : f32"), std::string::npos) << cfg;
+  }
+  MetalPoolMaxBwdRewriter pass;
+  EXPECT_NE(Rewrite(pass, PoolBwdHlo("f32", 3, 3), "metal$pool_max_bwd"), "");
+}
+
+TEST_F(MetalFfiRewritersTest, PoolMaxBwdNotRewritten) {
+  MetalPoolMaxBwdRewriter pass;
+  // Overlapping windows, padding, a min pool's or GT select, another
+  // scatter, a type the kernel does not take: the expander's.
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 3, 2), "metal$pool_max_bwd"), "");
+  EXPECT_EQ(Rewrite(pass,
+                    PoolBwdHlo("f32", 2, 2, "GE", "add", "pad=0_0x0_1x0_1x0_0"),
+                    "metal$pool_max_bwd"),
+            "");
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "LE"), "metal$pool_max_bwd"),
+            "");
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "GT"), "metal$pool_max_bwd"),
+            "");
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("f32", 2, 2, "GE", "maximum"),
+                    "metal$pool_max_bwd"),
+            "");
+  EXPECT_EQ(Rewrite(pass, PoolBwdHlo("s32", 2, 2), "metal$pool_max_bwd"), "");
+}
 
 class MetalConvRewriterTest : public HloHardwareIndependentTestBase {
  protected:

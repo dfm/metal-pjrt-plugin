@@ -35,6 +35,7 @@
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
 #include "metal_pjrt/compiler/passes/conv_rewriter.h"
+#include "metal_pjrt/compiler/passes/pool_rewriter.h"
 #include "metal_pjrt/compiler/passes/scan_rewriter.h"
 #include "metal_pjrt/compiler/passes/sort_expander.h"
 // --- begin linalg (Accelerate LAPACK) ---
@@ -113,7 +114,9 @@ absl::StatusOr<std::vector<uint8_t>> SerializeConstantsModule(
 // METAL_PJRT_DISABLE_REWRITES=scan (or all) turns off the metal$scan
 // rewriter, =cubsort XLA's SortRewriter (radix sort; MetalSortExpander then
 // takes every sort), =conv the metal$conv rewriter (the loop emitter then
-// takes every convolution), for A/B comparisons and bisecting. LAPACK has its own
+// takes every convolution), =pool the metal$pool_max_bwd rewriter (XLA's
+// SelectAndScatterExpander then takes every max-pool gradient), for A/B
+// comparisons and bisecting. LAPACK has its own
 // switch, METAL_PJRT_DISABLE_LAPACK (LapackDisabled()), shared with the
 // Python lowerings. All are read once (compile_settings.h).
 const metal_pjrt::CompileSettings& Settings() {
@@ -211,9 +214,11 @@ absl::StatusOr<std::unique_ptr<HloModule>> MetalCompiler::RunHloPasses(
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
   }
   // --- end linalg ---
-  if (Settings().scan_rewrite) {
+  if (Settings().scan_rewrite || Settings().pool_rewrite) {
+    // Before GpuCompiler's ReduceWindowRewriter / SelectAndScatterExpander.
     HloPassPipeline pipeline("metal-pre-optimization");
-    pipeline.AddPass<MetalScanRewriter>();
+    if (Settings().scan_rewrite) pipeline.AddPass<MetalScanRewriter>();
+    if (Settings().pool_rewrite) pipeline.AddPass<MetalPoolMaxBwdRewriter>();
     TF_RETURN_IF_ERROR(pipeline.Run(module.get()).status());
   }
   // Every sort ends up stable whatever its is_stable flag: SortRewriter's

@@ -22,11 +22,13 @@ struct CompileSettings {
   // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off
   // the metal$scan rewriter, "cubsort" XLA's SortRewriter (radix sort),
   // "conv" the metal$conv rewriter (convolutions stay on the loop emitter),
-  // and "all" all three (compiler/metal_compiler.cc). Other names are
-  // ignored with a warning.
+  // "pool" the metal$pool_max_bwd rewriter (max-pool gradients go to XLA's
+  // SelectAndScatterExpander), and "all" all four
+  // (compiler/metal_compiler.cc). Other names are ignored with a warning.
   bool scan_rewrite = true;
   bool cub_sort = true;
   bool conv_rewrite = true;
+  bool pool_rewrite = true;
   // METAL_PJRT_DISABLE_FFT, a boolean: jax's fft lowers to the dense DFT
   // instead of metal$fft. The switch acts in metal_pjrt_plugin/_lowerings.py
   // (so it shows in the HLO); it is read here only for the cache key.

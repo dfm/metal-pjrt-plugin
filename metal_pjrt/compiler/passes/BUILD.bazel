@@ -45,6 +45,27 @@ cc_test(
 )
 
 cc_library(
+    name = "pool_rewriter",
+    srcs = ["pool_rewriter.cc"],
+    hdrs = ["pool_rewriter.h"],
+    deps = [
+        "@com_google_absl//absl/container:flat_hash_set",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "@com_google_absl//absl/strings:string_view",
+        "@xla//xla:comparison_util",
+        "@xla//xla:literal",
+        "@xla//xla:shape_util",
+        "@xla//xla:xla_data_proto_cc",
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/hlo/pass:hlo_pass",
+        "@xla//xla/service/gpu:backend_configs_cc",
+        "@xla//xla/tsl/platform:errors",
+    ],
+)
+
+cc_library(
     name = "scan_rewriter",
     srcs = ["scan_rewriter.cc"],
     hdrs = ["scan_rewriter.h"],
@@ -95,6 +116,7 @@ cc_test(
     srcs = ["ffi_rewriters_test.cc"],
     deps = [
         ":conv_rewriter",
+        ":pool_rewriter",
         ":scan_rewriter",
         "@com_google_absl//absl/strings",
         "@com_google_googletest//:gtest_main",

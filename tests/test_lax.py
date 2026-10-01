@@ -493,6 +493,69 @@ def test_scatter_64bit_overwrite_with_repeated_indices():
     assert out.stdout.split() == ["0", "0"], out.stdout
 
 
+# Max-pool gradients (select-and-scatter, GE select, add scatter) over
+# non-overlapping VALID windows go to metal$pool_max_bwd; the child runs them
+# with that rewrite on or off (METAL_PJRT_DISABLE_REWRITES=pool: XLA's
+# expander) and saves the results. Inputs with many ties (few distinct
+# values; +0/-0), NaN and -inf; the 31 -> 15 pool drops the last row/column.
+POOL_BWD_CHILD = r"""
+import sys, numpy as np, jax, jax.numpy as jnp, ml_dtypes
+from jax import lax
+dev = jax.devices("mtl")[0]
+out = {}
+for tname, dt in (("f32", np.float32), ("f16", np.float16), ("bf16", ml_dtypes.bfloat16)):
+    for name, shape, k in (("2x2", (4, 31, 31, 8), 2), ("3x3", (2, 9, 9, 4), 3),
+                           ("2x2 c3", (2, 11, 10, 3), 2)):
+        rng = np.random.default_rng(len(shape) * k)
+        x = (rng.integers(-3, 4, shape) / 2).astype(np.float32)
+        x[rng.random(shape) < 0.05] = 0.0
+        x[rng.random(shape) < 0.05] = -0.0
+        x[rng.random(shape) < 0.02] = np.nan
+        x[rng.random(shape) < 0.02] = -np.inf
+        x = x.astype(dt)
+        pool = lambda v: lax.reduce_window(v, -jnp.inf, lax.max, (1, k, k, 1), (1, k, k, 1), "VALID")
+        dy = rng.standard_normal(jax.eval_shape(pool, x).shape).astype(dt)
+        dy.reshape(-1)[::7] = -0.0
+        f = jax.jit(lambda x, dy: jax.vjp(pool, x)[1](dy)[0])
+        args = jax.device_put((x, dy), dev)
+        out[f"{tname} {name} x"] = x.astype(np.float32)  # exact
+        out[f"{tname} {name}"] = np.asarray(f(*args)).view(np.uint16 if dt != np.float32 else np.uint32)
+        out[f"{tname} {name} dy"] = dy.astype(np.float32)
+        out[f"{tname} {name} rewritten"] = np.array(
+            "metal$pool_max_bwd" in f.lower(*args).compile().as_text())
+np.savez(sys.argv[1], **out)
+"""
+
+
+def test_max_pool_grad_matches_cpu_and_expander(tmp_path):
+    import os, ml_dtypes
+    results = {}
+    for arm, extra in (("rewrite", {}), ("expander", {"METAL_PJRT_DISABLE_REWRITES": "pool"})):
+        path = tmp_path / f"{arm}.npz"
+        env = {k: v for k, v in os.environ.items()
+               if k != "METAL_PJRT_DISABLE_REWRITES"}
+        env.update(JAX_PLATFORMS="mtl,cpu", **extra)
+        out = metal_testing.run_python(POOL_BWD_CHILD.replace("sys.argv[1]", repr(str(path))), env)
+        assert out.returncode == 0, out.stderr[-3000:]
+        results[arm] = dict(np.load(path))
+    cpu = metal_testing.cpu()
+    for tname, dt in (("f32", np.float32), ("f16", np.float16), ("bf16", ml_dtypes.bfloat16)):
+        for name, k in (("2x2", 2), ("3x3", 3), ("2x2 c3", 2)):
+            key = f"{tname} {name}"
+            assert results["rewrite"][key + " rewritten"], key
+            assert not results["expander"][key + " rewritten"], key
+            x = results["rewrite"][key + " x"].astype(dt)
+            dy = results["rewrite"][key + " dy"].astype(dt)
+            pool = lambda v: lax.reduce_window(v, -jnp.inf, lax.max, (1, k, k, 1), (1, k, k, 1), "VALID")
+            f = jax.jit(lambda x, dy: jax.vjp(pool, x)[1](dy)[0])
+            want = np.asarray(f(*jax.device_put((x, dy), cpu)))
+            want = want.view(np.uint16 if dt != np.float32 else np.uint32)
+            # Bit-exact (signs of zero included) against CPU and the expander.
+            np.testing.assert_array_equal(results["rewrite"][key], want, err_msg=key)
+            np.testing.assert_array_equal(results["rewrite"][key],
+                                          results["expander"][key], err_msg=key)
+
+
 # Subnormal inputs follow XLA:CPU, which flushes them (docs/accuracy.md):
 # log(1e-40) = -inf and cbrt(1e-40) = 1e-40 on both. (Odd functions that
 # return x for tiny x, e.g. sin / tan / log1p, keep a subnormal on mtl where

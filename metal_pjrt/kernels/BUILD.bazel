@@ -55,6 +55,12 @@ embed_msl(
 )
 
 embed_msl(
+    name = "pool",
+    src = "pool.metal",
+    symbol = "kPoolMsl",
+)
+
+embed_msl(
     name = "runtime_builtins",
     src = "runtime_builtins.metal",
     symbol = "kRuntimeBuiltinsMsl",
@@ -99,6 +105,7 @@ cc_test(
         ":gemv",
         ":mps_staging",
         ":msl_prelude",
+        ":pool",
         ":runtime_builtins",
         ":scan",
         ":small_linalg",

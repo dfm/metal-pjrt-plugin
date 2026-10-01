@@ -135,6 +135,15 @@ at 200 ms), the forward 58-59 ms. Other current numbers:
   kernel. airbench94's 31x31 64->24 input gradient (bf16, N = 1024, p10 of
   5 interleaved rounds): 20.66 -> 12.79 ms; its forward and weight
   gradient unchanged (13.8, 18.0 ms).
+- Max-pool gradients (2026-10-01): `metal$pool_max_bwd` (one pass over x,
+  dy and dx) instead of XLA's select-and-scatter expansion (a
+  reduce-window writing the max and one s32 index array per dimension,
+  then an atomic scatter-add into a filled dx). airbench94's pools (bf16,
+  N = 1024, VALID, p10 ms of 5 interleaved rounds): 31x31x64 2x2 11.8 ->
+  3.24 (~88 GB/s), 15x15x256 2x2 10.4 -> 3.1, 7x7x256 2x2 2.35 -> 1.0,
+  3x3x256 3x3 0.8 -> 0.51; 25.3 -> 7.9 ms per step. A first version with
+  one thread per element of x (re-reading its window with 2-byte loads)
+  was slower than the expander (12.8 ms for the first pool).
 - airbench94 training step with one command queue per device (2026-09-30;
   bf16, batch 1024; the GPU at its top performance state throughout, so
   full clock; GPU time from the command buffers' start/end with

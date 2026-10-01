@@ -31,6 +31,7 @@
 #include "metal_pjrt/kernels/mps_staging.metal.h"
 #include "metal_pjrt/kernels/msl_prelude.metal.h"
 #include "metal_pjrt/kernels/runtime_builtins.metal.h"
+#include "metal_pjrt/kernels/pool.metal.h"
 #include "metal_pjrt/kernels/scan.metal.h"
 #include "metal_pjrt/kernels/small_linalg.metal.h"
 #include "metal_pjrt/kernels/gemv.metal.h"
@@ -93,7 +94,7 @@ class KernelsTest : public ::testing::Test {
 TEST_F(KernelsTest, EverySourceCompiles) {
   for (const char* source :
        {kConvMiscMsl, kCubSortMsl, kFftMsl, kFftMiscMsl, kMpsStagingMsl,
-        kMslPrelude, kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl,
+        kMslPrelude, kPoolMsl, kRuntimeBuiltinsMsl, kScanMsl, kSmallLinalgMsl,
         kSteelConvMsl, kSteelGemmMsl, kGemvMsl}) {
     FunctionNames(source);
   }
@@ -138,6 +139,16 @@ TEST_F(KernelsTest, SmallLinalgAndMpsStaging) {
                                    "small_trsm"}));
   for (const std::string& name : small) ExpectKernel(kSmallLinalgMsl, name);
   ExpectKernel(kMpsStagingMsl, "copy_f32");
+}
+
+// pool_max_bwd_<type>_v<lanes>: f32, f16, bf16; 1 or 4 lanes.
+TEST_F(KernelsTest, PoolMaxBwd) {
+  EXPECT_EQ(FunctionNames(kPoolMsl).size(), 6);
+  for (const char* t : {"float", "half", "bfloat"}) {
+    for (const char* v : {"1", "4"}) {
+      ExpectKernel(kPoolMsl, absl::StrCat("pool_max_bwd_", t, "_v", v));
+    }
+  }
 }
 
 // scan_<op>_<type>: 4 ops x (f32, f16, bf16, s32).

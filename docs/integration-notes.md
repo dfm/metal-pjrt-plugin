@@ -254,6 +254,19 @@ Template: `xla/service/gpu/intel_gpu_compiler.{h,cc}`.
   f32/f16/bf16, and convolutions under 4 Mflop (the loop emitter's single
   fused kernel is faster there, docs/performance.md).
   `METAL_PJRT_DISABLE_REWRITES=conv` turns the rewriter off.
+- `metal$pool_max_bwd` (`ffi/pool_ffi.cc` over `ffi/pool.h`,
+  `kernels/pool.metal`): the target of `MetalPoolMaxBwdRewriter`
+  (`compiler/passes/pool_rewriter.h`, start of `RunHloPasses`), which takes
+  a select-and-scatter with a GE select and an add scatter over
+  non-overlapping, unpadded windows (JAX's max-pool gradient), f32/f16/bf16,
+  windows on at most two adjacent dims (x viewed as [A, D1, D2, B]). One
+  thread per window and 4 (or 1) elements of B reads x and dy once and
+  writes dx once (init + dy at the window's selected element, init
+  elsewhere and over the partial windows VALID drops); the selection is
+  the expander's (first maximum, NaN as `>=` orders it). Instead of
+  SelectAndScatterExpander's reduce-window over x and one s32 iota per
+  dimension and its atomic scatter-add. Overlapping or padded windows stay
+  with the expander. `METAL_PJRT_DISABLE_REWRITES=pool` turns it off.
 - `metal$fft` (`ffi/fft_ffi.cc` over `fft/fft.h`, MLX's FFT kernels): the
   target of the `fft` lowering in `metal_pjrt_plugin/_lowerings.py`, one
   1-D transform per axis on complex64 rows (float32 on the real side of

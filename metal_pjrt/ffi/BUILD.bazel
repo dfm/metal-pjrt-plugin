@@ -6,7 +6,8 @@ load("//metal_pjrt:device_test.bzl", "DEVICE_TEST_TAGS")
 package(default_visibility = ["//visibility:public"])
 
 # XLA FFI support for the Metal platform: helpers plus the handlers the Metal
-# compiler's scan and convolution rewriters target (metal$scan, metal$conv),
+# compiler's scan, convolution and max-pool rewriters target (metal$scan,
+# metal$conv, metal$pool_max_bwd),
 # the FFT handler the Python fft lowering targets (metal$fft),
 # XLA's SortRewriter targets (xla.gpu.ext.cub_sort_keys/pairs) and the Python
 # callback handler. Handlers register statically, so this is alwayslink.
@@ -17,11 +18,13 @@ cc_library(
         "cub_sort_ffi.cc",
         "fft_ffi.cc",
         "metal_ffi.cc",
+        "pool_ffi.cc",
         "python_callback_ffi.cc",
         "scan_ffi.cc",
     ],
     hdrs = ["metal_ffi.h"],
     deps = [
+        ":pool",
         ":radix_sort",
         ":scan",
         "//metal_pjrt/conv",
@@ -50,6 +53,24 @@ cc_library(
         "@xla//xla/stream_executor:stream_executor_h",
     ],
     alwayslink = True,
+)
+
+# The max-pool backward kernel's dispatch (metal$pool_max_bwd's handler is
+# pool_ffi.cc). No XLA.
+cc_library(
+    name = "pool",
+    srcs = ["pool.cc"],
+    hdrs = ["pool.h"],
+    deps = [
+        "//metal_pjrt/kernels:pool",
+        "//metal_pjrt/runtime:kernel_launch",
+        "//metal_pjrt/runtime:metal_runtime",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:status_macros",
+        "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/types:span",
+    ],
 )
 
 # The scan kernel's dispatch (metal$scan's handler is scan_ffi.cc). No XLA.

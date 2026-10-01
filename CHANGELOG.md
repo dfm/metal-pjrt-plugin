@@ -12,6 +12,10 @@ describe the present only. Dates in parentheses are when a change was made.
   (e.g. 24) take the specialized implicit-GEMM kernel, with the weight's
   rows zero-padded in the workspace, instead of the general one: the
   airbench94 31x31 64->24 input gradient 20.7 -> 12.8 ms.
+- Max-pool gradients over non-overlapping windows (JAX's `reduce_window`
+  max with stride = window, VALID) run as one kernel, `metal$pool_max_bwd`,
+  bit-identical to the expansion it replaces: airbench94's four pools 25.3
+  -> 7.9 ms. `METAL_PJRT_DISABLE_REWRITES=pool` turns it off.
 
 ### 2026-09-30
 
