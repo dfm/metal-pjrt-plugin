@@ -347,6 +347,26 @@ def test_conv_wgrad_rewritten(d):
     assert text.count('kind = \\"wgrad\\"') == 1, text
 
 
+LOOP_EMITTER_CONVS = [
+    "grad small conv, strided",
+    "grad small conv, kernel dilation and uneven padding",
+    "grad grouped conv, strided", "grad depthwise conv",
+    "grad conv 3d, strided"]
+
+
+@pytest.mark.parametrize("name", LOOP_EMITTER_CONVS)
+def test_small_conv_grads_stay_on_the_loop_emitter(name):
+    # These cases are about XLA's loop emitter: far below MetalConvRewriter's
+    # 4 Mflop, grouped or 3-D, so no convolution of the forward or backward
+    # program becomes metal$conv, and the grouped kernel gradients' batch
+    # groups are converted away.
+    fn, args = CASES[name]
+    with jax.default_device(metal_testing.metal()):
+        text = jax.jit(fn).lower(*args).compile().as_text()
+    assert "metal$conv" not in text, text
+    assert "batch_group_count" not in text, text
+
+
 def test_grad_through_complex_indexing_is_refused():
     # The gradient of z[idx] is a scatter-add on complex64, which needs
     # 64-bit atomics when indices repeat; autodiff cannot promise unique
