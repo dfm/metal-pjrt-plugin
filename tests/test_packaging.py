@@ -20,19 +20,20 @@ def _pyproject(path="pyproject.toml"):
     return tomllib.loads((ROOT / path).read_text())
 
 
-def test_jax_range_matches_pyproject():
+def test_jax_requirement_matches_pyproject():
     deps = _pyproject()["project"]["dependencies"]
-    want = metal_pjrt_plugin._range_text()
+    want = metal_pjrt_plugin._jax_requirement()
     assert f"jax{want}" in deps and f"jaxlib{want}" in deps, (want, deps)
 
 
 def test_core_dependency():
-    # The frontend depends on metal-pjrt-core; the core has no Python
-    # dependencies (in particular not jax), so one build serves every jax in
-    # the frontend's range.
+    # The frontend pins exactly the metal-pjrt-core in core/ (the build it
+    # is tested with); the core has no Python dependencies (in particular
+    # not jax), so one build serves every jax the frontend supports.
     deps = _pyproject()["project"]["dependencies"]
-    assert any(d.startswith("metal-pjrt-core>=") for d in deps), deps
     core = _pyproject("core/pyproject.toml")["project"]
+    pin = f"metal-pjrt-core=={core['version']};"
+    assert any(d.startswith(pin) for d in deps), (pin, deps)
     assert core["name"] == "metal-pjrt-core"
     assert "dependencies" not in core, core.get("dependencies")
 
@@ -52,18 +53,19 @@ def test_one_dist_registers_mtl():
 
 
 def test_version_warning(monkeypatch, caplog):
-    # Outside the tested range: a warning naming the range, and the plugin
+    # Below the lowest tested version: a warning naming it, and the plugin
     # still loads (initialize() goes on).
     import jax
     monkeypatch.setattr(jax, "__version__", "0.0.0")
     metal_pjrt_plugin._check_versions()
     assert "found jax 0.0.0" in caplog.text, caplog.text
-    assert metal_pjrt_plugin._range_text() in caplog.text, caplog.text
+    assert metal_pjrt_plugin._jax_requirement() in caplog.text, caplog.text
 
 
 @pytest.mark.parametrize("version,warns", [
-    ("0.9.2", True), ("0.13.0", True), ("0.13.0.dev1", True),
-    ("0.10.0", False), ("0.12.0.dev20261001", False), ("0.11.2+local", False),
+    ("0.9.2", True), ("0.9.99.dev1", True), ("0.10.0", False),
+    ("0.12.0.dev20261001", False), ("0.11.2+local", False),
+    ("0.13.0", False), ("0.13.0.dev1", False), ("1.0.0", False),
 ])
 def test_version_range_edges(monkeypatch, caplog, version, warns):
     import jax
@@ -74,13 +76,13 @@ def test_version_range_edges(monkeypatch, caplog, version, warns):
     assert bool(caplog.text) == warns, caplog.text
 
 
-def test_version_warning_names_only_the_one_out_of_range(monkeypatch, caplog):
+def test_version_warning_names_only_the_one_too_old(monkeypatch, caplog):
     import jax
     import jaxlib
     monkeypatch.setattr(jax, "__version__", "0.11.2")
-    monkeypatch.setattr(jaxlib, "__version__", "0.13.1")
+    monkeypatch.setattr(jaxlib, "__version__", "0.9.2")
     metal_pjrt_plugin._check_versions()
-    assert "found jaxlib 0.13.1;" in caplog.text, caplog.text
+    assert "found jaxlib 0.9.2;" in caplog.text, caplog.text
     assert "jax 0.11.2" not in caplog.text, caplog.text
 
 

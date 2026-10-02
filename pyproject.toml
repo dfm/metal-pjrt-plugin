@@ -9,14 +9,14 @@ authors = [{name = "The metal-pjrt-plugin Authors"}]
 # dist-info/licenses/.
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
-# jax/jaxlib: the versions tested (_JAX_RANGE in metal_pjrt_plugin/__init__.py;
-# tests/test_packaging.py checks). metal-pjrt-core: the compiled library,
-# released separately (core/pyproject.toml); its frontend ABI version is
-# checked at startup.
+# jax/jaxlib: the lowest version tested, no upper bound (_JAX_MIN in
+# metal_pjrt_plugin/__init__.py). metal-pjrt-core: exactly the build this
+# release was tested with (core/pyproject.toml), its frontend ABI version
+# also checked at startup. tests/test_packaging.py checks both.
 dependencies = [
-    "jax>=0.10.0,<0.13.0",
-    "jaxlib>=0.10.0,<0.13.0",
-    "metal-pjrt-core>=0.0.1,<0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "jax>=0.10.0",
+    "jaxlib>=0.10.0",
+    "metal-pjrt-core==0.0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

@@ -28,8 +28,8 @@ elsewhere, and please [report them](CONTRIBUTING.md).
 
 - An Apple Silicon Mac. Intel Macs aren't supported.
 - macOS 26 or later.
-- Python 3.12+ with `jax` and `jaxlib` 0.10 to 0.12 (tested: 0.10.0
-  through 0.11.2 and a 0.12 nightly). Other versions load with a warning.
+- Python 3.12+ with `jax` and `jaxlib` 0.10.0 or later (tested: 0.10.0
+  through 0.11.2 and a 0.12 nightly). Older versions load with a warning.
 
 There's no PyPI release yet, so you build from source. That needs the
 Xcode command-line tools (`xcode-select --install`; full Xcode isn't

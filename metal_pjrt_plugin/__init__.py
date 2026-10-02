@@ -41,11 +41,12 @@ except importlib.metadata.PackageNotFoundError:  # a bare source tree
 # platform_name, i.e. backend.platform, which JAX looks lowerings up by) and
 # the PLATFORM of _lowerings.py, _linalg_lowerings.py and _callbacks.py.
 PLATFORM = "mtl"
-# The jax and jaxlib versions this package is tested with, [lowest, first
-# untested): pyproject.toml requires the same (tests/test_packaging.py
-# checks). This package imports private jax._src modules, so other versions
-# get a warning (and still load).
-_JAX_RANGE = ((0, 10, 0), (0, 13, 0))
+# The lowest jax and jaxlib this package is tested with: pyproject.toml
+# requires the same (tests/test_packaging.py checks). This package imports
+# private jax._src modules, so older versions get a warning (and still
+# load). There is no upper bound: newer versions load silently, and testing
+# against JAX nightly says when a new release is needed.
+_JAX_MIN = (0, 10, 0)
 # The version of the private contract with metal-pjrt-core's library
 # (metal_pjrt_frontend_abi_version in metal_pjrt/pjrt/metal_pjrt_api.cc):
 # FFI targets and their attributes, the callback trampoline, client options,
@@ -171,23 +172,20 @@ def _version_tuple(version: str) -> tuple[int, ...]:
     return tuple(parts + [0] * (3 - len(parts)))
 
 
-def _range_text() -> str:
-    lo, hi = (".".join(map(str, v)) for v in _JAX_RANGE)
-    return f">={lo},<{hi}"
+def _jax_requirement() -> str:
+    return ">=" + ".".join(map(str, _JAX_MIN))
 
 
 def _check_versions():
     import jax
     import jaxlib
     found = {"jax": jax.__version__, "jaxlib": jaxlib.__version__}
-    lo, hi = _JAX_RANGE
-    other = {k: v for k, v in found.items()
-             if not lo <= _version_tuple(v) < hi}
+    other = {k: v for k, v in found.items() if _version_tuple(v) < _JAX_MIN}
     if other:
         logger.warning(
-            "metal-pjrt-plugin %s is tested with jax and jaxlib %s, found %s; "
+            "metal-pjrt-plugin %s needs jax and jaxlib %s, found %s; "
             "it may fail or compute wrong results.",
-            __version__, _range_text(),
+            __version__, _jax_requirement(),
             ", ".join(f"{k} {v}" for k, v in other.items()))
 
 

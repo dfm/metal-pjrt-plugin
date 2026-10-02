@@ -97,31 +97,34 @@ There are two packages, released separately:
 
 - **`metal-pjrt-plugin`** (the root `pyproject.toml`): the Python frontend
   users install, a pure-Python `py3-none-any` wheel. It holds the
-  `jax_plugins` entry point, the lowerings and the host callbacks, and
-  depends on `jax`/`jaxlib` within a tested range and on
-  `metal-pjrt-core`. It uses private `jax._src` APIs, so it is released
-  whenever JAX moves: widen the range after testing a new JAX (below). A
-  JAX outside the range loads with a warning.
+  `jax_plugins` entry point, the lowerings and the host callbacks. It
+  requires `jax`/`jaxlib` at or above the lowest version tested, with no
+  upper bound, and exactly one `metal-pjrt-core`, the build it was tested
+  with. It uses private `jax._src` APIs, so a new JAX can break it:
+  testing against JAX nightly says when a new release is needed. An older
+  JAX loads with a warning.
 - **`metal-pjrt-core`** (`core/`): only the dylib, tagged
   `py3-none-macosx_26_0_arm64`, with no Python dependencies (it does not
   link Python; callbacks go through a ctypes trampoline). It reaches
   jaxlib only through the PJRT C API, StableHLO version negotiation and
   XLA FFI, so one build serves many JAX releases. Release it when the
-  C++ changes, or for an XLA pin bump. Publish only its wheel, never an
-  sdist: building one would make a wheel without the dylib.
+  C++ changes, or for an XLA pin bump, and always with a frontend release
+  that pins it: a frontend never picks up a core it wasn't tested with.
+  Publish only its wheel, never an sdist: building one would make a wheel
+  without the dylib.
 
 The private contract between the two (platform name, client options, FFI
 targets and their attributes, the callback trampoline, environment
 variables read on both sides) has one version number,
 `metal_pjrt_frontend_abi_version()` in `metal_pjrt/pjrt/metal_pjrt_api.cc`,
 matched by `_CORE_ABI_VERSION` in `metal_pjrt_plugin/__init__.py`. Bump
-both on any incompatible change, and raise the frontend's lower bound on
-`metal-pjrt-core`. With a mismatch the frontend logs why and does not
-register the platform.
+both on any incompatible change. The exact pin already keeps released
+pairs together; the check catches the rest (an editable install against a
+stale build, hand-installed wheels): with a mismatch the frontend logs why
+and does not register the platform.
 
-The JAX range is `_JAX_RANGE` in `metal_pjrt_plugin/__init__.py`, the
-same as `pyproject.toml` (`tests/test_packaging.py` checks): the lowest
-version tested, and the first minor version not tested. To test another
+The lowest JAX is `_JAX_MIN` in `metal_pjrt_plugin/__init__.py`, the same
+as `pyproject.toml` (`tests/test_packaging.py` checks). To test another
 JAX, install it with the current `metal-pjrt-core` in a scratch venv and
 run `tests/test_jax_private_api.py` (no GPU) and the whole suite. On
 2026-10-02, 0.10.0, 0.10.1, 0.10.2, 0.11.0, 0.11.1, 0.11.2 and

@@ -9,10 +9,11 @@ describe the present only. Dates in parentheses are when a change was made.
 ### 2026-10-02
 
 - Two packages: `metal-pjrt-plugin`, the pure-Python frontend, and
-  `metal-pjrt-core`, the dylib alone. They are released separately and
+  `metal-pjrt-core`, the dylib alone. They are separate wheels,
   checked against each other at startup by a frontend ABI version
-  (`docs/development.md`, "Packages and releases"). The frontend requires
-  `jax`/`jaxlib >=0.10.0,<0.13.0` instead of exactly 0.11.2: today's dylib
+  (`docs/development.md`, "Packages and releases"). The frontend pins the
+  one core it was tested with, and requires `jax`/`jaxlib >=0.10.0` (no
+  upper bound) instead of exactly 0.11.2: today's dylib
   passed the test suite with every JAX from 0.10.0 to a 0.12 nightly, once
   host callbacks handled jax 0.10.0's `mlir.set_sharding`. The development
   link to the dylib moved to `core/metal_pjrt_core/`.

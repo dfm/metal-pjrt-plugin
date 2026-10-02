@@ -16,9 +16,8 @@ when `JAX_PLATFORMS` is unset. Run with `JAX_PLATFORMS=mtl,cpu` to see
 
 ## Warnings when JAX starts
 
-- `metal-pjrt-plugin ... is tested with jax and jaxlib >=0.10.0,<0.13.0,
-  found jax ...; it may fail or compute wrong results.` Install a JAX in
-  that range.
+- `metal-pjrt-plugin ... needs jax and jaxlib >=0.10.0, found jax ...; it
+  may fail or compute wrong results.` Upgrade JAX.
 - `metal-pjrt-plugin: the PJRT plugin library is missing, so the 'mtl'
   platform is unavailable: ...` In a source checkout, rerun
   `scripts/install_dev.sh` (the message says if the link into `bazel-bin`
