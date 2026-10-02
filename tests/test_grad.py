@@ -215,8 +215,8 @@ _clip_grad.defvjp(lambda x: (x, None), lambda _, g: (jnp.clip(g, -0.5, 0.5),))
 CASES["custom_vjp"] = (
     jax.grad(lambda x: jnp.sum(_clip_grad(x) * jnp.arange(16.0) / 8)), (R(16),))
 
-# The conv weight gradient whose f32 partials were misaligned (fixed in
-# ab3e2d0): N=1, 63x63x3, 3x3 VALID -> 32, so unfold_rows * k (3721 * 27)
+# The conv weight gradient whose f32 partials were misaligned (fixed on
+# 2026-09-28): N=1, 63x63x3, 3x3 VALID -> 32, so unfold_rows * k (3721 * 27)
 # is odd, through jax.grad in every precision (the partials follow f16/bf16
 # patches). test_conv_wgrad_rewritten checks it runs on metal$conv.
 CONV_DTYPES = {"f32": np.float32, "f16": np.float16, "bf16": ml_dtypes.bfloat16}
