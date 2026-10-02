@@ -61,14 +61,27 @@ def test_version_warning(monkeypatch, caplog):
     assert metal_pjrt_plugin._range_text() in caplog.text, caplog.text
 
 
-def test_no_version_warning_in_range(monkeypatch, caplog):
+@pytest.mark.parametrize("version,warns", [
+    ("0.9.2", True), ("0.13.0", True), ("0.13.0.dev1", True),
+    ("0.10.0", False), ("0.12.0.dev20261001", False), ("0.11.2+local", False),
+])
+def test_version_range_edges(monkeypatch, caplog, version, warns):
     import jax
     import jaxlib
-    for v in ("0.10.0", "0.12.0.dev20261001"):
-        monkeypatch.setattr(jax, "__version__", v)
-        monkeypatch.setattr(jaxlib, "__version__", v)
-        metal_pjrt_plugin._check_versions()
-    assert not caplog.text, caplog.text
+    monkeypatch.setattr(jax, "__version__", version)
+    monkeypatch.setattr(jaxlib, "__version__", version)
+    metal_pjrt_plugin._check_versions()
+    assert bool(caplog.text) == warns, caplog.text
+
+
+def test_version_warning_names_only_the_one_out_of_range(monkeypatch, caplog):
+    import jax
+    import jaxlib
+    monkeypatch.setattr(jax, "__version__", "0.11.2")
+    monkeypatch.setattr(jaxlib, "__version__", "0.13.1")
+    metal_pjrt_plugin._check_versions()
+    assert "found jaxlib 0.13.1;" in caplog.text, caplog.text
+    assert "jax 0.11.2" not in caplog.text, caplog.text
 
 
 def test_core_abi_version_matches():
@@ -78,17 +91,45 @@ def test_core_abi_version_matches():
             == metal_pjrt_plugin._CORE_ABI_VERSION)
 
 
-def test_core_abi_mismatch_is_refused(monkeypatch, caplog):
-    # Another version of the private contract is a broken install, not an
-    # untested combination: nothing is registered.
-    monkeypatch.setattr(metal_pjrt_plugin, "_CORE_ABI_VERSION", 999)
+def _initialize_registers(monkeypatch):
+    """Runs initialize() with JAX's register_plugin stubbed; whether it
+    registered."""
     registered = []
     import jax._src.xla_bridge as xb
     monkeypatch.setattr(xb, "register_plugin",
                         lambda *a, **k: registered.append(a))
     metal_pjrt_plugin.initialize()
-    assert not registered
+    return bool(registered)
+
+
+def test_core_abi_mismatch_is_refused(monkeypatch, caplog):
+    # Another version of the private contract is a broken install, not an
+    # untested combination: nothing is registered.
+    monkeypatch.setattr(metal_pjrt_plugin, "_CORE_ABI_VERSION", 999)
+    assert not _initialize_registers(monkeypatch)
     assert "frontend ABI version 999" in caplog.text, caplog.text
+    assert "'mtl' platform is unavailable" in caplog.text, caplog.text
+
+
+def test_pre_split_library_is_refused(monkeypatch, caplog):
+    # A library without metal_pjrt_frontend_abi_version (built before the
+    # packages were split) reads as version 0.
+    class NoSymbol:
+        def __init__(self, path):
+            pass
+    monkeypatch.setattr(metal_pjrt_plugin.ctypes, "CDLL", NoSymbol)
+    assert not _initialize_registers(monkeypatch)
+    assert "has version 0" in caplog.text, caplog.text
+
+
+def test_unloadable_library_is_refused(monkeypatch, tmp_path, caplog):
+    # A file that is not a loadable library: the reason is logged, nothing
+    # is registered, and initialize() does not raise.
+    lib = tmp_path / "pjrt_c_api_mtl_plugin.dylib"
+    lib.write_bytes(b"not a Mach-O file")
+    monkeypatch.setattr(metal_pjrt_plugin, "_library_candidate", lambda: lib)
+    assert not _initialize_registers(monkeypatch)
+    assert "could not be loaded" in caplog.text, caplog.text
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
 
 

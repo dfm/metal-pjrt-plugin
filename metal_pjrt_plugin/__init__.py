@@ -50,7 +50,8 @@ _JAX_RANGE = ((0, 10, 0), (0, 13, 0))
 # (metal_pjrt_frontend_abi_version in metal_pjrt/pjrt/metal_pjrt_api.cc):
 # FFI targets and their attributes, the callback trampoline, client options,
 # shared environment variables and the platform name. A library with another
-# version is not registered.
+# version is not registered; it stays loaded (reading the version loads it,
+# and unloading XLA is not safe), which is harmless.
 _CORE_ABI_VERSION = 1
 
 
@@ -201,7 +202,13 @@ def initialize():
     if path is None:
         logger.warning(_missing_library_message())
         return
-    abi = _core_abi_version(path)
+    try:
+        abi = _core_abi_version(path)
+    except OSError as e:  # wrong architecture, newer macOS, a broken build
+        logger.warning(
+            "metal-pjrt-plugin: the PJRT plugin library %s could not be "
+            "loaded, so the '%s' platform is unavailable: %s", path, PLATFORM, e)
+        return
     if abi != _CORE_ABI_VERSION:
         logger.warning(_abi_mismatch_message(path, abi))
         return

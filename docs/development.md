@@ -107,7 +107,8 @@ There are two packages, released separately:
   link Python; callbacks go through a ctypes trampoline). It reaches
   jaxlib only through the PJRT C API, StableHLO version negotiation and
   XLA FFI, so one build serves many JAX releases. Release it when the
-  C++ changes, or for an XLA pin bump.
+  C++ changes, or for an XLA pin bump. Publish only its wheel, never an
+  sdist: building one would make a wheel without the dylib.
 
 The private contract between the two (platform name, client options, FFI
 targets and their attributes, the callback trampoline, environment
@@ -123,7 +124,10 @@ same as `pyproject.toml` (`tests/test_packaging.py` checks): the lowest
 version tested, and the first minor version not tested. To test another
 JAX, install it with the current `metal-pjrt-core` in a scratch venv and
 run `tests/test_jax_private_api.py` (no GPU) and the whole suite. On
-2026-10-02, 0.10.0 through 0.12.0.dev20261001 passed (978-981 tests).
+2026-10-02, 0.10.0, 0.10.1, 0.10.2, 0.11.0, 0.11.1, 0.11.2 and
+0.12.0.dev20261001 passed it, apart from a test of the old exact pin;
+after the split, the installed wheels passed it under 0.10.0 and the
+nightly, and the editable install under 0.11.2.
 Before 0.10, `jax._src` APIs the frontend uses change; a few tests
 compare bit for bit with XLA:CPU, which differs before 0.11.2, and skip
 there (`OLD_CPU_REFERENCE` in `tests/metal_testing.py`).
@@ -181,8 +185,8 @@ stays local, under `scripts/device_lock.py`.
 - **No remote cache.** JAX's public cache had no entries for this build
   (2026-09-30: 0 hits of 189 LLVM and 325 XLA actions): it's written from
   Linux only, and these macOS actions use Xcode's clang.
-- **No wheels.** Releases are source only. Testing the frontend against
-  JAX nightly in CI is a follow-up.
+- **Not in CI yet:** building the wheels, and testing the frontend
+  against JAX nightly.
 
 ## Environment variables
 

@@ -16,7 +16,7 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 dependencies = [
     "jax>=0.10.0,<0.13.0",
     "jaxlib>=0.10.0,<0.13.0",
-    "metal-pjrt-core>=0.0.1,<0.1",
+    "metal-pjrt-core>=0.0.1,<0.1; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

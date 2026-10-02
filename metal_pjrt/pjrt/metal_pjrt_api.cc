@@ -309,15 +309,31 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
 
 // The private contract between this library (the metal-pjrt-core wheel) and
 // the Python frontend (metal-pjrt-plugin, metal_pjrt_plugin/), which are
-// released separately: the "mtl" platform name (MetalName()), the PJRT
-// client-creation options the frontend passes, the FFI targets the
-// frontend's lowerings emit, with their attributes, operand layouts and the
-// sizes they accept (metal$lapack_*, metal$fft,
-// xla_ffi_python_metal_callback), the exported callback trampoline
-// (metal_pjrt_register_python_callback_trampoline), and the environment
-// variables both sides read (METAL_PJRT_DISABLE_LAPACK). Bump it on any
-// incompatible change; the frontend refuses to register with a library
-// whose version differs from its own (_CORE_ABI_VERSION in
+// released separately. It covers:
+// - the "mtl" platform name (MetalName()) and the PJRT client-creation
+//   options the frontend passes;
+// - the FFI targets the frontend's lowerings emit, with their attributes,
+//   operand layouts and the sizes they accept (metal$lapack_*, metal$fft,
+//   xla_ffi_python_metal_callback);
+// - host callbacks: metal_pjrt_register_python_callback_trampoline, the
+//   trampoline's signature and return convention (nonzero with a message in
+//   the error buffer, whose capacity includes the NUL), the
+//   MetalPjrtCallbackBuffer layout (a ctypes Structure in _callbacks.py) and
+//   the XLA PrimitiveType numbers that encode its dtypes
+//   (metal_pjrt/ffi/python_callback_ffi.cc);
+// - the environment variables both sides act on (METAL_PJRT_DISABLE_LAPACK,
+//   METAL_PJRT_DISABLE_FFT, which the library also puts in the cache key)
+//   and their boolean parsing (EnvFlag in runtime/env.h, _env_flag);
+// - the persistent compilation cache: the frontend presents mtl to JAX's
+//   cache as "gpu", which works because this library drops the
+//   PJRT_AbiVersion extension (above) and keys executables by its build and
+//   compile settings (platform_version, MetalExecutor::PluginVersion).
+// Outside it: the test hooks (metal_pjrt_memory_stats,
+// metal_pjrt_testing_memory_pressure), which only tests/ and examples/ use,
+// and the package layout (metal_pjrt_core.library_path(), the file name),
+// which the frontend's version range on metal-pjrt-core covers. Bump the
+// version on any incompatible change; the frontend refuses to register with
+// a library whose version differs from its own (_CORE_ABI_VERSION in
 // metal_pjrt_plugin/__init__.py).
 extern "C" PJRT_CAPI_EXPORT int metal_pjrt_frontend_abi_version() {
   return 1;
