@@ -51,11 +51,10 @@ build, growing with rebuilds). Every checkout shares that cache, so later
 builds and fresh clones take minutes. Running the plugin needs no
 developer tools.
 
-To check that it works, run the smoke tests (`device_lock.py` runs one GPU
-job at a time; see [GPU safety](docs/faq.md#is-it-safe-for-my-gpu)):
+To check that it works, run the smoke tests:
 
 ```
-scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
+.venv/bin/python -m pytest tests/test_smoke.py
 ```
 
 To install into another environment, build a wheel with

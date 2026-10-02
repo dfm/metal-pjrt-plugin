@@ -30,17 +30,26 @@ the tests behind each row.
 
 ## Is it safe for my GPU?
 
-If one GPU kernel runs too long, macOS's watchdog resets the GPU for every
-program on the machine, and after several resets it can stay slow until
-you reboot. A few habits keep you clear of it:
+Yes, with one difference from a datacenter NVIDIA card. A Mac's GPU
+also drives the display, so macOS runs a watchdog: if one GPU kernel runs
+too long, it resets the GPU for every program on the machine, and after
+several resets the GPU can stay slow until you reboot. The plugin keeps
+ordinary programs clear of it: it splits queued work into short command
+buffers, caps each process's memory (see
+[below](#how-much-memory-can-it-use)), and refuses allocations under
+critical memory pressure. A few things are still up to you:
 
-- Run one GPU-heavy job at a time (`scripts/device_lock.py -- <command>`
-  queues them), and keep your problems well inside memory: swapping can
-  stall the GPU long enough to trip the watchdog.
-- If you need to stop a GPU job, use Ctrl-C (`device_lock.py` passes it
-  to the job); never `kill -9`. Interrupting mid-computation hasn't been
-  tested thoroughly, so let jobs finish when you can.
 - Split very large single operations, like a matmul with ~10^12 flops.
+- Keep your problems well inside memory. The GPU shares RAM with
+  everything else, and a GPU stalled on swapped-out pages can trip the
+  watchdog.
+- Stop GPU jobs with Ctrl-C, never `kill -9`. Interrupting
+  mid-computation hasn't been tested thoroughly, so let jobs finish when
+  you can.
+
+If you run several GPU-heavy jobs at once, `scripts/device_lock.py --
+<command>` (in a source checkout) queues them one at a time and passes
+Ctrl-C through.
 
 If something does go wrong, the first GPU error ends GPU work for that
 process: every later GPU call fails and says to restart Python. The
