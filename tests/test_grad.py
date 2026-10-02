@@ -310,13 +310,11 @@ ULPS = {
     'grad conv odd wgrad partials f32': 11,
     'grad conv odd wgrad partials f16': 1,
     'grad conv odd wgrad partials bf16': 1.1,
-    # Not measured yet (estimates; set from a run with
-    # METAL_TEST_REPORT_ULPS=1):
-    'grad small conv, strided': 22,
-    'grad small conv, kernel dilation and uneven padding': 22,
-    'grad grouped conv, strided': 22, 'grad depthwise conv': 22,
-    'grad conv 3d, strided': 22, 'grad sum pool 3x3 stride 2 SAME': 8,
-    'grad embedding lookup bf16': 8,
+    'grad small conv, strided': 4.6,
+    'grad small conv, kernel dilation and uneven padding': 2.9,
+    'grad grouped conv, strided': 2.8, 'grad depthwise conv': 3.5,
+    'grad conv 3d, strided': 4.9, 'grad sum pool 3x3 stride 2 SAME': 1.8,
+    'grad embedding lookup bf16': 1,
 }
 
 
