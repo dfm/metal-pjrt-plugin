@@ -28,7 +28,7 @@ lists the messages and what to do about each.
 
 | Feature | Works? | Details | Tests (`tests/`) |
 |---|---|---|---|
-| `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | | `test_lax.py`, `test_smoke.py` |
+| `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | | `test_grad.py`, `test_lax.py`, `test_smoke.py` |
 | Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | Metal has only 32-bit atomics, so a scatter-add/min/max on 64-bit elements, or any scatter on complex64, is refused unless `unique_indices=True` | `test_lax.py`, `test_scan.py` |
 | `jax.random` | yes | | `test_lax.py` |
 | Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders; f16/bf16 on native "steel" kernels (ported from MLX) with bias and activation fused into the store. Few-row shapes (small-batch decode) have their own kernel | `test_steel_gemm.py`, `test_epilogue.py` |
