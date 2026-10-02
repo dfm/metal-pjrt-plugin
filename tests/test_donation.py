@@ -22,7 +22,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from metal_testing import run_python
+from metal_testing import OLD_JAX, run_python
 
 pytestmark = pytest.mark.metal
 
@@ -59,9 +59,12 @@ def test_use_after_donation_raises():
         np.asarray(x)
     # Before jax 0.11.2 the deleted buffer reaches the client, which refuses
     # it with a ValueError.
-    with pytest.raises((RuntimeError, ValueError),
-                       match="deleted|Donation requested for invalid buffer"):
-        f(x)
+    if OLD_JAX:
+        with pytest.raises(ValueError, match="Donation requested for invalid buffer"):
+            f(x)
+    else:
+        with pytest.raises(RuntimeError, match="deleted"):
+            f(x)
 
 
 def test_donation_while_a_reader_is_in_flight():

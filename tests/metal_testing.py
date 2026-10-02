@@ -42,6 +42,9 @@ def _version(v):
 # same bits under every jaxlib), so the cases that compare those bit for bit
 # with CPU skip there.
 OLD_CPU_REFERENCE = _version(jaxlib.__version__) < (0, 11, 2)
+# jax before 0.11.2 lowers some programs differently and leaves a use after
+# donation to the client: the few checks this changes loosen only there.
+OLD_JAX = _version(jax.__version__) < (0, 11, 2)
 
 
 @functools.cache
