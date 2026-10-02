@@ -104,12 +104,15 @@ jobs:
           flags="--config=ci"
           [ "${{ inputs.bytes }}" = "false" ] && flags="$flags --remote_download_outputs=all"
           echo "BAZEL_FLAGS=$flags" >> "$GITHUB_ENV"
+          # shellcheck disable=SC2086  # $flags is a list of flags
           bazel build $flags //metal_pjrt/...
           df -h /
 
       - name: Bazel tests (host only)
         if: ${{ !inputs.warm_cache_only }}
-        run: bazel test $BAZEL_FLAGS //...       # device_tests is tagged manual
+        run: |
+          # shellcheck disable=SC2086  # $BAZEL_FLAGS is a list of flags
+          bazel test $BAZEL_FLAGS //...       # device_tests is tagged manual
 
       - name: Stop Bazel
         if: ${{ always() }}
