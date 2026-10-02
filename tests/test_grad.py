@@ -228,6 +228,56 @@ for d, dt in CONV_DTYPES.items():
             argnums=(0, 1)),
         (R(3, 3, 3, 32).astype(dt), R(1, 63, 63, 3).astype(dt)))
 
+# ---- backward programs that take a path the forward one does not ----
+# Convolutions XLA's loop emitter runs (small, grouped, 3-D): their gradients
+# are convolutions the forward pass never has, with input dilation (the
+# input's gradient of a strided one), kernel dilation (the kernel's) and,
+# for a grouped one, batch groups (ConvolutionGroupConverter, see
+# tests/test_conv.py for the stride-1 kernel gradients).
+NHWC = ("NHWC", "HWIO", "NHWC")
+
+
+def _conv_grads(dimension_numbers=NHWC, **kw):
+    return jax.grad(lambda x, w: jnp.sum(lax.conv_general_dilated(
+        x, w, dimension_numbers=dimension_numbers, **kw) ** 2), argnums=(0, 1))
+
+
+CASES["grad small conv, strided"] = (
+    _conv_grads(window_strides=(2, 2), padding="SAME"),
+    (R(2, 9, 9, 3), R(3, 3, 3, 4)))
+CASES["grad small conv, kernel dilation and uneven padding"] = (
+    _conv_grads(window_strides=(1, 2), padding=((1, 2), (0, 1)),
+                rhs_dilation=(2, 1)),
+    (R(2, 9, 8, 3), R(3, 2, 3, 4)))
+CASES["grad grouped conv, strided"] = (
+    _conv_grads(window_strides=(2, 2), padding="SAME", feature_group_count=2),
+    (R(2, 9, 9, 4), R(3, 3, 2, 6)))
+CASES["grad depthwise conv"] = (
+    _conv_grads(window_strides=(1, 1), padding="SAME", feature_group_count=4),
+    (R(2, 8, 8, 4), R(3, 3, 1, 8)))
+CASES["grad conv 3d, strided"] = (
+    _conv_grads(dimension_numbers=("NDHWC", "DHWIO", "NDHWC"),
+                window_strides=(1, 2, 1), padding="SAME"),
+    (R(1, 4, 5, 6, 3), R(2, 2, 2, 3, 4)))
+# Sum (average) pooling: the transpose pads the cotangent with interior
+# zeros (stride - 1) and sums windows of it.
+CASES["grad sum pool 3x3 stride 2 SAME"] = (
+    jax.grad(lambda x: jnp.sum(lax.reduce_window(
+        x, 0.0, lax.add, (1, 3, 3, 1), (1, 2, 2, 1), "SAME") ** 2)),
+    (R(2, 9, 9, 3),))
+# max over an axis with ties: the cotangent is split evenly among the
+# maxima (an equality mask and a count; exact here).
+CASES["grad max reduce with ties"] = (
+    jax.grad(lambda x: jnp.sum(jnp.max(x, -1) * jnp.arange(1.0, 5.0))),
+    (np.array([[1, 3, 3, 0], [2, 2, 2, 2], [0, -1, 0, -1], [5, 1, 2, 3]],
+              np.float32),))
+ELEMENTWISE.add("grad max reduce with ties")
+# An embedding lookup in bf16: its gradient is a scatter-add on 16-bit
+# elements with repeated indices (XLA's compare-and-swap on the 32-bit word).
+CASES["grad embedding lookup bf16"] = (
+    jax.grad(lambda e, w: jnp.sum((e[IDX] * w).astype(jnp.float32) ** 2)),
+    (R(10, 8).astype(ml_dtypes.bfloat16), R(7, 8).astype(ml_dtypes.bfloat16)))
+
 # Measured (METAL_TEST_REPORT_ULPS=1, M3) and doubled; cases missing here
 # must match exactly. The large elementwise errors (tanh, sigmoid, gelu,
 # silu, expm1) are relative to derivatives near zero, large on CPU float32
@@ -260,6 +310,13 @@ ULPS = {
     'grad conv odd wgrad partials f32': 11,
     'grad conv odd wgrad partials f16': 1,
     'grad conv odd wgrad partials bf16': 1.1,
+    # Not measured yet (estimates; set from a run with
+    # METAL_TEST_REPORT_ULPS=1):
+    'grad small conv, strided': 22,
+    'grad small conv, kernel dilation and uneven padding': 22,
+    'grad grouped conv, strided': 22, 'grad depthwise conv': 22,
+    'grad conv 3d, strided': 22, 'grad sum pool 3x3 stride 2 SAME': 8,
+    'grad embedding lookup bf16': 8,
 }
 
 
@@ -288,3 +345,16 @@ def test_conv_wgrad_rewritten(d):
     with jax.default_device(metal_testing.metal()):
         text = jax.jit(fn).lower(*args).compile().as_text()
     assert text.count('kind = \\"wgrad\\"') == 1, text
+
+
+def test_grad_through_complex_indexing_is_refused():
+    # The gradient of z[idx] is a scatter-add on complex64, which needs
+    # 64-bit atomics when indices repeat; autodiff cannot promise unique
+    # indices, so this is refused by name rather than miscompiled. If it
+    # starts passing, the refusal was lifted: replace this with a value check.
+    z = (R(10) + 1j * R(10, seed=1)).astype(np.complex64)
+    fn = jax.jit(jax.grad(lambda z: jnp.sum(jnp.abs(z[IDX]) ** 2)))
+    with jax.default_device(metal_testing.metal()):
+        with pytest.raises(jax.errors.JaxRuntimeError,
+                           match="scatter of complex values"):
+            fn(jax.device_put(z))
