@@ -104,7 +104,7 @@ latency.
 - **Persistent compilation cache.** With it on, the first call of the
   nanoGPT training step in a new process takes ~0.42 s from the cache
   instead of ~0.75 s (an MLP train step: 41 ms instead of ~66 ms). Most
-  mtl compiles take under a second, which is why the README suggests
+  mtl compiles take under a second, which is why the [FAQ](faq.md) suggests
   `JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0`.
 - **Buffer donation.** Until the plugin added "mtl" to JAX's list of
   platforms with donation, JAX copied donated inputs on mtl. Qwen3-0.6B

@@ -40,7 +40,7 @@ In short:
   build of XLA takes about two hours on 8 GB).
 - Run everything that touches the GPU under `scripts/device_lock.py --
   <command>`, one job at a time, and do not kill a process that has GPU
-  work in flight (README, "GPU safety").
+  work in flight ([`docs/faq.md`](docs/faq.md#is-it-safe-for-my-gpu)).
 - `scripts/device_lock.py -- .venv/bin/python -m pytest tests` and
   `scripts/device_lock.py -- bazel test //metal_pjrt:device_tests` should
   pass; `bazel test //metal_pjrt/...` runs the tests that need no GPU.

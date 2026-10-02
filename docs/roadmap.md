@@ -24,7 +24,7 @@ made.
   stay "METAL". The name "metal" collided with Apple's jax-metal.
 - **Opt-in.** CPU stays JAX's default backend.
 - **Compilation cache.** The plugin never sets `jax_compilation_cache_dir`
-  or its thresholds; the README says how to turn the cache on.
+  or its thresholds; the FAQ says how to turn the cache on.
 - **Versions.** A jax/jaxlib other than the one the plugin was built for
   gets a warning naming the versions to install, and the plugin loads
   anyway.

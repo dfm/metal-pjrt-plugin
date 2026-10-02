@@ -8,7 +8,7 @@ which is Apple's jax-metal plugin). It is opt-in: select it with
 JAX_PLATFORMS=mtl,cpu, jax.config.update("jax_platforms", "mtl,cpu") before
 the first use of a device or array, or pass jax.devices("mtl") explicitly.
 Nothing in this package needs to be imported or called by users; JAX finds
-it through its "jax_plugins" entry point. See the README for what works.
+it through its "jax_plugins" entry point. See docs/faq.md for what works.
 
 Implementation: modeled on jax_plugins/cuda/__init__.py, initialize()
 registers the PJRT plugin dylib next to this file (packaged by

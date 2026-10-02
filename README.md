@@ -52,7 +52,7 @@ builds and fresh clones take minutes. Running the plugin needs no
 developer tools.
 
 To check that it works, run the smoke tests (`device_lock.py` runs one GPU
-job at a time; see [GPU safety](#gpu-safety)):
+job at a time; see [GPU safety](docs/faq.md#is-it-safe-for-my-gpu)):
 
 ```
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
@@ -84,83 +84,11 @@ The plugin is opt-in: installing it doesn't change JAX's default (CPU).
 To keep CPU as the default and send only some work to the GPU, place it
 explicitly with `jax.device_put(x, jax.devices("mtl")[0])`.
 
-## What works
-
-A "no" below should always be an error at compile time, never a wrong
-answer. If you get a wrong answer, that's a bug, so please report it.
-
-| Feature | Works? | Notes |
-|---|---|---|
-| `jit`, `grad`, `vmap`, `checkpoint`, `scan`, `while_loop`, `cond` | yes | |
-| Elementwise math, reductions, gather, scatter, cumulative ops | yes | some 64-bit and complex scatters need `unique_indices=True` |
-| `jax.random` | yes | |
-| Matmul in float32, float16, bfloat16 | yes | |
-| Matmul on int8 or with mixed types (e.g. f16 x f16 -> bf16) | no | |
-| Convolutions (1-D, 2-D, 3-D, grouped), with gradients | yes | 3-D and grouped ones are slow |
-| Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | |
-| FFT (`jnp.fft`) | yes | complex64 / float32; lengths above 2^24 (powers of two) or 2^23 - 1 (others) aren't supported |
-| Linear algebra in float32 (`cholesky`, `solve`, `lu`, `qr`, `eigh`, `svd`, ...) | yes | small Cholesky, triangular solve and LU (up to 32x32) run on the GPU; larger factorizations run on the CPU (Accelerate) |
-| `eig`, `schur`, `hessenberg`, `tridiagonal` | no | |
-| `pure_callback`, `io_callback`, `jax.debug.print` | yes | synchronous, so slow in hot loops |
-| Buffer donation (`donate_argnums`) | yes | |
-| JAX's persistent compilation cache | yes | opt-in, see below |
-| float32, float16, bfloat16, integers, bool, complex64 | yes | complex LU, and so complex `solve`, `inv` and `det`, isn't supported |
-| float64, complex128 | no | Apple GPUs have no double type; keep float64 work on the CPU |
-| int4 / uint4 | no | |
-| Several devices (`pmap`, sharding) | no | one GPU only |
-
-[`docs/op-coverage.md`](docs/op-coverage.md) has the full picture, op by
-op, with the tests behind each row.
-
-## GPU safety
-
-If one GPU kernel runs too long, macOS's watchdog resets the GPU for every
-program on the machine, and after several resets it can stay slow until
-you reboot. A few habits keep you clear of it:
-
-- Run one GPU-heavy job at a time (`scripts/device_lock.py -- <command>`
-  queues them), and keep your problems well inside memory: swapping can
-  stall the GPU long enough to trip the watchdog.
-- If you need to stop a GPU job, use Ctrl-C (`device_lock.py` passes it
-  to the job); never `kill -9`. Interrupting mid-computation hasn't been
-  tested thoroughly, so let jobs finish when you can.
-- Split very large single operations, like a matmul with ~10^12 flops.
-
-If something does go wrong, the first GPU error ends GPU work for that
-process: every later GPU call fails and says to restart Python. The
-machine doesn't need a reboot. The plugin logs every reset it sees to
-`~/.cache/metal-pjrt/gpu_resets.jsonl`, and `scripts/gpu_health.py` (in a
-source checkout) summarizes the log. [`docs/design.md`](docs/design.md#runtime) has the
-details, including an opt-in quarantine for kernels that cause resets.
-
-## Good to know
-
-- **Accuracy.** Most functions agree with CPU float32 to within a few
-  ulps. A few special functions are looser (`lgamma`, `digamma`,
-  `betainc`), and Metal's `exp`, `log`, `sin` and `cos` are slightly
-  biased. Some functions flush subnormal inputs and outputs to zero, as
-  XLA's CPU backend does; a few differ.
-  [`docs/accuracy.md`](docs/accuracy.md) has the numbers.
-- **Memory is your RAM.** By default a process may use up to half of it
-  (`METAL_PJRT_MEMORY_FRACTION` scales that). Out-of-memory errors say
-  whether your process hit its budget or the whole system is short.
-- **Medium-sized linear algebra is often faster on the CPU.**
-  Factorizations above 32x32 run on the CPU (Accelerate) after the GPU
-  finishes its queued work, so lots of them are often faster kept on the
-  CPU.
-- **Compilation cache.** JAX's persistent cache is off until you give it
-  a directory. Since most compiles here take under a second, also lower
-  JAX's threshold for caching them:
-
-  ```
-  export JAX_COMPILATION_CACHE_DIR=~/.cache/jax
-  export JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS=0
-  ```
-
-- **jax-metal.** Use a separate virtual environment if you also use
-  Apple's `jax-metal`; the two pin different JAX versions.
-
-When something fails, [`docs/troubleshooting.md`](docs/troubleshooting.md)
+Before running anything heavy, read [Is it safe for my
+GPU?](docs/faq.md#is-it-safe-for-my-gpu): a kernel that runs too long
+makes macOS reset the GPU for the whole machine. The
+[FAQ](docs/faq.md) also covers what works, accuracy, memory and the
+compilation cache, and [`docs/troubleshooting.md`](docs/troubleshooting.md)
 maps the plugin's error messages to what to do.
 
 ## Examples
@@ -173,6 +101,8 @@ maps the plugin's error messages to what to do.
 
 ## Learn more
 
+- [`docs/faq.md`](docs/faq.md): what works, GPU safety, accuracy, memory
+  and the compilation cache.
 - [`docs/design.md`](docs/design.md): how the plugin works, and how it
   differs from MLX.
 - [`docs/op-coverage.md`](docs/op-coverage.md),

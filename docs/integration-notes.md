@@ -228,7 +228,7 @@ The plugin never sets `jax_compilation_cache_dir`
 ([`roadmap.md`](roadmap.md)): the setting is process-wide and plugins
 initialize whatever `JAX_PLATFORMS` says, so a default would turn the
 cache on for CPU-only users. Users set it themselves (see the
-[README](../README.md)); JAX's 1 s minimum compile time applies.
+[FAQ](faq.md#how-do-i-turn-on-the-compilation-cache)); JAX's 1 s minimum compile time applies.
 Executables with host callbacks bypass the cache
 ([`callbacks.md`](callbacks.md)).
 

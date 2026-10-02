@@ -1,6 +1,6 @@
 # Op coverage
 
-The README's support table is the short version. This page has the full
+The [FAQ](faq.md#what-works)'s support table is the short version. This page has the full
 picture: each feature with the tests behind it, then every operation
 XLA:GPU can emit and the path it takes on Metal.
 
@@ -49,7 +49,7 @@ lists the messages and what to do about each.
 | complex64 | yes | arithmetic, math, data movement, reductions, matmul, sort, `cholesky`, `triangular_solve`, `qr` and transfers. Not supported: scatter without unique indices (above), and so LU (`solve`, `inv`, `det`), whose pivoting is such a scatter. complex128 is refused like float64 | `test_lax.py` |
 | int4 / uint4 | no | fail in the kernel translator | `test_lax.py` (expected failure) |
 | Buffer donation (`donate_argnums`) | yes | the donated input's memory becomes the output, as on CUDA; JAX's own donation tests in `api_test.py` pass | `test_donation.py` |
-| JAX's persistent compilation cache | yes, opt-in | see the README | `test_callbacks.py`, `test_compilation_cache.py` |
+| JAX's persistent compilation cache | yes, opt-in | see the [FAQ](faq.md#how-do-i-turn-on-the-compilation-cache) | `test_callbacks.py`, `test_compilation_cache.py` |
 
 ## How XLA ops reach Metal
 
