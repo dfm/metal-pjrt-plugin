@@ -11,15 +11,18 @@ Nothing in this package needs to be imported or called by users; JAX finds
 it through its "jax_plugins" entry point. See docs/faq.md for what works.
 
 Implementation: modeled on jax_plugins/cuda/__init__.py, initialize()
-registers the PJRT plugin dylib next to this file (packaged by
-scripts/build_wheel.sh, or a link into bazel-bin made by
-scripts/install_dev.sh), then lets JAX's persistent compilation cache serve
-it (when the user configures a cache directory; the plugin never sets one)
-and installs the lowerings and host callbacks the plugin needs.
+registers the PJRT plugin dylib of the metal-pjrt-core package (a separate
+wheel, released rarely; a link into bazel-bin made by scripts/install_dev.sh
+in a source checkout) once its frontend ABI version matches this package's,
+then lets JAX's persistent compilation cache serve it (when the user
+configures a cache directory; the plugin never sets one) and installs the
+lowerings and host callbacks the plugin needs.
 """
 
+import ctypes
 import dataclasses
 import importlib.metadata
+import itertools
 import logging
 import os
 import pathlib
@@ -38,12 +41,17 @@ except importlib.metadata.PackageNotFoundError:  # a bare source tree
 # platform_name, i.e. backend.platform, which JAX looks lowerings up by) and
 # the PLATFORM of _lowerings.py, _linalg_lowerings.py and _callbacks.py.
 PLATFORM = "mtl"
-_PLUGIN_BASENAME = "pjrt_c_api_mtl_plugin.dylib"
-# The jax/jaxlib the plugin is built against (pyproject.toml pins the same;
-# tests/test_packaging.py checks). The dylib is built from that jaxlib's XLA
-# commit, and this package imports private jax._src modules, so the pin is
-# real even where pip lets another version in.
-_JAX_VERSION = "0.11.2"
+# The jax and jaxlib versions this package is tested with, [lowest, first
+# untested): pyproject.toml requires the same (tests/test_packaging.py
+# checks). This package imports private jax._src modules, so other versions
+# get a warning (and still load).
+_JAX_RANGE = ((0, 10, 0), (0, 13, 0))
+# The version of the private contract with metal-pjrt-core's library
+# (metal_pjrt_frontend_abi_version in metal_pjrt/pjrt/metal_pjrt_api.cc):
+# FFI targets and their attributes, the callback trampoline, client options,
+# shared environment variables and the platform name. A library with another
+# version is not registered.
+_CORE_ABI_VERSION = 1
 
 
 def _env_flag(name: str) -> bool:
@@ -56,29 +64,62 @@ def _env_flag(name: str) -> bool:
     return v not in ("", "0", "false", "no", "off")
 
 
-def _library_candidate() -> pathlib.Path:
-    return pathlib.Path(__file__).resolve().parent / _PLUGIN_BASENAME
+def _library_candidate() -> pathlib.Path | None:
+    """The library in the installed metal-pjrt-core, or None without it."""
+    try:
+        import metal_pjrt_core
+    except ImportError:
+        return None
+    return metal_pjrt_core.library_path()
 
 
 def _get_library_path() -> pathlib.Path | None:
     candidate = _library_candidate()
-    if candidate.exists():
+    if candidate is not None and candidate.exists():
         return candidate
     return None
 
 
 def _missing_library_message() -> str:
     candidate = _library_candidate()
-    if candidate.is_symlink():  # exists() was False: a dangling link
+    if candidate is None:
+        why = ("the metal-pjrt-core package, which holds it, is not "
+               "installed. Install it (pip install metal-pjrt-core; "
+               "metal-pjrt-plugin depends on it), or run "
+               "scripts/install_dev.sh in a source checkout")
+    elif candidate.is_symlink():  # exists() was False: a dangling link
         why = (f"{candidate} is a link to {os.readlink(candidate)}, which does "
                "not exist (a development install whose bazel-bin output is "
                "gone). Rebuild and relink with scripts/install_dev.sh")
     else:
-        why = (f"{candidate} does not exist. Reinstall metal-pjrt-plugin from "
-               "a wheel (which ships it), or run scripts/install_dev.sh in a "
-               "source checkout")
+        why = (f"{candidate} does not exist. Reinstall metal-pjrt-core, or run "
+               "scripts/install_dev.sh in a source checkout")
     return (f"metal-pjrt-plugin: the PJRT plugin library is missing, so the "
             f"'{PLATFORM}' platform is unavailable: {why}.")
+
+
+def _core_abi_version(path: pathlib.Path) -> int:
+    """The library's frontend ABI version; 0 for a library from before the
+    packages were split, which has none."""
+    fn = getattr(ctypes.CDLL(str(path)), "metal_pjrt_frontend_abi_version", None)
+    if fn is None:
+        return 0
+    fn.restype = ctypes.c_int
+    fn.argtypes = []
+    return fn()
+
+
+def _abi_mismatch_message(path: pathlib.Path, found: int) -> str:
+    try:
+        core = importlib.metadata.version("metal-pjrt-core")
+    except importlib.metadata.PackageNotFoundError:
+        core = "unknown"
+    return (f"metal-pjrt-plugin {__version__} needs a metal-pjrt-core library "
+            f"with frontend ABI version {_CORE_ABI_VERSION}, but {path} "
+            f"(metal-pjrt-core {core}) has version {found}, so the "
+            f"'{PLATFORM}' platform is unavailable. Install versions that "
+            "match (pip install -U metal-pjrt-plugin metal-pjrt-core), or "
+            "rebuild with scripts/install_dev.sh in a source checkout.")
 
 
 class _AsGpuBackend:
@@ -119,17 +160,34 @@ def _install_is_cache_used_wrapper():
     compilation_cache.is_cache_used = is_cache_used
 
 
+def _version_tuple(version: str) -> tuple[int, ...]:
+    """(major, minor, patch) of a version string; a pre-release such as
+    0.12.0.dev20261001 counts as its release."""
+    parts = []
+    for p in version.split(".")[:3]:
+        digits = "".join(itertools.takewhile(str.isdigit, p))
+        parts.append(int(digits or 0))
+    return tuple(parts + [0] * (3 - len(parts)))
+
+
+def _range_text() -> str:
+    lo, hi = (".".join(map(str, v)) for v in _JAX_RANGE)
+    return f">={lo},<{hi}"
+
+
 def _check_versions():
     import jax
     import jaxlib
     found = {"jax": jax.__version__, "jaxlib": jaxlib.__version__}
-    other = {k: v for k, v in found.items() if v != _JAX_VERSION}
+    lo, hi = _JAX_RANGE
+    other = {k: v for k, v in found.items()
+             if not lo <= _version_tuple(v) < hi}
     if other:
         logger.warning(
-            "metal-pjrt-plugin is built for jax and jaxlib %s, found %s; it may fail "
-            "or compute wrong results. Install jax==%s jaxlib==%s.",
-            _JAX_VERSION, ", ".join(f"{k} {v}" for k, v in other.items()),
-            _JAX_VERSION, _JAX_VERSION)
+            "metal-pjrt-plugin %s is tested with jax and jaxlib %s, found %s; "
+            "it may fail or compute wrong results.",
+            __version__, _range_text(),
+            ", ".join(f"{k} {v}" for k, v in other.items()))
 
 
 def initialize():
@@ -142,6 +200,10 @@ def initialize():
     path = _get_library_path()
     if path is None:
         logger.warning(_missing_library_message())
+        return
+    abi = _core_abi_version(path)
+    if abi != _CORE_ABI_VERSION:
+        logger.warning(_abi_mismatch_message(path, abi))
         return
     # The plugin is XLA's GPU PJRT client; these are its client-creation
     # options. "platform" is XLA's pass-through allocator: every buffer comes

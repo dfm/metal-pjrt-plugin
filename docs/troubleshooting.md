@@ -16,13 +16,17 @@ when `JAX_PLATFORMS` is unset. Run with `JAX_PLATFORMS=mtl,cpu` to see
 
 ## Warnings when JAX starts
 
-- `metal-pjrt-plugin is built for jax and jaxlib 0.11.2, found jax ...;
-  it may fail or compute wrong results. Install jax==0.11.2
-  jaxlib==0.11.2.` Install exactly that version.
+- `metal-pjrt-plugin ... is tested with jax and jaxlib >=0.10.0,<0.13.0,
+  found jax ...; it may fail or compute wrong results.` Install a JAX in
+  that range.
 - `metal-pjrt-plugin: the PJRT plugin library is missing, so the 'mtl'
   platform is unavailable: ...` In a source checkout, rerun
   `scripts/install_dev.sh` (the message says if the link into `bazel-bin`
-  is dangling). Otherwise reinstall the wheel.
+  is dangling). Otherwise reinstall `metal-pjrt-core`.
+- `metal-pjrt-plugin ... needs a metal-pjrt-core library with frontend ABI
+  version N, but ... has version M, so the 'mtl' platform is
+  unavailable.` The two packages don't match: upgrade both, or in a
+  source checkout rebuild with `scripts/install_dev.sh`.
 - `metal-pjrt-plugin: host callbacks unavailable: ...` Callbacks will
   fail; everything else works. Please report it.
 - `metal-pjrt-plugin: buffer donation unavailable: ...` or

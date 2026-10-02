@@ -10,7 +10,7 @@ build/
 .venv/
 .venv-mps/
 # Symlink into bazel-bin, created by scripts/install_dev.sh.
-metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib
+core/metal_pjrt_core/pjrt_c_api_mtl_plugin.dylib
 # bench/run_all.sh's raw rows and table: generated locally, not tracked
 # (docs/performance.md carries the current numbers).
 bench/results/*.jsonl

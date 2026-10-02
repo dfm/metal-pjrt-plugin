@@ -16,11 +16,25 @@ import metal_pjrt_plugin
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
-def test_version_pin_matches_pyproject():
-    deps = re.search(r"^dependencies = \[(.*)\]$",
-                     (ROOT / "pyproject.toml").read_text(), re.M).group(1)
-    assert f'"jax=={metal_pjrt_plugin._JAX_VERSION}"' in deps, deps
-    assert f'"jaxlib=={metal_pjrt_plugin._JAX_VERSION}"' in deps, deps
+def _pyproject(path="pyproject.toml"):
+    return tomllib.loads((ROOT / path).read_text())
+
+
+def test_jax_range_matches_pyproject():
+    deps = _pyproject()["project"]["dependencies"]
+    want = metal_pjrt_plugin._range_text()
+    assert f"jax{want}" in deps and f"jaxlib{want}" in deps, (want, deps)
+
+
+def test_core_dependency():
+    # The frontend depends on metal-pjrt-core; the core has no Python
+    # dependencies (in particular not jax), so one build serves every jax in
+    # the frontend's range.
+    deps = _pyproject()["project"]["dependencies"]
+    assert any(d.startswith("metal-pjrt-core>=") for d in deps), deps
+    core = _pyproject("core/pyproject.toml")["project"]
+    assert core["name"] == "metal-pjrt-core"
+    assert "dependencies" not in core, core.get("dependencies")
 
 
 def test_one_dist_registers_mtl():
@@ -38,10 +52,44 @@ def test_one_dist_registers_mtl():
 
 
 def test_version_warning(monkeypatch, caplog):
+    # Outside the tested range: a warning naming the range, and the plugin
+    # still loads (initialize() goes on).
     import jax
     monkeypatch.setattr(jax, "__version__", "0.0.0")
     metal_pjrt_plugin._check_versions()
-    assert "found jax 0.0.0;" in caplog.text, caplog.text
+    assert "found jax 0.0.0" in caplog.text, caplog.text
+    assert metal_pjrt_plugin._range_text() in caplog.text, caplog.text
+
+
+def test_no_version_warning_in_range(monkeypatch, caplog):
+    import jax
+    import jaxlib
+    for v in ("0.10.0", "0.12.0.dev20261001"):
+        monkeypatch.setattr(jax, "__version__", v)
+        monkeypatch.setattr(jaxlib, "__version__", v)
+        metal_pjrt_plugin._check_versions()
+    assert not caplog.text, caplog.text
+
+
+def test_core_abi_version_matches():
+    path = metal_pjrt_plugin._get_library_path()
+    assert path is not None, metal_pjrt_plugin._missing_library_message()
+    assert (metal_pjrt_plugin._core_abi_version(path)
+            == metal_pjrt_plugin._CORE_ABI_VERSION)
+
+
+def test_core_abi_mismatch_is_refused(monkeypatch, caplog):
+    # Another version of the private contract is a broken install, not an
+    # untested combination: nothing is registered.
+    monkeypatch.setattr(metal_pjrt_plugin, "_CORE_ABI_VERSION", 999)
+    registered = []
+    import jax._src.xla_bridge as xb
+    monkeypatch.setattr(xb, "register_plugin",
+                        lambda *a, **k: registered.append(a))
+    metal_pjrt_plugin.initialize()
+    assert not registered
+    assert "frontend ABI version 999" in caplog.text, caplog.text
+    assert "'mtl' platform is unavailable" in caplog.text, caplog.text
 
 
 def test_public_surface():
@@ -58,32 +106,40 @@ def test_public_surface():
         assert importlib.util.find_spec(f"metal_pjrt_plugin._{name}") is not None
 
 
-@pytest.mark.parametrize("dangling", [False, True])
-def test_missing_library_warning(monkeypatch, tmp_path, caplog, dangling):
-    # The warning names the expected path, whether it is a dangling
-    # bazel-bin link, the remedy and the consequence; nothing is registered.
+@pytest.mark.parametrize("case", ["missing", "dangling", "no core"])
+def test_missing_library_warning(monkeypatch, tmp_path, caplog, case):
+    # The warning names the expected path (or the missing metal-pjrt-core),
+    # whether it is a dangling bazel-bin link, the remedy and the
+    # consequence; nothing is registered.
     lib = tmp_path / "pjrt_c_api_mtl_plugin.dylib"
-    if dangling:
+    if case == "dangling":
         lib.symlink_to(tmp_path / "bazel-bin" / "gone.dylib")
-    monkeypatch.setattr(metal_pjrt_plugin, "_library_candidate", lambda: lib)
+    monkeypatch.setattr(metal_pjrt_plugin, "_library_candidate",
+                        lambda: None if case == "no core" else lib)
     metal_pjrt_plugin.initialize()
-    assert str(lib) in caplog.text, caplog.text
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
     assert "scripts/install_dev.sh" in caplog.text, caplog.text
-    assert ("which does not exist" in caplog.text) == dangling, caplog.text
+    assert ("which does not exist" in caplog.text) == (case == "dangling"), caplog.text
+    if case == "no core":
+        assert "metal-pjrt-core" in caplog.text, caplog.text
+    else:
+        assert str(lib) in caplog.text, caplog.text
 
 
 def test_license_files_in_wheel():
-    # PEP 639 license-files put both in the wheel's dist-info/licenses/
-    # (setuptools >= 77); scripts/build_wheel.sh stages both. The notices
-    # carry the MLX and metal-cpp licenses for code compiled into the dylib.
-    pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    # PEP 639 license-files put both in each wheel's dist-info/licenses/
+    # (setuptools >= 77); scripts/build_wheel.sh stages both for each. The
+    # notices carry the MLX and metal-cpp licenses for code compiled into
+    # the dylib.
     files = ["LICENSE", "THIRD_PARTY_NOTICES"]
-    assert pyproject["project"]["license-files"] == files
-    assert pyproject["build-system"]["requires"] == ["setuptools>=77"]
-    staged = re.search(r"^cp (.*) \"\$STAGE\"/$",
-                       (ROOT / "scripts/build_wheel.sh").read_text(), re.M)
-    assert staged and set(files) <= set(staged.group(1).split()), staged
+    script = (ROOT / "scripts/build_wheel.sh").read_text()
+    for path, stage in (("pyproject.toml", "PLUGIN"),
+                        ("core/pyproject.toml", "CORE")):
+        pyproject = _pyproject(path)
+        assert pyproject["project"]["license-files"] == files, path
+        assert pyproject["build-system"]["requires"] == ["setuptools>=77"], path
+        staged = re.search(rf'^cp (.*) "\${stage}"/$', script, re.M)
+        assert staged and set(files) <= set(staged.group(1).split()), stage
     notices = (ROOT / "THIRD_PARTY_NOTICES").read_text()
     for needle in ("Copyright © 2023 Apple Inc.",
                    "Copyright \u00a9 2024 Apple Inc.",

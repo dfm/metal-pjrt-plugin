@@ -28,8 +28,8 @@ elsewhere, and please [report them](CONTRIBUTING.md).
 
 - An Apple Silicon Mac. Intel Macs aren't supported.
 - macOS 26 or later.
-- Python 3.12+ with exactly `jax==0.11.2` and `jaxlib==0.11.2`. The plugin
-  is built against that release's XLA and warns on any other version.
+- Python 3.12+ with `jax` and `jaxlib` 0.10 to 0.12 (tested: 0.10.0
+  through 0.11.2 and a 0.12 nightly). Other versions load with a warning.
 
 There's no PyPI release yet, so you build from source. That needs the
 Xcode command-line tools (`xcode-select --install`; full Xcode isn't
@@ -57,8 +57,11 @@ To check that it works, run the smoke tests:
 .venv/bin/python -m pytest tests/test_smoke.py
 ```
 
-To install into another environment, build a wheel with
-`scripts/build_wheel.sh` and `pip install` the file it puts in `dist/`.
+To install into another environment, build the wheels with
+`scripts/build_wheel.sh` and `pip install` both files it puts in `dist/`:
+`metal-pjrt-plugin`, the Python package JAX finds, and `metal-pjrt-core`,
+the compiled library it loads. The library talks to JAX through stable
+interfaces, so one build works across the supported JAX versions.
 
 ## Quick start
 
@@ -131,4 +134,4 @@ Apache-2.0 ([`LICENSE`](LICENSE)). The plugin includes third-party code:
 matmul, convolution and FFT kernels ported from
 [MLX](https://github.com/ml-explore/mlx) (MIT), Apple's metal-cpp headers
 (Apache-2.0), and a statically linked XLA. Their notices are in
-[`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES), which ships in the wheel.
+[`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES), which ships in both wheels.

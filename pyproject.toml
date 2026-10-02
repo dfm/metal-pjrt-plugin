@@ -9,7 +9,15 @@ authors = [{name = "The metal-pjrt-plugin Authors"}]
 # dist-info/licenses/.
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
-dependencies = ["jax==0.11.2", "jaxlib==0.11.2"]
+# jax/jaxlib: the versions tested (_JAX_RANGE in metal_pjrt_plugin/__init__.py;
+# tests/test_packaging.py checks). metal-pjrt-core: the compiled library,
+# released separately (core/pyproject.toml); its frontend ABI version is
+# checked at startup.
+dependencies = [
+    "jax>=0.10.0,<0.13.0",
+    "jaxlib>=0.10.0,<0.13.0",
+    "metal-pjrt-core>=0.0.1,<0.1",
+]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -35,15 +43,11 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 # Only the Python package: never a "metal_pjrt*" pattern, which would sweep
-# the C++ tree metal_pjrt/ in as namespace packages.
+# the C++ tree metal_pjrt/ in as namespace packages. The library is in
+# metal-pjrt-core (core/), so this wheel is pure Python.
 [tool.setuptools.packages.find]
 include = ["metal_pjrt_plugin*"]
 namespaces = false
-
-# The plugin dylib (scripts/build_wheel.sh copies it in; for editable
-# installs it is scripts/install_dev.sh's link into bazel-bin).
-[tool.setuptools.package-data]
-"metal_pjrt_plugin" = ["*.dylib"]
 
 # tests/: see tests/conftest.py. No pytest-timeout and no xdist: a timeout
 # ends the process with GPU work in flight, and parallel workers put several

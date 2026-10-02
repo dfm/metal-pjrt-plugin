@@ -37,6 +37,8 @@ installing and using the plugin, see the README.
   `tests/test_jax_private_api.py` does the same for private JAX APIs.
 - `metal_pjrt_plugin/`: the Python package (entry point `mtl`), modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
+- `core/`: the `metal-pjrt-core` package, which holds only the dylib
+  ([Packages and releases](#packages-and-releases)).
 - `tests/`: the pytest suite; `scripts/jax_known_failures/`: expected
   failures of JAX's own tests.
 - `bench/`: benchmarks.
@@ -51,19 +53,19 @@ tests build quickly and test one kernel in isolation.
 
 ```
 brew install bazelisk
-scripts/install_dev.sh                       # builds the dylib, links it into metal_pjrt_plugin/, pip install -e .
+scripts/install_dev.sh                       # builds the dylib, links it into core/metal_pjrt_core/, pip install -e core -e .
 scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt/...                                    # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt:device_tests # C++ device tests, one at a time
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests (a path in JAX's checkout, below), serialized; fails on failures not in scripts/jax_known_failures/
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
-scripts/build_wheel.sh                                         # dist/metal_pjrt_plugin-0.0.1-py3-none-macosx_26_0_arm64.whl, dylib inside
+scripts/build_wheel.sh                                         # dist/: metal_pjrt_core-*-py3-none-macosx_26_0_arm64.whl (the dylib), metal_pjrt_plugin-*-py3-none-any.whl
 ```
 
-`install_dev.sh` creates `.venv` (with uv, or `python3.12`), installs the
-package editable with its `test` extra, and links the dylib from
-`bazel-bin`. Tests and scripts set `JAX_PLATFORMS=mtl,cpu` themselves.
+`install_dev.sh` creates `.venv` (with uv, or `python3.12`), installs
+both packages editable (the frontend with its `test` extra), and links the
+dylib from `bazel-bin` into `core/metal_pjrt_core/`. Tests and scripts set `JAX_PLATFORMS=mtl,cpu` themselves.
 
 `run_jax_tests.sh` needs JAX's tests at the pinned version, once:
 
@@ -89,12 +91,42 @@ clone; its ~8.5 GB output base lives elsewhere.
 With more memory, override it in `user.bazelrc`, e.g. `common --jobs=8`
 and `common --local_resources=memory=20000` on 32 GB.
 
-### The wheel
+### Packages and releases
 
-Pure Python plus the dylib, tagged `py3-none-macosx_26_0_arm64`,
-depending on `jax==0.11.2` and `jaxlib==0.11.2`. The package warns at
-discovery on any other version (`_JAX_VERSION`, checked against
-`pyproject.toml` by `tests/test_packaging.py`).
+There are two packages, released separately:
+
+- **`metal-pjrt-plugin`** (the root `pyproject.toml`): the Python frontend
+  users install, a pure-Python `py3-none-any` wheel. It holds the
+  `jax_plugins` entry point, the lowerings and the host callbacks, and
+  depends on `jax`/`jaxlib` within a tested range and on
+  `metal-pjrt-core`. It uses private `jax._src` APIs, so it is released
+  whenever JAX moves: widen the range after testing a new JAX (below). A
+  JAX outside the range loads with a warning.
+- **`metal-pjrt-core`** (`core/`): only the dylib, tagged
+  `py3-none-macosx_26_0_arm64`, with no Python dependencies (it does not
+  link Python; callbacks go through a ctypes trampoline). It reaches
+  jaxlib only through the PJRT C API, StableHLO version negotiation and
+  XLA FFI, so one build serves many JAX releases. Release it when the
+  C++ changes, or for an XLA pin bump.
+
+The private contract between the two (platform name, client options, FFI
+targets and their attributes, the callback trampoline, environment
+variables read on both sides) has one version number,
+`metal_pjrt_frontend_abi_version()` in `metal_pjrt/pjrt/metal_pjrt_api.cc`,
+matched by `_CORE_ABI_VERSION` in `metal_pjrt_plugin/__init__.py`. Bump
+both on any incompatible change, and raise the frontend's lower bound on
+`metal-pjrt-core`. With a mismatch the frontend logs why and does not
+register the platform.
+
+The JAX range is `_JAX_RANGE` in `metal_pjrt_plugin/__init__.py`, the
+same as `pyproject.toml` (`tests/test_packaging.py` checks): the lowest
+version tested, and the first minor version not tested. To test another
+JAX, install it with the current `metal-pjrt-core` in a scratch venv and
+run `tests/test_jax_private_api.py` (no GPU) and the whole suite. On
+2026-10-02, 0.10.0 through 0.12.0.dev20261001 passed (978-981 tests).
+Before 0.10, `jax._src` APIs the frontend uses change; a few tests
+compare bit for bit with XLA:CPU, which differs before 0.11.2, and skip
+there (`OLD_CPU_REFERENCE` in `tests/metal_testing.py`).
 
 ### Tests
 
@@ -149,7 +181,8 @@ stays local, under `scripts/device_lock.py`.
 - **No remote cache.** JAX's public cache had no entries for this build
   (2026-09-30: 0 hits of 189 LLVM and 325 XLA actions): it's written from
   Linux only, and these macOS actions use Xcode's clang.
-- **No wheels.** Releases are source only.
+- **No wheels.** Releases are source only. Testing the frontend against
+  JAX nightly in CI is a follow-up.
 
 ## Environment variables
 

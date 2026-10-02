@@ -56,6 +56,8 @@ cc_binary(
     name = "pjrt_c_api_mtl_plugin.dylib",
     linkopts = [
         "-Wl,-exported_symbol,_GetPjrtApi",
+        # The frontend<->library contract version (metal_pjrt_api.cc).
+        "-Wl,-exported_symbol,_metal_pjrt_frontend_abi_version",
         # Host callbacks: metal_pjrt_plugin/_callbacks.py installs its trampoline.
         "-Wl,-exported_symbol,_metal_pjrt_register_python_callback_trampoline",
         # Memory stats and the memory-pressure test hook (metal_runtime.cc).

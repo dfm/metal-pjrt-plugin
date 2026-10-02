@@ -306,3 +306,19 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
   }();
   return api;
 }
+
+// The private contract between this library (the metal-pjrt-core wheel) and
+// the Python frontend (metal-pjrt-plugin, metal_pjrt_plugin/), which are
+// released separately: the "mtl" platform name (MetalName()), the PJRT
+// client-creation options the frontend passes, the FFI targets the
+// frontend's lowerings emit, with their attributes, operand layouts and the
+// sizes they accept (metal$lapack_*, metal$fft,
+// xla_ffi_python_metal_callback), the exported callback trampoline
+// (metal_pjrt_register_python_callback_trampoline), and the environment
+// variables both sides read (METAL_PJRT_DISABLE_LAPACK). Bump it on any
+// incompatible change; the frontend refuses to register with a library
+// whose version differs from its own (_CORE_ABI_VERSION in
+// metal_pjrt_plugin/__init__.py).
+extern "C" PJRT_CAPI_EXPORT int metal_pjrt_frontend_abi_version() {
+  return 1;
+}

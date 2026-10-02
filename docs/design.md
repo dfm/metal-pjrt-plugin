@@ -33,8 +33,9 @@ compute capability, so XLA takes its generic non-NVIDIA branches.
 
 ## What loading the plugin changes in JAX
 
-The plugin uses private `jax._src` APIs, so it's built for exactly
-`jax==0.11.2`/`jaxlib==0.11.2` and warns at discovery on anything else.
+The plugin uses private `jax._src` APIs, so the frontend is tested against
+a range of JAX versions and warns at discovery on anything else
+([packages and releases](development.md#packages-and-releases)).
 
 With `JAX_PLATFORMS` unset, JAX initializes every installed backend, this
 one included; if the Metal device can't be set up, it fails quietly and

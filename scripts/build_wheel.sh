@@ -2,14 +2,17 @@
 # Copyright 2026 The metal-pjrt-plugin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Build the metal-pjrt-plugin wheel with the plugin dylib inside it as package
-# data (a real file, not the dev symlink into bazel-bin).
-#   scripts/build_wheel.sh            # bazel build, then the wheel in dist/
-#   scripts/build_wheel.sh --no-build # wheel from the existing bazel-bin dylib
-# The wheel is py3-none-macosx_<MACOS_MIN>_arm64: pure Python plus a dylib
-# loaded through ctypes/PJRT, so it does not depend on the Python version.
+# Build the two wheels in dist/:
+# - metal-pjrt-core (core/): the plugin dylib as package data (a real file,
+#   not the dev symlink into bazel-bin), py3-none-macosx_<MACOS_MIN>_arm64:
+#   a dylib loaded through ctypes/PJRT, so it depends on neither the Python
+#   nor the jax version.
+# - metal-pjrt-plugin (the root): the pure-Python frontend, py3-none-any.
+#   scripts/build_wheel.sh            # bazel build, then both wheels
+#   scripts/build_wheel.sh --no-build # wheels from the existing bazel-bin dylib
 # MACOS_MIN is the dylib's deployment target (.bazelrc, --macos_minimum_os);
-# the script checks that the two agree.
+# the script checks that the two agree. Release the two separately
+# (docs/development.md, "Releases").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 MACOS_MIN=26_0
@@ -23,18 +26,36 @@ if [[ "${MINOS//./_}" != "$MACOS_MIN" ]]; then
   echo "$DYLIB is built for macOS ${MINOS:-?} or later, but the wheel would be tagged macosx_${MACOS_MIN}; rebuild it, or change MACOS_MIN and .bazelrc together" >&2
   exit 1
 fi
+# The library is loaded into any Python through ctypes/PJRT: it must not
+# link libpython.
+if otool -L "$DYLIB" | grep -qi python; then
+  echo "$DYLIB links Python; metal-pjrt-core must not depend on the Python version" >&2
+  exit 1
+fi
 STAGE=$(mktemp -d)
 trap 'rm -rf "$STAGE"' EXIT
-cp pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES "$STAGE"/
-mkdir -p "$STAGE/metal_pjrt_plugin"
-cp metal_pjrt_plugin/*.py "$STAGE/metal_pjrt_plugin/"
-cp -L "$DYLIB" "$STAGE/metal_pjrt_plugin/"
-chmod u+w "$STAGE/metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib"
-cat > "$STAGE/setup.cfg" <<EOF
+mkdir -p dist
+
+# metal-pjrt-core
+CORE="$STAGE/core"
+mkdir -p "$CORE/metal_pjrt_core"
+cp core/pyproject.toml core/README.md LICENSE THIRD_PARTY_NOTICES "$CORE"/
+cp core/metal_pjrt_core/*.py "$CORE/metal_pjrt_core/"
+cp -L "$DYLIB" "$CORE/metal_pjrt_core/"
+chmod u+w "$CORE/metal_pjrt_core/pjrt_c_api_mtl_plugin.dylib"
+cat > "$CORE/setup.cfg" <<CFG
 [bdist_wheel]
 python_tag = py3
 plat_name = macosx_${MACOS_MIN}_arm64
-EOF
-mkdir -p dist
-uv build --wheel --out-dir dist "$STAGE"
-ls -l dist/metal_pjrt_plugin-*-py3-none-macosx_${MACOS_MIN}_arm64.whl
+CFG
+uv build --wheel --out-dir dist "$CORE"
+
+# metal-pjrt-plugin
+PLUGIN="$STAGE/plugin"
+mkdir -p "$PLUGIN/metal_pjrt_plugin"
+cp pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES "$PLUGIN"/
+cp metal_pjrt_plugin/*.py "$PLUGIN/metal_pjrt_plugin/"
+uv build --wheel --out-dir dist "$PLUGIN"
+
+ls -l dist/metal_pjrt_core-*-py3-none-macosx_${MACOS_MIN}_arm64.whl \
+      dist/metal_pjrt_plugin-*-py3-none-any.whl

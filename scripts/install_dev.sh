@@ -2,8 +2,9 @@
 # Copyright 2026 The metal-pjrt-plugin Authors
 # SPDX-License-Identifier: Apache-2.0
 
-# Build the plugin dylib and link it into the Python package for development.
-#   scripts/install_dev.sh            # build + link + pip install -e .[test]
+# Build the plugin dylib, link it into the metal-pjrt-core package (core/)
+# and install both packages editable, for development.
+#   scripts/install_dev.sh            # build + link + pip install -e core -e .[test]
 #   scripts/install_dev.sh --no-build # just link an existing build
 # Creates .venv (Python 3.12) if it does not exist: with uv if installed,
 # else with python3.12 from PATH. Never installs into another Python.
@@ -32,7 +33,7 @@ if [[ ! -x .venv/bin/python ]]; then
   elif command -v python3.12 >/dev/null; then
     python3.12 -m venv .venv
   else
-    echo "need uv or python3.12 (jax 0.11.2 requires Python >= 3.12)" >&2
+    echo "need uv or python3.12 (metal-pjrt-plugin requires Python >= 3.12)" >&2
     exit 1
   fi
 fi
@@ -41,7 +42,9 @@ if [[ "${1:-}" != "--no-build" ]]; then
 fi
 SRC=bazel-bin/metal_pjrt/pjrt/pjrt_c_api_mtl_plugin.dylib
 [[ -f "$SRC" ]] || { echo "missing $SRC" >&2; exit 1; }
-ln -sf "$(pwd)/$SRC" metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib
+ln -sf "$(pwd)/$SRC" core/metal_pjrt_core/pjrt_c_api_mtl_plugin.dylib
+# Where the link was before the library moved to metal-pjrt-core.
+rm -f metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib
 # Leftovers of earlier names, each of whose jax_plugins entry point would
 # load the same dylib a second time: dists "jax-metal-pjrt" (platform
 # "metal"), "jax-openmetal" and "openmetal_pjrt_plugin" (platform
@@ -59,9 +62,9 @@ rmdir jax_plugins 2>/dev/null || true
 rm -rf jax_metal_pjrt.egg-info jax_openmetal.egg-info openmetal_pjrt_plugin.egg-info
 if command -v uv >/dev/null; then
   uv pip uninstall --python .venv/bin/python "${OLD_DISTS[@]}" >/dev/null 2>&1 || true
-  uv pip install --python .venv/bin/python -e ".[test]" >/dev/null
+  uv pip install --python .venv/bin/python -e core -e ".[test]" >/dev/null
 else
   .venv/bin/python -m pip uninstall -y "${OLD_DISTS[@]}" >/dev/null 2>&1 || true
-  .venv/bin/python -m pip install -e ".[test]" >/dev/null
+  .venv/bin/python -m pip install -e core -e ".[test]" >/dev/null
 fi
 echo "installed; try: scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py"

@@ -1,0 +1,35 @@
+# metal-pjrt-core: the compiled half of metal-pjrt-plugin (the root
+# pyproject.toml), released separately and rarely. It holds only the PJRT
+# plugin library and has no Python dependencies: the library talks to jaxlib
+# through the PJRT C API, StableHLO version negotiation and XLA FFI, so one
+# build serves a range of jax versions. The frontend checks the library's
+# frontend ABI version (metal_pjrt/pjrt/metal_pjrt_api.cc) at startup.
+[project]
+name = "metal-pjrt-core"
+version = "0.0.1"
+description = "The compiled PJRT library of metal-pjrt-plugin (JAX on Apple GPUs); install metal-pjrt-plugin"
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{name = "The metal-pjrt-plugin Authors"}]
+license = "Apache-2.0"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: MacOS :: MacOS X",
+]
+
+[project.urls]
+Repository = "https://github.com/dfm/metal-pjrt-plugin"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["metal_pjrt_core*"]
+namespaces = false
+
+# scripts/build_wheel.sh copies the library in; for editable installs it is
+# scripts/install_dev.sh's link into bazel-bin.
+[tool.setuptools.package-data]
+"metal_pjrt_core" = ["*.dylib"]
