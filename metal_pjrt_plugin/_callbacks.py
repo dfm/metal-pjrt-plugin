@@ -240,7 +240,11 @@ def _metal_emit_python_callback(ctx, callback, token, operands, operand_avals,
       TARGET, has_side_effect=has_side_effect,
   )(ctx, *operands, callback_id=np.uint64(cb_id))
   if sharding is not None:
-    mlir.set_sharding(ctx.module_context, result, sharding)
+    # jax 0.10.0's set_sharding takes no ModuleContext (added in 0.10.1).
+    if "ctx" in inspect.signature(mlir.set_sharding).parameters:
+      mlir.set_sharding(ctx.module_context, result, sharding)
+    else:
+      mlir.set_sharding(result, sharding)
   results = result.results
   if token:
     token, *results = results

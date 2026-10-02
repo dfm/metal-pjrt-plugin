@@ -17,7 +17,7 @@ import numpy as np
 import pytest
 from jax import lax
 
-from metal_testing import cpu, metal, run_on
+from metal_testing import OLD_CPU_REFERENCE, cpu, metal, run_on
 
 pytestmark = pytest.mark.metal
 
@@ -83,6 +83,8 @@ def key_bits(dtype, n, seed=3):
                                    "float16", "bfloat16", "int32", "uint32",
                                    "float32"])
 def test_radix_sort_key_types(dtype):
+    if dtype == "bfloat16" and OLD_CPU_REFERENCE:
+        pytest.skip("XLA:CPU orders bf16 NaNs differently before jaxlib 0.11.2")
     x = key_bits(dtype, 20000)
     assert any(t.startswith("xla.gpu.ext.cub_sort_") for t in targets(jnp.sort, x))
     same_bits(run_on(metal(), jnp.sort, x), run_on(cpu(), jnp.sort, x))

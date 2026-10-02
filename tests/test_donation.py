@@ -57,7 +57,10 @@ def test_use_after_donation_raises():
     f(x).block_until_ready()
     with pytest.raises(RuntimeError, match="deleted"):
         np.asarray(x)
-    with pytest.raises(RuntimeError, match="deleted"):
+    # Before jax 0.11.2 the deleted buffer reaches the client, which refuses
+    # it with a ValueError.
+    with pytest.raises((RuntimeError, ValueError),
+                       match="deleted|Donation requested for invalid buffer"):
         f(x)
 
 

@@ -60,14 +60,19 @@ SIGNATURES = {
         "(call_target_name, *, operand_layouts=None, result_layouts=None, "
         "backend_config=None, skip_ffi_layout_processing=False, "
         "**lowering_args)"),
-    "mlir.set_sharding": (mlir.set_sharding, "(ctx, op, sharding)"),
+    # jax 0.10.0 had no ctx (_callbacks.py handles both).
+    "mlir.set_sharding": (mlir.set_sharding,
+                          ("(ctx, op, sharding)", "(op, sharding)")),
     "mlir.ModuleContext.add_host_callback": (
         mlir.ModuleContext.add_host_callback, "(self, host_callback)"),
+    # reduction_op is new in jax 0.11 (unused here); replicated_axes was a
+    # tuple in 0.10.0.
     "SdyArray": (
         SdyArray,
-        "(*, mesh_shape, dim_shardings, logical_device_ids=None, "
-        "replicated_axes=frozenset(), unreduced_axes=frozenset(), "
-        "reduction_op=None)"),
+        tuple("(*, mesh_shape, dim_shardings, logical_device_ids=None, "
+              f"replicated_axes={r}, unreduced_axes=frozenset(){op})"
+              for r, op in (("frozenset()", ", reduction_op=None"),
+                            ("frozenset()", ""), ("()", "")))),
     "SdyArrayList": (SdyArrayList, "(shardings)"),
     # __init__.py
     "compilation_cache.is_cache_used": (
@@ -123,8 +128,11 @@ SIGNATURES = {
 
 @pytest.mark.parametrize("name", list(SIGNATURES))
 def test_signature(name):
+    # One signature, or a tuple of those of the jax versions the plugin
+    # supports.
     fn, want = SIGNATURES[name]
-    assert params(fn) == want, f"{name} changed: re-check the plugin's use"
+    want = (want,) if isinstance(want, str) else want
+    assert params(fn) in want, f"{name} changed: re-check the plugin's use"
 
 
 def test_metal_emit_python_callback_matches_upstream():

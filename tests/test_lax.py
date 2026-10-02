@@ -393,6 +393,8 @@ NORMWISE = {
                                              raises=jax.errors.JaxRuntimeError)] if n in XFAIL else [])
     for n, f in CASES])
 def test_lax(name, fn):
+    if name == "dot batched bf16" and metal_testing.OLD_CPU_REFERENCE:
+        pytest.skip("XLA:CPU's bf16 dot differs before jaxlib 0.11.2")
     _current[0] = name
     fn()
 
@@ -442,8 +444,11 @@ print(same(lambda x: jnp.sin(x) * 2 + 1, x32),
       same(lambda x: x.reshape(8, 8)[2:6], x64),
       refused(lambda x: x * 2, x64),
       refused(lambda x: jnp.sin(x.astype(jnp.float32)).astype(jnp.float64).sum(), x64),
-      refused(lambda x: jax.lax.mulhi(x, x), np.arange(64, dtype=np.int64)),
-      same(lambda x: jax.lax.mulhi(x, x * 7919), np.arange(-32, 32, dtype=np.int32)))
+      # lax.mulhi is new in jax 0.11.
+      refused(lambda x: jax.lax.mulhi(x, x), np.arange(64, dtype=np.int64))
+      if hasattr(jax.lax, "mulhi") else True,
+      same(lambda x: jax.lax.mulhi(x, x * 7919), np.arange(-32, 32, dtype=np.int32))
+      if hasattr(jax.lax, "mulhi") else True)
 """
 
 

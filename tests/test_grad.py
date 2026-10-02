@@ -231,7 +231,8 @@ for d, dt in CONV_DTYPES.items():
 # Measured (METAL_TEST_REPORT_ULPS=1, M3) and doubled; cases missing here
 # must match exactly. The large elementwise errors (tanh, sigmoid, gelu,
 # silu, expm1) are relative to derivatives near zero, large on CPU float32
-# as well (tanh 127, gelu 223, silu 65, expm1 8.5).
+# as well (tanh 127, gelu 223, silu 65, expm1 8.5). grad broadcasting is
+# 3.03 under jax < 0.11.2, whose lowering differs.
 ULPS = {
     'grad exp': 2.2, 'grad log': 1, 'grad log1p': 2.4, 'grad expm1': 47,
     'grad sin': 2.7, 'grad cos': 2.9, 'grad tan': 3.5, 'grad tanh': 260,
@@ -241,7 +242,7 @@ ULPS = {
     'grad erf': 9.0, 'grad asin': 1.2, 'grad atanh': 2.9, 'grad atan': 2.9,
     'grad sinh': 3.6, 'grad where': 2.0,
     'grad binary (x * y, x / y, atan2, logaddexp)': 2.1,
-    'grad broadcasting': 2.8, 'grad sum/mean axes': 1.8, 'grad prod': 4.3,
+    'grad broadcasting': 6.1, 'grad sum/mean axes': 1.8, 'grad prod': 4.3,
     'grad logsumexp': 1, 'grad var/std': 2.4, 'grad cumsum/cumprod': 3.5,
     'grad softmax cross entropy': 2.1, 'grad gather (x[idx])': 1.1,
     'grad scatter add (.at[].add)': 8.1, 'grad scatter set (.at[].set)': 1,

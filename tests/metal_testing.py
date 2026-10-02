@@ -20,15 +20,28 @@ every comparison (with pytest -s), plus the CPU float32 error for context,
 which is how the tolerances were set.
 """
 import functools
+import re
 import subprocess
 import sys
 
 import jax
+import jaxlib
 import ml_dtypes
 import numpy as np
 from metal_pjrt_plugin import _env_flag
 
 REPORT = _env_flag("METAL_TEST_REPORT_ULPS")
+
+
+def _version(v):
+    return tuple(int(p) for p in re.match(r"(\d+)\.(\d+)\.(\d+)", v).groups())
+
+
+# XLA:CPU before jaxlib 0.11.2 rounds a bf16 batched dot and orders bf16
+# NaN payloads differently from later versions (metal's results are the
+# same bits under every jaxlib), so the cases that compare those bit for bit
+# with CPU skip there.
+OLD_CPU_REFERENCE = _version(jaxlib.__version__) < (0, 11, 2)
 
 
 @functools.cache
