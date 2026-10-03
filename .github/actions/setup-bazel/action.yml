@@ -1,0 +1,76 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The macos-26 setup shared by ci.yml and release.yml before a Bazel build:
+# free disk space, select Xcode, and restore the Bazel disk and repository
+# caches. Only ci.yml on main saves the cache (with the `key` output); a
+# release only reads it.
+name: Bazel setup
+description: Free disk space, select Xcode and restore the Bazel caches on macos-26
+
+outputs:
+  key:
+    description: This run's cache key (PREFIX-<run id>), for actions/cache/save
+    value: ${{ steps.key.outputs.key }}
+  prefix-base:
+    description: The prefix every cache entry of this setup starts with
+    value: ${{ steps.key.outputs.base }}
+  dir:
+    description: .bazelrc's --disk_cache / --repository_cache parent directory
+    value: ${{ steps.key.outputs.dir }}
+
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      # The runner's disk holds the restored cache, the output base and the
+      # repository cache; the image ships much we do not use.
+      shell: bash
+      env:
+        XCODE_VERSION: "26.5"     # the macOS 26.5 SDK the plugin is developed with
+      run: |
+        df -h /
+        for app in /Applications/Xcode_*.app; do
+          [ "$app" = "/Applications/Xcode_${XCODE_VERSION}.app" ] || sudo rm -rf "$app"
+        done
+        xcrun simctl delete all 2>/dev/null || true
+        sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Volumes \
+          /Library/Developer/CoreSimulator/Images 2>/dev/null || true
+        sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
+          ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/android 2>/dev/null || true
+        sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
+        xcodebuild -version
+        xcrun --show-sdk-version
+        clang --version
+        df -h /
+
+    - name: Cache key
+      id: key
+      # The prefix: runner image, Xcode, and everything that changes action
+      # keys wholesale. Entries are saved as PREFIX-<run id> (keys are
+      # immutable) and restored by prefix, then by the broader image/Xcode
+      # prefix for a partial hit after a re-pin.
+      shell: bash
+      env:
+        BASE: bazel-macos26-xcode26.5
+        HASH: ${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'third_party/PINS.md', '.bazelrc') }}
+      run: |
+        {
+          echo "base=$BASE"
+          echo "prefix=$BASE-$HASH"
+          echo "key=$BASE-$HASH-$GITHUB_RUN_ID"
+          # Literally "~": the cache version hashes the paths as written, so
+          # changing their spelling would orphan the saved cache.
+          echo "dir=~/.cache/metal-pjrt-plugin"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Restore Bazel caches
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+      with:
+        path: |
+          ${{ steps.key.outputs.dir }}/bazel-disk
+          ${{ steps.key.outputs.dir }}/bazel-repo
+        key: ${{ steps.key.outputs.key }}
+        restore-keys: |
+          ${{ steps.key.outputs.prefix }}-
+          ${{ steps.key.outputs.base }}-

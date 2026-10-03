@@ -32,11 +32,6 @@ concurrency:
 permissions:
   contents: read
 
-env:
-  XCODE_VERSION: "26.5"           # as in ci.yml
-  CACHE_DIR: ~/.cache/metal-pjrt-plugin
-  CACHE_PREFIX_BASE: bazel-macos26-xcode26.5
-
 jobs:
   plan:
     if: ${{ !github.event.repository.private }}
@@ -86,44 +81,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         if: ${{ env.BUILD == 'true' }}
 
-      - name: Free disk space
+      # Restores main's Bazel cache (a tag can read main's entries); only
+      # ci.yml saves it, so a release never evicts it.
+      - name: Bazel setup
         if: ${{ env.BUILD == 'true' }}
-        run: |
-          for app in /Applications/Xcode_*.app; do
-            [ "$app" = "/Applications/Xcode_${XCODE_VERSION}.app" ] || sudo rm -rf "$app"
-          done
-          xcrun simctl delete all 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Volumes \
-            /Library/Developer/CoreSimulator/Images 2>/dev/null || true
-          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
-            ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/android 2>/dev/null || true
-          df -h /
-
-      - name: Select Xcode
-        if: ${{ env.BUILD == 'true' }}
-        run: |
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
-          xcodebuild -version
-
-      - name: Cache key
-        id: key
-        if: ${{ env.BUILD == 'true' }}
-        run: |
-          echo "prefix=${CACHE_PREFIX_BASE}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'third_party/PINS.md', '.bazelrc') }}" >> "$GITHUB_OUTPUT"
-
-      # Restore only: ci.yml on main owns the cache (a tag can read main's
-      # entries), so a release never evicts it.
-      - name: Restore Bazel caches
-        if: ${{ env.BUILD == 'true' }}
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: |
-            ${{ env.CACHE_DIR }}/bazel-disk
-            ${{ env.CACHE_DIR }}/bazel-repo
-          key: ${{ steps.key.outputs.prefix }}-release
-          restore-keys: |
-            ${{ steps.key.outputs.prefix }}-
-            ${{ env.CACHE_PREFIX_BASE }}-
+        uses: ./.github/actions/setup-bazel
 
       - name: Build the dylib
         if: ${{ env.BUILD == 'true' }}

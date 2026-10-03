@@ -18,15 +18,6 @@ on:
   pull_request:
     paths-ignore: ["**.md", "docs/**", "examples/**"]
   workflow_dispatch:
-    inputs:
-      warm_cache_only:
-        description: "Only build and save the Bazel cache (e.g. to prime it once after the repo goes public)"
-        type: boolean
-        default: false
-      bytes:
-        description: "Build without the bytes (--remote_download_outputs=toplevel); off: download all outputs"
-        type: boolean
-        default: true
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -36,15 +27,6 @@ concurrency:
 
 permissions:
   contents: read
-
-env:
-  XCODE_VERSION: "26.5"           # the macOS 26.5 SDK the plugin is developed with
-  CACHE_DIR: ~/.cache/metal-pjrt-plugin   # .bazelrc's --disk_cache / --repository_cache
-  # The cache key prefix: runner image, Xcode, and everything that changes
-  # action keys wholesale. Entries are saved as PREFIX-<run id> (keys are
-  # immutable) and restored by prefix, then by the broader image/Xcode
-  # prefix for a partial hit after a re-pin.
-  CACHE_PREFIX_BASE: bazel-macos26-xcode26.5
 
 jobs:
   build-test:
@@ -57,43 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - name: Free disk space
-        # The runner's disk holds the restored cache, the output base and
-        # the repository cache; the image ships much we do not use.
-        run: |
-          df -h /
-          for app in /Applications/Xcode_*.app; do
-            [ "$app" = "/Applications/Xcode_${XCODE_VERSION}.app" ] || sudo rm -rf "$app"
-          done
-          xcrun simctl delete all 2>/dev/null || true
-          sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Volumes \
-            /Library/Developer/CoreSimulator/Images 2>/dev/null || true
-          sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
-            ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/android 2>/dev/null || true
-          df -h /
-
-      - name: Select Xcode
-        run: |
-          sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
-          xcodebuild -version
-          xcrun --show-sdk-version
-          clang --version
-
-      - name: Cache key
-        id: key
-        run: |
-          echo "prefix=${CACHE_PREFIX_BASE}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'third_party/PINS.md', '.bazelrc') }}" >> "$GITHUB_OUTPUT"
-
-      - name: Restore Bazel caches
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
-        with:
-          path: |
-            ${{ env.CACHE_DIR }}/bazel-disk
-            ${{ env.CACHE_DIR }}/bazel-repo
-          key: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
-          restore-keys: |
-            ${{ steps.key.outputs.prefix }}-
-            ${{ env.CACHE_PREFIX_BASE }}-
+      - name: Bazel setup
+        id: bazel
+        uses: ./.github/actions/setup-bazel
 
       - name: Build
         # A cold cache takes longer than one job allows on this runner: the
@@ -101,30 +49,21 @@ jobs:
         # the next run continues where this one stopped.
         timeout-minutes: 300
         run: |
-          flags="--config=ci"
-          [ "${{ inputs.bytes }}" = "false" ] && flags="$flags --remote_download_outputs=all"
-          echo "BAZEL_FLAGS=$flags" >> "$GITHUB_ENV"
-          # shellcheck disable=SC2086  # $flags is a list of flags
-          bazel build $flags //metal_pjrt/...
+          bazel build --config=ci //metal_pjrt/...
           df -h /
 
       - name: Bazel tests (host only)
-        if: ${{ !inputs.warm_cache_only }}
-        run: |
-          # shellcheck disable=SC2086  # $BAZEL_FLAGS is a list of flags
-          bazel test $BAZEL_FLAGS //...       # device_tests is tagged manual
+        run: bazel test --config=ci //...    # device_tests is tagged manual
 
       - name: Stop Bazel
         if: ${{ always() }}
         run: bazel shutdown || true
 
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
-        if: ${{ !inputs.warm_cache_only }}
         with:
           enable-cache: false   # the Actions cache quota is the Bazel cache's
 
       - name: Python tests (host only)
-        if: ${{ !inputs.warm_cache_only }}
         run: |
           scripts/install_dev.sh --no-build
           .venv/bin/python -m pytest tests -m "not metal"
@@ -143,9 +82,9 @@ jobs:
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
-            ${{ env.CACHE_DIR }}/bazel-disk
-            ${{ env.CACHE_DIR }}/bazel-repo
-          key: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
+            ${{ steps.bazel.outputs.dir }}/bazel-disk
+            ${{ steps.bazel.outputs.dir }}/bazel-repo
+          key: ${{ steps.bazel.outputs.key }}
 
       - name: Delete superseded cache entries
         # Only one entry fits the quota: once this run's is saved, delete the
@@ -154,9 +93,10 @@ jobs:
         if: ${{ always() && steps.save.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          NEW_KEY: ${{ steps.key.outputs.prefix }}-${{ github.run_id }}
+          NEW_KEY: ${{ steps.bazel.outputs.key }}
+          PREFIX_BASE: ${{ steps.bazel.outputs.prefix-base }}
         run: |
-          gh cache list --repo "${{ github.repository }}" --key "${CACHE_PREFIX_BASE}-" \
+          gh cache list --repo "${{ github.repository }}" --key "${PREFIX_BASE}-" \
               --limit 100 --json key --jq '.[].key' |
             while read -r key; do
               [ "$key" = "$NEW_KEY" ] || gh cache delete "$key" --repo "${{ github.repository }}"

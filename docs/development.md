@@ -207,8 +207,11 @@ stays local, under `scripts/device_lock.py`.
 - **Caching.** The disk and repository caches go in the Actions cache,
   keyed `bazel-macos26-xcode<X>-<hash of MODULE.bazel.lock, .bazelversion,
   third_party/PINS.md and .bazelrc>-<run id>` and restored by longest
-  prefix. Only `main` and manual runs save. The workflow pins Xcode
-  (`XCODE_VERSION`), and the strict action environment fixes PATH, so
+  prefix. Only `main` and manual runs save; releases only restore. The
+  setup shared by `ci.yml` and `release.yml` (freeing disk, pinning Xcode,
+  the cache key and restore) is one composite action,
+  `.github/actions/setup-bazel`. Xcode is pinned there, and the strict
+  action environment fixes PATH, so
   action keys don't depend on the runner. Before saving,
   `scripts/prune_disk_cache.py` trims the disk cache to 7 GB, least
   recently used first, to fit the free 10 GB quota (Bazel's own GC only
@@ -216,17 +219,17 @@ stays local, under `scripts/device_lock.py`.
   successful save.
 - **Disk and memory.** The job deletes unused Xcodes, simulators, Android
   and .NET, and builds with `--config=ci`: two jobs within 3.5 GB, and
-  without the bytes (`--remote_download_outputs=toplevel`). The manual
-  run's `bytes` input turns that off.
+  without the bytes (`--remote_download_outputs=toplevel`: cache hits stay
+  in the disk cache instead of being copied into the output base).
 - **Cold cache.** A cold build exceeds one job, so the build step stops
-  at 300 minutes, saves the cache, and the next run continues. To prime it
-  once the repository is public, run the workflow by hand with
-  `warm_cache_only`.
+  at 300 minutes, saves the cache, and the next run (a push to `main` or a
+  manual run) continues.
 - **No remote cache.** JAX's public cache had no entries for this build
   (2026-09-30: 0 hits of 189 LLVM and 325 XLA actions): it's written from
   Linux only, and these macOS actions use Xcode's clang.
-- **Not in CI yet:** building the wheels, and testing the frontend
-  against JAX nightly.
+- **Not in CI yet:** testing the frontend against JAX nightly. The wheels
+  are built and tested by the release workflow
+  ([Releasing](#releasing)).
 
 ## Environment variables
 
