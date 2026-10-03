@@ -95,8 +95,8 @@ common:public_cache --remote_timeout=120s
 # CI (.github/workflows/ci.yml): GitHub's arm64 macOS runners have 3 cores and
 # 7 GB of RAM, so fewer and smaller concurrent compiles than the 8 GB profile
 # above; build without the bytes against the disk cache (cache hits are not
-# copied into the output base, which keeps a warm build within the runner's
-# disk; top-level outputs such as the plugin dylib and test binaries are).
+# copied into the output base, which keeps a warm build fast and small;
+# top-level outputs such as the plugin dylib and test binaries are).
 common:ci --jobs=2
 common:ci --local_resources=memory=3500
 common:ci --remote_download_outputs=toplevel

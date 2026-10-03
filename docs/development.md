@@ -192,7 +192,7 @@ holder's descendants.
 ## Continuous integration
 
 `.github/workflows/ci.yml` builds the plugin and runs the host-only tests
-on GitHub's `macos-26` arm64 runners (3 cores, 7 GB RAM, 14 GB disk):
+on GitHub's `macos-26` arm64 runners (3 cores, 7 GB RAM; about 95 GB of free disk, so no cleanup is needed):
 `bazel build //metal_pjrt/...`, `bazel test //...` (`device_tests` is
 `manual`) and `pytest tests -m "not metal"`. Anything that needs the GPU
 stays local, under `scripts/device_lock.py`.
@@ -208,7 +208,7 @@ stays local, under `scripts/device_lock.py`.
   keyed `bazel-macos26-xcode<X>-<hash of MODULE.bazel.lock, .bazelversion,
   third_party/PINS.md and .bazelrc>-<run id>` and restored by longest
   prefix. Only `main` and manual runs save; releases only restore. The
-  setup shared by `ci.yml` and `release.yml` (freeing disk, pinning Xcode,
+  setup shared by `ci.yml` and `release.yml` (pinning Xcode,
   the cache key and restore) is one composite action,
   `.github/actions/setup-bazel`. Xcode is pinned there, and the strict
   action environment fixes PATH, so
@@ -217,10 +217,10 @@ stays local, under `scripts/device_lock.py`.
   recently used first, to fit the free 10 GB quota (Bazel's own GC only
   runs when the server is idle). Older entries are deleted after a
   successful save.
-- **Disk and memory.** The job deletes unused Xcodes, simulators, Android
-  and .NET, and builds with `--config=ci`: two jobs within 3.5 GB, and
-  without the bytes (`--remote_download_outputs=toplevel`: cache hits stay
-  in the disk cache instead of being copied into the output base).
+- **Memory.** The job builds with `--config=ci`: two jobs within 3.5 GB,
+  and without the bytes (`--remote_download_outputs=toplevel`: cache hits
+  stay in the disk cache instead of being copied into the output base). A
+  warm build plus tests used about 10 GB of disk (2026-10-02).
 - **Cold cache.** A cold build exceeds one job, so the build step stops
   at 300 minutes, saves the cache, and the next run (a push to `main` or a
   manual run) continues.

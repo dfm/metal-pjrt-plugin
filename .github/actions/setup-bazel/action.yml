@@ -2,11 +2,10 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # The macos-26 setup shared by ci.yml and release.yml before a Bazel build:
-# free disk space, select Xcode, and restore the Bazel disk and repository
-# caches. Only ci.yml on main saves the cache (with the `key` output); a
+# select Xcode and restore the Bazel disk and repository caches. Only ci.yml on main saves the cache (with the `key` output); a
 # release only reads it.
 name: Bazel setup
-description: Free disk space, select Xcode and restore the Bazel caches on macos-26
+description: Select Xcode and restore the Bazel caches on macos-26
 
 outputs:
   key:
@@ -22,22 +21,11 @@ outputs:
 runs:
   using: composite
   steps:
-    - name: Free disk space
-      # The runner's disk holds the restored cache, the output base and the
-      # repository cache; the image ships much we do not use.
+    - name: Select Xcode
       shell: bash
       env:
         XCODE_VERSION: "26.5"     # the macOS 26.5 SDK the plugin is developed with
       run: |
-        df -h /
-        for app in /Applications/Xcode_*.app; do
-          [ "$app" = "/Applications/Xcode_${XCODE_VERSION}.app" ] || sudo rm -rf "$app"
-        done
-        xcrun simctl delete all 2>/dev/null || true
-        sudo rm -rf ~/Library/Developer/CoreSimulator /Library/Developer/CoreSimulator/Volumes \
-          /Library/Developer/CoreSimulator/Images 2>/dev/null || true
-        sudo rm -rf "${ANDROID_HOME:-/nonexistent}" "${ANDROID_SDK_ROOT:-/nonexistent}" \
-          ~/Library/Android /usr/local/share/dotnet ~/.dotnet /usr/local/lib/android 2>/dev/null || true
         sudo xcode-select -s "/Applications/Xcode_${XCODE_VERSION}.app"
         xcodebuild -version
         xcrun --show-sdk-version
