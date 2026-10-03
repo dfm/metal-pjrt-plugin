@@ -41,8 +41,8 @@ Every number here comes from one machine: an M3 MacBook Air (10-core GPU,
   ~2.3 us of GPU time per dispatch). macOS picks the state from the duty
   cycle, and no public API pins it: `dispatch_bound.py`'s 64-step chain
   flips between ~410 and ~720 us from call to call, so a single median is
-  bimodal. The command-buffer pacing isn't the cause (both modes appear
-  whether every op commits early or none does).
+  bimodal. Early commits aren't the cause (both modes appear whether every
+  op commits early or none does).
 - **Thermals.** This laptop holds its top GPU performance state (~9 W)
   for about 3 minutes of sustained load, then settles near 5-6 W. Long
   comparisons therefore start with an untimed warm-up and interleave the
@@ -78,16 +78,25 @@ emitted `x*2` kernel reaches the same ~81 GB/s as hand-written MSL), and
 XLA's fusion helps most on reductions fused with their producers and on
 optimizer updates. The slow spots are grouped, depthwise and 3-D
 convolutions (still on XLA's loop emitter), standalone softmax (two
-fusions here, one kernel in MLX), and anything bound by per-dispatch
-latency.
+fusions here, one kernel in MLX), and many small separate calls (below).
+Many tiny ops inside one program are faster than in MLX.
 
 ## Dispatch, sorting, solvers and memory
 
 - **Fixed cost.** A tiny program (`jit(x*2+1)` on 1024 floats) takes
   ~170-210 us median from dispatch to result, the same as MLX (182 us).
-  A long chain of tiny kernels costs ~2-4 us of GPU time per dispatch; a
-  2000-step `scan` with tiny state takes ~8.5 ms.
-- **Where a call's time goes** (2026-10-03, medians, back-to-back calls).
+- **Tiny ops in one program** (2026-10-02, median per step; a chain step
+  is two kernels, a scan step three). Chains of 256 / 1024 steps: 3.6 /
+  3.0 us here, 5.5-6.5 / 5.8-6.0 us in MLX with `mx.compile` and 11-15 us
+  without. A 2000-step `scan` with tiny state: 6.5 ms (3.3 us per step),
+  against 18.7-20.2 ms for the unrolled loop in compiled MLX, which has no
+  scan. A tiny kernel of these chains costs ~1.3-1.6 us of GPU time in
+  the fast performance state and ~4-6 us in the slow one (the ~2.3 / ~4.2
+  us above are `dispatch_bound.py`'s, 2026-09-27); a bare Metal chain of
+  dependent dispatches costs ~0.8-1.3 us. Encoding takes ~0.8 us per op on
+  the host, so it keeps ahead of the GPU, and the scan runs without host
+  synchronization (~8 command buffers for 2000 steps).
+- **Where a call's time goes** (2026-10-02, medians, back-to-back calls).
   For `jit(x*2+1)` / a 5000x500 matvec: JAX and XLA's client 2 + 11 us
   until the command buffer is committed (our encoding ~3.5 us of it), then
   87 / 94 us until the GPU starts, 6 / 113 us of GPU work, 60 / 108 us
@@ -393,12 +402,12 @@ for this model).
 - **Host LAPACK as a stream host task** (2026-09-27): `cholesky` 128
   median 313 -> 299 us with the same p90, and a chain of 100 `cho_solve`
   64 12% slower. The two GPU round trips around the call remain.
-- **Faster round-trip waits** (2026-10-03): spinning on the timeline
+- **Faster round-trip waits** (2026-10-02): spinning on the timeline
   instead of `waitUntilSignaledValue` saved at most ~5 us, within the
   ±20 us noise, and once slowed the GPU's start (CPU and GPU share a power
   budget). Not waiting for Metal's completion after the timeline signal
   would save ~12 us but could report a failed buffer as done.
-- **Deferring commits while the GPU is busy** (2026-10-03): letting calls
+- **Deferring commits while the GPU is busy** (2026-10-02): letting calls
   share a command buffer while two of ours are in flight took the tiny
   program from 25 to ~13 us per pipelined call, but the matvec from 115 to
   ~135 us: with the Python thread blocked on XLA's in-flight limit,
@@ -418,5 +427,11 @@ for this model).
 - **Per-encoder blame** via `EncoderExecutionStatus` (2026-09-26): free,
   but a command buffer is mostly one compute encoder, so it can't narrow a
   watchdog reset down to a kernel.
-- **A configurable early-commit interval** (2026-09-27): neither extreme
-  changed the bimodal chain timings above, so the 500 us constant stays.
+- **Pacing early commits in time** (2026-09-27, removed 2026-10-02): at
+  most one early commit per 500 us kept the GPU idle while the host
+  encoded the rest of a program after its first 16 ops. Since the single
+  queue (2026-09-30), waiting for the GPU to run out already limits early
+  commits to about one per round trip, so the pacing only delayed them:
+  without it a 2000-step scan takes 6.5 instead of 8.3 ms, a 256-step
+  chain 0.93 instead of 1.06 ms, with the same number of command buffers
+  and no change elsewhere (linear algebra, GEMMs, nanoGPT).

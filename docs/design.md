@@ -118,8 +118,9 @@ comments are the reference; these are the policies.
 
 A command buffer costs hundreds of microseconds of CPU and scheduler time,
 so a stream packs many dispatches into one. It commits when the GPU is
-out of our work and at least 16 ops are encoded, if 500 us have passed
-since the last commit; explicit syncs commit at once.
+out of our work and at least 16 ops are encoded; explicit syncs commit at
+once. Waiting for the GPU to run out already limits these commits to about
+one per GPU round trip.
 
 Caps keep each buffer far from the GPU watchdog: 1024 ops, 2^27 threads,
 or 2e11 GEMM flops. GEMMs are charged an estimate (`blas::GemmWork`)

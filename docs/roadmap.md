@@ -127,7 +127,7 @@ The repository went public on 2026-10-02 with these still open.
 
 ## Next
 
-- **The per-call round trip** (profiled 2026-10-03). A tiny program takes
+- **The per-call round trip** (profiled 2026-10-02). A tiny program takes
   ~175 us from dispatch to result against ~4 us on the CPU, and 182 us in
   MLX. A bare Metal program with the same synchronization takes ~120-135
   us: ~60-90 us from commit until the GPU starts, ~40-60 us from its end

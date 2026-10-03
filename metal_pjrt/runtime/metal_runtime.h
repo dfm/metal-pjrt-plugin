@@ -638,7 +638,6 @@ class Device {
   int ops_in_cmd_ = 0;
   uint64_t threads_in_cmd_ = 0;
   uint64_t flops_in_cmd_ = 0;
-  std::chrono::steady_clock::time_point last_commit_time_{};
   // Kernels encoded into the open buffer (failure diagnostics, reset log).
   std::vector<std::shared_ptr<const KernelIdentity>> pending_kernels_;
   absl::Status inject_error_;  // Stream::FailNextCommandBufferForTesting
@@ -807,13 +806,10 @@ class Stream {
   // GEMM flops are encoded (the latter two keep each buffer far from the GPU
   // watchdog).
   static constexpr int kMaxOpsPerCommandBuffer = 1024;
+  // Waiting for the GPU to run out limits early commits to about one per
+  // GPU round trip (~150 us), so loops of tiny kernels make few buffers
+  // (a 2000-step scan: ~8 per call).
   static constexpr int kEarlyCommitOps = 16;
-  // Early commits are also paced in time: submitting a command buffer costs
-  // the driver ~150 us of a dedicated thread, which was the bottleneck for
-  // loops of tiny kernels (700 buffers per call). At most one early commit
-  // per kEarlyCommitIntervalUs; explicit syncs and the caps above still
-  // commit immediately.
-  static constexpr int kEarlyCommitIntervalUs = 500;
   // Copies and uniform fills up to this size run as compute kernels.
   static constexpr uint64_t kComputeCopyMaxBytes = 16ull << 20;
   // Also commit once this many threads have been dispatched into one command

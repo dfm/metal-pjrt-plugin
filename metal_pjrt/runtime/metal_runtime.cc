@@ -1699,7 +1699,6 @@ absl::Status Device::CommitLocked() {
   });
   cmd_->commit();
   committed_.store(v);
-  last_commit_time_ = std::chrono::steady_clock::now();
   reset_open();  // AddInFlight holds its own reference
   return absl::OkStatus();
 }
@@ -1723,9 +1722,7 @@ absl::Status Device::FinishOpLocked(uint64_t work, uint64_t flops) {
     return CommitLocked();
   }
   if (ops_in_cmd_ >= Stream::kEarlyCommitOps &&
-      timeline_->signaledValue() >= committed_.load() &&
-      std::chrono::steady_clock::now() - last_commit_time_ >=
-          std::chrono::microseconds(Stream::kEarlyCommitIntervalUs)) {
+      timeline_->signaledValue() >= committed_.load()) {
     return CommitLocked();
   }
   return absl::OkStatus();
