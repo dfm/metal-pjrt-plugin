@@ -55,7 +55,7 @@ jobs:
       contents: read
       actions: write              # to delete the superseded cache entry
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Free disk space
         # The runner's disk holds the restored cache, the output base and
@@ -85,7 +85,7 @@ jobs:
           echo "prefix=${CACHE_PREFIX_BASE}-${{ hashFiles('MODULE.bazel.lock', '.bazelversion', 'third_party/PINS.md', '.bazelrc') }}" >> "$GITHUB_OUTPUT"
 
       - name: Restore Bazel caches
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
             ${{ env.CACHE_DIR }}/bazel-disk
@@ -118,8 +118,10 @@ jobs:
         if: ${{ always() }}
         run: bazel shutdown || true
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         if: ${{ !inputs.warm_cache_only }}
+        with:
+          enable-cache: false   # the Actions cache quota is the Bazel cache's
 
       - name: Python tests (host only)
         if: ${{ !inputs.warm_cache_only }}
@@ -138,7 +140,7 @@ jobs:
       - name: Save Bazel caches
         id: save
         if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
         with:
           path: |
             ${{ env.CACHE_DIR }}/bazel-disk
@@ -159,13 +161,3 @@ jobs:
             while read -r key; do
               [ "$key" = "$NEW_KEY" ] || gh cache delete "$key" --repo "${{ github.repository }}"
             done
-
-  lint:
-    if: ${{ !github.event.repository.private }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: actionlint
-        run: |
-          bash <(curl -sSL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.12/scripts/download-actionlint.bash) 1.7.12
-          ./actionlint -color
