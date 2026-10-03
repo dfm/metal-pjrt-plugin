@@ -142,22 +142,31 @@ publishing: no tokens are stored anywhere. Both PyPI projects trust that
 workflow in the `pypi` environment, which only `v*` tags can deploy to and
 which waits for a maintainer's approval.
 
-1. Bump `version` in `pyproject.toml`. If the C++ changed (or the XLA
-   pin), also bump `core/pyproject.toml` and the frontend's
-   `metal-pjrt-core==` pin to match.
-2. Run the whole GPU suite locally on that commit (GitHub's runners have
-   no usable GPU, so the workflow runs only host tests).
-3. Merge to `main`, then tag and push: `git tag v<version> && git push
-   origin v<version>`.
-4. The workflow checks that the tag matches the frontend's version, that
-   the version isn't on PyPI yet and that the core pin matches; builds
-   `metal-pjrt-core` only if its version is new (on macOS, from `main`'s
-   Bazel cache); installs the wheels in a fresh venv and runs
-   `pytest -m "not metal"` against them; then waits for approval and
-   publishes the wheels (never an sdist).
+1. Bump `version` in `pyproject.toml`. If anything the library is built
+   from changed since the last core release (`metal_pjrt/`, `core/`,
+   `third_party/`, `MODULE.bazel*`, `.bazelrc`, `.bazelversion`), also
+   bump `core/pyproject.toml` and the frontend's `metal-pjrt-core==` pin;
+   the workflow refuses to reuse a published core whose sources changed.
+2. Run the GPU suite locally as a pre-check, and merge to `main`.
+3. Wait for CI on that commit to finish (it saves the Bazel cache the
+   release's core build reads; tagging earlier can mean a cold, five-hour
+   build), then tag that commit of `main` and push the tag:
+   `git tag v<version> && git push origin v<version>`.
+4. The workflow checks the tag (it matches the frontend's version and is
+   on `main`), that the version is new on PyPI and that the core pin
+   matches; builds `metal-pjrt-core` only if its version is new; installs
+   the wheels in a fresh venv and runs `pytest -m "not metal"` against
+   them; then waits for approval.
+5. Before approving, test what will be published: download the run's
+   `wheel-*` artifacts (`gh run download <run-id> -p 'wheel-*'`), install
+   them in a fresh venv, and run the GPU suite under
+   `scripts/device_lock.py` from outside the checkout. Compare the wheels'
+   SHA-256 with the ones the publish job prints. If core was not rebuilt,
+   the pinned one comes from PyPI.
+6. Approve. Core is uploaded first, then the frontend (never an sdist).
 
 Run the workflow by hand from the Actions tab for a dry run: everything
-but publishing.
+but publishing. Do one before the first release.
 
 ### Tests
 

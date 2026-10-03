@@ -2,15 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 #
 # Release to PyPI with trusted publishing (docs/development.md, "Releasing").
-# Pushing a tag vX.Y.Z, where X.Y.Z is metal-pjrt-plugin's version, builds
-# and tests the wheels and publishes them once the `pypi` environment's
-# reviewer approves. metal-pjrt-core is built and published only when its
-# version isn't on PyPI yet; otherwise the frontend is tested against the
-# published core it pins. Run by hand (workflow_dispatch) for a dry run:
-# everything but the publish job.
+# Pushing a tag vX.Y.Z on main, where X.Y.Z is metal-pjrt-plugin's version,
+# builds and tests the wheels and publishes them once the `pypi`
+# environment's reviewer approves. metal-pjrt-core is built and published
+# only when its version isn't on PyPI yet; otherwise the frontend is tested
+# against the published core it pins. Run by hand (workflow_dispatch) for a
+# dry run: everything but the publish job.
 #
-# No GPU here (GitHub's macOS runners have none usable): run the GPU suite
-# locally on the release commit before tagging.
+# No GPU here (GitHub's macOS runners have none usable): before approving,
+# download the run's wheels and run the GPU suite on them locally (the
+# test and publish jobs print each wheel's SHA-256 to compare).
+#
+# Third-party actions are pinned by commit (the publish job holds the
+# upload token).
 #
 # COST GUARD: as in ci.yml, every job runs only on a public repository.
 name: Release
@@ -41,14 +45,20 @@ jobs:
       core_version: ${{ steps.plan.outputs.core_version }}
       build_core: ${{ steps.plan.outputs.build_core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+        with:
+          fetch-depth: 0              # tags and main, for the checks below
       - name: Versions
         id: plan
         env:
           REF: ${{ github.ref }}
         run: |
           python3 - <<'EOF' >> "$GITHUB_OUTPUT"
-          import os, re, sys, tomllib, urllib.error, urllib.request
+          import os, re, subprocess, sys, tomllib, urllib.error, urllib.request
+
+          # The library's inputs: a change here needs a new metal-pjrt-core.
+          CORE_SOURCES = ["metal_pjrt", "core", "third_party", "MODULE.bazel",
+                          "MODULE.bazel.lock", ".bazelrc", ".bazelversion"]
 
           def on_pypi(name, version):
               url = f"https://pypi.org/pypi/{name}/{version}/json"
@@ -59,6 +69,9 @@ jobs:
                   if e.code == 404:
                       return False
                   raise
+
+          def git(*args):
+              return subprocess.run(["git", *args], capture_output=True, text=True)
 
           def fail(msg):
               print(f"::error::{msg}", file=sys.stderr)
@@ -71,12 +84,36 @@ jobs:
                   if re.match(r"metal-pjrt-core\b", d)]
           if not pins or not pins[0].startswith(f"metal-pjrt-core=={cv};"):
               fail(f"pyproject.toml must pin metal-pjrt-core=={cv}: {pins}")
+
           ref = os.environ["REF"]
-          if ref.startswith("refs/tags/") and ref != f"refs/tags/v{pv}":
-              fail(f"tag {ref} does not match metal-pjrt-plugin {pv}")
+          tagged = ref.startswith("refs/tags/")
+          if tagged:
+              if ref != f"refs/tags/v{pv}":
+                  fail(f"tag {ref} does not match metal-pjrt-plugin {pv}")
+              if git("merge-base", "--is-ancestor", "HEAD", "origin/main").returncode:
+                  fail(f"{ref} is not on main: tag a commit of main")
           if on_pypi("metal-pjrt-plugin", pv):
-              fail(f"metal-pjrt-plugin {pv} is already on PyPI: bump the version")
+              msg = f"metal-pjrt-plugin {pv} is already on PyPI: bump the version"
+              if tagged:
+                  fail(msg)
+              print(f"::notice::{msg} (dry run continues)", file=sys.stderr)
+
           build_core = not on_pypi("metal-pjrt-core", cv)
+          if not build_core:
+              # The published core must still be what the sources build: find
+              # the first release tag with this core version.
+              tags = git("tag", "--list", "v*", "--sort=creatordate").stdout.split()
+              released = next(
+                  (t for t in tags
+                   if re.search(rf'^version = "{re.escape(cv)}"$',
+                                git("show", f"{t}:core/pyproject.toml").stdout, re.M)),
+                  None)
+              if released is None:
+                  fail(f"metal-pjrt-core {cv} is on PyPI but no v* tag has it")
+              if git("diff", "--quiet", released, "HEAD", "--", *CORE_SOURCES).returncode:
+                  fail(f"the library's sources changed since metal-pjrt-core {cv} "
+                       f"was released ({released}): bump core/pyproject.toml "
+                       f"and the frontend's pin")
           print(f"plugin_version={pv}")
           print(f"core_version={cv}")
           print(f"build_core={str(build_core).lower()}")
@@ -90,11 +127,11 @@ jobs:
     needs: plan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
       - name: Build metal-pjrt-plugin
         run: scripts/build_wheel.sh --frontend-only
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
           name: wheel-plugin
           path: dist/metal_pjrt_plugin-*.whl
@@ -102,8 +139,8 @@ jobs:
 
   core:
     # Only when metal-pjrt-core's version is new (build_core); otherwise the
-    # job's steps are skipped. The job-level `if` stays the cost guard alone
-    # (tests/test_packaging.py).
+    # steps are skipped and the job succeeds. Skipping the job instead would
+    # make `test`, which needs it, skip too.
     if: ${{ !github.event.repository.private }}
     needs: plan
     runs-on: macos-26
@@ -111,7 +148,7 @@ jobs:
     env:
       BUILD: ${{ needs.plan.outputs.build_core }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
         if: ${{ env.BUILD == 'true' }}
 
       - name: Free disk space
@@ -143,7 +180,7 @@ jobs:
       # entries), so a release never evicts it.
       - name: Restore Bazel caches
         if: ${{ env.BUILD == 'true' }}
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             ${{ env.CACHE_DIR }}/bazel-disk
@@ -158,7 +195,7 @@ jobs:
         timeout-minutes: 300
         run: bazel build --config=ci //metal_pjrt/pjrt:pjrt_c_api_mtl_plugin.dylib
 
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
         if: ${{ env.BUILD == 'true' }}
 
       - name: Build metal-pjrt-core
@@ -171,7 +208,7 @@ jobs:
         if: ${{ always() && env.BUILD == 'true' }}
         run: bazel shutdown || true
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         if: ${{ env.BUILD == 'true' }}
         with:
           name: wheel-core
@@ -185,16 +222,16 @@ jobs:
     needs: [plan, frontend, core]
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e  # v6.8.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: wheel-*
           path: dist
           merge-multiple: true
       - name: Install the wheels
         run: |
-          ls -l dist
+          shasum -a 256 dist/*.whl
           uv venv --python 3.12 "$RUNNER_TEMP/venv"
           uv pip install --python "$RUNNER_TEMP/venv/bin/python" --find-links dist \
             "metal-pjrt-plugin[test]==${{ needs.plan.outputs.plugin_version }}"
@@ -216,7 +253,7 @@ jobs:
     # Tags only; the `pypi` environment (tags v*, a required reviewer) and
     # PyPI's trusted publisher (this workflow and environment) gate it too.
     if: ${{ !github.event.repository.private && startsWith(github.ref, 'refs/tags/v') }}
-    needs: test
+    needs: [plan, test]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -224,15 +261,25 @@ jobs:
     permissions:
       id-token: write                # trusted publishing
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
           pattern: wheel-*
           path: dist
-          merge-multiple: true
       - name: Wheels only, never an sdist
         run: |
-          ls -l dist
-          for f in dist/*; do
+          find dist -type f -exec shasum -a 256 {} +
+          for f in dist/*/*; do
             [[ "$f" == *.whl ]] || { echo "::error::only wheels are published: $f"; exit 1; }
           done
-      - uses: pypa/gh-action-pypi-publish@release/v1
+      # Core first: if the frontend's upload then fails, a rerun finds core
+      # on PyPI and publishes the frontend. The other order could leave a
+      # frontend pinned to a core that isn't there.
+      - name: Publish metal-pjrt-core
+        if: ${{ needs.plan.outputs.build_core == 'true' }}
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          packages-dir: dist/wheel-core/
+      - name: Publish metal-pjrt-plugin
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
+        with:
+          packages-dir: dist/wheel-plugin/
