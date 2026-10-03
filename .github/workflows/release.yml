@@ -10,8 +10,9 @@
 # dry run: everything but the publish job.
 #
 # No GPU here (GitHub's macOS runners have none usable): before approving,
-# download the run's wheels and run the GPU suite on them locally (the
-# test and publish jobs print each wheel's SHA-256 to compare).
+# download the run's wheels and run the GPU suite on them locally, checking
+# their SHA-256 against the test job's (the publish job prints them again
+# as the record of what was uploaded).
 #
 # Third-party actions are pinned by commit (the publish job holds the
 # upload token).
@@ -271,14 +272,17 @@ jobs:
           for f in dist/*/*; do
             [[ "$f" == *.whl ]] || { echo "::error::only wheels are published: $f"; exit 1; }
           done
-      # Core first: if the frontend's upload then fails, a rerun finds core
-      # on PyPI and publishes the frontend. The other order could leave a
-      # frontend pinned to a core that isn't there.
+      # Core first: the other order could leave a frontend pinned to a core
+      # that isn't there. If the frontend's upload fails, "Re-run failed
+      # jobs" reruns this job with the first attempt's plan (build_core still
+      # true), so core's step skips the file it already uploaded; the
+      # frontend's step stays strict.
       - name: Publish metal-pjrt-core
         if: ${{ needs.plan.outputs.build_core == 'true' }}
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: dist/wheel-core/
+          skip-existing: true
       - name: Publish metal-pjrt-plugin
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:

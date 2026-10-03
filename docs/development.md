@@ -160,10 +160,12 @@ which waits for a maintainer's approval.
 5. Before approving, test what will be published: download the run's
    `wheel-*` artifacts (`gh run download <run-id> -p 'wheel-*'`), install
    them in a fresh venv, and run the GPU suite under
-   `scripts/device_lock.py` from outside the checkout. Compare the wheels'
-   SHA-256 with the ones the publish job prints. If core was not rebuilt,
-   the pinned one comes from PyPI.
+   `scripts/device_lock.py` from outside the checkout. Check the wheels'
+   SHA-256 against the test job's log (the publish job prints them again
+   as the record of what was uploaded). If core was not rebuilt, the
+   pinned one comes from PyPI.
 6. Approve. Core is uploaded first, then the frontend (never an sdist).
+   If the frontend's upload fails, "Re-run failed jobs" retries it.
 
 Run the workflow by hand from the Actions tab for a dry run: everything
 but publishing. Do one before the first release.
