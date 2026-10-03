@@ -176,12 +176,12 @@ def test_license_files_in_wheel():
     # the dylib.
     files = ["LICENSE", "THIRD_PARTY_NOTICES"]
     script = (ROOT / "scripts/build_wheel.sh").read_text()
-    for path, stage in (("pyproject.toml", "PLUGIN"),
-                        ("core/pyproject.toml", "CORE")):
+    for path, stage in (("pyproject.toml", "plugin"),
+                        ("core/pyproject.toml", "core")):
         pyproject = _pyproject(path)
         assert pyproject["project"]["license-files"] == files, path
         assert pyproject["build-system"]["requires"] == ["setuptools>=77"], path
-        staged = re.search(rf'^cp (.*) "\${stage}"/$', script, re.M)
+        staged = re.search(rf'^\s*cp (.*) "\${stage}"/$', script, re.M)
         assert staged and set(files) <= set(staged.group(1).split()), stage
     notices = (ROOT / "THIRD_PARTY_NOTICES").read_text()
     for needle in ("Copyright © 2023 Apple Inc.",
@@ -199,8 +199,9 @@ def test_license_files_in_wheel():
 def test_ci_jobs_skip_private_repos():
     # Cost guard (docs/development.md, "Continuous integration"): GitHub bills
     # macOS minutes on private repositories, so every job of every workflow
-    # carries the guard and is skipped while the repository is private.
-    guard = "if: ${{ !github.event.repository.private }}"
+    # carries the guard and is skipped while the repository is private. A job
+    # may add conditions after it with &&.
+    guard = "if: ${{ !github.event.repository.private"
     workflows = sorted((ROOT / ".github/workflows").glob("*.y*ml"))
     assert workflows
     for wf in workflows:
@@ -217,4 +218,5 @@ def test_ci_jobs_skip_private_repos():
                 jobs[current].append(line.strip())
         assert jobs, wf.name
         for name, body in jobs.items():
-            assert guard in body, f"{wf.name}: job {name} lacks `{guard}`"
+            assert any(line == guard + " }}" or line.startswith(guard + " && ")
+                       for line in body), f"{wf.name}: job {name} lacks `{guard} }}}}`"

@@ -135,6 +135,30 @@ Before 0.10, `jax._src` APIs the frontend uses change; a few tests
 compare bit for bit with XLA:CPU, which differs before 0.11.2, and skip
 there (`OLD_CPU_REFERENCE` in `tests/metal_testing.py`).
 
+### Releasing
+
+Releases go to PyPI from `.github/workflows/release.yml` with trusted
+publishing: no tokens are stored anywhere. Both PyPI projects trust that
+workflow in the `pypi` environment, which only `v*` tags can deploy to and
+which waits for a maintainer's approval.
+
+1. Bump `version` in `pyproject.toml`. If the C++ changed (or the XLA
+   pin), also bump `core/pyproject.toml` and the frontend's
+   `metal-pjrt-core==` pin to match.
+2. Run the whole GPU suite locally on that commit (GitHub's runners have
+   no usable GPU, so the workflow runs only host tests).
+3. Merge to `main`, then tag and push: `git tag v<version> && git push
+   origin v<version>`.
+4. The workflow checks that the tag matches the frontend's version, that
+   the version isn't on PyPI yet and that the core pin matches; builds
+   `metal-pjrt-core` only if its version is new (on macOS, from `main`'s
+   Bazel cache); installs the wheels in a fresh venv and runs
+   `pytest -m "not metal"` against them; then waits for approval and
+   publishes the wheels (never an sdist).
+
+Run the workflow by hand from the Actions tab for a dry run: everything
+but publishing.
+
 ### Tests
 
 GPU tests are marked `metal` and refuse to run outside
