@@ -135,8 +135,11 @@ The repository went public on 2026-10-02 with these still open.
   time: a 5000x500 f32 matvec takes ~340-460 us per call on mtl, against
   ~57 us on the CPU, although inside one program each matvec costs
   ~113 us, about the memory bandwidth (the CPU, ~50 us, reads the 10 MB
-  matrix from its caches). First profile where the time goes, then cut
-  what's ours.
+  matrix from its caches). For scale, the same matvec takes ~176 us per
+  call on a Colab T4, of which only ~35-40 us should be the kernel at its
+  bandwidth: XLA:CUDA's fixed cost there is ~135-140 us, PCIe included,
+  against our ~230 us with no bus to cross. First profile where the time
+  goes, then cut what's ours.
 - **The memory cache at warn pressure.** While pressure is at warn, the
   pressure handler releases every cached buffer on each free, so the cache
   is effectively off. Trimming to a fraction instead might help (an
