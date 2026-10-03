@@ -154,7 +154,9 @@ which waits for a maintainer's approval.
    `git tag v<version> && git push origin v<version>`.
 4. The workflow checks the tag (it matches the frontend's version and is
    on `main`), that the version is new on PyPI and that the core pin
-   matches; builds `metal-pjrt-core` only if its version is new; installs
+   matches (`scripts/release_plan.py`, which also runs locally:
+   `REF=refs/tags/v<version> scripts/release_plan.py`); builds
+   `metal-pjrt-core` only if its version is new; installs
    the wheels in a fresh venv and runs `pytest -m "not metal"` against
    them; then waits for approval.
 5. Before approving, test what will be published: download the run's
