@@ -80,6 +80,12 @@ Factorizations above 32x32 run on the CPU (Accelerate) after the GPU
 finishes its queued work, so lots of medium-sized ones are often faster
 kept on the CPU.
 
+## Why does a tiny `jit` call take ~175 us?
+
+That's the round trip to the GPU and back: Metal itself takes most of
+it, as it does for MLX. Put small steps inside one `jit`, and don't wait
+on each call ([`performance.md`](performance.md#dispatch-sorting-solvers-and-memory)).
+
 ## How do I turn on the compilation cache?
 
 JAX's persistent cache is off until you give it a directory. Since most

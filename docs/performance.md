@@ -84,9 +84,26 @@ latency.
 ## Dispatch, sorting, solvers and memory
 
 - **Fixed cost.** A tiny program (`jit(x*2+1)` on 1024 floats) takes
-  ~170-210 us median from dispatch to result. A long chain of tiny kernels
-  costs ~2-4 us of GPU time per dispatch; a 2000-step `scan` with tiny
-  state takes ~8.5 ms.
+  ~170-210 us median from dispatch to result, the same as MLX (182 us).
+  A long chain of tiny kernels costs ~2-4 us of GPU time per dispatch; a
+  2000-step `scan` with tiny state takes ~8.5 ms.
+- **Where a call's time goes** (2026-10-03, medians, back-to-back calls).
+  For `jit(x*2+1)` / a 5000x500 matvec: JAX and XLA's client 2 + 11 us
+  until the command buffer is committed (our encoding ~3.5 us of it), then
+  87 / 94 us until the GPU starts, 6 / 113 us of GPU work, 60 / 108 us
+  until the host sees it finish, 12 / 15 us waiting for Metal's
+  completion (so a late failure is reported, not hidden) and 7 us back to
+  Python: 185 / 348 us. MLX takes 182 / 337 us. A bare Metal program with
+  the same synchronization takes ~120-135 us, so most of the cost is
+  Metal's submission and completion latency; the ~40 us that is ours is
+  spread over pieces of ~12 us or less.
+- **Calls that don't wait.** Issued back to back and waited on once, the
+  same calls take ~25 us each for the tiny program (MLX 2.8 us, CPU 4 us)
+  and ~115 us for the matvec, its bandwidth (MLX 112 us). Each call is
+  its own command buffer, since XLA records an event and a host callback
+  after every execution and both commit. So keep small steps inside one
+  `jit`, and let JAX's asynchronous dispatch run ahead rather than waiting
+  on each call.
 - **Sort** (`jnp.sort`, f32, radix): 20k elements 0.31 ms, 1M 2.6 ms, 16M
   41 ms, 28-66x less time than the bitonic network it replaced. Rows of 64
   or fewer stay on the bitonic network.
@@ -376,6 +393,18 @@ for this model).
 - **Host LAPACK as a stream host task** (2026-09-27): `cholesky` 128
   median 313 -> 299 us with the same p90, and a chain of 100 `cho_solve`
   64 12% slower. The two GPU round trips around the call remain.
+- **Faster round-trip waits** (2026-10-03): spinning on the timeline
+  instead of `waitUntilSignaledValue` saved at most ~5 us, within the
+  ±20 us noise, and once slowed the GPU's start (CPU and GPU share a power
+  budget). Not waiting for Metal's completion after the timeline signal
+  would save ~12 us but could report a failed buffer as done.
+- **Deferring commits while the GPU is busy** (2026-10-03): letting calls
+  share a command buffer while two of ours are in flight took the tiny
+  program from 25 to ~13 us per pipelined call, but the matvec from 115 to
+  ~135 us: with the Python thread blocked on XLA's in-flight limit,
+  nothing commits until the stream's worker gets there. Doing it properly
+  needs a thread that commits when a buffer completes (the completion
+  handler can't take the queue lock); see the roadmap.
 - **Radix sort on short rows** (2026-09-27): one threadgroup per row was
   3-180x slower (1000x32: 942 vs 307 us), so short rows go to the bitonic
   network.

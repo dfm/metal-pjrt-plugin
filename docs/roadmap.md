@@ -127,19 +127,32 @@ The repository went public on 2026-10-02 with these still open.
 
 ## Next
 
-- **The per-call round trip.** A tiny program (`jit(x*2+1)` on 1024
-  floats) takes ~170 us from dispatch to result on mtl against ~4 us on
-  the CPU (2026-10-02), while a chain of tiny kernels costs only ~2-4 us of
-  GPU time each, so most of it is host-side: PJRT dispatch, encoding,
-  commit and the wait. It dominates small programs timed one call at a
-  time: a 5000x500 f32 matvec takes ~340-460 us per call on mtl, against
-  ~57 us on the CPU, although inside one program each matvec costs
-  ~113 us, about the memory bandwidth (the CPU, ~50 us, reads the 10 MB
-  matrix from its caches). For scale, the same matvec takes ~176 us per
-  call on a Colab T4, of which only ~35-40 us should be the kernel at its
-  bandwidth: XLA:CUDA's fixed cost there is ~135-140 us, PCIe included,
-  against our ~230 us with no bus to cross. First profile where the time
-  goes, then cut what's ours.
+- **The per-call round trip** (profiled 2026-10-03). A tiny program takes
+  ~175 us from dispatch to result against ~4 us on the CPU, and 182 us in
+  MLX. A bare Metal program with the same synchronization takes ~120-135
+  us: ~60-90 us from commit until the GPU starts, ~40-60 us from its end
+  until the host sees it. The ~40 us above that is the XLA client's
+  dispatch, our encoding, the wait for Metal's completion and the Python
+  thread's wake-up, none worth more than ~12 us
+  ([`performance.md`](performance.md)). No low-risk change gained more
+  than the noise, so it stays as is. For scale, a 5000x500 f32 matvec
+  takes ~348 us per call here and ~176 us on a Colab T4 (dfm,
+  2026-10-02).
+
+  Calls that don't wait cost ~25 us each for a tiny program (MLX 2.8 us),
+  because each is its own command buffer; a matvec is already at its
+  bandwidth (~115 us). Batching such calls means committing the open
+  buffer only when the GPU runs low on our work, and then something must
+  commit it once the GPU drains, even if no API call arrives (the Python
+  thread may be blocked on XLA's in-flight limit). That can't be the
+  completion handler taking the queue lock: a thread holding that lock
+  can block inside `commandBuffer()` once Metal's limit of outstanding
+  buffers is reached, waiting for completions that queue behind the
+  handler, a deadlock. It would take a committer thread the handler
+  wakes, which becomes part of the progress guarantee (every waiter
+  audited against it). Measured upside: ~13 us per tiny pipelined call;
+  without the committer, the matvec got slower (115 -> ~135 us). Not
+  planned unless many small separate calls matter.
 - **The memory cache at warn pressure.** While pressure is at warn, the
   pressure handler releases every cached buffer on each free, so the cache
   is effectively off. Trimming to a fraction instead might help (an
