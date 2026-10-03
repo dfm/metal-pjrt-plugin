@@ -28,8 +28,8 @@ made.
 - **Versions.** A jax/jaxlib other than the one the plugin was built for
   gets a warning naming the versions to install, and the plugin loads
   anyway.
-- **Launch (2026-09-30).** Source only: no wheel on a release and no PyPI.
-  The deployment target is macOS 26.0. `THIRD_PARTY_NOTICES` carries the
+- **Releases (2026-10-02).** Wheels on PyPI from `release.yml` with
+  trusted publishing (first release 0.0.1, 2026-10-03). The deployment target is macOS 26.0. `THIRD_PARTY_NOTICES` carries the
   license texts of everything linked into the library.
 - **Accuracy.** Match XLA:CPU. Where Metal's math and XLA:CPU disagree,
   follow CPU, including its flushing of subnormal inputs and outputs; a
@@ -85,7 +85,9 @@ made.
   [`performance.md`](performance.md#measured-and-dropped)), and purgeable
   cached buffers (the 2 s idle release does the job).
 
-## Before the repository goes public
+## Open from the pre-release checklist
+
+The repository went public on 2026-10-02 with these still open.
 
 - **A clean-clone build** with empty Bazel caches on the release commit,
   then the full suites against that library, since a source build is the
@@ -104,9 +106,6 @@ made.
   performance number comes from one M3 on macOS 26.2; other GPUs or macOS
   versions (a different Metal compiler and math library) may need
   retuned tolerances.
-- **CI** (`.github/workflows/ci.yml`) has never run: its jobs skip private
-  repositories, so the first run is the one after publication, a cold
-  build on a hosted runner.
 
 ## Untested
 
@@ -128,6 +127,16 @@ made.
 
 ## Next
 
+- **The per-call round trip.** A tiny program (`jit(x*2+1)` on 1024
+  floats) takes ~170 us from dispatch to result on mtl against ~4 us on
+  the CPU (2026-10-02), while a chain of tiny kernels costs only ~2-4 us of
+  GPU time each, so most of it is host-side: PJRT dispatch, encoding,
+  commit and the wait. It dominates small programs timed one call at a
+  time: a 5000x500 f32 matvec takes ~340-460 us per call on mtl, against
+  ~57 us on the CPU, although inside one program each matvec costs
+  ~113 us, about the memory bandwidth (the CPU, ~50 us, reads the 10 MB
+  matrix from its caches). First profile where the time goes, then cut
+  what's ours.
 - **The memory cache at warn pressure.** While pressure is at warn, the
   pressure handler releases every cached buffer on each free, so the cache
   is effectively off. Trimming to a fraction instead might help (an
