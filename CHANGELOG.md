@@ -1,10 +1,15 @@
 # Changelog
 
-Nothing is released yet (version 0.0.1, no PyPI release). This file keeps
-the renames and dated decisions, so the reference docs in `docs/` can
-describe the present only. Dates in parentheses are when a change was made.
+This file keeps the renames and dated decisions, so the reference docs in
+`docs/` can describe the present only. Dates in parentheses are when a
+change was made.
 
 ## Unreleased
+
+## 0.0.1 (2026-10-03)
+
+The first release: `metal-pjrt-plugin` 0.0.1 and `metal-pjrt-core` 0.0.1
+on PyPI. Everything below led up to it.
 
 ### 2026-10-02
 
