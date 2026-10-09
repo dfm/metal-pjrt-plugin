@@ -29,7 +29,7 @@ lists the messages and what to do about each.
 | Feature | Works? | Details | Tests (`tests/`) |
 |---|---|---|---|
 | `jit`, `grad`, `vmap`, `checkpoint`, control flow (`scan`, `while_loop`, `cond`, `switch`) | yes | | `test_grad.py`, `test_lax.py`, `test_smoke.py` |
-| Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | Metal has only 32-bit atomics, so a scatter-add/min/max on 64-bit elements, or any scatter on complex64, is refused unless `unique_indices=True` | `test_lax.py`, `test_scan.py` |
+| Elementwise math, reductions, broadcasting, gather, scatter, cumulative ops | yes | Metal has only 32-bit atomics, so a scatter-add/min/max on 64-bit elements, or a complex64 scatter that does more than add or overwrite (e.g. multiply), is refused unless `unique_indices=True` | `test_lax.py`, `test_scan.py` |
 | `jax.random` | yes | | `test_lax.py` |
 | Matmul, f32 / f16 / bf16 | yes | f32 on Metal Performance Shaders; f16/bf16 on native "steel" kernels (ported from MLX) with bias and activation fused into the store. Few-row shapes (small-batch decode) have their own kernel | `test_steel_gemm.py`, `test_epilogue.py` |
 | Matmul, int8 x int8 -> int32 and mixed types (e.g. f16 x f16 -> bf16) | no | refused at compile time. Small integer dots that XLA keeps as loops do run | `test_lax.py` ("dot int32") |
@@ -46,7 +46,7 @@ lists the messages and what to do about each.
 | Several devices (`pmap`, sharding) | no | the plugin exposes one device | |
 | f32, f16, bf16, integer and bool types | yes | | `test_lax.py` |
 | float64 | no | Apple GPUs have no double type. Transfers of f64 arrays work, and so do copies inside `jit` (reshapes, contiguous slices). f64 arithmetic and other f64 data movement are refused at compile time; a strided f64 slice fails in the kernel translator instead. With `jax_enable_x64` on, keep f64 work on the CPU | `test_lax.py` |
-| complex64 | yes | arithmetic, math, data movement, reductions, matmul, sort, `cholesky`, `triangular_solve`, `qr` and transfers. Not supported: scatter without unique indices (above), and so LU (`solve`, `inv`, `det`), whose pivoting is such a scatter. complex128 is refused like float64 | `test_lax.py` |
+| complex64 | yes | arithmetic, math, data movement, reductions, matmul, sort, scatter-add and overwrite (and so LU: `solve`, `inv`, `det`; sparse arrays), `cholesky`, `triangular_solve`, `qr` and transfers. Not supported: other scatter combiners without unique indices (above). complex128 is refused like float64 | `test_lax.py`, `test_linalg.py` |
 | int4 / uint4 | no | fail in the kernel translator | `test_lax.py` (expected failure) |
 | Buffer donation (`donate_argnums`) | yes | the donated input's memory becomes the output, as on CUDA; JAX's own donation tests in `api_test.py` pass | `test_donation.py` |
 | JAX's persistent compilation cache | yes, opt-in | see the [FAQ](faq.md#how-do-i-turn-on-the-compilation-cache) | `test_callbacks.py`, `test_compilation_cache.py` |
@@ -83,13 +83,13 @@ opcode".
 | reduce-window, cumulative ops | elemental; minor-dim cumsum/cumprod/cummax/cummin -> `metal$scan` | OK | `tests/test_scan.py` |
 | softmax / log-softmax | XLA's reduction + loop fusions | OK | `tests/test_scan.py` |
 | gather, dynamic-slice, dynamic-update-slice | elemental / in-place DUS | OK | verified |
-| scatter | scatter emitter, with atomics | OK | 64-bit combining and complex scatters need `unique_indices` (refused by `CheckPostGemmRewriter`). A 64-bit overwrite with repeated indices is a plain store, as on CUDA, with no torn values under stress (`test_scatter_64bit_overwrite_with_repeated_indices`) |
+| scatter | scatter emitter, with atomics | OK | 64-bit combining scatters need `unique_indices` (refused by `CheckPostGemmRewriter`). A 64-bit overwrite with repeated indices is a plain store, as on CUDA, with no torn values under stress (`test_scatter_64bit_overwrite_with_repeated_indices`). complex64: an add becomes two f32 scatter-adds (`MetalComplexScatterSplitter`); an overwrite is one 8-byte store where XLA would compare-and-swap (`metal_kernel_compiler.cc`), also not torn (`test_complex_scatter_overwrite_with_repeated_indices`); other combiners need `unique_indices` |
 | select-and-scatter | non-overlapping unpadded max-pool gradients -> `metal$pool_max_bwd` (one pass, no atomics); otherwise XLA's expander | OK | bit-identical to CPU, including ties and NaN ("max-pool grad" cases); `METAL_PJRT_DISABLE_REWRITES=pool` turns it off |
 | stochastic-convert, logistic, batch-norm | HLO expanders | OK | |
 | convolution | 1-D/2-D f32/f16/bf16, ungrouped, >= 4 Mflop -> `metal$conv` (`metal_pjrt/conv`); otherwise the loop emitter. complex64 becomes three real convolutions | OK | `tests/test_conv.py`, `conv:conv_test`; `METAL_PJRT_DISABLE_REWRITES=conv` sends all to the loop emitter |
 | dot, f32/f16/bf16 | BlasLt over MPS or steel; 2..8 rows with K >= 512 (a multiple of 4) on MLX's wide gemv. XLA's DotMerger is off: it would copy shared weights on every call | OK | `tests/test_steel_gemm.py`, `blas:gemv_test`. Refused at compile time: groups over INT32_MAX elements (`CheckGemmGroupsFitInt32`), f16/bf16 past steel's 32-bit index limits, mixed types. Open decision: an int8 GEMM ([`roadmap.md`](roadmap.md)) |
 | dot, f64, s8 x s8 -> s32 | BlasLt | NO | refused at compile time, naming the op. Other integer dots (s32, s8 -> s8) stay loops and run |
-| dot, c64 | `MetalComplexDotExpander`: four real f32 dots (not Gauss's three, for parity with cuBLAS and CPU), also for the dots of XLA's complex cholesky / triangular_solve / qr expanders | OK | 0.6-4.3 ulps normwise, as CPU. complex LU is refused (its pivoting scatter needs 64-bit atomics) |
+| dot, c64 | `MetalComplexDotExpander`: four real f32 dots (not Gauss's three, for parity with cuBLAS and CPU), also for the dots of XLA's complex cholesky / triangular_solve / qr expanders | OK | 0.6-4.3 ulps normwise, as CPU |
 | dot with fused epilogue (bias, relu, gelu, matrix bias) | fused by the rewriter on OneAPI | OK | applied in steel's store; f32 is MPS plus one epilogue kernel. `tests/test_epilogue.py` |
 | ragged-dot, scaled-dot | rewriters to dense dots | OK / fp8 untested | |
 | dot precision algorithms `TF32_*`, `F16_F16_F16`, `BF16_BF16_BF16` | XLA's algorithm check | NO | `BF16_BF16_F32` runs |

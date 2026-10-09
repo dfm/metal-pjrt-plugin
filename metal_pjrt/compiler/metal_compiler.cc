@@ -32,6 +32,7 @@
 #include "metal_pjrt/runtime/constants_container.h"
 #include "metal_pjrt/stream_executor/metal_platform_id.h"
 #include "metal_pjrt/compiler/passes/complex_dot.h"
+#include "metal_pjrt/compiler/passes/complex_scatter.h"
 #include "metal_pjrt/compiler/passes/dot_upcast.h"
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
 #include "metal_pjrt/compiler/passes/conv_rewriter.h"
@@ -186,6 +187,9 @@ absl::Status MetalCompiler::OptimizeHloConvolutionCanonicalization(
   // Complex dots XLA made after RunHloPasses' expansion: CholeskyExpander,
   // QrExpander, RaggedDotRewriter and TriangularSolveExpander above.
   pipeline.AddPass<MetalComplexDotExpander>();
+  // complex64 scatter-adds with possibly repeated indices: two f32 ones
+  // (Metal has no 64-bit atomics for XLA's complex compare-and-swap).
+  pipeline.AddPass<MetalComplexScatterSplitter>();
   pipeline.AddPass<MetalSortExpander>();
   pipeline.AddPass<CallInliner>();
   pipeline.AddPass<TupleSimplifier>();

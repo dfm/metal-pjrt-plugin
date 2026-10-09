@@ -519,6 +519,62 @@ def test_scatter_64bit_overwrite_with_repeated_indices():
     assert out.stdout.split() == ["0", "0"], out.stdout
 
 
+def test_complex_scatter_add_with_repeated_indices():
+    # MetalComplexScatterSplitter: two f32 scatter-adds. Small integers, so
+    # every sum is exact whatever order colliding updates land in.
+    rng = np.random.default_rng(0)
+    c = lambda *s: (rng.integers(-4, 5, s) + 1j * rng.integers(-4, 5, s)).astype(np.complex64)
+    z, u = c(16, 3), c(4096, 3)
+    idx = rng.integers(0, 16, 4096).astype(np.int32)
+    want = z.copy()
+    np.add.at(want, idx, u)
+    dev = metal_testing.metal()
+    got = jax.jit(lambda z, i, u: z.at[i].add(u))(*jax.device_put((z, idx, u), dev))
+    np.testing.assert_array_equal(np.asarray(got), want)
+    # Sparse densification is such a scatter-add (BCOO with duplicates).
+    from jax.experimental import sparse
+    data, rows = c(64), rng.integers(0, 8, (64, 2)).astype(np.int32)
+    want = np.zeros((8, 8), np.complex64)
+    np.add.at(want, (rows[:, 0], rows[:, 1]), data)
+    got = jax.jit(lambda d, r: sparse.BCOO((d, r), shape=(8, 8)).todense())(
+        *jax.device_put((data, rows), dev))
+    np.testing.assert_array_equal(np.asarray(got), want)
+
+
+def test_complex_scatter_overwrite_with_repeated_indices():
+    # A complex64 overwrite is one 8-byte store per element in the kernel
+    # lowering (where XLA would compare-and-swap). Like the 64-bit integer
+    # overwrite above it must not tear: 2^20 updates k + k*1j into 1 or 64
+    # slots leave every slot holding one of its updates, whole.
+    f = jax.jit(lambda x, i, u: x.at[i].set(u))
+    dev = metal_testing.metal()
+    for slots in (1, 64):
+        for r in range(3):
+            rng = np.random.default_rng(r)
+            idx = rng.integers(0, slots, 1 << 20).astype(np.int32)
+            k = (rng.permutation(1 << 20) + 1).astype(np.float32)
+            upd = (k + 1j * k).astype(np.complex64)
+            y = np.asarray(f(*jax.device_put((np.zeros(slots, np.complex64), idx, upd), dev)))
+            assert (y.real == y.imag).all(), (slots, r, y[y.real != y.imag][:4])
+            for s in range(slots):
+                assert y[s] in set(upd[idx == s].tolist()), (slots, r, s, y[s])
+
+
+def test_complex_scatter_multiply_is_refused():
+    # Not componentwise and not an overwrite: still needs a 64-bit
+    # compare-and-swap when indices repeat, so it is refused by name.
+    z = np.ones(4, np.complex64)
+    idx = np.array([0, 1, 1], np.int32)
+    u = np.full(3, 1 + 1j, np.complex64)
+    f = jax.jit(lambda z, i, u: z.at[i].multiply(u))
+    with pytest.raises(jax.errors.JaxRuntimeError, match="scatter of complex values"):
+        f(*jax.device_put((z, idx, u), metal_testing.metal()))
+    np.testing.assert_array_equal(  # unique_indices=True runs
+        np.asarray(jax.jit(lambda z, i, u: z.at[i].multiply(u, unique_indices=True))(
+            *jax.device_put((z, np.array([0, 1, 2], np.int32), u), metal_testing.metal()))),
+        np.array([1 + 1j, 1 + 1j, 1 + 1j, 1], np.complex64))
+
+
 # Max-pool gradients (select-and-scatter, GE select, add scatter) over
 # non-overlapping VALID windows go to metal$pool_max_bwd; the child runs them
 # with that rewrite on or off (METAL_PJRT_DISABLE_REWRITES=pool: XLA's

@@ -40,6 +40,10 @@ def mat(*s):
   return rng.standard_normal(s).astype(np.float32)
 
 
+def cmat(*s):
+  return (mat(*s) + 1j * mat(*s)).astype(np.complex64)
+
+
 def eigh_check(a):
   w, v = jnp.linalg.eigh(a)
   resid = jnp.abs(a @ v - v * w).max() / jnp.abs(w).max()
@@ -145,6 +149,14 @@ CHECKS = {
     "grad slogdet": (lambda a: jax.grad(lambda x: jnp.linalg.slogdet(x + 5 * jnp.eye(12))[1])(a), mat(12, 12)),
     "fft2 * 2 / ifftn (complex buffers)": (lambda x: jnp.abs(jnp.fft.ifftn(jnp.fft.fft2(x) * 2)), mat(8, 12)),
     "fft grad (complex buffers)": (lambda x: jax.grad(lambda v: jnp.sum(jnp.abs(jnp.fft.rfft(v)) ** 2))(x), mat(32)),
+    # complex64 LU takes JAX's generic path; its pivoting row swaps are an
+    # overwrite scatter with possibly repeated indices (one 8-byte store
+    # per element in the kernel lowering). Last, so the cases above keep
+    # their inputs.
+    "complex lu 12": (lu_check, cmat(12, 12)),
+    "complex solve 12": (lambda a, b: jnp.linalg.solve(a + 4 * jnp.eye(12), b), cmat(12, 12), cmat(12, 3)),
+    "complex inv 12": (lambda a: jnp.linalg.inv(a + 4 * jnp.eye(12)), cmat(12, 12)),
+    "complex slogdet 12": (lambda a: jnp.linalg.slogdet(a + 4 * jnp.eye(12)), cmat(12, 12)),
 }
 
 
@@ -203,6 +215,10 @@ ULPS = {
     'grad eigh': 34, 'grad slogdet': 2.7,
     'fft2 * 2 / ifftn (complex buffers)': 4,
     'fft grad (complex buffers)': 2.6,
+    # JAX's generic complex LU and XLA's triangular-solve expansion (not
+    # LAPACK). CPU float32 measures 6.2 / 3.2 / 4.9 / 3.4 on these inputs.
+    'complex lu 12': 14, 'complex solve 12': 21, 'complex inv 12': 9,
+    'complex slogdet 12': 10,
 }
 
 

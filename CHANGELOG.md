@@ -22,6 +22,13 @@ change was made.
   `PJRT_Device_MemoryStats` from its runtime; no XLA patch. The LLM
   example reports peak device memory with it, and the CIFAR example's
   memory profile no longer uses the `metal_pjrt_memory_stats` test hook.
+- complex64 scatters with repeated indices that add or overwrite work
+  (they were refused: XLA combines complex elements with a 64-bit
+  compare-and-swap). An add becomes two f32 scatter-adds
+  (`MetalComplexScatterSplitter`); an overwrite becomes one 8-byte store
+  in the kernel lowering. So complex LU and everything on it (`solve`,
+  `inv`, `det`, `slogdet`, `expm`) and complex sparse arrays work. Other
+  combiners (multiply) are still refused without `unique_indices`.
 
 ## 0.0.1 (2026-10-03)
 

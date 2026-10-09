@@ -366,14 +366,12 @@ def test_small_conv_grads_stay_on_the_loop_emitter(name):
     assert "batch_group_count" not in text, text
 
 
-def test_grad_through_complex_indexing_is_refused():
-    # The gradient of z[idx] is a scatter-add on complex64, which needs
-    # 64-bit atomics when indices repeat; autodiff cannot promise unique
-    # indices, so this is refused by name rather than miscompiled. If it
-    # starts passing, the refusal was lifted: replace this with a value check.
+def test_grad_through_complex_indexing():
+    # The gradient of z[idx] is a complex64 scatter-add with repeated
+    # indices (IDX), split into two f32 scatter-adds by
+    # MetalComplexScatterSplitter.
     z = (R(10) + 1j * R(10, seed=1)).astype(np.complex64)
     fn = jax.jit(jax.grad(lambda z: jnp.sum(jnp.abs(z[IDX]) ** 2)))
-    with jax.default_device(metal_testing.metal()):
-        with pytest.raises(jax.errors.JaxRuntimeError,
-                           match="scatter of complex values"):
-            fn(jax.device_put(z))
+    want = np.asarray(fn(jax.device_put(z, metal_testing.cpu())))
+    got = np.asarray(fn(jax.device_put(z, metal_testing.metal())))
+    np.testing.assert_allclose(got, want, rtol=1e-6, atol=1e-6)

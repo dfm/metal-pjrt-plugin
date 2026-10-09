@@ -12,19 +12,59 @@
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ExecutionEngine/Orc/ThreadSafeModule.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "metal_pjrt/codegen/msl_emitter.h"
 #include "metal_pjrt/codegen/msl_llvm_bridge.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/IR/Block.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OwningOpRef.h"
 #include "mlir/Pass/PassManager.h"
 #include "xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.h"
+#include "xla/codegen/emitters/ir/xla_ops.h"
 #include "xla/codegen/emitters/transforms/pass_pipelines.h"
 #include "xla/tsl/framework/mlir/status_scoped_diagnostic_handler.h"
 
 namespace metal_pjrt::codegen {
+namespace {
+
+// XLA writes an overwrite scatter whose indices may repeat as an
+// xla.atomic_rmw whose body only yields the update. LowerTensors stores
+// such an update directly for f32 and integer elements, but takes a 64-bit
+// compare-and-swap loop for complex<f32> (atomic_rmw_utils.cc, TODO
+// b/336367145), which Metal does not have. An overwrite reads nothing, so
+// make it a plain tensor.insert, as for a scatter with unique indices: one
+// aligned 8-byte float2 store. Colliding updates then never mix halves,
+// as XLA assumes for its plain stores of 64-bit integer overwrites (Metal
+// does not document it; tests/test_lax.py checks it under stress). The
+// last writer wins, as on CUDA.
+void RewriteComplexOverwrites(mlir::ModuleOp module) {
+  llvm::SmallVector<xla::AtomicRMWOp> overwrites;
+  module.walk([&](xla::AtomicRMWOp op) {
+    auto type = mlir::cast<mlir::RankedTensorType>(op.getInput().getType());
+    mlir::Block* body = op.getBody();
+    if (mlir::isa<mlir::ComplexType>(type.getElementType()) &&
+        body->getOperations().size() == 1 &&
+        body->getTerminator()->getOperand(0).getParentBlock() != body) {
+      overwrites.push_back(op);
+    }
+  });
+  for (xla::AtomicRMWOp op : overwrites) {
+    mlir::OpBuilder b(op);
+    mlir::Value insert = mlir::tensor::InsertOp::create(
+        b, op.getLoc(), op.getBody()->getTerminator()->getOperand(0),
+        op.getInput(), op.getIndices());
+    op.getResult().replaceAllUsesWith(insert);
+    op.erase();
+  }
+}
+
+}  // namespace
 
 absl::StatusOr<xla::LlvmKernelSource> CompileMlirToMsl(
     const stream_executor::DeviceDescription& device,
@@ -36,6 +76,8 @@ absl::StatusOr<xla::LlvmKernelSource> CompileMlirToMsl(
   // Before any pass folds the thread ids away.
   const int threads_per_threadgroup =
       ThreadsPerThreadgroupFromRanges(module.get(), entry_function_name);
+
+  RewriteComplexOverwrites(module.get());
 
   // Same pipeline as xla::gpu::CompileMlirToLlvm, minus PDL, with the lowering
   // stopping before SCFToControlFlow.
