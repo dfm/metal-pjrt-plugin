@@ -129,10 +129,11 @@ def test_short_row_argsort_sweep():
     # orders, stable and not, as one row (the case that broke), batched rows
     # and a sort axis that is not minor. A stable descending argsort of
     # 8-bit keys in a padded row (jnp's rev / sort / rev form) came out
-    # wrong when the pad was a kPad: Metal miscompiled its if-guarded load
-    # once inlined into a substage. Padding now repeats each row's last
-    # element, so cases where that element is the extreme value (it must
-    # still sort before the padding) or NaN are included.
+    # wrong when the first network step read its padded, reversed input
+    # through two inlined copies of one helper (self and partner), which
+    # Metal miscompiled. Padded slots must sort after every real
+    # element whatever their value, so rows whose last element is the
+    # extreme value or NaN are included.
     rng = np.random.default_rng(0)
     for n in (1, 2, 3, 5, 6, 7, 8, 9, 17):
         for dt in (np.bool_, np.int8, np.int32, np.float32):
