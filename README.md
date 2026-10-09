@@ -95,6 +95,9 @@ maps the plugin's error messages to what to do.
 
 ## Examples
 
+Each example has a README with results and what it took to make it fast.
+Run their commands from the root of this repository.
+
 - [`examples/llm`](examples/llm): Qwen3 inference in pure JAX, in bf16,
   int8 and int4.
 - [`examples/lora`](examples/lora): LoRA fine-tuning of Qwen3.
