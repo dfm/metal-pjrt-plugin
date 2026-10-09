@@ -1,0 +1,28 @@
+# Known failures of JAX's tests/memories_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: host offloading (compute_on("device_host"))
+ComputeOffload::test_compute_host_loop
+ComputeOffload::test_compute_offload_with_donation
+ComputeOffload::test_compute_on_2d
+ComputeOffload::test_compute_on_basic
+ComputeOffload::test_compute_on_basic_inline
+ComputeOffload::test_compute_on_cache_miss
+ComputeOffload::test_compute_on_grad
+ComputeOffload::test_compute_on_reduction
+ComputeOffload::test_compute_on_remat
+ComputeOffload::test_copy_offload0
+ComputeOffload::test_copy_offload1
+ComputeOffload::test_eager_compute
+ComputeOffload::test_host_offload_in_custom_vjp
+ComputeOffload::test_indexing_on_host
+ComputeOffload::test_offload_take_host
+ComputeOffload::test_scan_offload
+StreamAnnotationTest::test_compute_on_out_mem_space
+StreamAnnotationTest::test_compute_on_out_mem_space_tuple
+
+# UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
+# fp8 scaled matmuls), in kernels or host callbacks
+ComputeOffload::test_int4_host_compute

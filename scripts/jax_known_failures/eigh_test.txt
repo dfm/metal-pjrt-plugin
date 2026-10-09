@@ -1,0 +1,15 @@
+# Known failures of JAX's tests/eigh_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: eigh/svd algorithm choices only CPU/CUDA implement (mtl takes
+# JAX's TPU rules for them)
+LaxLinalgEighTest::testEigh0
+LaxLinalgEighTest::testEigh1
+
+# UNSUPPORTED: tridiagonal_solve(perturb_singular=True)
+LaxLinalgEighTest::testRandomUniform0
+LaxLinalgEighTest::testRandomUniform1
+LaxLinalgEighTest::testToeplitz0
+LaxLinalgEighTest::testToeplitz1

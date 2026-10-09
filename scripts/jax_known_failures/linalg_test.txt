@@ -1,0 +1,56 @@
+# Known failures of JAX's tests/linalg_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: tridiagonal_solve(perturb_singular=True)
+LaxLinalgTest::test_tridiagonal_solve_2x2_singular0
+LaxLinalgTest::test_tridiagonal_solve_endpoints0
+LaxLinalgTest::test_tridiagonal_solve_grad1
+LaxLinalgTest::test_tridiagonal_solve_zero_matrix0
+
+# WRONG ANSWER, known: tridiagonal_solve needing pivoting gives NaN (JAX's
+# non-pivoting generic rule); PR #7 (LAPACK gtsv) fixes it, then trim these
+LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting0
+LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting1
+LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting_last_rows0
+LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting_last_rows1
+
+# UNSUPPORTED: no mtl lowering for eig, tridiagonal or geqp3 (none on TPU
+# either; _lowerings.py)
+NumpyLinalgTest::testEig0
+NumpyLinalgTest::testEig1
+NumpyLinalgTest::testEig2
+NumpyLinalgTest::testEigBatching0
+NumpyLinalgTest::testEigBatching1
+NumpyLinalgTest::testEigBatching2
+NumpyLinalgTest::testEigGradComplexInputs0
+NumpyLinalgTest::testEigGradComplexInputs1
+NumpyLinalgTest::testEigGradComplexInputs2
+NumpyLinalgTest::testEigGradRealInputs0
+NumpyLinalgTest::testEigGradRealInputs1
+NumpyLinalgTest::testEigGradRealInputs2
+NumpyLinalgTest::testEigHandlesNanInputs0
+NumpyLinalgTest::testEigHandlesNanInputs1
+NumpyLinalgTest::testEigHandlesNanInputs2
+NumpyLinalgTest::testEigvals0
+NumpyLinalgTest::testEigvals1
+NumpyLinalgTest::testEigvals2
+NumpyLinalgTest::testEigvalsGrad0
+NumpyLinalgTest::testEigvalsGrad1
+NumpyLinalgTest::testEigvalsGrad2
+NumpyLinalgTest::testEigvalsInf
+ScipyLinalgTest::testQrMultiply0
+ScipyLinalgTest::testQrMultiply2
+ScipyLinalgTest::testScipyQrModes0
+ScipyLinalgTest::testScipyQrModes2
+ScipyLinalgTest::testTridiagonal0
+ScipyLinalgTest::testTridiagonal1
+ScipyLinalgTest::testTridiagonal2
+ScipyLinalgTest::test_solve_sylvester_broadcast2
+
+# UNSUPPORTED: eigh/svd algorithm choices only CPU/CUDA implement (mtl takes
+# JAX's TPU rules for them)
+NumpyLinalgTest::testSVD1
+NumpyLinalgTest::testSVD11
+NumpyLinalgTest::testSVD6

@@ -68,6 +68,21 @@ jobs:
           scripts/install_dev.sh --no-build
           .venv/bin/python -m pytest tests -m "not metal"
 
+      # The wheels of this commit, for nightly.yml (JAX nightly) and for
+      # GPU testing on a Mac (scripts/jax_grid.sh --from-ci): main pushes
+      # and manual runs, which can be of any branch. About 60 MB.
+      - name: Build the wheels
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        run: scripts/build_wheel.sh --no-build
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+        with:
+          name: wheels
+          path: dist/*.whl
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Prune the disk cache
         if: ${{ always() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') }}
         # The disk and repository caches together must stay under the 10 GB

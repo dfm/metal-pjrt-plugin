@@ -1,12 +1,12 @@
 # Known failures of JAX's tests/lax_test.py on mtl, as run by
 # scripts/run_jax_tests.sh. One test id per line (without the file), '#'
-# comments. Baseline: 996 pass, 13 fail, 63 skipped.
+# comments. Baseline (jax 0.11.2, "gpu" label): 986 pass, 10 fail, 76 skipped.
 #
 # Test ids depend on the generated-case count and x64, so
 # scripts/jax_tests_plugin.py only compares against this list when the run
 # matches the config line below. Matching is by id only: a known failure
 # that starts failing for a different reason stays hidden.
-# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
 
 # UNSUPPORTED: int4 converts (MSL emitter: unsupported non-trivial
 # unrealized_conversion_cast)
@@ -24,9 +24,6 @@ LaxTest::test_int4_binary_ops1
 # UNSUPPORTED: dot precision algorithms (ALG_DOT_TF32*, F16_F16_F16,
 # BF16_BF16_BF16)
 LaxTest::testDotAlgorithm13
-LaxTest::testDotAlgorithm14
-LaxTest::testDotAlgorithm6
-LaxTest::testDotAlgorithm8
 
 # UNSUPPORTED: dce_sink FFI handler not registered for METAL
 LaxTest::test_dce_sink_prevents_xla_dce

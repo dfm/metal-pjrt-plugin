@@ -1,0 +1,22 @@
+# Known failures of JAX's tests/python_callback_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
+# fp8 scaled matmuls), in kernels or host callbacks
+PythonCallbackTest::test_non_default_stride_subbyte_results0
+PythonCallbackTest::test_non_default_stride_subbyte_results1
+PythonCallbackTest::test_non_default_stride_subbyte_results2
+PythonCallbackTest::test_non_default_stride_subbyte_results3
+PythonCallbackTest::test_non_default_stride_subbyte_results4
+PythonCallbackTest::test_subbyte_operands0
+PythonCallbackTest::test_subbyte_operands1
+PythonCallbackTest::test_subbyte_operands2
+PythonCallbackTest::test_subbyte_operands3
+PythonCallbackTest::test_subbyte_operands4
+PythonCallbackTest::test_subbyte_results0
+PythonCallbackTest::test_subbyte_results1
+PythonCallbackTest::test_subbyte_results2
+PythonCallbackTest::test_subbyte_results3
+PythonCallbackTest::test_subbyte_results4
