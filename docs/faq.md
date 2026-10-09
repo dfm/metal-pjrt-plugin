@@ -8,7 +8,7 @@ answer. If you get a wrong answer, that's a bug, so please report it.
 | Feature | Works? | Notes |
 |---|---|---|
 | `jit`, `grad`, `vmap`, `checkpoint`, `scan`, `while_loop`, `cond` | yes | |
-| Elementwise math, reductions, gather, scatter, cumulative ops | yes | some 64-bit and complex scatters need `unique_indices=True` |
+| Elementwise math, reductions, gather, scatter, cumulative ops | yes | some 64-bit scatters, and complex ones that multiply, need `unique_indices=True` |
 | `jax.random` | yes | |
 | Matmul in float32, float16, bfloat16 | yes | |
 | Matmul on int8 or with mixed types (e.g. f16 x f16 -> bf16) | no | |
@@ -20,7 +20,7 @@ answer. If you get a wrong answer, that's a bug, so please report it.
 | `pure_callback`, `io_callback`, `jax.debug.print` | yes | synchronous, so slow in hot loops |
 | Buffer donation (`donate_argnums`) | yes | |
 | JAX's persistent compilation cache | yes | opt-in, see [below](#how-do-i-turn-on-the-compilation-cache) |
-| float32, float16, bfloat16, integers, bool, complex64 | yes | complex LU, and so complex `solve`, `inv` and `det`, isn't supported |
+| float32, float16, bfloat16, integers, bool, complex64 | yes | |
 | float64, complex128 | no | Apple GPUs have no double type; keep float64 work on the CPU |
 | int4 / uint4 | no | |
 | Several devices (`pmap`, sharding) | no | one GPU only |

@@ -124,10 +124,10 @@ Messages starting with `Metal:` name your operation and source line:
 - `Metal: scatter with a combiner on 64-bit elements needs 64-bit atomics,
   which Metal does not have: ...` Pass `unique_indices=True` if the
   indices are unique, or use 32-bit elements.
-- `Metal: scatter of complex values needs 64-bit atomics (XLA
-  compare-and-swaps complex elements, even to overwrite), ...` Pass
-  `unique_indices=True`, or scatter the real and imaginary parts
-  separately.
+- `Metal: a scatter of complex values with this combiner needs 64-bit
+  atomics, ...` (a combiner other than adding or overwriting with the
+  update, such as `.at[].multiply`). Pass `unique_indices=True` if the
+  indices are unique.
 - `Metal: the HLO fft op is not supported (XLA's FFT runs on cuFFT only);
   ...` The program was lowered for another platform. Lower it for mtl.
 - `Metal: XLA fused a bias of ... elements into a matmul with ... output

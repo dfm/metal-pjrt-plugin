@@ -40,6 +40,10 @@ def mat(*s):
   return rng.standard_normal(s).astype(np.float32)
 
 
+def cmat(*s):
+  return (mat(*s) + 1j * mat(*s)).astype(np.complex64)
+
+
 def eigh_check(a):
   w, v = jnp.linalg.eigh(a)
   resid = jnp.abs(a @ v - v * w).max() / jnp.abs(w).max()
@@ -145,6 +149,14 @@ CHECKS = {
     "grad slogdet": (lambda a: jax.grad(lambda x: jnp.linalg.slogdet(x + 5 * jnp.eye(12))[1])(a), mat(12, 12)),
     "fft2 * 2 / ifftn (complex buffers)": (lambda x: jnp.abs(jnp.fft.ifftn(jnp.fft.fft2(x) * 2)), mat(8, 12)),
     "fft grad (complex buffers)": (lambda x: jax.grad(lambda v: jnp.sum(jnp.abs(jnp.fft.rfft(v)) ** 2))(x), mat(32)),
+    # complex64 LU takes JAX's generic path; its pivoting row swaps are an
+    # overwrite scatter with possibly repeated indices (one 8-byte store
+    # per element in the kernel lowering). Last, so the cases above keep
+    # their inputs.
+    "complex lu 12": (lu_check, cmat(12, 12)),
+    "complex solve 12": (lambda a, b: jnp.linalg.solve(a + 4 * jnp.eye(12), b), cmat(12, 12), cmat(12, 3)),
+    "complex inv 12": (lambda a: jnp.linalg.inv(a + 4 * jnp.eye(12)), cmat(12, 12)),
+    "complex slogdet 12": (lambda a: jnp.linalg.slogdet(a + 4 * jnp.eye(12)), cmat(12, 12)),
 }
 
 
@@ -203,6 +215,10 @@ ULPS = {
     'grad eigh': 34, 'grad slogdet': 2.7,
     'fft2 * 2 / ifftn (complex buffers)': 4,
     'fft grad (complex buffers)': 2.6,
+    # JAX's generic complex LU and XLA's triangular-solve expansion (not
+    # LAPACK). CPU float32 measures 6.2 / 3.2 / 4.9 / 3.4 on these inputs.
+    'complex lu 12': 14, 'complex solve 12': 21, 'complex inv 12': 9,
+    'complex slogdet 12': 10,
 }
 
 
@@ -382,3 +398,30 @@ def test_eigh_workspace_above_2_24():
   out = run_python(BIG_EIGH_CHILD, env)
   assert out.returncode == 0 and "err:" in out.stdout, (out.returncode, out.stdout, out.stderr[-2000:])
   assert float(out.stdout.split("err:")[1]) < 1e-5, out.stdout
+
+
+def test_complex_lu_pivoting_overwrites_rows():
+  # complex64 LU takes JAX's generic path, which swaps rows with a complex64
+  # scatter whose indices may repeat (a step whose pivot is its own row
+  # writes that row twice). That overwrite used to be refused (XLA would
+  # compare-and-swap 64 bits); the plugin now stores it as one float2.
+  # Small rows 0, 3, 6, 9 force swaps; the others leave steps that do not.
+  from metal_testing import cpu, metal, run_on
+  a = cmat(12, 12)
+  a[::3] *= 1e-3
+  f = jax.jit(jax.lax.linalg.lu)
+  text = f.lower(jax.device_put(a, metal())).compile().as_text()
+  overwrites = [l for l in text.splitlines()
+                if re.search(r"= c64\[[0-9,]+\]\S* scatter\(", l)
+                and "unique_indices=true" not in l]
+  assert overwrites, "no complex64 scatter with repeatable indices: " + text
+  lu, piv, perm = run_on(metal(), f, a)
+  _, cpu_piv, cpu_perm = run_on(cpu(), f, a)
+  np.testing.assert_array_equal(perm, cpu_perm)
+  np.testing.assert_array_equal(piv, cpu_piv)
+  steps = np.arange(12)
+  assert (piv == steps).any() and (piv != steps).any(), piv
+  l = np.tril(lu, -1) + np.eye(12)
+  u = np.triu(lu)
+  err = np.abs(l @ u - a[perm]).max() / np.abs(a).max()
+  assert err < 1e-5, err

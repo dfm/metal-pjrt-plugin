@@ -212,15 +212,16 @@ bool MovesF64InAKernel(const HloInstruction& instr) {
 }
 
 // A scatter whose combiner does more than overwrite needs atomics on the
-// element type (read-modify-write when indices collide). XLA overwrites
-// complex elements with a compare-and-swap loop too (no atomic store of a
-// complex, atomic_rmw_utils.cc), a 64-bit one for complex64.
+// element type (read-modify-write when indices collide). For complex64,
+// MetalComplexScatterSplitter has made adds into two f32 scatters, and the
+// kernel lowering stores a single-operand overwrite with one 8-byte store
+// (metal_kernel_compiler.cc) where XLA would compare-and-swap; any other
+// complex combiner would need a 64-bit compare-and-swap.
 bool NeedsWideAtomics(const HloInstruction& instr) {
   if (instr.opcode() != HloOpcode::kScatter ||
       Cast<HloScatterInstruction>(&instr)->unique_indices()) {
     return false;
   }
-  if (TouchesType(instr, {C64, C128})) return true;
   const HloInstruction* root = instr.to_apply()->root_instruction();
   const int n = instr.operand_count() / 2;  // operands, indices, updates
   bool overwrite = root->opcode() == HloOpcode::kParameter &&
@@ -231,6 +232,9 @@ bool NeedsWideAtomics(const HloInstruction& instr) {
       overwrite &= e->opcode() == HloOpcode::kParameter &&
                    e->parameter_number() >= n;
     }
+  }
+  if (TouchesType(instr, {C64, C128})) {
+    return !overwrite || instr.operand_count() != 3;
   }
   if (overwrite) return false;
   bool wide = false;
@@ -310,10 +314,10 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
       if (NeedsWideAtomics(*instr)) {
         if (TouchesType(*instr, {C64, C128})) {
           return absl::UnimplementedError(absl::StrCat(
-              "Metal: scatter of complex values needs 64-bit atomics (XLA "
-              "compare-and-swaps complex elements, even to overwrite), which "
-              "Metal does not have; pass unique_indices=True if the indices "
-              "do not repeat: ",
+              "Metal: a scatter of complex values with this combiner needs "
+              "64-bit atomics, which Metal does not have; pass "
+              "unique_indices=True if the indices do not repeat (scatters "
+              "that add the update or overwrite with it do not need it): ",
               DescribeOp(*instr)));
         }
         return absl::UnimplementedError(absl::StrCat(

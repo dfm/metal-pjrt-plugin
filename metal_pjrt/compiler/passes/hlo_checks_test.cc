@@ -345,8 +345,7 @@ TEST_F(MetalHloChecksTest, ComplexScatterNeedsAtomics) {
   constexpr char kScatter[] = R"(
 HloModule m
 comb {
-  a = c64[] parameter(0)
-  ROOT b = c64[] parameter(1)
+  $BODY
 }
 ENTRY e {
   x = c64[4] parameter(0)
@@ -354,15 +353,37 @@ ENTRY e {
   u = c64[3] parameter(2)
   ROOT s = c64[4] scatter(x, i, u), update_window_dims={}, inserted_window_dims={0}, scatter_dims_to_operand_dims={0}, index_vector_dim=1, $UNIQUEto_apply=comb
 })";
-  // Even an overwrite: XLA compare-and-swaps complex elements.
-  absl::Status s = Check(absl::StrReplaceAll(kScatter, {{"$UNIQUE", ""}}));
+  constexpr char kOverwrite[] =
+      "a = c64[] parameter(0)\n  ROOT b = c64[] parameter(1)";
+  constexpr char kMultiply[] =
+      "a = c64[] parameter(0)\n  b = c64[] parameter(1)\n"
+      "  ROOT r = c64[] multiply(a, b)";
+  auto hlo = [&](absl::string_view body, bool unique) {
+    return absl::StrReplaceAll(
+        kScatter,
+        {{"$BODY", body}, {"$UNIQUE", unique ? "unique_indices=true, " : ""}});
+  };
+  // An overwrite is one 8-byte store in the kernel lowering (an add was
+  // split into f32 scatters before this check runs).
+  EXPECT_TRUE(Check(hlo(kOverwrite, false)).ok());
+  absl::Status s = Check(hlo(kMultiply, false));
   EXPECT_EQ(s.code(), absl::StatusCode::kUnimplemented);
   EXPECT_NE(s.message().find("scatter of complex values"), std::string::npos)
       << s;
-  EXPECT_EQ(s.message().find("combiner"), std::string::npos) << s;
-  EXPECT_TRUE(Check(absl::StrReplaceAll(kScatter,
-                                        {{"$UNIQUE", "unique_indices=true, "}}))
-                  .ok());
+  EXPECT_TRUE(Check(hlo(kMultiply, true)).ok());
+  // MetalComplexScatterSplitter splits add(x, y) before this check, so an
+  // add here (add(b, b) is not split) and the no-op combiner (returns the
+  // current value) are refused like any other combiner.
+  for (const char* body :
+       {"a = c64[] parameter(0)\n  b = c64[] parameter(1)\n"
+        "  ROOT r = c64[] add(b, b)",
+        "ROOT a = c64[] parameter(0)\n  b = c64[] parameter(1)"}) {
+    absl::Status r = Check(hlo(body, false));
+    EXPECT_EQ(r.code(), absl::StatusCode::kUnimplemented) << body;
+    EXPECT_NE(r.message().find("scatter of complex values"),
+              std::string::npos)
+        << r;
+  }
 }
 
 // MetalComplexDotExpander runs before GemmRewriter, so a complex64 dot here
