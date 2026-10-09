@@ -6,7 +6,7 @@
 # frontend ABI version (metal_pjrt/pjrt/metal_pjrt_api.cc) at startup.
 [project]
 name = "metal-pjrt-core"
-version = "0.0.1"
+version = "0.0.2"
 description = "The compiled PJRT library of metal-pjrt-plugin (JAX on Apple GPUs); install metal-pjrt-plugin"
 readme = "README.md"
 requires-python = ">=3.12"

@@ -7,6 +7,7 @@
 ComputeOffload::test_compute_host_loop
 ComputeOffload::test_compute_offload_with_donation
 ComputeOffload::test_compute_on_2d
+ComputeOffload::test_compute_on_aot
 ComputeOffload::test_compute_on_basic
 ComputeOffload::test_compute_on_basic_inline
 ComputeOffload::test_compute_on_cache_miss
@@ -20,6 +21,8 @@ ComputeOffload::test_host_offload_in_custom_vjp
 ComputeOffload::test_indexing_on_host
 ComputeOffload::test_offload_take_host
 ComputeOffload::test_scan_offload
+StreamAnnotationTest::test_compute_on2_out_mem_space
+StreamAnnotationTest::test_compute_on2_out_mem_space_tuple
 StreamAnnotationTest::test_compute_on_out_mem_space
 StreamAnnotationTest::test_compute_on_out_mem_space_tuple
 

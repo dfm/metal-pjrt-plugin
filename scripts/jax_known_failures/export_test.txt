@@ -21,3 +21,6 @@ JaxExportTest::test_memory_space_from_out_shardings
 # UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
 # fp8 scaled matmuls), in kernels or host callbacks
 JaxExportTest::test_poly_numeric_dtypes_dtype_float4_e2m1fn
+
+# UNSUPPORTED: host offloading (compute_on("device_host"))
+JaxExportTest::test_compute_on_host

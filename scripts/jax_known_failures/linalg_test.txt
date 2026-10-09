@@ -7,14 +7,9 @@
 LaxLinalgTest::test_tridiagonal_solve_2x2_singular0
 LaxLinalgTest::test_tridiagonal_solve_endpoints0
 LaxLinalgTest::test_tridiagonal_solve_grad1
-LaxLinalgTest::test_tridiagonal_solve_zero_matrix0
-
-# WRONG ANSWER, known: tridiagonal_solve needing pivoting gives NaN (JAX's
-# non-pivoting generic rule); PR #7 (LAPACK gtsv) fixes it, then trim these
 LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting0
-LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting1
 LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting_last_rows0
-LaxLinalgTest::test_tridiagonal_solve_requiring_pivoting_last_rows1
+LaxLinalgTest::test_tridiagonal_solve_zero_matrix0
 
 # UNSUPPORTED: no mtl lowering for eig, tridiagonal or geqp3 (none on TPU
 # either; _lowerings.py)
@@ -53,4 +48,11 @@ ScipyLinalgTest::test_solve_sylvester_broadcast2
 # JAX's TPU rules for them)
 NumpyLinalgTest::testSVD1
 NumpyLinalgTest::testSVD11
+NumpyLinalgTest::testSVD12
+NumpyLinalgTest::testSVD2
 NumpyLinalgTest::testSVD6
+NumpyLinalgTest::testSVD7
+
+# LABEL, jax 0.10.x: on "gpu" expects cuSOLVER's refusal of float16 QR;
+# mtl computes it (XLA's QrExpander)
+NumpyLinalgTest::testQrInvalidDtypeCPU

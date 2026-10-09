@@ -6,6 +6,18 @@ change was made.
 
 ## Unreleased
 
+## 0.0.2 (2026-10-09)
+
+`metal-pjrt-plugin` 0.0.2 and `metal-pjrt-core` 0.0.2. Silent wrong
+answers fixed (8-bit bit counts, gathers with clamped indices, short-row
+argsort feeding a gather, `tridiagonal_solve` needing pivoting), complex64
+scatters with repeated indices, and `jax.Device.memory_stats()`. Tested on
+the GPU with jax 0.10.0, 0.10.2, 0.11.2 and nightly (2026-10-09): this
+package's suite and 44 of JAX's test files, whose remaining failures are
+listed in `scripts/jax_known_failures/`. Known: nested `dynamic_slice` with
+out-of-range starts gives XLA's pre-fix answer, as XLA:CPU does in jax 0.11.2
+(docs/accuracy.md).
+
 ### 2026-10-09
 
 - float32 `lax.linalg.tridiagonal_solve` runs Accelerate's `sgtsv`
