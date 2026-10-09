@@ -413,6 +413,20 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   for (int64_t step = 0; step < pre_steps; ++step) {
     TF_ASSIGN_OR_RETURN(s, EmitStep(outer, sort->to_apply(), num_operands, n,
                                     pow2, s));
+    // Keep each substage its own fusion. Otherwise XLA fuses the whole
+    // network into every consumer (a gather by the argsort, say), which
+    // then recomputes each earlier substage per element, twice per level
+    // (select(swap, gather(prev, f ^ j), prev)): 2^steps calls, about
+    // 2M per element at 64. The Metal compiler also miscompiles that
+    // nested form (v[:, jnp.argsort(s, descending=True)] came out wrong).
+    // XLA:GPU removes optimization barriers only after scheduling.
+    HloInstruction* tuple =
+        comp->AddInstruction(HloInstruction::CreateTuple(s.arrays));
+    HloInstruction* barrier = comp->AddInstruction(HloInstruction::CreateUnary(
+        tuple->shape(), HloOpcode::kOptimizationBarrier, tuple));
+    for (int64_t i = 0; i < static_cast<int64_t>(s.arrays.size()); ++i) {
+      TF_ASSIGN_OR_RETURN(s.arrays[i], MakeGetTupleElementHlo(barrier, i));
+    }
   }
   std::vector<HloInstruction*> sorted(s.arrays.begin(),
                                       s.arrays.begin() + num_operands);
