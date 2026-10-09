@@ -1,0 +1,18 @@
+# Known failures of JAX's tests/api_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: host offloading (compute_on("device_host"))
+APITest::test_cache_miss_explanations_compute_on
+
+# UNSUPPORTED: float64 / complex128 (Apple GPUs have no double precision)
+APITest::test_dtype_warning0
+APITest::test_dtype_warning1
+AutodidaxTest::test_autodidax_smoketest
+
+# LABEL: the test reads the "gpu" label as CUDA/ROCm (a CUDA backend, GPU
+# platform id or export platform)
+JitTest::test_device_to_device_copy_between_backends
+JitTest::test_explicit_backend
+JitTest::test_mismatched_nested_backends

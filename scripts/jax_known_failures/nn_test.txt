@@ -1,0 +1,28 @@
+# Known failures of JAX's tests/nn_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: float64 / complex128 (Apple GPUs have no double precision)
+NNFunctionsTest::testDotProductAttentionFloat64MaskDebugInfs
+
+# UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
+# fp8 scaled matmuls), in kernels or host callbacks
+NNFunctionsTest::testScaledDotGeneral0
+NNFunctionsTest::testScaledDotGeneral1
+NNFunctionsTest::testScaledDotGeneral2
+NNFunctionsTest::testScaledDotGeneral3
+NNFunctionsTest::testScaledDotGeneral4
+NNFunctionsTest::testScaledDotGeneral5
+NNFunctionsTest::testScaledMatmul0
+NNFunctionsTest::testScaledMatmul1
+NNFunctionsTest::testScaledMatmul10
+NNFunctionsTest::testScaledMatmul11
+NNFunctionsTest::testScaledMatmul2
+NNFunctionsTest::testScaledMatmul3
+NNFunctionsTest::testScaledMatmul4
+NNFunctionsTest::testScaledMatmul5
+NNFunctionsTest::testScaledMatmul6
+NNFunctionsTest::testScaledMatmul7
+NNFunctionsTest::testScaledMatmul8
+NNFunctionsTest::testScaledMatmul9

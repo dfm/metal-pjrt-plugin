@@ -1,0 +1,23 @@
+# Known failures of JAX's tests/export_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# LABEL: the test reads the "gpu" label as CUDA/ROCm (a CUDA backend, GPU
+# platform id or export platform)
+JaxExportTest::test_default_export_platform
+JaxExportTest::test_error_wrong_platform_cpu
+JaxExportTest::test_error_wrong_platform_cuda
+JaxExportTest::test_error_wrong_platform_rocm
+JaxExportTest::test_error_wrong_platform_tpu
+JaxExportTest::test_memory_space_from_arg
+JaxExportTest::test_multi_platform_mlir_lower_fun_with_platform_specific_primitives
+JaxExportTest::test_multi_platform_nested_inside_single_platform_export
+
+# JAX: fails on the CPU backend too at this version
+JaxExportTest::test_dict_non_string_key
+JaxExportTest::test_memory_space_from_out_shardings
+
+# UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
+# fp8 scaled matmuls), in kernels or host callbacks
+JaxExportTest::test_poly_numeric_dtypes_dtype_float4_e2m1fn

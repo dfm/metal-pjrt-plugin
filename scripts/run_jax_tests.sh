@@ -14,18 +14,29 @@
 # scripts/jax_tests_plugin.py refuses to run unless the default backend is
 # mtl and compares failures with scripts/jax_known_failures/<file>.txt:
 # the exit status is non-zero only for new failures.
+# Tests are labelled as run on "gpu" (JAX_TESTS_DUT=gpu, the default; set it
+# empty for JAX's unlabelled behaviour, where many tests skip on mtl).
+# PYTHON picks the interpreter (default .venv/bin/python; scripts/jax_grid.py
+# uses one venv per JAX version) and JAX_TESTS_DIR the JAX checkout, whose
+# tests must be those of the installed jax (jax.version._git_hash).
 # Usage: scripts/run_jax_tests.sh tests/lax_test.py [pytest args]
 set -uo pipefail
-cd "$(dirname "$0")/.."
+R=$(cd "$(dirname "$0")/.." && pwd)
 T=${JAX_TESTS_DIR:-$HOME/.cache/metal-pjrt/jax-tests}
+PY=${PYTHON:-$R/.venv/bin/python}
 FILE=${1:?test file relative to the jax repo, e.g. tests/lax_test.py}; shift
-scripts/gpu_health.py >&2  # warn about resets / quarantined kernels
-if ! .venv/bin/python -c "import absl, hypothesis" 2>/dev/null; then
-  echo "run_jax_tests.sh: JAX's tests need absl-py and hypothesis in .venv:" >&2
-  echo "  uv pip install --python .venv/bin/python absl-py hypothesis" >&2
+"$R/scripts/gpu_health.py" >&2  # warn about resets / quarantined kernels
+if ! "$PY" -c "import absl, hypothesis" 2>/dev/null; then
+  echo "run_jax_tests.sh: JAX's tests need absl-py and hypothesis in $PY:" >&2
+  echo "  uv pip install --python $PY absl-py hypothesis" >&2
   exit 2
 fi
-exec scripts/device_lock.py -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
-  JAX_ENABLE_COMPILATION_CACHE=false PYTHONPATH="$PWD/scripts${PYTHONPATH:+:$PYTHONPATH}" \
-  .venv/bin/python -m pytest "$T/$FILE" -p jax_tests_plugin -p no:cacheprovider -p no:xdist \
+# From the JAX checkout: `python -m pytest` puts the working directory first
+# on sys.path, and in this repository that would be the source frontend
+# instead of an installed wheel under test.
+cd "$T"
+exec "$R/scripts/device_lock.py" -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
+  JAX_ENABLE_COMPILATION_CACHE=false JAX_TESTS_DUT=${JAX_TESTS_DUT-gpu} \
+  PYTHONPATH="$R/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+  "$PY" -m pytest "$FILE" -p jax_tests_plugin -p no:cacheprovider -p no:xdist \
   -p no:timeout -o faulthandler_timeout=${PYTEST_TIMEOUT:-180} -q --tb=no -rN "$@"

@@ -1,0 +1,95 @@
+# Copyright 2026 The metal-pjrt-plugin Authors
+# SPDX-License-Identifier: Apache-2.0
+#
+# The latest main wheels against JAX nightly, without a GPU
+# (docs/development.md, "Continuous integration"). The frontend uses private
+# jax._src APIs and has no upper bound on jax, so this is what says a new
+# JAX breaks it and a release is needed. It tests the wheels CI built for
+# main's latest green push (ci.yml's `wheels` artifact; no Bazel build here),
+# installed as users get them, with that commit's tests: the host-only
+# suite, including tests/test_lowering.py (programs lowered for "mtl"
+# without a Metal device) and tests/test_jax_private_api.py.
+#
+# A scheduled run's failure is emailed to whoever last changed the schedule.
+#
+# COST GUARD: as in ci.yml, every job runs only on a public repository.
+name: JAX nightly
+
+on:
+  schedule:
+    - cron: "17 7 * * *"         # daily; JAX's nightlies are built overnight (US)
+  workflow_dispatch:
+    inputs:
+      jax:
+        description: "jax/jaxlib to test: 'nightly', or a version such as 0.11.2"
+        default: nightly
+
+permissions:
+  contents: read
+  actions: read                  # to find and download ci.yml's wheels
+
+jobs:
+  host-tests:
+    if: ${{ !github.event.repository.private }}
+    runs-on: macos-26            # the core wheel is macOS 26 arm64 only
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      JAX: ${{ inputs.jax || 'nightly' }}
+    steps:
+      - name: Latest main wheels
+        id: wheels
+        run: |
+          run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml \
+                  --branch main --event push --status success --limit 1 \
+                  --json databaseId,headSha --jq '.[0] | "\(.databaseId) \(.headSha)"')
+          [[ -n "$run" ]] || { echo "::error::no successful ci.yml push run on main"; exit 1; }
+          read -r id sha <<< "$run"
+          gh run download "$id" --repo "$GITHUB_REPOSITORY" --name wheels --dir "$RUNNER_TEMP/dist" || {
+            echo "::error::ci.yml run $id has no wheels artifact (expired, or from before ci.yml uploaded them): re-run ci.yml on main"
+            exit 1
+          }
+          ls -l "$RUNNER_TEMP/dist"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "run=$id" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ steps.wheels.outputs.sha }}   # the tests of the wheels' commit
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          enable-cache: false
+
+      - name: Install the wheels and JAX
+        run: |
+          V="$RUNNER_TEMP/venv/bin/python"
+          uv venv --python 3.12 "$RUNNER_TEMP/venv"
+          # The files themselves: by name, an unbumped version could resolve
+          # to the released wheel on PyPI.
+          uv pip install --python "$V" "$RUNNER_TEMP"/dist/metal_pjrt_core-*.whl \
+            "$(ls "$RUNNER_TEMP"/dist/metal_pjrt_plugin-*.whl)[test]"
+          if [[ "$JAX" == nightly ]]; then
+            # JAX's nightly index (docs.jax.dev, "Installation"); everything
+            # else still comes from PyPI.
+            uv pip install --python "$V" --prerelease=allow \
+              --upgrade-package jax --upgrade-package jaxlib \
+              --extra-index-url https://us-python.pkg.dev/ml-oss-artifacts-published/jax/simple/ \
+              jax jaxlib
+          else
+            uv pip install --python "$V" "jax==$JAX" "jaxlib==$JAX"
+          fi
+          "$V" -c "import jax, jaxlib; print('jax', jax.__version__, 'jaxlib', jaxlib.__version__)"
+          {
+            echo "Wheels: ci.yml run ${{ steps.wheels.outputs.run }} (main @ ${{ steps.wheels.outputs.sha }})"
+            echo
+            uv pip list --python "$V" | grep -i -E '^(metal|jax)'
+          } | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Host-only tests
+        # From outside the checkout, so that metal_pjrt_plugin is the
+        # installed wheel, not the source tree.
+        working-directory: ${{ runner.temp }}
+        run: |
+          "$RUNNER_TEMP/venv/bin/python" "$GITHUB_WORKSPACE/scripts/check_installed_wheels.py"
+          "$RUNNER_TEMP/venv/bin/python" -m pytest "$GITHUB_WORKSPACE/tests" -m "not metal" -rs

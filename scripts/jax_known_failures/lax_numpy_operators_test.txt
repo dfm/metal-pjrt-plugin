@@ -1,0 +1,8 @@
+# Known failures of JAX's tests/lax_numpy_operators_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# WRONG ANSWER, documented: Metal flushes float32 subnormals converted to
+# bfloat16, so spacing of bfloat16 subnormals is 0 (docs/accuracy.md)
+JaxNumpyOperatorTests::testSpacingSubnormals0

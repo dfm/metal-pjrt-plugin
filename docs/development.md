@@ -58,7 +58,10 @@ scripts/device_lock.py -- .venv/bin/python -m pytest tests/test_smoke.py
 scripts/device_lock.py -- .venv/bin/python -m pytest tests        # Python test suite (~1 min)
 bazel test //metal_pjrt/...                                    # host-only C++ tests
 scripts/device_lock.py -- bazel test //metal_pjrt:device_tests # C++ device tests, one at a time
+.venv/bin/python -m pytest tests -m "not metal"               # host-only tests, incl. lowering for mtl without a GPU (test_lowering.py)
 scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests (a path in JAX's checkout, below), serialized; fails on failures not in scripts/jax_known_failures/
+scripts/jax_grid.py                                            # fast: this suite + a few JAX test files, in .venv (Testing across JAX versions)
+scripts/jax_grid.py --tier slow --wheels ci                    # release: every JAX version x every JAX test file, CI's wheels
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
 scripts/build_wheel.sh                                         # dist/: metal_pjrt_core-*-py3-none-macosx_26_0_arm64.whl (the dylib), metal_pjrt_plugin-*-py3-none-any.whl
 ```
@@ -67,12 +70,85 @@ scripts/build_wheel.sh                                         # dist/: metal_pj
 both packages editable (the frontend with its `test` extra), and links the
 dylib from `bazel-bin` into `core/metal_pjrt_core/`. Tests and scripts set `JAX_PLATFORMS=mtl,cpu` themselves.
 
-`run_jax_tests.sh` needs JAX's tests at the pinned version, once:
+`run_jax_tests.sh` needs JAX's tests at the installed version, once
+(`jax_grid.py` fetches them itself):
 
 ```
 git clone --depth 1 --branch jax-v0.11.2 https://github.com/jax-ml/jax ~/.cache/metal-pjrt/jax-tests
 uv pip install --python .venv/bin/python absl-py hypothesis   # or .venv/bin/python -m pip install
 ```
+
+It labels the device under test `gpu` (below) and runs pytest from the
+JAX checkout. `PYTHON` picks another interpreter and `JAX_TESTS_DIR`
+another checkout.
+
+### Testing across JAX versions
+
+The frontend uses private `jax._src` APIs and accepts any JAX from
+`_JAX_MIN` up, so every release is tested against a grid of JAX versions,
+on the GPU, with `scripts/jax_grid.py`:
+
+- **fast** (the development loop, a few minutes): this repository's suite
+  and six JAX test files (`lax_test`, `lax_numpy_operators_test`,
+  `lax_numpy_reducers_test`, `linalg_test`, `fft_test`,
+  `python_callback_test`), in `.venv` as it is (`--jax dev`).
+- **slow** (before a release, about half an hour per JAX version): the
+  same suite and 44 JAX test files, for `_JAX_MIN`, the newest patch
+  release of each later minor version, and the nightly. Add
+  `--wheels ci` to test the wheels `ci.yml` built for `main`'s latest
+  push, or `--wheels ci:<run-id>` for a given `ci.yml` run (a manual run
+  of `ci.yml` builds wheels for any branch) or the release run waiting for
+  approval (Releasing, step 5). The default builds wheels from `bazel-bin`.
+
+Each version gets a venv (`~/.cache/metal-pjrt/grid/venv-<version>`) with
+the wheels installed as users get them, and JAX's tests at the commit the
+installed `jax` was built from (`jax.version._git_hash` for a nightly, the
+release tag otherwise). `--jax 0.11.2 nightly` and `--files linalg_test`
+narrow a run. Logs and a summary table go to
+`~/.cache/metal-pjrt/grid/<time>/`; the exit status is non-zero if this
+suite fails or a JAX file has a failure not in its manifest. Every GPU
+step holds the device lock and waits while a Bazel build or test runs.
+
+JAX's known failures on `mtl` are listed per file in
+`scripts/jax_known_failures/`, grouped by reason (mostly refusals of what
+the plugin doesn't support: float64, sub-byte types, multiple devices).
+`--update-manifests` rewrites them from a run: what still fails keeps its
+comment, what passes is dropped, and new failures are added under
+`# TODO review:` with their error. Review that diff before committing it;
+a manifest is a list of what may fail. A manifest only applies to runs
+with the settings on its `# config:` line (generated cases, x64, label),
+since test ids depend on them.
+
+What running JAX's tests on `mtl` taught us (2026-10-08 sweep):
+
+- **Label the device `gpu`.** Many JAX tests skip unless the device under
+  test is cpu, gpu or tpu (`python_callback_test` skipped all of its 182).
+  `jax_test_dut` is a `jax.config` flag defined in `jax._src.test_util`,
+  so `JAX_TEST_DUT=...` in the environment does nothing;
+  `scripts/jax_tests_plugin.py` sets it (`JAX_TESTS_DUT=gpu`, the
+  default). Then `mtl` matches the tags `{gpu, oneapi}`, and gpu-gated
+  tests run.
+- **Run with `-s`.** With the `gpu` label, `debugging_primitives_test` and
+  the effect-counting tests fail only under pytest's output capture (on
+  the CPU backend too). `jax_grid.py` passes `-s`.
+- **One process, no timeouts.** No xdist (two GPU processes over-commit
+  memory) and no pytest-timeout, which ends the process with GPU work in
+  flight. `run_jax_tests.sh` sets this up.
+- **The tests must match the installed `jax`.** JAX's tests use
+  `jax._src.test_util` internals that change between versions.
+- **Test ids are deterministic** for a given `JAX_NUM_GENERATED_CASES`
+  (3); a case's parameters are in
+  `getattr(TestClass, name).__x_params_repr__`.
+- **Different random inputs look like nondeterminism.** Before calling a
+  failure a race, rerun the same input a few hundred times.
+- **A wrong answer from a fused kernel may be Metal's.** Two of the
+  sweep's silent wrong answers were Metal compiler miscompiles, one was
+  ours. To tell them apart, compile the dumped kernel
+  (`--xla_dump_to`) as C++ for the CPU (loads through `memcpy`, every
+  access bounds-checked against its buffer) under UBSan and ASan, and
+  compare with the GPU. When reducing such a kernel, keep each thread's
+  store address and check bounds on every access: reductions that drop
+  them produce fake repros (a write race, an out-of-bounds read).
 
 ### Build times and caches
 
@@ -147,7 +223,8 @@ which waits for a maintainer's approval.
    `third_party/`, `MODULE.bazel*`, `.bazelrc`, `.bazelversion`), also
    bump `core/pyproject.toml` and the frontend's `metal-pjrt-core==` pin;
    the workflow refuses to reuse a published core whose sources changed.
-2. Run the GPU suite locally as a pre-check, and merge to `main`.
+2. Run `scripts/jax_grid.py --tier slow` locally (or with `--wheels ci`
+   after merging) as a pre-check, and merge to `main`.
 3. Wait for CI on that commit to finish (it saves the Bazel cache the
    release's core build reads; tagging earlier can mean a cold, five-hour
    build), then tag that commit of `main` and push the tag:
@@ -159,12 +236,12 @@ which waits for a maintainer's approval.
    `metal-pjrt-core` only if its version is new; installs
    the wheels in a fresh venv and runs `pytest -m "not metal"` against
    them; then waits for approval.
-5. Before approving, test what will be published: download the run's
-   `wheel-*` artifacts (`gh run download <run-id> -p 'wheel-*'`), install
-   them in a fresh venv, and run the GPU suite under
-   `scripts/device_lock.py` from outside the checkout. Check the wheels'
-   SHA-256 against the test job's log (the publish job prints them again
-   as the record of what was uploaded). If core was not rebuilt, the
+5. Before approving, test what will be published:
+   `scripts/jax_grid.py --tier slow --wheels ci:<run-id>` downloads the
+   run's `wheel-*` artifacts and runs the grid on them (at least
+   `--tier fast --jax <newest> nightly` if time is short). Check the
+   wheels' SHA-256 against the test job's log (the publish job prints them
+   again as the record of what was uploaded). If core was not rebuilt, the
    pinned one comes from PyPI.
 6. Approve. Core is uploaded first, then the frontend (never an sdist).
    If the frontend's upload fails, "Re-run failed jobs" retries it.
@@ -227,9 +304,19 @@ stays local, under `scripts/device_lock.py`.
 - **No remote cache.** JAX's public cache had no entries for this build
   (2026-09-30: 0 hits of 189 LLVM and 325 XLA actions): it's written from
   Linux only, and these macOS actions use Xcode's clang.
-- **Not in CI yet:** testing the frontend against JAX nightly. The wheels
-  are built and tested by the release workflow
-  ([Releasing](#releasing)).
+- **Wheels.** `main` pushes and manual runs also build both wheels and
+  upload them as the `wheels` artifact (30 days), for the nightly job and
+  for GPU testing on a Mac (`scripts/jax_grid.py --wheels ci`).
+- **JAX nightly.** `.github/workflows/nightly.yml` runs daily (and by
+  hand, with any JAX version): it installs the wheels of `main`'s latest
+  green push with JAX nightly and runs that commit's host-only tests from
+  outside the checkout, including `tests/test_lowering.py`, which lowers
+  programs for `mtl` without a Metal device (JAX_PLATFORMS=cpu in a child
+  process) and checks the frontend's rules (FFT, LAPACK, complex
+  convolutions, callbacks, donation) and that registering them logged no
+  warning, and `tests/test_jax_private_api.py`. A failure means a new JAX
+  breaks the frontend and a release is due. A scheduled run's failure is
+  emailed to whoever last changed its schedule.
 
 ## Environment variables
 
@@ -254,6 +341,9 @@ with a warning.
 | `METAL_TEST_REPORT_ULPS` | script | test | boolean, default off: print every measured error (with `pytest -s`) | `tests/metal_testing.py` |
 | `METAL_TEST_REPORT_ERRORS` | script | test | on when set to anything (even `0`), default off: print the measured FFT errors | `metal_pjrt/fft/fft_test.cc` |
 | `JAX_TESTS_DIR` | script | dev | JAX checkout with the tests, default `~/.cache/metal-pjrt/jax-tests` | `scripts/run_jax_tests.sh` |
+| `PYTHON` | script | dev | interpreter for JAX's tests, default `.venv/bin/python` | `scripts/run_jax_tests.sh` |
+| `JAX_TESTS_DUT` | script | dev | device label for JAX's tests (`jax_test_dut`), default `gpu`; empty for none | `scripts/run_jax_tests.sh`, `scripts/jax_tests_plugin.py` |
+| `JAX_TESTS_UPDATE_MANIFEST` | script | dev | boolean (`1`), default off: rewrite the known-failures manifests from the run | `scripts/jax_tests_plugin.py` |
 | `BENCH_BACKENDS`, `BENCH_ROUNDS`, `BENCH_ONLY`, `BENCH_ALLOW_DEGRADED`, `BENCH_BAZEL_SHUTDOWN` | script | dev | arms (default `metal metal-gpu cpu mlx`), interleaved rounds (3), case substrings, run despite a GPU reset since boot (boolean), `bazel shutdown` first (boolean, off) | `bench/run_all.sh` |
 | `METAL_PJRT_DEVICE_LOCK_HELD` | script | internal | set by `scripts/device_lock.py` for its command: the holder's pid, which makes the lock re-entrant for descendants | `scripts/device_lock.py`, `tests/conftest.py` |
 | `BENCH_OUT`, `BENCH_LABEL` | script | internal | set by `bench/run_all.sh`: the JSONL file and the backend label of the rows | `bench/*.py` |

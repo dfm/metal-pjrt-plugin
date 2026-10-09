@@ -1,0 +1,29 @@
+# Known failures of JAX's tests/sparse_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# LABEL: expects cuSPARSE's efficiency warning on "gpu"
+cuSparseTest::test_coo_fromdense2
+cuSparseTest::test_coo_matmat2
+cuSparseTest::test_coo_matvec2
+cuSparseTest::test_coo_sorted_indices_gpu_lowerings
+cuSparseTest::test_coo_todense2
+cuSparseTest::test_csr_fromdense2
+cuSparseTest::test_csr_matmat2
+cuSparseTest::test_csr_matvec2
+cuSparseTest::test_csr_todense2
+
+# UNSUPPORTED: cuSPARSE-only sparse lowerings (no mtl rule)
+cuSparseTest::test_coo_spmm0
+cuSparseTest::test_coo_spmm1
+cuSparseTest::test_coo_spmm2
+cuSparseTest::test_coo_spmv0
+cuSparseTest::test_coo_spmv1
+cuSparseTest::test_coo_spmv2
+cuSparseTest::test_csr_spmm0
+cuSparseTest::test_csr_spmm1
+cuSparseTest::test_csr_spmm2
+cuSparseTest::test_csr_spmv0
+cuSparseTest::test_csr_spmv1
+cuSparseTest::test_csr_spmv2

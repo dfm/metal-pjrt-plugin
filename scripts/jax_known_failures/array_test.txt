@@ -1,0 +1,8 @@
+# Known failures of JAX's tests/array_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: sub-byte and 8-bit float types (int4/int2/uint4, float4_e2m1fn,
+# fp8 scaled matmuls), in kernels or host callbacks
+JaxArrayTest::test_array_copy_to_host_async_concurrent

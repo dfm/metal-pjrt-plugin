@@ -1,0 +1,7 @@
+# Known failures of JAX's tests/lax_autodiff_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# UNSUPPORTED: float64 / complex128 (Apple GPUs have no double precision)
+LaxAutodiffTest::testAcoshGradLargeValuesFloat64

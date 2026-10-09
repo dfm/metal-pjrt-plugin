@@ -1,0 +1,8 @@
+# Known failures of JAX's tests/aot_test.py on mtl, as
+# run by scripts/run_jax_tests.sh. One test id per line (without the
+# file), '#' comments; scripts/jax_tests_plugin.py explains matching.
+# config: JAX_NUM_GENERATED_CASES=3 JAX_ENABLE_X64=0 JAX_TESTS_DUT=gpu
+
+# LABEL: the test reads the "gpu" label as CUDA/ROCm (a CUDA backend, GPU
+# platform id or export platform)
+JaxAotTest::test_topology_serialize_deserialize_aot_compile_reload
