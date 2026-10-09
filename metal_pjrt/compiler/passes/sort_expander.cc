@@ -410,23 +410,33 @@ absl::StatusOr<HloInstruction*> ExpandSort(HloSortInstruction* sort) {
   static_assert(kMaxUnrolledSortDim == 64);
   const int64_t pre_steps =
       num_steps <= kMaxUnrolledSteps ? num_steps : num_steps % 2;
+  // Keep each substage its own fusion, reading materialized arrays.
+  // Otherwise XLA fuses the whole network into every consumer (a gather by
+  // the argsort, say), which then recomputes each earlier substage per
+  // element, twice per level (select(swap, gather(prev, f ^ j), prev)):
+  // 2^steps calls, about 2M per element at 64. The Metal compiler also
+  // miscompiles a substage that inlines a computed input twice (self and
+  // partner): that nested form gave wrong columns for
+  // v[:, jnp.argsort(s, descending=True)], and the first substage reading
+  // its padded, reversed input through two inlined calls gave a wrong
+  // stable descending argsort of 8-bit keys. So the inputs are materialized
+  // too, not only each substage's outputs. XLA:GPU removes optimization
+  // barriers only after scheduling.
+  auto materialize = [&](std::vector<HloInstruction*>& arrays) -> absl::Status {
+    HloInstruction* tuple =
+        comp->AddInstruction(HloInstruction::CreateTuple(arrays));
+    HloInstruction* barrier = comp->AddInstruction(HloInstruction::CreateUnary(
+        tuple->shape(), HloOpcode::kOptimizationBarrier, tuple));
+    for (int64_t i = 0; i < static_cast<int64_t>(arrays.size()); ++i) {
+      TF_ASSIGN_OR_RETURN(arrays[i], MakeGetTupleElementHlo(barrier, i));
+    }
+    return absl::OkStatus();
+  };
+  if (pre_steps > 0) TF_RETURN_IF_ERROR(materialize(s.arrays));
   for (int64_t step = 0; step < pre_steps; ++step) {
     TF_ASSIGN_OR_RETURN(s, EmitStep(outer, sort->to_apply(), num_operands, n,
                                     pow2, s));
-    // Keep each substage its own fusion. Otherwise XLA fuses the whole
-    // network into every consumer (a gather by the argsort, say), which
-    // then recomputes each earlier substage per element, twice per level
-    // (select(swap, gather(prev, f ^ j), prev)): 2^steps calls, about
-    // 2M per element at 64. The Metal compiler also miscompiles that
-    // nested form (v[:, jnp.argsort(s, descending=True)] came out wrong).
-    // XLA:GPU removes optimization barriers only after scheduling.
-    HloInstruction* tuple =
-        comp->AddInstruction(HloInstruction::CreateTuple(s.arrays));
-    HloInstruction* barrier = comp->AddInstruction(HloInstruction::CreateUnary(
-        tuple->shape(), HloOpcode::kOptimizationBarrier, tuple));
-    for (int64_t i = 0; i < static_cast<int64_t>(s.arrays.size()); ++i) {
-      TF_ASSIGN_OR_RETURN(s.arrays[i], MakeGetTupleElementHlo(barrier, i));
-    }
+    TF_RETURN_IF_ERROR(materialize(s.arrays));
   }
   std::vector<HloInstruction*> sorted(s.arrays.begin(),
                                       s.arrays.begin() + num_operands);

@@ -132,11 +132,13 @@ ENTRY e {
       }
     }
     EXPECT_EQ(whiles, n <= 64 ? 0 : 1) << "n=" << n;
-    // One barrier per straight-line substage, so none fuses into another's
-    // consumers; the while loop's odd step (if any) has one too.
+    // One barrier on the network's inputs and one per straight-line
+    // substage, so every substage reads materialized arrays; the while
+    // loop's odd peeled step (if any) is treated the same way.
     const int lg = 64 - __builtin_clzll(n - 1);  // log2 of the padded n
     const int steps = lg * (lg + 1) / 2;
-    EXPECT_EQ(barriers, n <= 64 ? steps : steps % 2) << "n=" << n;
+    const int pre_steps = n <= 64 ? steps : steps % 2;
+    EXPECT_EQ(barriers, pre_steps > 0 ? pre_steps + 1 : 0) << "n=" << n;
     // Still sorts correctly.
     std::mt19937 rng(n);
     std::vector<Literal> args;
