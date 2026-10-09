@@ -712,3 +712,21 @@ def test_small_dot_bf16_algorithm(alg, tol):
     else:
         want = metal_testing.run_on(metal_testing.cpu(), jnp.dot, a, b)
     assert np.abs(got - want).max() / np.abs(want).max() < tol
+
+
+def test_lax_empty_allocates_without_filling():
+    # lax.empty lowers to the AllocateBuffer custom call (as on cuda and
+    # tpu), which XLA's thunk emitter turns into no work; whatever is then
+    # written into the buffer is what comes back.
+    dev = metal_testing.metal()
+    with jax.default_device(dev):
+        f = jax.jit(lambda: lax.empty((4, 2), jnp.int32))
+        assert "@AllocateBuffer() : () -> tensor<4x2xi32>" in f.lower().as_text()
+        assert f().shape == (4, 2)
+
+    def g(x):
+        out = lax.empty((2,), x.dtype)
+        out = out.at[0].set(1)
+        return out.at[1].set(out[0] * x[0])
+    got = metal_testing.run_on(dev, jax.vmap(g), np.array([[2], [3]], np.int32))
+    np.testing.assert_array_equal(got, [[1, 2], [1, 3]])

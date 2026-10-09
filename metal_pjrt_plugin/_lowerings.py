@@ -334,9 +334,18 @@ def register() -> None:
                            dispatch._tpu_gpu_device_put_lowering,
                            platform=PLATFORM)
 
+  def _empty():
+    # lax.empty as on cuda and tpu: an AllocateBuffer custom call, which
+    # XLA's GPU thunk emitter turns into nothing (the default rule fills the
+    # result with zeros).
+    from jax._src.lax import lax
+    mlir.register_lowering(lax.empty_p, lax._empty_custom_call_lower,
+                           platform=PLATFORM)
+
   reg("fft", _fft)
   reg("conv_general_dilated", _conv)
   reg("device_put", _device_put)
+  reg("empty", _empty)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
   from metal_pjrt_plugin import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702

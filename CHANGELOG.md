@@ -6,6 +6,12 @@ change was made.
 
 ## Unreleased
 
+### 2026-10-09
+
+- `lax.empty` (and so `jnp.empty`, `jnp.empty_like`) lowers to XLA's
+  `AllocateBuffer` custom call, as on cuda and tpu: the buffer is allocated
+  and not filled, where it was filled with zeros.
+
 ## 0.0.2 (2026-10-09)
 
 `metal-pjrt-plugin` 0.0.2 and `metal-pjrt-core` 0.0.2. Silent wrong
