@@ -303,8 +303,8 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"math.cos", "xla_cos"},         {"math.cosh", "cosh"},
       {"math.sin", "xla_sin"},         {"math.sinh", "sinh"},
       {"math.tan", "tan"},          {"math.tanh", "tanh"},
-      {"math.ctlz", "clz"},         {"math.cttz", "ctz"},
-      {"math.ctpop", "popcount"},   {"math.erf", "xla_erf"},
+      {"math.ctlz", "xla_clz"},     {"math.cttz", "xla_ctz"},
+      {"math.ctpop", "xla_popcount"}, {"math.erf", "xla_erf"},
       {"math.exp", "xla_exp"},
       {"math.exp2", "exp2"},        {"math.expm1", "xla_expm1"},
       {"math.floor", "floor"},      {"math.fma", "fma"},
@@ -329,9 +329,11 @@ const llvm::StringMap<std::string>& MathFunctions() {
       {"llvm.intr.maxnum", "fmax"}, {"llvm.intr.minnum", "fmin"},
       {"llvm.intr.maximum", "xla_maximum"},
       {"llvm.intr.minimum", "xla_minimum"},
-      {"llvm.intr.pow", "xla_powf"}, {"llvm.intr.ctlz", "clz"},
-      {"llvm.intr.cttz", "ctz"},    {"llvm.intr.ctpop", "popcount"},
+      {"llvm.intr.pow", "xla_powf"}, {"llvm.intr.ctlz", "xla_clz"},
+      {"llvm.intr.cttz", "xla_ctz"}, {"llvm.intr.ctpop", "xla_popcount"},
       {"llvm.intr.abs", "abs"},
+      {"arith.maxsi", "xla_maxsi"}, {"arith.minsi", "xla_minsi"},
+      {"arith.maxui", "xla_maxui"}, {"arith.minui", "xla_minui"},
   };
   return *table;
 }
@@ -686,10 +688,28 @@ absl::Status ExpandArith(ModuleOp module) {
     op->getResult(0).replaceAllUsesWith(r);
     op->erase();
   }
+  // Scalar integer min/max stay, for the math table's prelude helpers
+  // (Metal's min/max builtins). Metal miscompiled the compare-and-select
+  // the generic expansion makes of them: a gather's index clamp (maxsi of a
+  // size_t after an int32 wrap) loaded zeros (2026-10-08).
+  llvm::SmallVector<Operation*> to_expand;
+  module.walk([&](Operation* op) {
+    if (mlir::isa<mlir::arith::MaxSIOp, mlir::arith::MinSIOp,
+                  mlir::arith::MaxUIOp, mlir::arith::MinUIOp>(op)) {
+      const Type t = op->getResult(0).getType();
+      if (t.isIndex() || (t.isInteger() && t.getIntOrFloatBitWidth() >= 8)) {
+        return;
+      }
+    }
+    to_expand.push_back(op);
+  });
   mlir::RewritePatternSet patterns(module.getContext());
   mlir::arith::populateCeilFloorDivExpandOpsPatterns(patterns);
   mlir::arith::populateExpandMinMaxPatterns(patterns);
-  if (mlir::failed(mlir::applyPatternsGreedily(module, std::move(patterns)))) {
+  if (mlir::failed(mlir::applyOpPatternsGreedily(
+          to_expand, std::move(patterns),
+          mlir::GreedyRewriteConfig().setStrictness(
+              mlir::GreedyRewriteStrictness::ExistingAndNewOps)))) {
     return absl::InternalError(
         absl::StrCat("MSL emitter: arith expansion failed", kReportBug));
   }
