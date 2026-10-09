@@ -828,6 +828,8 @@ absl::StatusOr<Allocation> Device::Allocate(uint64_t size, Use use) {
                  << " bytes, generation " << it->second.generation << ")";
     }
     allocations_[key] = {buf, length, requested, ++generation_};
+    peak_allocated_bytes_ = std::max(peak_allocated_bytes_, allocated_bytes_);
+    ++num_allocs_;
   }
   return Allocation{ptr, requested};
 }
@@ -1083,6 +1085,8 @@ Device::MemoryStats Device::memory_stats() const {
   std::lock_guard<std::mutex> lock(mu_);
   MemoryStats m;
   m.live_bytes = allocated_bytes_;
+  m.peak_live_bytes = peak_allocated_bytes_;
+  m.num_allocs = num_allocs_;
   m.cached_bytes = cached_bytes_;
   m.budget_bytes = memory_budget_;
   m.cache_hits = cache_hits_;
@@ -1090,6 +1094,16 @@ Device::MemoryStats Device::memory_stats() const {
   m.released = released_;
   m.pressure = pressure_;
   return m;
+}
+
+bool MemoryStatsOf(int ordinal, Device::MemoryStats* out) {
+  std::lock_guard<std::mutex> lock(g_devices_mu);
+  for (Device* d : g_devices) {
+    if (d->ordinal() != ordinal) continue;
+    *out = d->memory_stats();
+    return true;
+  }
+  return false;
 }
 
 std::string Device::DescribeNearestAllocations(const void* ptr) const {

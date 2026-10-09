@@ -6,6 +6,15 @@ change was made.
 
 ## Unreleased
 
+### 2026-10-08
+
+- `jax.Device.memory_stats()` works on mtl (it returned `None`): bytes in
+  use and their peak, allocations, the budget as `bytes_limit`, and the
+  cached buffers in `pool_bytes`. The plugin answers
+  `PJRT_Device_MemoryStats` from its runtime; no XLA patch. The LLM
+  example reports peak device memory with it, and the CIFAR example's
+  memory profile no longer uses the `metal_pjrt_memory_stats` test hook.
+
 ## 0.0.1 (2026-10-03)
 
 The first release: `metal-pjrt-plugin` 0.0.1 and `metal-pjrt-core` 0.0.1

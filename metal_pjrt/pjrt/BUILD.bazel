@@ -32,7 +32,8 @@ cc_library(
 # "mtl" platform on macOS) minus its PJRT_AbiVersion extension, so that
 # jaxlib can serialize executables (persistent compilation cache), with
 # BufferFromHostBuffer done with the caller's host data before returning, and
-# with out-of-memory error messages carrying the runtime's reason.
+# with out-of-memory error messages carrying the runtime's reason, and with
+# device memory stats from the runtime.
 cc_library(
     name = "metal_pjrt_api",
     srcs = ["metal_pjrt_api.cc"],

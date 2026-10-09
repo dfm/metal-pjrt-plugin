@@ -369,6 +369,8 @@ class Device {
   static constexpr std::chrono::seconds kCacheIdleRelease{2};
   struct MemoryStats {
     uint64_t live_bytes = 0;
+    uint64_t peak_live_bytes = 0;
+    uint64_t num_allocs = 0;  // successful allocations, ever
     uint64_t cached_bytes = 0;
     uint64_t budget_bytes = 0;
     uint64_t cache_hits = 0;
@@ -506,6 +508,8 @@ class Device {
   // AllocateHost's buffers, keyed as allocations_ is (length = mapped bytes).
   std::map<uintptr_t, std::pair<MTL::Buffer*, uint64_t>> host_allocations_;
   uint64_t allocated_bytes_ = 0;
+  uint64_t peak_allocated_bytes_ = 0;
+  uint64_t num_allocs_ = 0;
   uint64_t memory_budget_ = 0;
   // The free-buffer cache (see Allocate), guarded by mu_: least recently
   // freed first, and indexed by length.
@@ -877,6 +881,10 @@ class Stream {
   std::deque<HostTask> work_;
   bool stop_ = false;
 };
+
+// Device::memory_stats() of the live device `ordinal` (false: none). For
+// PJRT_Device_MemoryStats (pjrt/metal_pjrt_api.cc).
+bool MemoryStatsOf(int ordinal, Device::MemoryStats* out);
 
 }  // namespace rt
 }  // namespace metal_pjrt

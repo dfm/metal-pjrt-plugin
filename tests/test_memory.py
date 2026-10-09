@@ -258,3 +258,32 @@ print(jax.jit(lambda x: x + 1)(1.0))
         assert (f"Ignoring METAL_PJRT_MEMORY_FRACTION={fraction} (not a number "
                 "> 0); using 1, a budget of ") in out.stderr, out.stderr[-3000:]
         assert 0 < budget <= half_ram, budget
+
+
+def test_jax_memory_stats():
+    # jax.Device.memory_stats() comes from the runtime (the plugin's
+    # PJRT_Device_MemoryStats): live bytes (buffer lengths, page-rounded),
+    # their peak, the budget as the limit, live + cached as the pool.
+    out = run_child(r"""
+dev = jax.devices("mtl")[0]
+m0 = dev.memory_stats()
+assert m0 is not None
+for k in ("bytes_in_use", "peak_bytes_in_use", "bytes_limit", "num_allocs",
+          "pool_bytes"):
+    assert k in m0, m0
+assert m0["bytes_limit"] == stats()["budget"], (m0, stats())
+assert m0["bytes_in_use"] == stats()["live"], (m0, stats())
+x = jax.device_put(np.ones(16 * MB, np.uint8), dev).block_until_ready()
+m1 = dev.memory_stats()
+assert m1["bytes_in_use"] >= m0["bytes_in_use"] + 16 * MB, (m0, m1)
+assert m1["peak_bytes_in_use"] >= m1["bytes_in_use"], m1
+assert m1["num_allocs"] > m0["num_allocs"], (m0, m1)
+assert m1["pool_bytes"] >= m1["bytes_in_use"], m1
+del x
+gc.collect()
+m2 = dev.memory_stats()
+assert m2["bytes_in_use"] <= m1["bytes_in_use"] - 16 * MB, (m1, m2)
+assert m2["peak_bytes_in_use"] == m1["peak_bytes_in_use"], (m1, m2)
+print("OK")
+""")
+    assert "OK" in out, out
