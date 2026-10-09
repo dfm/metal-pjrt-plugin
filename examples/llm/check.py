@@ -80,7 +80,8 @@ def report(name, lp, lr, ids):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--quant", choices=["int8", "int4"], default=None)
     ap.add_argument("--text-file", help="evaluate on this file instead of a short sentence")

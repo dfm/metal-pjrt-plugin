@@ -16,8 +16,6 @@ Apple Inc., MIT License), reimplemented here in JAX.
 """
 import dataclasses, json, math, os, sys
 
-WIKISQL_REVISION = "886acf6d49be0dc2ee58fc3eb768d2dee1476da2"   # the one tested
-
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -27,6 +25,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "llm"))
 import qwen3  # noqa: E402
 
 PROJECTIONS = ("q", "k", "v", "o", "gate", "up", "down")
+WIKISQL_REVISION = "886acf6d49be0dc2ee58fc3eb768d2dee1476da2"   # the one tested
 
 
 @dataclasses.dataclass(frozen=True)

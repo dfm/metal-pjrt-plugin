@@ -9,7 +9,8 @@ snapshot() returns a dict of:
                  kern.memorystatus_vm_pressure_level (1 normal, 2 warn,
                  4 critical)
   and, when the mtl plugin is loaded, its device 0 counters from
-  metal_pjrt_memory_stats: live_mb, cached_mb, budget_mb, cache_hits,
+  metal_pjrt_memory_stats, the plugin's test hook (not a stable API; it may
+  change between versions): live_mb, cached_mb, budget_mb, cache_hits,
   cache_misses (cumulative: a miss is a fresh Metal allocation),
   pressure_plugin (0 normal, 1 warn, 2 critical as the plugin sees it),
   kernels (compiled kernels cached).

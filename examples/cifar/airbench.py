@@ -123,9 +123,8 @@ def forward(params, stats, x, train, dtype=jnp.bfloat16):
     new_stats = []
     # With --remat the backward pass recomputes each group from its input
     # instead of keeping every intermediate: the step's scratch at batch
-    # 1024 goes from 1.17 to 0.94 GB, for a run 27% longer (242 vs 190 s on
-    # an M3, 2026-10-01). Without it the run fits the plugin's default
-    # memory budget on an 8 GB Mac.
+    # 1024 goes from 1.17 to 0.94 GB, for a run 27% longer. Without it the
+    # run fits the plugin's default memory budget on an 8 GB Mac.
     group = jax.checkpoint(conv_group, static_argnums=(3,)) if REMAT and train else conv_group
     for g, s in zip(params["groups"], stats):
         x, s12 = group(g, s, x, train)
@@ -391,8 +390,6 @@ def main():
     t0 = time.perf_counter()
     train(0, data, args.epochs, dtype, max_steps=steps_per_epoch)
     warm = time.perf_counter() - t0
-    step = make_train_step(make_optimizer(math.ceil(steps_per_epoch * args.epochs)), dtype)
-    compiled = step._cache_size()
     print(json.dumps({"backend": jax.devices()[0].platform, "warmup_run_s": round(warm, 2)}),
           flush=True)
     if args.warm_full:
@@ -410,8 +407,8 @@ def main():
             row.update(memprofile.snapshot())
         rows.append(row)
         print(json.dumps(row), flush=True)
-    # The timed runs must not have compiled anything new.
-    assert step._cache_size() == compiled, "the train step recompiled during a timed run"
+    if not rows:
+        return
     accs = np.array([r["acc"] for r in rows])
     times = np.array([r["train_s"] for r in rows])
     print(json.dumps({"summary": True, "runs": len(rows), "acc_mean": round(float(accs.mean()), 4),

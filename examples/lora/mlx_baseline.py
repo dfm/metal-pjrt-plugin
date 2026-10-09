@@ -25,7 +25,8 @@ VAL = re.compile(r"Iter (\d+): Val loss ([\d.]+), Val took ([\d.]+)s")
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", required=True)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--iters", type=int, default=200)
@@ -94,7 +95,7 @@ def exact_match(model_name, adapter_path, data, n, max_new=96):
                                       add_generation_prompt=True, enable_thinking=False)
         out = mlx_lm.generate(model, tok, prompt=ids, max_tokens=max_new)
         hits += out.strip() == r["completion"].strip()
-    return hits / n
+    return hits / len(records)
 
 
 if __name__ == "__main__":

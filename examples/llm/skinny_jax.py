@@ -36,7 +36,8 @@ def time_ms(f, args, bursts, calls):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--rows", default="1,2,4,8,16,32,64")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--bursts", type=int, default=3)

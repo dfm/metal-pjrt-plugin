@@ -5,8 +5,8 @@
   .venv/bin/python examples/lora/compare.py --data ~/.cache/metal-pjrt-examples/wikisql \\
       --mlx-python ~/.venvs/mlx/bin/python --wrap "scripts/device_lock.py --"
 
-Each round runs a short fine-tune (`--iters` steps, no validation after
-the first) with each implementation in turn, so drift of the machine's
+Each round runs a short fine-tune (`--iters` steps, validation only at
+the first and last) with each implementation in turn, so drift of the machine's
 state (other load, heat) hits both alike. Each report window's step time
 is the window mean on both sides (1 / iterations per second, as mlx_lm.lora
 reports it); per run, the step time is the median over the report windows
@@ -30,7 +30,8 @@ def run(cmd, env=None):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--data", required=True, help="lora.py export directory")
     ap.add_argument("--mlx-python", required=True)
     ap.add_argument("--rounds", type=int, default=3)
@@ -43,7 +44,7 @@ def main():
               "--steps-per-eval", str(10 ** 6)] + (["--grad-checkpoint"] * args.grad_checkpoint)
     arms = {
         "jax": (wrap + [sys.executable, os.path.join(HERE, "train.py"), *common],
-                {**os.environ, "JAX_PLATFORMS": "mtl,cpu"}),
+                {**os.environ, "JAX_PLATFORMS": os.environ.get("JAX_PLATFORMS", "mtl,cpu")}),
         "mlx-lm": (wrap + [args.mlx_python, os.path.join(HERE, "mlx_baseline.py"),
                            "--data", args.data, *common], None),
     }

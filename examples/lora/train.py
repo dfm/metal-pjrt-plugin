@@ -20,7 +20,6 @@ import argparse, json, os, statistics, sys, time
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -39,11 +38,11 @@ def evaluate(eval_fn, adapters, params, data, batch_size, pad_to):
 
 
 def exact_match(eng, records, n, max_new=96):
-    hits = 0
-    for r in records[:n]:
+    records, hits = records[:n], 0
+    for r in records:
         out, _ = eng.generate(eng.encode(r["prompt"]), max_new, fused=True)
         hits += eng.tok.decode(out).strip() == r["completion"].strip()
-    return hits / n
+    return hits / len(records)
 
 
 def main():
@@ -92,7 +91,7 @@ def main():
     seen = set()
     losses, ntoks, times, compile_s = [], [], [], 0.0
     t_train = time.perf_counter()
-    epochs = -(-args.iters * args.batch_size // len(train))
+    epochs = -(-args.iters // (len(train) // args.batch_size))
     for it, (tokens, offsets, lengths) in enumerate(
             lora.batches(train, args.batch_size, args.seed, epochs, args.pad_to), start=1):
         if it > args.iters:

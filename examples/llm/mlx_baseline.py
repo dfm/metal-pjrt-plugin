@@ -60,7 +60,8 @@ def kl_report(model, path, chunk=128):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--prompts", default="16,128,512")
     ap.add_argument("--context", type=int, default=128)
