@@ -74,6 +74,10 @@ scales that budget (`2` allows all of RAM, still under that cap).
 Separately, any allocation is refused while macOS reports critical memory
 pressure. Out-of-memory errors say which of the two happened.
 
+`jax.devices("mtl")[0].memory_stats()` reports what is in use
+(`bytes_in_use`, `peak_bytes_in_use`), the budget (`bytes_limit`), and
+`pool_bytes`, which adds the freed buffers the plugin keeps for reuse.
+
 ## Why is my linear algebra slower than on the CPU?
 
 Factorizations above 32x32 run on the CPU (Accelerate) after the GPU

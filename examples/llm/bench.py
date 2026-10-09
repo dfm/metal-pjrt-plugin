@@ -144,9 +144,16 @@ def main():
         emit(case, ts, S, tok_s=round(args.batch * S / np.median(ts) * 1e3, 1),
              compile_s=c, **more)
 
-    # The process's peak resident memory (macOS reports ru_maxrss in bytes).
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    common.emit(backend, "peak_rss_gb", 0, 0, {**extra, "value": round(peak / 1e9, 2)})
+    # Peak device memory where the backend reports it (mtl; what MLX's
+    # mx.get_peak_memory() measures), else the process's peak resident
+    # memory (macOS reports ru_maxrss in bytes).
+    stats = jax.devices()[0].memory_stats() or {}
+    if "peak_bytes_in_use" in stats:
+        peak = stats["peak_bytes_in_use"]
+        common.emit(backend, "peak_memory_gb", 0, 0, {**extra, "value": round(peak / 1e9, 2)})
+    else:
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        common.emit(backend, "peak_rss_gb", 0, 0, {**extra, "value": round(peak / 1e9, 2)})
 
 
 if __name__ == "__main__":

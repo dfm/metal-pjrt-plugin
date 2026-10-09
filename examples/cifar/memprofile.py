@@ -8,45 +8,28 @@ snapshot() returns a dict of:
   pressure_sys   macOS's memory pressure level from sysctl
                  kern.memorystatus_vm_pressure_level (1 normal, 2 warn,
                  4 critical)
-  and, when the mtl plugin is loaded, its device 0 counters from
-  metal_pjrt_memory_stats, the plugin's test hook (not a stable API; it may
-  change between versions): live_mb, cached_mb, budget_mb, cache_hits,
-  cache_misses (cumulative: a miss is a fresh Metal allocation),
-  pressure_plugin (0 normal, 1 warn, 2 critical as the plugin sees it),
-  kernels (compiled kernels cached).
+  and, on mtl, device 0's jax memory_stats(): live_mb (buffers in use),
+  peak_mb (their peak so far), cached_mb (freed buffers the plugin keeps
+  for reuse), budget_mb (the plugin's memory budget), num_allocs
+  (allocations so far).
 """
 import ctypes, ctypes.util
 
 MB = 1 << 20
-_FIELDS = ("live", "cached", "budget", "cache_hits", "cache_misses", "pressure_plugin",
-           "kernels", "kernel_msl_bytes")
-_lib = None
-
-
-def _plugin():
-    global _lib
-    if _lib is None:
-        try:
-            import metal_pjrt_plugin
-            _lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
-            _lib.metal_pjrt_memory_stats.restype = ctypes.c_int
-        except Exception:
-            _lib = False
-    return _lib or None
 
 
 def plugin_stats():
-    lib = _plugin()
-    if lib is None:
+    import jax
+    try:
+        m = jax.devices("mtl")[0].memory_stats()
+    except RuntimeError:  # no mtl backend
         return {}
-    out = (ctypes.c_uint64 * 8)()
-    if lib.metal_pjrt_memory_stats(0, out) != 0:
+    if not m:
         return {}
-    s = dict(zip(_FIELDS, out))
-    return {"live_mb": round(s["live"] / MB, 1), "cached_mb": round(s["cached"] / MB, 1),
-            "budget_mb": round(s["budget"] / MB), "cache_hits": s["cache_hits"],
-            "cache_misses": s["cache_misses"], "pressure_plugin": s["pressure_plugin"],
-            "kernels": s["kernels"]}
+    return {"live_mb": round(m["bytes_in_use"] / MB, 1),
+            "peak_mb": round(m["peak_bytes_in_use"] / MB, 1),
+            "cached_mb": round((m["pool_bytes"] - m["bytes_in_use"]) / MB, 1),
+            "budget_mb": round(m["bytes_limit"] / MB), "num_allocs": m["num_allocs"]}
 
 
 def footprint_mb():

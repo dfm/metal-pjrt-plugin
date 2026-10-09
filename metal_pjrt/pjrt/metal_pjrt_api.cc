@@ -6,7 +6,8 @@
 // wrapped so the caller's host buffer is copied (or, when large, done with)
 // before it returns, and PJRT_LoadedExecutable_Execute and
 // PJRT_Error_Message wrapped so out-of-memory errors say why and for which
-// executable (below).
+// executable, and PJRT_Device_MemoryStats answered from the runtime
+// (below).
 //
 // With that extension, PjRtCApiExecutable::GetAbiVersion reports the OneAPI
 // executable ABI, which jaxlib's IFRT (GetXlaExecutableVersion) rejects
@@ -268,6 +269,56 @@ void ErrorMessage(PJRT_Error_Message_Args* args) {
   args->message_size = it->second.size();
 }
 
+// XLA's platform allocator (a passthrough to MetalExecutor::Allocate) keeps
+// no statistics, so XLA's PJRT_Device_MemoryStats is Unimplemented and
+// jax.Device.memory_stats() returns None. This answers from the runtime
+// instead: bytes in use and their peak, allocations, the budget as the limit,
+// and the live and cached bytes as the pool. Anything else (no runtime device
+// for the hardware id, an older caller's struct) goes to XLA.
+int LocalHardwareId(PJRT_Device* device, PJRT_Error** error) {
+  PJRT_Device_LocalHardwareId_Args args;
+  args.struct_size = PJRT_Device_LocalHardwareId_Args_STRUCT_SIZE;
+  args.extension_start = nullptr;
+  args.device = device;
+  args.local_hardware_id = -1;
+  *error = g_gpu->PJRT_Device_LocalHardwareId(&args);
+  return args.local_hardware_id;
+}
+
+PJRT_Error* MemoryStats(PJRT_Device_MemoryStats_Args* args) {
+  if (args->struct_size <
+      PJRT_STRUCT_SIZE(PJRT_Device_MemoryStats_Args, peak_pool_bytes_is_set)) {
+    return g_gpu->PJRT_Device_MemoryStats(args);
+  }
+  PJRT_Error* error = nullptr;
+  const int ordinal = LocalHardwareId(args->device, &error);
+  if (error != nullptr) return error;
+  metal_pjrt::rt::Device::MemoryStats m;
+  if (!metal_pjrt::rt::MemoryStatsOf(ordinal, &m)) {
+    return g_gpu->PJRT_Device_MemoryStats(args);
+  }
+  args->bytes_in_use = static_cast<int64_t>(m.live_bytes);
+  args->peak_bytes_in_use = static_cast<int64_t>(m.peak_live_bytes);
+  args->peak_bytes_in_use_is_set = true;
+  args->num_allocs = static_cast<int64_t>(m.num_allocs);
+  args->num_allocs_is_set = true;
+  args->largest_alloc_size_is_set = false;
+  args->bytes_limit = static_cast<int64_t>(m.budget_bytes);
+  args->bytes_limit_is_set = true;
+  args->bytes_reserved_is_set = false;
+  args->peak_bytes_reserved_is_set = false;
+  args->bytes_reservable_limit_is_set = false;
+  args->largest_free_block_bytes_is_set = false;
+  args->pool_bytes = static_cast<int64_t>(m.live_bytes + m.cached_bytes);
+  args->pool_bytes_is_set = true;
+  args->peak_pool_bytes_is_set = false;
+  if (args->struct_size >= PJRT_STRUCT_SIZE(PJRT_Device_MemoryStats_Args,
+                                            peak_allocated_bytes_is_set)) {
+    args->peak_allocated_bytes_is_set = false;
+  }
+  return nullptr;
+}
+
 void ErrorDestroy(PJRT_Error_Destroy_Args* args) {
   {
     std::lock_guard<std::mutex> lock(g_messages_mu);
@@ -289,6 +340,7 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
     copy.PJRT_LoadedExecutable_Execute = Execute;
     copy.PJRT_Error_Message = ErrorMessage;
     copy.PJRT_Error_Destroy = ErrorDestroy;
+    copy.PJRT_Device_MemoryStats = MemoryStats;
     // Copy every other extension node (they are plain structs of function
     // pointers), relinked in the same order. Allocated once, never freed.
     PJRT_Extension_Base** tail = &copy.extension_start;
