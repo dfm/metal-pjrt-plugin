@@ -571,6 +571,68 @@ TEST_F(MslEmitterTest, SignedIndexDivRem) {
   EXPECT_EQ(count, 2);
 }
 
+// Scalar integer min/max (an index clamp here) call the prelude's builtin
+// wrappers: Metal miscompiled the compare-and-select expansion. A vector
+// one is still expanded.
+constexpr char kIntMinMax[] = R"mlir(
+module {
+  func.func @clamp(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %c0 = arith.constant 0 : index
+    %c9 = arith.constant 9 : index
+    %tid = gpu.thread_id x
+    %lo = arith.maxsi %tid, %c0 : index
+    %i = arith.minsi %lo, %c9 : index
+    %ii = arith.index_cast %i : index to i32
+    %a = llvm.load %arg0 : !llvm.ptr -> i8
+    %b = llvm.load %arg1 : !llvm.ptr -> i8
+    %m = arith.maxui %a, %b : i8
+    %n = arith.minui %m, %a : i8
+    %v = llvm.load %arg0 : !llvm.ptr -> vector<2xi32>
+    %u = llvm.load %arg1 : !llvm.ptr -> vector<2xi32>
+    %w = arith.maxsi %v, %u : vector<2xi32>
+    llvm.store %w, %arg1 : vector<2xi32>, !llvm.ptr
+    llvm.store %n, %arg1 : i8, !llvm.ptr
+    %p = llvm.getelementptr %arg1[%ii] : (!llvm.ptr, i32) -> !llvm.ptr, i32
+    llvm.store %ii, %p : i32, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, ScalarIntegerMinMaxUseBuiltins) {
+  absl::StatusOr<MslKernel> kernel = Emit(kIntMinMax, "clamp");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  EXPECT_THAT(msl, HasSubstr("= xla_maxsi("));
+  EXPECT_THAT(msl, HasSubstr("= xla_minsi("));
+  EXPECT_THAT(msl, HasSubstr("= xla_maxui("));
+  EXPECT_THAT(msl, HasSubstr("= xla_minui("));
+  // The vector maxsi: a compare and select.
+  EXPECT_THAT(msl, HasSubstr(" ? "));
+}
+
+// Bit counts call the prelude's wrappers (Metal counts an int8_t as a
+// sign-extended int).
+constexpr char kBitCounts[] = R"mlir(
+module {
+  func.func @counts(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %a = llvm.load %arg0 : !llvm.ptr -> i8
+    %p = math.ctpop %a : i8
+    %l = math.ctlz %p : i8
+    %t = math.cttz %l : i8
+    llvm.store %t, %arg1 : i8, !llvm.ptr
+    return
+  }
+})mlir";
+
+TEST_F(MslEmitterTest, BitCountsUsePreludeWrappers) {
+  absl::StatusOr<MslKernel> kernel = Emit(kBitCounts, "counts");
+  ASSERT_TRUE(kernel.ok()) << kernel.status();
+  const std::string& msl = kernel->msl_source;
+  EXPECT_THAT(msl, HasSubstr("= xla_popcount("));
+  EXPECT_THAT(msl, HasSubstr("= xla_clz("));
+  EXPECT_THAT(msl, HasSubstr("= xla_ctz("));
+}
+
 // scf.for over index must compare signed: a negative upper bound means no
 // iterations, not ~2^64 of them (size_t).
 constexpr char kSignedIndexLoop[] = R"mlir(

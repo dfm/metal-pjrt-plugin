@@ -126,6 +126,49 @@ inline T xla_minimum(T a, T b) {
   return a < b ? a : b;
 }
 
+// Integer min/max (scalars of 8 to 64 bits, index as size_t) through
+// Metal's builtins, with the op's signedness. Not a compare and select:
+// Metal miscompiled that as a gather's index clamp (msl_emitter.cc,
+// ExpandArith).
+template <int N> struct xla_int_of;
+template <> struct xla_int_of<1> { typedef char s; typedef uchar u; };
+template <> struct xla_int_of<2> { typedef short s; typedef ushort u; };
+template <> struct xla_int_of<4> { typedef int s; typedef uint u; };
+template <> struct xla_int_of<8> { typedef long s; typedef ulong u; };
+template <typename T>
+inline T xla_maxsi(T a, T b) {
+  typedef typename xla_int_of<sizeof(T)>::s S;
+  return T(max(S(a), S(b)));
+}
+template <typename T>
+inline T xla_minsi(T a, T b) {
+  typedef typename xla_int_of<sizeof(T)>::s S;
+  return T(min(S(a), S(b)));
+}
+template <typename T>
+inline T xla_maxui(T a, T b) {
+  typedef typename xla_int_of<sizeof(T)>::u U;
+  return T(max(U(a), U(b)));
+}
+template <typename T>
+inline T xla_minui(T a, T b) {
+  typedef typename xla_int_of<sizeof(T)>::u U;
+  return T(min(U(a), U(b)));
+}
+
+// Bit counts. Metal computes popcount/clz/ctz of an int8_t (the emitter's
+// i8, signless) as of a sign-extended int: popcount(int8_t(-1)) is 32,
+// clz(int8_t(5)) is 29. 8-bit values go through their zero-extended uint.
+template <typename T>
+inline T xla_popcount(T x) { return popcount(x); }
+template <typename T>
+inline T xla_clz(T x) { return clz(x); }
+template <typename T>
+inline T xla_ctz(T x) { return ctz(x); }
+inline int8_t xla_popcount(int8_t x) { return int8_t(popcount(uint(uchar(x)))); }
+inline int8_t xla_clz(int8_t x) { return int8_t(clz(uint(uchar(x))) - 24); }
+inline int8_t xla_ctz(int8_t x) { return int8_t(ctz(uint(uchar(x)) | 0x100u)); }
+
 // Math functions MSL does not provide. Computed in float, compile with
 // fast math disabled.
 template <typename T>

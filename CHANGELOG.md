@@ -8,6 +8,14 @@ change was made.
 
 ### 2026-10-08
 
+- Three silent wrong answers fixed, found by running JAX's own tests:
+  `lax.population_count`/`clz` (and `jnp.bitwise_count`) on 8-bit
+  integers counted the sign-extended 32-bit value; and a gather whose
+  computed indices are clamped (`x[::-2]` through JAX's gather indexing,
+  `jnp.compress`/`jnp.extract` with `size=`) read zeros past its first row,
+  from a Metal compiler miscompile of the clamp's compare and select.
+  Integer min/max and bit counts now go through the MSL prelude's wrappers
+  of Metal's builtins.
 - `jax.Device.memory_stats()` works on mtl (it returned `None`): bytes in
   use and their peak, allocations, the budget as `bytes_limit`, and the
   cached buffers in `pool_bytes`. The plugin answers

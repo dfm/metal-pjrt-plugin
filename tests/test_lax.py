@@ -109,6 +109,16 @@ for op in ["add","mul","div","rem","max","shift_left","shift_right_arithmetic","
             else: ref(getattr(lax, op), x, y)
         return fn
     case(f"lax.{op} int32")(mk(op))
+# 8-bit counts are not those of the sign-extended int (Metal's own
+# popcount/clz of an int8_t); 16 bits for good measure.
+for op in ["population_count", "clz"]:
+    for dt in ["int8", "uint8", "int16"]:
+        def mk(op, dt):
+            def fn():
+                x = np.array([-1, -2, -128, 5, 0, 1, 127, 64], np.int16)
+                ref(getattr(lax, op), x.astype(dt), same=True)
+            return fn
+        case(f"lax.{op} {dt}")(mk(op, dt))
 case("lax.integer_pow")(lambda: ref(lambda x: lax.integer_pow(x, 3), A(64)))
 case("lax.eq/lt/select")(lambda: ref(lambda x, y: lax.select(lax.lt(x, y), x, lax.mul(y, 2.0)), A(64), A(64)[::-1]))
 case("lax.clamp")(lambda: ref(lambda x: lax.clamp(-1.0, x, 1.0), A(64)))
@@ -140,6 +150,17 @@ case("lax.iota")(lambda: ref(lambda: lax.iota(jnp.int32, 100).astype(f32)))
 case("lax.full_like")(lambda: ref(lambda x: lax.full_like(x, 3.0), A(64)))
 case("lax.gather")(lambda: ref(lambda x, i: x[i], A(64), jnp.array([3, 5, 7, 63])))
 case("lax.gather 2d")(lambda: ref(lambda x, i: x[i, :], A(16, 8), jnp.array([3, 5])))
+# Computed, clamped indices (x[::-2] as JAX's GATHER indexing strategy
+# writes it): Metal miscompiled the clamp's compare and select, and rows
+# past the first loaded zeros.
+_rows = lax.GatherDimensionNumbers(offset_dims=(1,), collapsed_slice_dims=(0,), start_index_map=(0,))
+case("lax.gather computed negative stride")(lambda: ref(
+    lambda x: lax.rev(lax.gather(x, (lax.rev(lax.iota(jnp.int32, 5), (0,)) * -2 + 9)[:, None],
+                                 _rows, (1, 8), mode="clip"), (0,)),
+    np.arange(80, dtype=np.int32).reshape(10, 8), same=True))
+case("jnp.compress size")(lambda: ref(
+    lambda c, a: jnp.compress(c, a, axis=1, size=4, fill_value=1),
+    np.array([True, False, True, True]), np.arange(1, 5, dtype=np.int32).reshape(1, 4), same=True))
 case("lax.scatter")(lambda: ref(lambda x: x.at[jnp.array([1, 3])].set(9.0), A(64)))
 case("lax.scatter_add")(lambda: ref(lambda x: x.at[jnp.array([1, 1, 3])].add(1.0), A(64)))
 # Below 32 bits XLA has no direct atomic: these go through a compare-and-swap
