@@ -45,7 +45,7 @@ need retuned tolerances.
   - Converting a float32 subnormal to bfloat16 at run time gives +-0
     (Metal's conversion flushes; CPU keeps it): `x.astype(bfloat16)` for
     |x| < 1.18e-38, and `jnp.spacing` of bfloat16 subnormals and zero (0;
-    CPU 9.2e-41), whose fallback is computed in float32. Arithmetic that
+    CPU 9.2e-41: it computes those in float32 and converts back). Arithmetic that
     lands in that range flushes on both; float16 is unaffected.
 - **`atan2(+-0, negative)`** is float32(pi) = 3.1415927, correctly rounded;
   CPU gives one ulp less.

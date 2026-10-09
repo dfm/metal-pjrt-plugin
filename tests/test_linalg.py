@@ -450,10 +450,14 @@ def test_tridiagonal_solve_lowers_to_gtsv():
   # float32 goes to LAPACK (pivoting); complex64 and perturb_singular keep
   # JAX's generic path.
   from metal_testing import metal
-  f32 = [jax.ShapeDtypeStruct((4,), np.float32)] * 3 + [
-      jax.ShapeDtypeStruct((4, 1), np.float32)]
-  c64 = [jax.ShapeDtypeStruct(a.shape, np.complex64) for a in f32]
-  solve = jax.jit(jax.lax.linalg.tridiagonal_solve, device=metal())
-  assert "metal$lapack_gtsv" in solve.lower(*f32).as_text()
-  assert "metal$lapack_gtsv" not in solve.lower(*c64).as_text()
+  on_metal = jax.sharding.SingleDeviceSharding(metal())
+  def args(dtype):
+    return [jax.ShapeDtypeStruct(s, dtype, sharding=on_metal)
+            for s in ((4,), (4,), (4,), (4, 1))]
+  solve = jax.jit(jax.lax.linalg.tridiagonal_solve,
+                  static_argnames="perturb_singular")
+  assert "metal$lapack_gtsv" in solve.lower(*args(np.float32)).as_text()
+  assert "metal$lapack_gtsv" not in solve.lower(*args(np.complex64)).as_text()
+  with pytest.raises(NotImplementedError, match="perturb_singular"):
+    solve.lower(*args(np.float32), perturb_singular=True)
 
