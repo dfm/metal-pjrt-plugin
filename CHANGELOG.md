@@ -8,6 +8,13 @@ change was made.
 
 ### 2026-10-08
 
+- Short-row sorts (the bitonic network, rows of up to 64) run one kernel
+  per network step, as designed: XLA had fused the whole network into the
+  sort's consumer, which then recomputed every earlier step per element
+  (2^steps work), in a form the Metal compiler miscompiled.
+  `v[:, jnp.argsort(s, descending=True)]` picked wrong columns, and with
+  it complex64 `jnp.linalg.svd` (JAX's QDWH path) returned wrong factors.
+  An optimization barrier after each step keeps them apart.
 - Three silent wrong answers fixed, found by running JAX's own tests:
   `lax.population_count`/`clz` (and `jnp.bitwise_count`) on 8-bit
   integers counted the sign-extended 32-bit value; and a gather whose

@@ -124,13 +124,19 @@ ENTRY e {
     std::unique_ptr<HloModule> module = std::move(module_or).value();
     MetalSortExpander pass;
     ASSERT_TRUE(RunHloPass(&pass, module.get()).ok());
-    int whiles = 0;
+    int whiles = 0, barriers = 0;
     for (const HloComputation* c : module->computations()) {
       for (const HloInstruction* i : c->instructions()) {
         whiles += i->opcode() == HloOpcode::kWhile;
+        barriers += i->opcode() == HloOpcode::kOptimizationBarrier;
       }
     }
     EXPECT_EQ(whiles, n <= 64 ? 0 : 1) << "n=" << n;
+    // One barrier per straight-line substage, so none fuses into another's
+    // consumers; the while loop's odd step (if any) has one too.
+    const int lg = 64 - __builtin_clzll(n - 1);  // log2 of the padded n
+    const int steps = lg * (lg + 1) / 2;
+    EXPECT_EQ(barriers, n <= 64 ? steps : steps % 2) << "n=" << n;
     // Still sorts correctly.
     std::mt19937 rng(n);
     std::vector<Literal> args;

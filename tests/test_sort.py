@@ -95,6 +95,23 @@ def test_radix_sort_key_types(dtype):
         same_bits(run_on(metal(), fn, x, v), run_on(cpu(), fn, x, v))
 
 
+def test_bitonic_argsort_feeding_a_gather():
+    # A short-row argsort (the bitonic network) whose indices feed a
+    # gather, as in v[:, argsort(s)]. XLA used to fuse the whole network
+    # into the gather, recomputing every substage per element (2^steps work)
+    # in a form the Metal compiler miscompiled: wrong columns for descending
+    # order, even in f32. Each substage is now its own fusion.
+    rng = np.random.default_rng(0)
+    for n in (6, 8, 33, 64):
+        v = rng.standard_normal((n, n)).astype(np.float32)
+        s = rng.standard_normal(n).astype(np.float32)
+        for desc in (False, True):
+            f = jax.jit(lambda v, s, desc=desc: v[:, jnp.argsort(s, descending=desc)])
+            np.testing.assert_array_equal(run_on(metal(), f, v, s),
+                                          run_on(cpu(), f, v, s),
+                                          err_msg=f"n={n} descending={desc}")
+
+
 def test_tiny_rows_stay_bitonic():
     # 1000 rows of 32 and (rows, 4) int32 key/value sorts: more than
     # 16384 elements, but the bitonic network is faster than one threadgroup
