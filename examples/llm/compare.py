@@ -28,7 +28,8 @@ def run(cmd, env=None):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--mlx-python", required=True)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--rounds", type=int, default=3)
@@ -37,7 +38,7 @@ def main():
     ap.add_argument("--wrap", default="", help="command prefix for each arm")
     args = ap.parse_args()
     lock = shlex.split(args.wrap)
-    env = {**os.environ, "JAX_PLATFORMS": "mtl,cpu"}
+    env = {**os.environ, "JAX_PLATFORMS": os.environ.get("JAX_PLATFORMS", "mtl,cpu")}
     common = ["--model", args.model, "--prompts", args.prompts]
     ms = collections.defaultdict(list)       # (impl, quant, case) -> [ms]
     for r in range(args.rounds):
@@ -49,7 +50,7 @@ def main():
                     ("mlx-lm", [args.mlx_python, os.path.join(HERE, "mlx_baseline.py"),
                                 *common, *mflags], None)):
                 for row in run(lock + cmd, e):
-                    if row["case"] != "peak_memory_gb":
+                    if not row["case"].startswith("peak_"):
                         ms[impl, q, row["case"]].append(row["ms"])
                 print(f"round {r + 1}: {impl} {q} done", file=sys.stderr, flush=True)
 

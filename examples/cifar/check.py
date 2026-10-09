@@ -6,8 +6,8 @@
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 
-On one batch of 256 CIFAR-10 training images (random images if the data
-is not downloaded yet), compares the logits, the loss and the gradient of
+On one batch of 256 CIFAR-10 training images (random images if CIFAR-10
+can't be downloaded), compares the logits, the loss and the gradient of
 every parameter with float32 on CPU, computed in float32 and in bfloat16
 on the default device, and in bfloat16 on CPU as a control. Reports the
 relative error (|a - b| / |b| over the whole array) per parameter; exit
@@ -30,7 +30,8 @@ def batch(n=256):
     try:
         tx, ty, _, _ = ab.load_cifar10()
         return tx[:n], ty[:n], "CIFAR-10"
-    except Exception:                      # offline: shapes are what matters
+    except OSError as e:                   # offline: shapes are what matters
+        print(f"CIFAR-10 unavailable ({e}); using random images", file=sys.stderr)
         rng = np.random.default_rng(0)
         return (rng.integers(0, 256, (n, 32, 32, 3), dtype=np.uint8),
                 rng.integers(0, 10, n).astype(np.int32), "random")

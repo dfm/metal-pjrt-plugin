@@ -4,8 +4,8 @@
 
 One forward function serves both prefill (T prompt tokens) and decode
 (T = 1): it writes the new keys and values into a fixed-size KV cache at
-position `pos` and attends over the whole cache with a causal mask, so every
-shape is static and each (batch, T) pair compiles once.
+position `pos` and attends over a window of the cache with a causal mask, so
+every shape is static and each (batch, T, window) compiles once.
 
 The layers are a Python list, unrolled at trace time, each with its own
 cache arrays. A `lax.scan` over stacked layers compiles faster but costs

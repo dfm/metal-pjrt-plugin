@@ -24,11 +24,14 @@ Every timed region ends with `jax.block_until_ready` on all outputs.
   decode_fused  all steps in one jitted while loop: the device-only cost.
 With --batch B, tok_s counts all B sequences.
 
+Needs the repository's bench/ directory (bench/common.py), so run it from a
+checkout rather than copying it out on its own.
+
 Decode starts after a `--context`-token prompt (prefilled outside the
 timing). Attention reads a window of the `--max-len` cache that covers the
 context (generate.Engine.window).
 """
-import argparse, os, sys, time
+import argparse, os, resource, sys, time
 
 import jax
 import numpy as np
@@ -61,7 +64,8 @@ def compile_s(jitted, *args):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--model", default="Qwen/Qwen3-0.6B")
     ap.add_argument("--max-len", type=int, default=1024)
     ap.add_argument("--prompts", default="16,128,512")
@@ -140,10 +144,9 @@ def main():
         emit(case, ts, S, tok_s=round(args.batch * S / np.median(ts) * 1e3, 1),
              compile_s=c, **more)
 
-    mem = jax.devices()[0].memory_stats() or {}
-    if "peak_bytes_in_use" in mem:
-        common.emit(backend, "peak_memory_gb", 0, 0,
-                    {**extra, "value": round(mem["peak_bytes_in_use"] / 1e9, 2)})
+    # The process's peak resident memory (macOS reports ru_maxrss in bytes).
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    common.emit(backend, "peak_rss_gb", 0, 0, {**extra, "value": round(peak / 1e9, 2)})
 
 
 if __name__ == "__main__":

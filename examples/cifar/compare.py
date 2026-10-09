@@ -115,8 +115,11 @@ def main():
         if rc:
             sys.exit(f"warm-up run failed: {err}")
         print(json.dumps({"warmup_run": True, "wall_s": round(time.time() - t0, 1)}), flush=True)
-        arms = [(name, lambda seed, n=1, more=tuple(shlex.split(v)): jax_cmd(seed, n, more), env)
-                for name, v in variants]
+        def variant(flags):
+            more = tuple(shlex.split(flags))
+            return lambda seed, n=1: jax_cmd(seed, n, more)
+
+        arms = [(name, variant(v), env) for name, v in variants]
         arms += [("torch", torch_cmd, tenv)] if args.torch_python else []
         for seed in range(1, args.runs + 1):
             for name, cmd, e in arms:

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generate text with Qwen3 in pure JAX.
 
-  JAX_PLATFORMS=mtl,cpu python examples/llm/generate.py "Why is the sky blue?"
+  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/generate.py "Why is the sky blue?"
 
 The prompt is wrapped in Qwen3's chat template (thinking off unless
 --think). Decoding runs one jitted step per token from Python, which lets

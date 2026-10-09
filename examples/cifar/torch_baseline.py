@@ -239,7 +239,8 @@ def train(seed, data, epochs, dtype):
 
 
 def main():
-    ap = argparse.ArgumentParser()
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--seed", type=int, default=1, help="seed of the first run")
     ap.add_argument("--epochs", type=float, default=HYP["epochs"])
@@ -272,6 +273,8 @@ def main():
         row = {**info, **train(args.seed + r, data, args.epochs, dtype)}
         rows.append(row)
         print(json.dumps(row), flush=True)
+    if not rows:
+        return
     accs = np.array([r["acc"] for r in rows])
     times = np.array([r["train_s"] for r in rows])
     sd = lambda a: round(float(a.std(ddof=1)), 4) if len(a) > 1 else 0.0
