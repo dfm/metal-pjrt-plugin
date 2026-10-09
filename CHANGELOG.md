@@ -6,6 +6,16 @@ change was made.
 
 ## Unreleased
 
+### 2026-10-09
+
+- float32 `lax.linalg.tridiagonal_solve` runs Accelerate's `sgtsv`
+  (`metal$lapack_gtsv`), which pivots, as JAX's CPU and CUDA lowerings do.
+  It used JAX's generic Thomas algorithm, which does not, so a system
+  needing pivoting (a zero or small leading pivot) silently returned NaN.
+  complex64 still takes the generic path.
+- docs/accuracy.md: converting a float32 subnormal to bfloat16 flushes it to
+  zero on Metal (so `jnp.spacing` of bfloat16 subnormals is 0).
+
 ### 2026-10-08
 
 - Short-row sorts (the bitonic network, rows of up to 64) run one kernel

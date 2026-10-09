@@ -157,6 +157,23 @@ CHECKS = {
     "complex solve 12": (lambda a, b: jnp.linalg.solve(a + 4 * jnp.eye(12), b), cmat(12, 12), cmat(12, 3)),
     "complex inv 12": (lambda a: jnp.linalg.inv(a + 4 * jnp.eye(12)), cmat(12, 12)),
     "complex slogdet 12": (lambda a: jnp.linalg.slogdet(a + 4 * jnp.eye(12)), cmat(12, 12)),
+    # LAPACK's gtsv pivots; JAX's generic algorithm gave NaN on these two
+    # (JAX's linalg_test: a zero, then a small, leading pivot).
+    "tridiagonal_solve pivoting": (
+        lambda dl, d, du, b: jax.lax.linalg.tridiagonal_solve(dl, d, du, b),
+        np.array([0, 2, -2, 3], np.float32), np.array([1, 4, 1, -1], np.float32),
+        np.array([2, -1, 1, 0], np.float32), np.array([[1], [2], [3], [4]], np.float32)),
+    "tridiagonal_solve pivoting last rows": (
+        lambda dl, d, du, b: jax.lax.linalg.tridiagonal_solve(dl, d, du, b),
+        np.array([0, 1, -6, 1], np.float32), np.array([1, -1, 2, 1], np.float32),
+        np.array([2, 1, -1, 0], np.float32), np.array([[1], [2], [-1], [-2]], np.float32)),
+    "tridiagonal_solve batched": (
+        lambda dl, d, du, b: jax.lax.linalg.tridiagonal_solve(dl, d, du, b),
+        mat(3, 40), mat(3, 40), mat(3, 40), mat(3, 40, 2)),
+    "grad tridiagonal_solve": (
+        lambda dl, d, du, b: jax.grad(lambda *a: jnp.sum(
+            jax.lax.linalg.tridiagonal_solve(*a) ** 2), argnums=(0, 1, 2, 3))(dl, d, du, b),
+        mat(40), mat(40) + 4, mat(40), mat(40, 2)),
 }
 
 
@@ -219,6 +236,8 @@ ULPS = {
     # LAPACK). CPU float32 measures 6.2 / 3.2 / 4.9 / 3.4 on these inputs.
     'complex lu 12': 14, 'complex solve 12': 21, 'complex inv 12': 9,
     'complex slogdet 12': 10,
+    # gtsv is the same Accelerate routine as on CPU: 7.26 / 16.6 there.
+    'tridiagonal_solve batched': 15, 'grad tridiagonal_solve': 36,
 }
 
 
@@ -425,3 +444,16 @@ def test_complex_lu_pivoting_overwrites_rows():
   u = np.triu(lu)
   err = np.abs(l @ u - a[perm]).max() / np.abs(a).max()
   assert err < 1e-5, err
+
+
+def test_tridiagonal_solve_lowers_to_gtsv():
+  # float32 goes to LAPACK (pivoting); complex64 and perturb_singular keep
+  # JAX's generic path.
+  from metal_testing import metal
+  f32 = [jax.ShapeDtypeStruct((4,), np.float32)] * 3 + [
+      jax.ShapeDtypeStruct((4, 1), np.float32)]
+  c64 = [jax.ShapeDtypeStruct(a.shape, np.complex64) for a in f32]
+  solve = jax.jit(jax.lax.linalg.tridiagonal_solve, device=metal())
+  assert "metal$lapack_gtsv" in solve.lower(*f32).as_text()
+  assert "metal$lapack_gtsv" not in solve.lower(*c64).as_text()
+

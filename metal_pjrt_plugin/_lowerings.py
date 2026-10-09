@@ -40,8 +40,9 @@ the ownership table). The generic rules and the TPU ``eigh`` rule
 unsupported options and METAL_PJRT_DISABLE_LAPACK.
 
 Primitives that already lower via generic rules and need nothing here:
-lu_pivots_to_permutation, tridiagonal_solve, threefry2x32, rng_bit_generator, approx_top_k
-(generic fallback), cholesky_update, symmetric_product.
+lu_pivots_to_permutation, threefry2x32, rng_bit_generator, approx_top_k
+(generic fallback), cholesky_update, symmetric_product. (tridiagonal_solve
+is in _linalg_lowerings.py: float32 goes to LAPACK's gtsv, which pivots.)
 
 Deliberately NOT registered (no platform-independent implementation exists
 in JAX; unsupported on TPU too): eig, schur, hessenberg, tridiagonal, geqp3.

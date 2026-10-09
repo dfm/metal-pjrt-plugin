@@ -20,9 +20,13 @@ Who owns which primitive (float32; other dtypes take the fallback):
   householder_product  here     metal$lapack_orgqr        [2] -> QrExpander
   eigh                 here     metal$lapack_syevd        _eigh_tpu_lowering
   svd                  here     metal$lapack_gesdd[_novec]  _svd_tpu_lowering_rule
+  tridiagonal_solve    here     metal$lapack_gtsv         _tridiagonal_solve_jax [3]
 
   [1] MetalLinalgRewriter (metal_pjrt/linalg/linalg_rewriter.cc)
   [2] the ProductOfElementaryHouseholderReflectors custom call
+  [3] JAX's generic Thomas algorithm, which does not pivot: a system that
+      needs pivoting (a zero or small leading pivot) gives NaN or garbage.
+      gtsv pivots, as JAX's CPU and CUDA lowerings do.
 
 cholesky_p and triangular_solve_p need nothing here: their generic lowerings
 emit the HLO ``cholesky`` / ``triangular_solve`` ops, which the compiler's
@@ -30,7 +34,8 @@ MetalLinalgRewriter turns into the custom calls at the start of
 RunHloPasses. getrf returns lu, 0-based pivots and the permutation.
 
 Unsupported options (eigh/svd subsets, Jacobi/polar/QDWH algorithms, m < n
-householder products, dynamic shapes) take the fallback too.
+householder products, tridiagonal_solve's perturb_singular, dynamic shapes)
+take the fallback too.
 ``METAL_PJRT_DISABLE_LAPACK=1`` is the one switch for both owners: every rule
 here and the C++ rewriter restore the fallbacks (for A/B comparisons). Both
 read it once per process, as the persistent compilation cache key does
@@ -139,7 +144,19 @@ def register() -> None:
     _, s = rule(ctx, operand)
     return [s]
 
+  # tridiagonal_solve ------------------------------------------------------
+  tridiagonal_fallback = mlir.lower_fun(ll._tridiagonal_solve_jax,
+                                        multiple_results=False)
+
+  def tridiagonal_rule(ctx, dl, d, du, b, *, perturb_singular):
+    if perturb_singular or not ok(ctx):
+      return tridiagonal_fallback(ctx, dl, d, du, b,
+                                  perturb_singular=perturb_singular)
+    return ffi("metal$lapack_gtsv", operand_output_aliases={3: 0})(
+        ctx, dl, d, du, b)
+
   for prim, rule in ((ll.lu_p, lu_rule), (ll.geqrf_p, geqrf_rule),
                      (ll.householder_product_p, householder_rule),
-                     (ll.eigh_p, eigh_rule), (ll.svd_p, svd_rule)):
+                     (ll.eigh_p, eigh_rule), (ll.svd_p, svd_rule),
+                     (ll.tridiagonal_solve_p, tridiagonal_rule)):
     mlir.register_lowering(prim, rule, platform=PLATFORM)

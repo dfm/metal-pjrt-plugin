@@ -42,6 +42,11 @@ need retuned tolerances.
     1e-40`, CPU 0).
   - `rem(x, 1e-40)` is NaN; CPU gives +-0.
   - `atan2(1e-40, 0)` is 0; CPU gives 1e-40.
+  - Converting a float32 subnormal to bfloat16 at run time gives +-0
+    (Metal's conversion flushes; CPU keeps it): `x.astype(bfloat16)` for
+    |x| < 1.18e-38, and `jnp.spacing` of bfloat16 subnormals and zero (0;
+    CPU 9.2e-41), whose fallback is computed in float32. Arithmetic that
+    lands in that range flushes on both; float16 is unaffected.
 - **`atan2(+-0, negative)`** is float32(pi) = 3.1415927, correctly rounded;
   CPU gives one ulp less.
 - **tinygp's parallel solver** (quasisep-par) at n = 200000 gives a mean
