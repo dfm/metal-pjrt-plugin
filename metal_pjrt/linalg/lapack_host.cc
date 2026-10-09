@@ -41,6 +41,8 @@ void sgesdd_(const char* jobz, const int* m, const int* n, float* a,
              const int* lda, float* s, float* u, const int* ldu, float* vt,
              const int* ldvt, float* work, const int* lwork, int* iwork,
              int* info) METAL_PJRT_NEW_LAPACK(sgesdd);
+void sgtsv_(const int* n, const int* nrhs, float* dl, float* d, float* du,
+            float* b, const int* ldb, int* info) METAL_PJRT_NEW_LAPACK(sgtsv);
 void cblas_strsm(int order, int side, int uplo, int transa, int diag, int m,
                  int n, float alpha, const float* a, int lda, float* b,
                  int ldb) METAL_PJRT_NEW_LAPACK(cblas_strsm);
@@ -153,6 +155,28 @@ absl::Status HostGetrf(float* x, int32_t* pivots, int32_t* permutation,
       pb[i] -= 1;  // 1-based to 0-based
       std::swap(qb[i], qb[pb[i]]);
     }
+  }
+  return absl::OkStatus();
+}
+
+absl::Status HostGtsv(const float* dl, const float* d, const float* du,
+                      float* x, int64_t batch, int n, int nrhs) {
+  constexpr char kName[] = "metal$lapack_gtsv";
+  if (n == 0 || nrhs == 0) return absl::OkStatus();
+  // sgtsv overwrites the diagonals; the operands stay intact.
+  std::vector<float> l(std::max(n - 1, 1)), m(n), u(std::max(n - 1, 1));
+  const int ldb = n;
+  for (int64_t b = 0; b < batch; ++b) {
+    const int64_t o = b * n;
+    // JAX's dl[0] and du[n - 1] lie outside the matrix.
+    std::copy(dl + o + 1, dl + o + n, l.begin());
+    std::copy(d + o, d + o + n, m.begin());
+    std::copy(du + o, du + o + n - 1, u.begin());
+    float* xb = x + b * int64_t{n} * nrhs;
+    int info = 0;
+    sgtsv_(&n, &nrhs, l.data(), m.data(), u.data(), xb, &ldb, &info);
+    if (info < 0) return LapackError(kName, info);
+    if (info > 0) std::fill(xb, xb + int64_t{n} * nrhs, kNaN);
   }
   return absl::OkStatus();
 }

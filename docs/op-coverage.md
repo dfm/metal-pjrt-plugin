@@ -38,7 +38,7 @@ lists the messages and what to do about each.
 | Matmul and sort of complex64 | yes | a complex matmul runs as four real f32 ones; sorts are bit-identical to CPU | `test_lax.py` |
 | Convolutions | yes | 1-D and 2-D f32/f16/bf16, forward and gradients, on MLX's steel convolution kernels. Grouped, 3-D, other types and tiny ones run on XLA's (slow) loop emitter. Complex64 convolutions work | `test_conv.py`, `test_lax.py` |
 | Sorting (`sort`, `argsort`, `top_k`, `searchsorted`) | yes | a GPU radix sort for large arrays; bit-identical to CPU | `test_sort.py`, `test_lax.py` |
-| Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`), with gradients | yes | Accelerate's LAPACK on the host, on the shared memory (small matrices on GPU kernels). f16/bf16 linear algebra is untested | `test_linalg.py` |
+| Linear algebra in f32 (`cholesky`, `solve`, `triangular_solve`, `lu`, `qr`, `eigh`, `svd`, `inv`, `det`, `tridiagonal_solve`), with gradients | yes | Accelerate's LAPACK on the host, on the shared memory (small matrices on GPU kernels). f16/bf16 linear algebra is untested. complex64 `tridiagonal_solve` uses JAX's generic algorithm, which does not pivot (a system needing pivoting gives NaN), and `perturb_singular=True` is refused | `test_linalg.py` |
 | `eig`, `schur`, `hessenberg`, `tridiagonal` | no | no lowering for mtl (JAX: "MLIR translation rule for primitive 'eig' not found for platform mtl") | |
 | FFT (`jnp.fft`: fft, rfft, irfft, fftn, ...) | yes | MLX's FFT kernels, complex64 / float32, with gradients and vmap. Lengths up to 2^24 for powers of two, otherwise up to 2^23 - 1; longer ones raise NotImplementedError. complex128 is refused like float64 | `test_fft.py` |
 | `pure_callback`, `io_callback`, `jax.debug.print`, `jax.debug.callback` | yes | synchronous; sub-byte dtypes such as int4 are refused ([`callbacks.md`](callbacks.md)) | `test_callbacks.py` |
@@ -98,7 +98,7 @@ opcode".
 | rng (HLO kRng) | legacy IR | NO | `jax.lax.rng_uniform`; refused naming the op |
 | mulhi, 64-bit | i128 multiply | NO | refused naming the op; 8 to 32 bits work |
 | cholesky, triangular-solve | `metal$cholesky` / `metal$triangular_solve` (Accelerate, f32) | OK | host LAPACK on the shared buffers after a stream sync; `METAL_PJRT_DISABLE_LAPACK=1` restores XLA's expanders. `tests/test_linalg.py` |
-| lu, geqrf, householder_product, eigh, svd | `_linalg_lowerings.py` -> `metal$lapack_*` (f32) | OK | other dtypes fall back to JAX's generic paths |
+| lu, geqrf, householder_product, eigh, svd, tridiagonal_solve | `_linalg_lowerings.py` -> `metal$lapack_*` (f32; `gtsv` for tridiagonal_solve) | OK | other dtypes fall back to JAX's generic paths (tridiagonal_solve's does not pivot) |
 | fft | `_lowerings.py` -> one `metal$fft` call per axis (`metal_pjrt/fft`). complex128, a symbolic batch or `METAL_PJRT_DISABLE_FFT=1` take a dense DFT (n <= 46340). The HLO `fft` op itself is refused: XLA's is cuFFT-only | OK | `tests/test_fft.py`, `fft:fft_test` |
 | eig, schur, hessenberg, tridiagonal, geqp3 | no lowering for mtl (TPU lacks them too) | NO | |
 | cuDNN, Triton, CUTLASS, PTX custom kernels | | not produced | |

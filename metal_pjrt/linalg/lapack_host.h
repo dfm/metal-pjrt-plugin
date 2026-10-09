@@ -39,6 +39,14 @@ void HostTriangularSolve(const float* a, float* x, int64_t batch, int m,
 absl::Status HostGetrf(float* x, int32_t* pivots, int32_t* permutation,
                        int64_t batch, int m, int n);
 
+// sgtsv (Gaussian elimination with partial pivoting): x[b] (n x nrhs,
+// holding B) := X with A X = B, A[b] tridiagonal with sub-, main and
+// super-diagonals dl[b], d[b], du[b] (n each, as JAX passes them: dl[b][0]
+// and du[b][n - 1] are ignored). The diagonals are not modified. A singular
+// A makes that X all NaN (as on JAX's CPU backend).
+absl::Status HostGtsv(const float* dl, const float* d, const float* du,
+                      float* x, int64_t batch, int n, int nrhs);
+
 // sgeqrf: R and the Householder vectors in x, taus[b] (min(m, n)).
 absl::Status HostGeqrf(float* x, float* taus, int64_t batch, int m, int n);
 

@@ -40,6 +40,8 @@
 //     metal$lapack_gesdd(a[..., m, n]) -> (a (scratch), s, u, vt);
 //       attr full_matrices (bool)
 //     metal$lapack_gesdd_novec(a[..., m, n]) -> (a (scratch), s)
+//     metal$lapack_gtsv(dl[..., n], d[..., n], du[..., n], b[..., n, k])
+//       -> x[..., n, k]; a singular system makes that x NaN
 //   A failed factorization (info != 0) turns that batch element's outputs
 //   into NaN, as JAX's CPU lowering does; getrf only fails on bad arguments
 //   (singular matrices are not an error, as on CPU).
@@ -378,6 +380,35 @@ absl::Status GesddNoVec(stream_executor::Stream* stream, xffi::AnyBuffer a,
                    /*full_matrices=*/false);
 }
 
+absl::Status Gtsv(stream_executor::Stream* stream, xffi::AnyBuffer dl,
+                  xffi::AnyBuffer d, xffi::AnyBuffer du, xffi::AnyBuffer b,
+                  xffi::Result<xffi::AnyBuffer> x) {
+  constexpr char kName[] = "metal$lapack_gtsv";
+  for (const xffi::AnyBuffer* t : {&dl, &d, &du, &b}) {
+    if (absl::Status s = CheckF32(kName, t->element_type()); !s.ok()) return s;
+  }
+  absl::StatusOr<MatrixDims> db = GetMatrixDims(kName, b.dimensions());
+  if (!db.ok()) return db.status();
+  for (const xffi::AnyBuffer* t : {&dl, &d, &du}) {
+    if (static_cast<int64_t>(t->element_count()) != db->batch * db->rows) {
+      return absl::InvalidArgumentError(
+          "metal$lapack_gtsv: diagonals must have batch * n elements");
+    }
+  }
+  if (absl::Status s = CheckResult(kName, "x", *x, xla::F32,
+                                   b.element_count());
+      !s.ok()) {
+    return s;
+  }
+  if (absl::Status s = SyncStream(stream); !s.ok()) return s;
+  float* xp = static_cast<float*>(x->untyped_data());
+  CopyIfDistinct(xp, b.untyped_data(), b.size_bytes());
+  return HostGtsv(static_cast<const float*>(dl.untyped_data()),
+                  static_cast<const float*>(d.untyped_data()),
+                  static_cast<const float*>(du.untyped_data()), xp, db->batch,
+                  static_cast<int>(db->rows), static_cast<int>(db->cols));
+}
+
 }  // namespace
 
 XLA_FFI_DEFINE_HANDLER(kMetalCholesky, Cholesky,
@@ -438,6 +469,15 @@ XLA_FFI_DEFINE_HANDLER(kMetalGesddNoVec, GesddNoVec,
                            .Ret<xffi::AnyBuffer>()
                            .Ret<xffi::AnyBuffer>());
 
+XLA_FFI_DEFINE_HANDLER(kMetalGtsv, Gtsv,
+                       xffi::Ffi::Bind()
+                           .Ctx<xffi::Stream>()
+                           .Arg<xffi::AnyBuffer>()
+                           .Arg<xffi::AnyBuffer>()
+                           .Arg<xffi::AnyBuffer>()
+                           .Arg<xffi::AnyBuffer>()
+                           .Ret<xffi::AnyBuffer>());
+
 XLA_FFI_REGISTER_HANDLER(xffi::GetXlaFfiApi(), "metal$cholesky", "METAL",
                          kMetalCholesky);
 XLA_FFI_REGISTER_HANDLER(xffi::GetXlaFfiApi(), "metal$triangular_solve",
@@ -454,6 +494,8 @@ XLA_FFI_REGISTER_HANDLER(xffi::GetXlaFfiApi(), "metal$lapack_gesdd", "METAL",
                          kMetalGesdd);
 XLA_FFI_REGISTER_HANDLER(xffi::GetXlaFfiApi(), "metal$lapack_gesdd_novec",
                          "METAL", kMetalGesddNoVec);
+XLA_FFI_REGISTER_HANDLER(xffi::GetXlaFfiApi(), "metal$lapack_gtsv", "METAL",
+                         kMetalGtsv);
 
 }  // namespace linalg
 }  // namespace metal_pjrt

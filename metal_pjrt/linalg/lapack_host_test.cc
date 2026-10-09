@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <random>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -213,6 +214,68 @@ TEST(LapackHostTest, Getrf) {
           ASSERT_NEAR(s, a[e * m * n + j * m + perm[e * m + i]],
                       64 * k * kU32)
               << "b " << e << " (" << i << ", " << j << ")";
+        }
+      }
+    }
+  }
+}
+
+// JAX's two pivoting cases (linalg_test: a zero or small leading pivot),
+// a singular system (NaN), and random batched systems by their residual.
+TEST(LapackHostTest, GtsvPivots) {
+  struct Case {
+    std::vector<float> dl, d, du, b, want;
+  };
+  const std::vector<Case> cases = {
+      {{0, 2, -2, 3}, {1, 4, 1, -1}, {2, -1, 1, 0}, {1, 2, 3, 4},
+       {8, -3.5f, 0, -4}},
+      {{0, 1, -6, 1}, {1, -1, 2, 1}, {2, 1, -1, 0}, {1, 2, -1, -2},
+       {5, -2, -5, 3}},
+  };
+  for (const Case& c : cases) {
+    std::vector<float> x = c.b;
+    ASSERT_THAT(HostGtsv(c.dl.data(), c.d.data(), c.du.data(), x.data(), 1, 4,
+                         1),
+                IsOk());
+    for (int i = 0; i < 4; ++i) EXPECT_NEAR(x[i], c.want[i], 1e-5) << i;
+  }
+  const std::vector<float> zeros(3, 0.0f);
+  std::vector<float> x = {1, 1, 1};
+  ASSERT_THAT(HostGtsv(zeros.data(), zeros.data(), zeros.data(), x.data(), 1,
+                       3, 1),
+              IsOk());
+  for (float v : x) EXPECT_TRUE(std::isnan(v));
+  EXPECT_THAT(HostGtsv(nullptr, nullptr, nullptr, nullptr, 3, 0, 2), IsOk());
+}
+
+TEST(LapackHostTest, Gtsv) {
+  std::mt19937 rng(7);
+  for (auto [batch, n, nrhs] : {std::tuple{1, 1, 1}, std::tuple{3, 2, 2},
+                                std::tuple{4, 50, 3}}) {
+    std::vector<float> dl = Random(rng, batch * n), d = Random(rng, batch * n),
+                       du = Random(rng, batch * n);
+    const std::vector<float> b = Random(rng, batch * n * nrhs);
+    const std::vector<float> dl0 = dl, d0 = d, du0 = du;
+    std::vector<float> x = b;
+    ASSERT_THAT(HostGtsv(dl.data(), d.data(), du.data(), x.data(), batch, n,
+                         nrhs),
+                IsOk());
+    EXPECT_EQ(dl, dl0);
+    EXPECT_EQ(d, d0);
+    EXPECT_EQ(du, du0);
+    for (int k = 0; k < batch; ++k) {
+      for (int j = 0; j < nrhs; ++j) {
+        const float* xs = x.data() + (int64_t{k} * nrhs + j) * n;
+        const float* bs = b.data() + (int64_t{k} * nrhs + j) * n;
+        double scale = 0;
+        for (int i = 0; i < n; ++i) scale = std::max(scale, std::fabs(double(xs[i])));
+        for (int i = 0; i < n; ++i) {
+          const int64_t o = int64_t{k} * n + i;
+          double r = double(d[o]) * xs[i] - bs[i];
+          if (i > 0) r += double(dl[o]) * xs[i - 1];
+          if (i + 1 < n) r += double(du[o]) * xs[i + 1];
+          EXPECT_LT(std::fabs(r), 64 * n * kU32 * (1 + scale) * 4)
+              << "batch " << k << " rhs " << j << " row " << i;
         }
       }
     }
