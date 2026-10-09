@@ -398,3 +398,30 @@ def test_eigh_workspace_above_2_24():
   out = run_python(BIG_EIGH_CHILD, env)
   assert out.returncode == 0 and "err:" in out.stdout, (out.returncode, out.stdout, out.stderr[-2000:])
   assert float(out.stdout.split("err:")[1]) < 1e-5, out.stdout
+
+
+def test_complex_lu_pivoting_overwrites_rows():
+  # complex64 LU takes JAX's generic path, which swaps rows with a complex64
+  # scatter whose indices may repeat (a step whose pivot is its own row
+  # writes that row twice). That overwrite used to be refused (XLA would
+  # compare-and-swap 64 bits); the plugin now stores it as one float2.
+  # Small rows 0, 3, 6, 9 force swaps; the others leave steps that do not.
+  from metal_testing import cpu, metal, run_on
+  a = cmat(12, 12)
+  a[::3] *= 1e-3
+  f = jax.jit(jax.lax.linalg.lu)
+  text = f.lower(jax.device_put(a, metal())).compile().as_text()
+  overwrites = [l for l in text.splitlines()
+                if re.search(r"= c64\[[0-9,]+\]\S* scatter\(", l)
+                and "unique_indices=true" not in l]
+  assert overwrites, "no complex64 scatter with repeatable indices: " + text
+  lu, piv, perm = run_on(metal(), f, a)
+  _, cpu_piv, cpu_perm = run_on(cpu(), f, a)
+  np.testing.assert_array_equal(perm, cpu_perm)
+  np.testing.assert_array_equal(piv, cpu_piv)
+  steps = np.arange(12)
+  assert (piv == steps).any() and (piv != steps).any(), piv
+  l = np.tril(lu, -1) + np.eye(12)
+  u = np.triu(lu)
+  err = np.abs(l @ u - a[perm]).max() / np.abs(a).max()
+  assert err < 1e-5, err
