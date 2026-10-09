@@ -123,6 +123,47 @@ def test_bitonic_argsort_feeding_a_gather():
                                           err_msg=f"n={n} descending={desc}")
 
 
+def test_short_row_argsort_sweep():
+    # Every short-row configuration the bitonic network distinguishes: padded
+    # (non-power-of-two) and unpadded rows, 8-bit and 32-bit keys, both
+    # orders, stable and not, as one row (the case that broke), batched rows
+    # and a sort axis that is not minor. A stable descending argsort of
+    # 8-bit keys in a padded row (jnp's rev / sort / rev form) came out
+    # wrong when the first network step read its padded, reversed input
+    # through two inlined copies of one helper (self and partner), which
+    # Metal miscompiled. Padded slots must sort after every real
+    # element whatever their value, so rows whose last element is the
+    # extreme value or NaN are included.
+    rng = np.random.default_rng(0)
+    for n in (1, 2, 3, 5, 6, 7, 8, 9, 17):
+        for dt in (np.bool_, np.int8, np.int32, np.float32):
+            hi = 2 if dt == np.bool_ else 3
+            row = rng.integers(0, hi, n).astype(dt)
+            rows = rng.integers(0, hi, (4, n)).astype(dt)
+            cols = rng.integers(0, hi, (n, 3)).astype(dt)
+            rows[1, -1], rows[2, -1] = hi - 1, 0  # last element max / min
+            if dt == np.float32:
+                rows[3, -1] = np.nan
+            for desc in (False, True):
+                for stable in (False, True):
+                    f = lambda a, b, c, desc=desc, stable=stable: (
+                        jnp.argsort(a, stable=stable, descending=desc),
+                        jnp.argsort(b, axis=-1, stable=stable, descending=desc),
+                        jnp.argsort(c, axis=0, stable=stable, descending=desc))
+                    got = run_on(metal(), f, row, rows, cols)
+                    want = run_on(cpu(), f, row, rows, cols)
+                    what = f"n={n} {np.dtype(dt).name} desc={desc} stable={stable}"
+                    for g, w, x, ax in zip(got, want, (row, rows, cols), (-1, -1, 0)):
+                        if stable:
+                            np.testing.assert_array_equal(g, w, err_msg=what)
+                        else:  # equal keys in any order, but a permutation
+                            np.testing.assert_array_equal(
+                                np.sort(g, axis=ax), np.sort(w, axis=ax), err_msg=what)
+                            np.testing.assert_array_equal(
+                                np.take_along_axis(x, g, axis=ax),
+                                np.take_along_axis(x, w, axis=ax), err_msg=what)
+
+
 def test_tiny_rows_stay_bitonic():
     # 1000 rows of 32 and (rows, 4) int32 key/value sorts: more than
     # 16384 elements, but the bitonic network is faster than one threadgroup

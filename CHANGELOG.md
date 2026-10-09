@@ -15,6 +15,13 @@ change was made.
   `v[:, jnp.argsort(s, descending=True)]` picked wrong columns, and with
   it complex64 `jnp.linalg.svd` (JAX's QDWH path) returned wrong factors.
   An optimization barrier after each step keeps them apart.
+- That change broke `jnp.argsort(x, stable=True, descending=True)` of
+  8-bit keys (bool, int8) in rows whose length is not a power of two, and
+  so `jnp.compress`/`jnp.extract` with `size=` on such rows: the first
+  network step read its padded, reversed input through two inlined copies
+  of one helper (self and partner), which the Metal compiler miscompiled.
+  The network's inputs are now materialized too, so every step reads
+  plain arrays.
 - Three silent wrong answers fixed, found by running JAX's own tests:
   `lax.population_count`/`clz` (and `jnp.bitwise_count`) on 8-bit
   integers counted the sign-extended 32-bit value; and a gather whose
