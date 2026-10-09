@@ -314,10 +314,10 @@ absl::Status CheckPostGemmRewriter(const HloModule& module) {
       if (NeedsWideAtomics(*instr)) {
         if (TouchesType(*instr, {C64, C128})) {
           return absl::UnimplementedError(absl::StrCat(
-              "Metal: this scatter of complex values needs 64-bit atomics, "
-              "which Metal does not have (complex scatters that add or "
-              "overwrite are supported; other combiners need "
-              "unique_indices=True, if the indices do not repeat): ",
+              "Metal: a scatter of complex values with this combiner needs "
+              "64-bit atomics, which Metal does not have; pass "
+              "unique_indices=True if the indices do not repeat (scatters "
+              "that add the update or overwrite with it do not need it): ",
               DescribeOp(*instr)));
         }
         return absl::UnimplementedError(absl::StrCat(

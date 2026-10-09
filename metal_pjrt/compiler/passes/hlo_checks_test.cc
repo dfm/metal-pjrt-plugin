@@ -371,6 +371,19 @@ ENTRY e {
   EXPECT_NE(s.message().find("scatter of complex values"), std::string::npos)
       << s;
   EXPECT_TRUE(Check(hlo(kMultiply, true)).ok());
+  // MetalComplexScatterSplitter splits add(x, y) before this check, so an
+  // add here (add(b, b) is not split) and the no-op combiner (returns the
+  // current value) are refused like any other combiner.
+  for (const char* body :
+       {"a = c64[] parameter(0)\n  b = c64[] parameter(1)\n"
+        "  ROOT r = c64[] add(b, b)",
+        "ROOT a = c64[] parameter(0)\n  b = c64[] parameter(1)"}) {
+    absl::Status r = Check(hlo(body, false));
+    EXPECT_EQ(r.code(), absl::StatusCode::kUnimplemented) << body;
+    EXPECT_NE(r.message().find("scatter of complex values"),
+              std::string::npos)
+        << r;
+  }
 }
 
 // MetalComplexDotExpander runs before GemmRewriter, so a complex64 dot here
