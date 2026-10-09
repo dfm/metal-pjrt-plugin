@@ -109,8 +109,8 @@ for op in ["add","mul","div","rem","max","shift_left","shift_right_arithmetic","
             else: ref(getattr(lax, op), x, y)
         return fn
     case(f"lax.{op} int32")(mk(op))
-# 8-bit counts are not those of the sign-extended int (Metal's own
-# popcount/clz of an int8_t); 16 bits for good measure.
+# 8-bit counts are not those of the sign-extended int (Metal's int
+# popcount/clz, which an int8_t promotes to); 16 bits for good measure.
 for op in ["population_count", "clz"]:
     for dt in ["int8", "uint8", "int16"]:
         def mk(op, dt):

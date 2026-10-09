@@ -156,9 +156,11 @@ inline T xla_minui(T a, T b) {
   return T(min(U(a), U(b)));
 }
 
-// Bit counts. Metal computes popcount/clz/ctz of an int8_t (the emitter's
-// i8, signless) as of a sign-extended int: popcount(int8_t(-1)) is 32,
-// clz(int8_t(5)) is 29. 8-bit values go through their zero-extended uint.
+// Bit counts. The emitter's i8 is int8_t, which is signed char: a type of
+// its own, for which Metal has no popcount/clz/ctz overload (only char and
+// uchar), so C++ promotes it to a sign-extended int: popcount(int8_t(-1))
+// is 32, clz(int8_t(5)) is 29. 8-bit values go through their zero-extended
+// uint.
 template <typename T>
 inline T xla_popcount(T x) { return popcount(x); }
 template <typename T>

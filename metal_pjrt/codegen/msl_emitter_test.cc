@@ -610,8 +610,8 @@ TEST_F(MslEmitterTest, ScalarIntegerMinMaxUseBuiltins) {
   EXPECT_THAT(msl, HasSubstr(" ? "));
 }
 
-// Bit counts call the prelude's wrappers (Metal counts an int8_t as a
-// sign-extended int).
+// Bit counts call the prelude's wrappers (popcount of an int8_t, a signed
+// char, resolves to Metal's int overload and counts the sign-extended int).
 constexpr char kBitCounts[] = R"mlir(
 module {
   func.func @counts(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
