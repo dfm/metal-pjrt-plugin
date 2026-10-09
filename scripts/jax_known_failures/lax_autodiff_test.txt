@@ -5,3 +5,5 @@
 
 # UNSUPPORTED: float64 / complex128 (Apple GPUs have no double precision)
 LaxAutodiffTest::testAcoshGradLargeValuesFloat64
+LaxAutodiffTest::testAsinhAcoshGradLargeValuesFloat640
+LaxAutodiffTest::testAsinhAcoshGradLargeValuesFloat641

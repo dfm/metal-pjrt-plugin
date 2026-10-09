@@ -27,3 +27,9 @@ LaxTest::testDotAlgorithm13
 
 # UNSUPPORTED: dce_sink FFI handler not registered for METAL
 LaxTest::test_dce_sink_prevents_xla_dce
+
+# WRONG ANSWER, upstream XLA (jax-ml/jax#40849, nightly's test): nested
+# dynamic_slice with out-of-range starts clamps wrongly. XLA:CPU in jax 0.11.2
+# gives the same answers; fixed in XLA after the plugin's pin (needs a pin bump
+# or a backport)
+LaxTest::testNestedDynamicSliceOutOfBounds

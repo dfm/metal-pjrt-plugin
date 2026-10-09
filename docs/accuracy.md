@@ -52,6 +52,12 @@ need retuned tolerances.
 - **tinygp's parallel solver** (quasisep-par) at n = 200000 gives a mean
   ~1% off (1.7e5-2.0e5 ulps normwise; CPU float32 gives NaN). Cause
   unknown. `bench/tinygp_bench.py` still times it.
+- **A `dynamic_slice` of a `dynamic_slice` with out-of-range starts** can
+  read the wrong elements: XLA folds the two slices without clamping each
+  start as JAX specifies (jax-ml/jax#40849). With `x = arange(10)`,
+  `dynamic_slice(dynamic_slice(x, (9,), (4,)), (0,), (1,))` gives 9, not 6.
+  XLA:CPU in jax 0.11.2 gives the same; XLA fixed it after the plugin's
+  pin (2026-10-09). In-range starts are unaffected.
 
 ## Metal's biased math functions
 

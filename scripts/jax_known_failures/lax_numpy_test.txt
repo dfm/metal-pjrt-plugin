@@ -10,3 +10,12 @@ LaxBackedNumpyTests::testAstypeIntN2
 # UNSUPPORTED: no mtl lowering for eig, tridiagonal or geqp3 (none on TPU
 # either; _lowerings.py)
 LaxBackedNumpyTests::testPoly0
+
+# UNSUPPORTED: float64 / complex128 (Apple GPUs have no double precision)
+LaxBackedNumpyTests::testArrayExplicitDtypes
+
+# JAX, jax 0.10.x: testCross calls numpy.cross with 2-D vectors, which
+# numpy 2 rejects (the reference fails, on any backend)
+LaxBackedNumpyTests::testCross0
+LaxBackedNumpyTests::testCross1
+LaxBackedNumpyTests::testCross2
