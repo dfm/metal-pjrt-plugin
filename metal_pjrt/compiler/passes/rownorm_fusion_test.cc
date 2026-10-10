@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <gtest/gtest.h>
+#include "absl/strings/str_cat.h"
 #include "absl/strings/string_view.h"
 #include "mlir/IR/MLIRContext.h"
 #include "xla/backends/gpu/transforms/fusion_wrapper.h"
@@ -51,11 +52,26 @@ class MetalRowNormFusionTest : public HloHardwareIndependentTestBase {
 
   std::vector<const HloInstruction*> RowNormFusions(const HloModule& module) {
     std::vector<const HloInstruction*> fusions;
-    for (const HloInstruction* instr :
-         module.entry_computation()->instructions()) {
-      if (IsMetalRowNormFusion(*instr)) fusions.push_back(instr);
+    for (const HloComputation* computation :
+         module.MakeNonfusionComputations()) {
+      for (const HloInstruction* instr : computation->instructions()) {
+        if (IsMetalRowNormFusion(*instr)) fusions.push_back(instr);
+      }
     }
     return fusions;
+  }
+
+  // Instructions with `opcode` in the module's non-fusion computations and
+  // its fusions (not in reducers).
+  static int CountAll(const HloModule& module, HloOpcode opcode) {
+    int n = 0;
+    for (const HloComputation* computation : module.computations()) {
+      if (computation->IsFusionComputation() ||
+          computation == module.entry_computation()) {
+        n += Count(computation, opcode);
+      }
+    }
+    return n;
   }
 
   static int Count(const HloComputation* computation, HloOpcode opcode) {
@@ -68,7 +84,7 @@ class MetalRowNormFusionTest : public HloHardwareIndependentTestBase {
 
   // The module's result on deterministic inputs, before and after the pass
   // (HloEvaluator runs fusions through their fused computations).
-  void ExpectSameResult(absl::string_view hlo) {
+  void ExpectSameResult(absl::string_view hlo, double tolerance = 1e-5) {
     auto before = ParseAndReturnVerifiedModule(hlo);
     ASSERT_TRUE(before.ok()) << before.status();
     std::unique_ptr<HloModule> after = Run(hlo, /*expect_change=*/true);
@@ -77,21 +93,24 @@ class MetalRowNormFusionTest : public HloHardwareIndependentTestBase {
     const HloComputation* entry = (*before)->entry_computation();
     for (int i = 0; i < entry->num_parameters(); ++i) {
       const Shape& shape = entry->parameter_instruction(i)->shape();
-      Literal arg(shape);
+      Literal arg(ShapeUtil::ChangeElementType(shape, F32));
       int k = 0;
       ASSERT_TRUE(arg.Populate<float>([&](absl::Span<const int64_t>) {
                        ++k;
                        return 0.25f * ((k * 7 + i * 3) % 23) - 2.5f;
                      })
                       .ok());
-      args.push_back(std::move(arg));
+      auto converted = arg.Convert(shape.element_type());
+      ASSERT_TRUE(converted.ok()) << converted.status();
+      args.push_back(std::move(*converted));
     }
     HloEvaluator before_evaluator, after_evaluator;
     auto expected = before_evaluator.Evaluate(**before, args);
     ASSERT_TRUE(expected.ok()) << expected.status();
     auto actual = after_evaluator.Evaluate(*after, args);
     ASSERT_TRUE(actual.ok()) << actual.status();
-    EXPECT_TRUE(LiteralTestUtil::Near(*expected, *actual, ErrorSpec(1e-5)));
+    EXPECT_TRUE(
+        LiteralTestUtil::Near(*expected, *actual, ErrorSpec(tolerance)));
   }
 };
 
@@ -332,6 +351,188 @@ ENTRY e {
   ExpectSameResult(kHlo);
 }
 
+TEST_F(MetalRowNormFusionTest, FusesBf16Softmax) {
+  std::string hlo(kSoftmax);
+  for (size_t at = hlo.find("f32"); at != std::string::npos;
+       at = hlo.find("f32", at)) {
+    hlo.replace(at, 3, "bf16");
+  }
+  std::unique_ptr<HloModule> module = Run(hlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  EXPECT_EQ(RowNormFusions(*module).size(), 1) << module->ToString();
+  ExpectSameResult(hlo, /*tolerance=*/1e-2);
+}
+
+// Layer norm of a square [n, n]: the row value is broadcast along
+// dimension 0 and the weights along dimension 1, both [n].
+TEST_F(MetalRowNormFusionTest, FusesSquareLayerNorm) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  x = f32[16,16]{1,0} parameter(0)
+  w = f32[16]{0} parameter(1)
+  zero = f32[] constant(0)
+  inv_n = f32[] constant(0.0625)
+  inv_nb = f32[16]{0} broadcast(inv_n), dimensions={}
+  s = f32[16]{0} reduce(x, zero), dimensions={1}, to_apply=add_f32
+  mean = f32[16]{0} multiply(s, inv_nb)
+  meanb = f32[16,16]{1,0} broadcast(mean), dimensions={0}
+  d = f32[16,16]{1,0} subtract(x, meanb)
+  wb = f32[16,16]{1,0} broadcast(w), dimensions={1}
+  ROOT y = f32[16,16]{1,0} multiply(d, wb)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  const HloInstruction* root = module->entry_computation()->root_instruction();
+  ASSERT_TRUE(IsMetalRowNormFusion(*root)) << module->ToString();
+  EXPECT_EQ(root->operand_count(), 2);
+  ExpectSameResult(kHlo);
+}
+
+TEST_F(MetalRowNormFusionTest, FusesTwoSoftmaxes) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  x = f32[4,40]{1,0} parameter(0)
+  ninf = f32[] constant(-inf)
+  zero = f32[] constant(0)
+  mx = f32[4]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[4,40]{1,0} broadcast(mx), dimensions={0}
+  ex = f32[4,40]{1,0} subtract(x, mxb)
+  t = f32[40,4]{1,0} transpose(ex), dimensions={1,0}
+  mx2 = f32[40]{0} reduce(t, ninf), dimensions={1}, to_apply=max_f32
+  mx2b = f32[40,4]{1,0} broadcast(mx2), dimensions={0}
+  ROOT y = f32[40,4]{1,0} subtract(t, mx2b)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  EXPECT_EQ(RowNormFusions(*module).size(), 2) << module->ToString();
+  ExpectSameResult(kHlo);
+}
+
+TEST_F(MetalRowNormFusionTest, FusesInWhileBody) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+body {
+  p = (s32[], f32[4,40]{1,0}) parameter(0)
+  i = s32[] get-tuple-element(p), index=0
+  one = s32[] constant(1)
+  i1 = s32[] add(i, one)
+  x = f32[4,40]{1,0} get-tuple-element(p), index=1
+  ninf = f32[] constant(-inf)
+  mx = f32[4]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[4,40]{1,0} broadcast(mx), dimensions={0}
+  y = f32[4,40]{1,0} subtract(x, mxb)
+  ROOT r = (s32[], f32[4,40]{1,0}) tuple(i1, y)
+}
+cond {
+  p = (s32[], f32[4,40]{1,0}) parameter(0)
+  i = s32[] get-tuple-element(p), index=0
+  three = s32[] constant(3)
+  ROOT c = pred[] compare(i, three), direction=LT
+}
+ENTRY e {
+  x = f32[4,40]{1,0} parameter(0)
+  zero = s32[] constant(0)
+  t = (s32[], f32[4,40]{1,0}) tuple(zero, x)
+  w = (s32[], f32[4,40]{1,0}) while(t), condition=cond, body=body
+  ROOT y = f32[4,40]{1,0} get-tuple-element(w), index=1
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  EXPECT_EQ(RowNormFusions(*module).size(), 1) << module->ToString();
+  ExpectSameResult(kHlo);
+}
+
+// A duplicated broadcast's operand (here a reduction of exp) is read by
+// the broadcast's original outside, so it is not pulled in as well: no
+// work runs twice.
+TEST_F(MetalRowNormFusionTest, DoesNotRecomputeUnderDuplicatedMembers) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  x = f32[4,40]{1,0} parameter(0)
+  x2 = f32[4,40]{1,0} parameter(1)
+  w = f32[40,8]{1,0} parameter(2)
+  ninf = f32[] constant(-inf)
+  zero = f32[] constant(0)
+  mx = f32[4]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[4,40]{1,0} broadcast(mx), dimensions={0}
+  sub = f32[4,40]{1,0} subtract(x, mxb)
+  ex = f32[4,40]{1,0} exponential(sub)
+  sm = f32[4]{0} reduce(ex, zero), dimensions={1}, to_apply=add_f32
+  smb = f32[4,40]{1,0} broadcast(sm), dimensions={0}
+  y = f32[4,40]{1,0} divide(ex, smb)
+  e2 = f32[4,40]{1,0} exponential(x2)
+  r = f32[4]{0} reduce(e2, zero), dimensions={1}, to_apply=add_f32
+  rb = f32[4,40]{1,0} broadcast(r), dimensions={0}
+  z = f32[4,40]{1,0} multiply(y, rb)
+  d = f32[4,8]{1,0} dot(rb, w), lhs_contracting_dims={1}, rhs_contracting_dims={0}
+  ROOT t = (f32[4,40]{1,0}, f32[4,8]{1,0}) tuple(z, d)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  EXPECT_EQ(CountAll(*module, HloOpcode::kExp), 2) << module->ToString();
+  EXPECT_EQ(CountAll(*module, HloOpcode::kReduce), 3) << module->ToString();
+  ExpectSameResult(kHlo);
+}
+
+// Past kMaxParameters the whole fusion is dropped (not trimmed; see the
+// plan note).
+TEST_F(MetalRowNormFusionTest, DropsFusionsOverTheParameterLimit) {
+  std::string hlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+ENTRY e {
+  x = f32[4,40]{1,0} parameter(0)
+  ninf = f32[] constant(-inf)
+  mx = f32[4]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[4,40]{1,0} broadcast(mx), dimensions={0}
+  v0 = f32[4,40]{1,0} subtract(x, mxb)
+)";
+  for (int i = 1; i <= 17; ++i) {
+    hlo += absl::StrCat("  q", i, " = f32[4,40]{1,0} parameter(", i, ")\n",
+                        "  v", i, " = f32[4,40]{1,0} add(v", i - 1, ", q", i,
+                        ")\n");
+  }
+  hlo += "  ROOT y = f32[4,40]{1,0} negate(v17)\n}\n";
+  Run(hlo, /*expect_change=*/false);
+}
+
 TEST_F(MetalRowNormFusionTest, LeavesPlainReductionsAlone) {
   Run(R"(
 HloModule m
@@ -367,6 +568,16 @@ ENTRY e {
   ROOT y = f32[8,64]{1,0} divide(x, sb)
 })",
       /*expect_change=*/false);
+}
+
+// Every thread of a row starts from the init, so only identities are taken.
+TEST_F(MetalRowNormFusionTest, LeavesNonIdentityInitsAlone) {
+  std::string hlo(kSoftmax);
+  const std::string zero = "zero = f32[] constant(0)";
+  hlo.replace(hlo.find(zero), zero.size(), "zero = f32[] constant(1)");
+  const std::string ninf = "ninf = f32[] constant(-inf)";
+  hlo.replace(hlo.find(ninf), ninf.size(), "ninf = f32[] constant(0)");
+  Run(hlo, /*expect_change=*/false);
 }
 
 TEST_F(MetalRowNormFusionTest, LeavesLongRowsAlone) {
@@ -414,8 +625,20 @@ ENTRY e {
   const int64_t operand_count = fusions[0]->operand_count();
   const std::string backend_config = fusions[0]->raw_backend_config_string();
 
+  // As MetalExecutor describes an M-series GPU (stream_executor/
+  // metal_executor.cc, DescriptionFromInfo).
   se::DeviceDescription device = TestGpuDeviceInfo::RTXA6000DeviceInfo();
-  device.set_oneapi_compute_capability(0);
+  device.set_threads_per_warp(32);
+  device.set_threads_per_block_limit(1024);
+  device.set_shared_memory_per_block(32768);
+  device.set_shared_memory_per_block_optin(32768);
+  device.set_shared_memory_per_core(32768);
+  device.set_l2_cache_size(8 << 20);
+  device.set_memory_bandwidth(100e9);
+  device.set_clock_rate_ghz(1.4f);
+  device.set_core_count(10);
+  device.set_fpus_per_core(128);
+  device.set_oneapi_compute_capability(9);
   GpuAliasInfo alias_info(device);
   mlir::MLIRContext mlir_context;
   HloPassPipeline pipeline = FusionPipeline(

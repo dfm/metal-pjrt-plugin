@@ -24,6 +24,8 @@
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/hlo/ir/hlo_opcode.h"
 #include "xla/layout_util.h"
+#include "xla/literal.h"
+#include "xla/literal_util.h"
 #include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/ir_emission_utils.h"
 #include "xla/shape.h"
@@ -63,6 +65,11 @@ bool IsShuffleType(PrimitiveType type) {
   }
 }
 
+// Element types of values in a fusion: what the emitter is tested with.
+bool IsMemberType(PrimitiveType type) {
+  return IsShuffleType(type) || type == PRED;
+}
+
 // (a, b) -> a op b for a commutative op the emitter can shuffle-reduce.
 bool IsSimpleReducer(const HloComputation* reducer) {
   if (reducer->num_parameters() != 2 || reducer->instruction_count() != 3) {
@@ -82,6 +89,24 @@ bool IsSimpleReducer(const HloComputation* reducer) {
          root->operand(0)->opcode() == HloOpcode::kParameter &&
          root->operand(1)->opcode() == HloOpcode::kParameter &&
          root->operand(0) != root->operand(1);
+}
+
+// Whether `init` is the identity of the reducer's op: each of the row's
+// threads starts from it, so it is combined once per thread, not once.
+bool IsIdentity(const HloInstruction* init, HloOpcode op) {
+  const Literal& value = init->literal();
+  switch (op) {
+    case HloOpcode::kAdd:
+      return value.IsAll(0);
+    case HloOpcode::kMultiply:
+      return value.IsAll(1);
+    case HloOpcode::kMaximum:
+      return value == LiteralUtil::MinValue(value.shape().element_type());
+    case HloOpcode::kMinimum:
+      return value == LiteralUtil::MaxValue(value.shape().element_type());
+    default:
+      return false;
+  }
 }
 
 // The [rows..., n] shape a fusion works on; [rows...] holds row values.
@@ -114,7 +139,9 @@ std::optional<RowSpace> RowReduceSpace(const HloInstruction* instr,
       instr->dimensions(0) != rank - 1 ||
       init->opcode() != HloOpcode::kConstant ||
       !IsShuffleType(instr->shape().element_type()) ||
-      !IsSimpleReducer(instr->to_apply())) {
+      input->shape().element_type() != instr->shape().element_type() ||
+      !IsSimpleReducer(instr->to_apply()) ||
+      !IsIdentity(init, instr->to_apply()->root_instruction()->opcode())) {
     return std::nullopt;
   }
   RowSpace space{std::vector<int64_t>(input->shape().dimensions().begin(),
@@ -130,12 +157,68 @@ bool IsRowBroadcastDims(absl::Span<const int64_t> dims, int64_t row_rank) {
   return static_cast<int64_t>(dims.size()) == row_rank;
 }
 
+// Elementwise ops a fusion may hold: ones whose operands all have the
+// result's dimensions (no implicit scalar broadcast, as clamp allows), with
+// no layout change (copy) or called computation (map, fusion).
+bool IsAllowedElementwise(HloOpcode opcode) {
+  switch (opcode) {
+    case HloOpcode::kAbs:
+    case HloOpcode::kAdd:
+    case HloOpcode::kAnd:
+    case HloOpcode::kAtan2:
+    case HloOpcode::kCbrt:
+    case HloOpcode::kCeil:
+    case HloOpcode::kClamp:
+    case HloOpcode::kCompare:
+    case HloOpcode::kConvert:
+    case HloOpcode::kCos:
+    case HloOpcode::kDivide:
+    case HloOpcode::kErf:
+    case HloOpcode::kExp:
+    case HloOpcode::kExpm1:
+    case HloOpcode::kFloor:
+    case HloOpcode::kIsFinite:
+    case HloOpcode::kLog:
+    case HloOpcode::kLog1p:
+    case HloOpcode::kLogistic:
+    case HloOpcode::kMaximum:
+    case HloOpcode::kMinimum:
+    case HloOpcode::kMultiply:
+    case HloOpcode::kNegate:
+    case HloOpcode::kNot:
+    case HloOpcode::kOr:
+    case HloOpcode::kPower:
+    case HloOpcode::kRemainder:
+    case HloOpcode::kRoundNearestAfz:
+    case HloOpcode::kRoundNearestEven:
+    case HloOpcode::kRsqrt:
+    case HloOpcode::kSelect:
+    case HloOpcode::kSign:
+    case HloOpcode::kSin:
+    case HloOpcode::kSqrt:
+    case HloOpcode::kSubtract:
+    case HloOpcode::kTan:
+    case HloOpcode::kTanh:
+    case HloOpcode::kXor:
+      return true;
+    default:
+      return false;
+  }
+}
+
 // Whether `instr` can be computed inside a fusion over `space`: at an index
 // (rows..., col) for [rows..., n] values, (rows...) for row values.
 bool FitsRowSpace(const HloInstruction* instr, const RowSpace& space,
                   int64_t max_row_length) {
   const Shape& shape = instr->shape();
-  if (!shape.IsArray() || instr->HasSideEffect()) return false;
+  // Cloning into a fusion drops control dependencies, and the originals
+  // could then not be removed.
+  if (!shape.IsArray() || instr->HasSideEffect() ||
+      !IsMemberType(shape.element_type()) ||
+      !instr->control_predecessors().empty() ||
+      !instr->control_successors().empty()) {
+    return false;
+  }
   const bool full = space.IsFull(shape);
   const bool row = space.IsRow(shape);
   switch (instr->opcode()) {
@@ -149,8 +232,12 @@ bool FitsRowSpace(const HloInstruction* instr, const RowSpace& space,
       if (ShapeUtil::IsScalar(in)) return full || row;
       if (!full || !HasDefaultLayout(in)) return false;
       const int64_t rank = space.full.size();
-      if (space.IsRow(in)) return IsRowBroadcastDims(instr->dimensions(), rank - 1);
-      // A vector along the row, e.g. layer-norm weights.
+      if (space.IsRow(in) &&
+          IsRowBroadcastDims(instr->dimensions(), rank - 1)) {
+        return true;
+      }
+      // A vector along the row, e.g. layer-norm weights. (For [n, n], a
+      // [n] operand may be either, told apart by the dimensions.)
       return in.dimensions().size() == 1 && in.dimensions(0) == space.n() &&
              instr->dimensions().size() == 1 &&
              instr->dimensions(0) == rank - 1;
@@ -160,7 +247,13 @@ bool FitsRowSpace(const HloInstruction* instr, const RowSpace& space,
     case HloOpcode::kIota:
       return full || row;
     default:
-      return instr->IsElementwise() && (full || row);
+      if (!IsAllowedElementwise(instr->opcode()) || !(full || row)) {
+        return false;
+      }
+      return absl::c_all_of(instr->operands(), [&](const HloInstruction* op) {
+        return IsMemberType(op->shape().element_type()) &&
+               (full ? space.IsFull(op->shape()) : space.IsRow(op->shape()));
+      });
   }
 }
 
@@ -177,7 +270,6 @@ bool IsCheap(const HloInstruction* instr, const RowSpace& space,
       // Reads at most a row's worth of values per row.
       return true;
     default:
-      if (!instr->IsElementwise()) return false;
       return absl::c_all_of(instr->operands(), [&](const HloInstruction* op) {
         return IsCheap(op, space, max_row_length, depth + 1);
       });
@@ -226,9 +318,11 @@ class RegionBuilder {
       // Producers used only here, and cheap ones.
       for (HloInstruction* input : ExternalOperands()) {
         if (!FitsRowSpace(input, space_, max_row_length_)) continue;
+        // Users that are duplicated members don't count: their originals
+        // stay outside and still read `input`.
         if (input->opcode() != HloOpcode::kParameter && !input->IsRoot() &&
-            absl::c_all_of(input->users(), [&](const HloInstruction* user) {
-              return members_.contains(user);
+            absl::c_all_of(input->users(), [&](HloInstruction* user) {
+              return members_.contains(user) && !duplicated_.contains(user);
             })) {
           changed |= Add(input, /*duplicated=*/false);
         } else if (duplicated_.size() < kMaxDuplicated &&
@@ -324,7 +418,8 @@ class RegionBuilder {
         return false;
       }
     }
-    // Something along the row must depend on a row reduction: otherwise
+    // A diamond must close: an elementwise op along the row that combines
+    // a row reduction's result with row data (not a broadcast). Otherwise
     // XLA's reduction emitter does as well.
     absl::flat_hash_map<const HloInstruction*, bool> memo;
     std::function<bool(const HloInstruction*)> depends_on_reduce =
@@ -337,8 +432,18 @@ class RegionBuilder {
       memo[instr] = result;
       return result;
     };
+    auto is_row_data = [&](const HloInstruction* instr) {
+      return space_.IsFull(instr->shape()) &&
+             instr->opcode() != HloOpcode::kBroadcast &&
+             instr->opcode() != HloOpcode::kIota;
+    };
     return absl::c_any_of(order_, [&](const HloInstruction* member) {
-      return space_.IsFull(member->shape()) && depends_on_reduce(member);
+      if (!space_.IsFull(member->shape()) ||
+          !IsAllowedElementwise(member->opcode())) {
+        return false;
+      }
+      return absl::c_any_of(member->operands(), depends_on_reduce) &&
+             absl::c_any_of(member->operands(), is_row_data);
     });
   }
 
@@ -399,6 +504,13 @@ absl::StatusOr<HloInstruction*> FuseRegion(HloComputation* computation,
                                    HloInstruction::FusionKind::kCustom,
                                    fusion_operands, fused_computation));
   computation->parent()->SetAndUniquifyInstrName(fusion, "metal_rownorm");
+  // For profiles: the op_name of the first reduction (e.g. jax's softmax).
+  for (const HloInstruction* instr : post_order) {
+    if (instr->opcode() == HloOpcode::kReduce) {
+      fusion->set_metadata(instr->metadata());
+      break;
+    }
+  }
   GpuBackendConfig gpu_config;
   FusionBackendConfig& backend_config =
       *gpu_config.mutable_fusion_backend_config();
@@ -414,6 +526,7 @@ absl::StatusOr<HloInstruction*> FuseRegion(HloComputation* computation,
             ? fusion
             : computation->AddInstruction(
                   HloInstruction::CreateGetTupleElement(fusion, i));
+    value->set_metadata(output->metadata());
     std::vector<HloInstruction*> outside_users;
     for (HloInstruction* user : output->users()) {
       if (!members.contains(user)) outside_users.push_back(user);
