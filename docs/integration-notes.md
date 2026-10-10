@@ -186,7 +186,7 @@ The handlers:
   runs Accelerate directly on the shared buffers. f32 only. The ownership
   table is in the `_linalg_lowerings.py` docstring.
 
-Switches for debugging: `METAL_PJRT_DISABLE_REWRITES=scan|cubsort|conv|pool|all`,
+Switches for debugging: `METAL_PJRT_DISABLE_REWRITES=scan|cubsort|conv|pool|rownorm|all`,
 `METAL_PJRT_DISABLE_FFT=1` (dense DFT for every axis) and
 `METAL_PJRT_DISABLE_LAPACK=1` (XLA's expanders and JAX's generic
 lowerings). The kernels are tested without XLA (`ffi:*_test`,

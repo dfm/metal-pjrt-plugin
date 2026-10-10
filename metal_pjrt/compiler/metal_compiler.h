@@ -75,8 +75,10 @@ class MetalCompiler : public GpuCompiler {
       CompilationStats* compilation_stats) override;
 
   // Runs the stock post-layout pipeline, then
-  // MetalDotOperandUpcaster on the dots GemmRewriter left, then
-  // CheckPostGemmRewriter (hlo_checks.h).
+  // MetalDotOperandUpcaster on the dots GemmRewriter left and
+  // MetalRowNormFusion (rownorm_fusion.h; emitted by MetalRowNormEmitter,
+  // registered in the constructor), then CheckPostGemmRewriter
+  // (hlo_checks.h).
   absl::Status OptimizeHloPostLayoutAssignment(
       HloModule* hlo_module, se::StreamExecutor* stream_exec,
       const CompileOptions& options, const GpuTopology& gpu_topology,

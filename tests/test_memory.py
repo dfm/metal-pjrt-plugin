@@ -205,7 +205,7 @@ for r in range(2):
 per_program = (used - base_used) / n
 assert per_program < 200 * 1024, per_program / 1024  # ~470 KB if kept
 print("OK")
-""")
+""", METAL_PJRT_DISABLE_REWRITES="rownorm")  # f's row norms: one kernel each
     print(out)
     assert "OK" in out
 
