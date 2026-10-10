@@ -469,9 +469,52 @@ case HloOpcode::kTranspose:
 return true;
 default:
 
+### xla/backends/gpu/codegen/fusions.cc @ case HloFusionAnalysis::EmitterFusionKind::kCustomFusion:
+# why: Patch 0004: kCustom fusions ask MetalRowNormEmitterFactory first; metal_rownorm fusions have no other emitter.
+case HloFusionAnalysis::EmitterFusionKind::kCustomFusion:
+{
+if (CustomFusionEmitterFactory factory =
+custom_fusion_emitter_factory.load()) {
+if (auto emitter = factory(fusion_info)) return emitter;
+}
+return std::make_unique<CustomFusion>();
+}
+
+### xla/service/gpu/hlo_fusion_analysis.cc @ if (fusion_backend_config.kind() == kCustomFusionKind) {
+# why: A __custom_fusion kind selects kCustomFusion before any hero analysis (the fusion has several reduces).
+if (fusion_backend_config.kind() == kCustomFusionKind) {
+return HloFusionAnalysis::EmitterFusionKind::kCustomFusion;
+}
+
+### xla/service/gpu/thunk_emitter.cc @ // Intercept DynamicSliceFusionV2 custom fusions.
+# why: kCustomFusion fusions go to GetFusionEmitter unless named dynamic-slice fusion.
+// Intercept DynamicSliceFusionV2 custom fusions.
+if (fusion_analysis.emitter_fusion_kind() ==
+HloFusionAnalysis::EmitterFusionKind::kCustomFusion) {
+auto custom_name = GetCustomFusionConfigName(instr);
+if (custom_name.has_value() &&
+*custom_name == kDynamicSliceFusionConfigName) {
+return EmitDynamicSliceFusionV2(instr);
+}
+}
+std::unique_ptr<FusionInterface> emitter = GetFusionEmitter(
+HloFusionInfo(fusion_analysis, instr,
+&ir_emitter_context_->buffer_assignment(), *call_graph_));
+return emitter->Emit(*ir_emitter_context_, *instr);
+
+### xla/service/gpu/autotuning/config_assigner_pass.cc @ if (backend_config.kind() == kCustomFusionKind) {
+# why: Custom fusions that already carry custom_fusion_config are left alone (metal_rownorm sets it).
+if (backend_config.kind() == kCustomFusionKind) {
+if (backend_config.has_custom_fusion_config()) {
+return AutotuneDecision::Forbid("Custom fusion already has a config");
+}
+return AutotuneDecision::Allow();
+}
+
 ### IsOneAPI()/IsIntelGpu()/is_sycl occurrences per file
 xla/backends/gpu/codegen/emitters/mlir_kernel_emitter.cc: 1
 xla/backends/gpu/codegen/emitters/transpose.cc: 1
+xla/backends/gpu/codegen/fusions.cc: 0
 xla/backends/gpu/transforms/gemm_rewriter.cc: 2
 xla/backends/gpu/transforms/priority_fusion.cc: 0
 xla/backends/gpu/transforms/sort_rewriter.cc: 0
@@ -488,6 +531,9 @@ xla/pjrt/se/pjrt_stream_executor_client.cc: 0
 xla/pjrt/se/stream_executor_executable.cc: 0
 xla/python/pjrt_ifrt/pjrt_executable.cc: 0
 xla/service/algorithm_util.cc: 4
+xla/service/gpu/autotuning/config_assigner_pass.cc: 0
 xla/service/gpu/gpu_compiler.cc: 1
+xla/service/gpu/hlo_fusion_analysis.cc: 0
 xla/service/gpu/matmul_utils.cc: 0
+xla/service/gpu/thunk_emitter.cc: 0
 xla/stream_executor/integrations/tf_allocator_adapter.cc: 0

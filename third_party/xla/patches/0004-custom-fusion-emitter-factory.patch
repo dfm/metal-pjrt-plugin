@@ -1,0 +1,56 @@
+diff -ruN a/xla/backends/gpu/codegen/fusions.cc b/xla/backends/gpu/codegen/fusions.cc
+--- a/xla/backends/gpu/codegen/fusions.cc	2026-10-09 22:08:49
++++ b/xla/backends/gpu/codegen/fusions.cc	2026-10-09 22:08:49
+@@ -14,6 +14,7 @@
+ ==============================================================================*/
+ #include "xla/backends/gpu/codegen/fusions.h"
+ 
++#include <atomic>
+ #include <memory>
+ #include <optional>
+ #include <utility>
+@@ -64,12 +65,27 @@
+   return ret.ok() && *ret;
+ }
+ 
++namespace {
++std::atomic<CustomFusionEmitterFactory> custom_fusion_emitter_factory{
++    nullptr};
++}  // namespace
++
++void SetCustomFusionEmitterFactory(CustomFusionEmitterFactory factory) {
++  custom_fusion_emitter_factory.store(factory);
++}
++
+ std::unique_ptr<FusionInterface> GetFusionEmitter(
+     const FusionInfo& fusion_info) {
+   const auto& analysis = fusion_info.analysis();
+   switch (analysis.emitter_fusion_kind()) {
+     case HloFusionAnalysis::EmitterFusionKind::kCustomFusion:
++    {
++      if (CustomFusionEmitterFactory factory =
++              custom_fusion_emitter_factory.load()) {
++        if (auto emitter = factory(fusion_info)) return emitter;
++      }
+       return std::make_unique<CustomFusion>();
++    }
+     case HloFusionAnalysis::EmitterFusionKind::kLoop: {
+       // Check for a memcpy fusion before checking if a DUS can be emitted in
+       // place.
+diff -ruN a/xla/backends/gpu/codegen/fusions.h b/xla/backends/gpu/codegen/fusions.h
+--- a/xla/backends/gpu/codegen/fusions.h	2026-10-09 22:08:49
++++ b/xla/backends/gpu/codegen/fusions.h	2026-10-09 22:08:49
+@@ -93,6 +93,13 @@
+   }
+ };
+ 
++// Emitter for kCustom fusions of kind "__custom_fusion", supplied by a
++// backend outside XLA (set once, before compiling). Returns null for fusions
++// it does not handle, which then get CustomFusion (Unimplemented).
++using CustomFusionEmitterFactory =
++    std::unique_ptr<FusionInterface> (*)(const FusionInfo& fusion_info);
++void SetCustomFusionEmitterFactory(CustomFusionEmitterFactory factory);
++
+ // Returns the emitter for the given fusion.
+ std::unique_ptr<FusionInterface> GetFusionEmitter(
+     const FusionInfo& fusion_info);

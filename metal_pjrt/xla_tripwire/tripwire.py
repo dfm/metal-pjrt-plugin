@@ -115,6 +115,15 @@ SITES = [
          why="Small dots stay kDot (xla_gpu_gemm_rewrite_size_threshold); the upcaster targets exactly those."),
     Site("xla/backends/gpu/transforms/priority_fusion.cc", "bool IsFusible(const HloInstruction& instr) {", before=0, end="default:",
          why="kDot is not fusible, so the upcaster builds the convert+dot fusion itself."),
+    # --- Row-normalization fusions (compiler/passes/rownorm_fusion.h, patch 0004) ---
+    Site("xla/backends/gpu/codegen/fusions.cc", "case HloFusionAnalysis::EmitterFusionKind::kCustomFusion:", before=0, after=7,
+         why="Patch 0004: kCustom fusions ask MetalRowNormEmitterFactory first; metal_rownorm fusions have no other emitter."),
+    Site("xla/service/gpu/hlo_fusion_analysis.cc", "if (fusion_backend_config.kind() == kCustomFusionKind) {", before=0, after=2,
+         why="A __custom_fusion kind selects kCustomFusion before any hero analysis (the fusion has several reduces)."),
+    Site("xla/service/gpu/thunk_emitter.cc", "// Intercept DynamicSliceFusionV2 custom fusions.", before=0, after=13,
+         why="kCustomFusion fusions go to GetFusionEmitter unless named dynamic-slice fusion."),
+    Site("xla/service/gpu/autotuning/config_assigner_pass.cc", "if (backend_config.kind() == kCustomFusionKind) {", before=0, after=5,
+         why="Custom fusions that already carry custom_fusion_config are left alone (metal_rownorm sets it)."),
 ]
 
 # Files Bazel can't list as data (their package's default visibility is

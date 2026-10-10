@@ -173,7 +173,7 @@ The repository went public on 2026-10-02 with these still open.
   - `GetBatchRowColumnShape` (`matmul_utils.cc`) accumulates dimensions in
     `int`: 2^31 aborts and 2^32 becomes a 0-row GEMM (CUDA too). The plugin
     refuses such GEMMs at compile time (`CheckGemmGroupsFitInt32`).
-  - Patches 0002 and 0003.
+  - Patches 0002, 0003 and 0004.
   - Letting a PJRT plugin declare donation support. JAX hard-codes the
     platforms that get buffer donation, so the plugin appends "mtl" to a
     private list at start-up (pinned by `tests/test_jax_private_api.py`).

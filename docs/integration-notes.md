@@ -42,6 +42,12 @@ a SPIR target against a golden list. Both have an `--update` mode.
     unchanged default, so `MetalCompiler` can return a
     `MetalKernelCompiler`.
   - **0003**: a macOS build fix in `record_ffi.cc`.
+  - **0004** (codegen): `GetFusionEmitter` is a closed switch over fusion
+    kinds, and its `kCustomFusion` case only returns Unimplemented since
+    the custom-kernel-fusion registry was removed. The patch adds
+    `SetCustomFusionEmitterFactory`, asked first for those fusions, so
+    `MetalCompiler` can emit its row-normalization (`metal_rownorm`)
+    fusions.
   - No patch: `ptx_custom_kernel_emitter` has no branch without a
     configured GPU, so our tree provides a stub
     (`metal_pjrt/compiler/ptx_custom_kernel_emitter_stub.cc`).
