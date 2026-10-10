@@ -288,7 +288,7 @@ def test_disable_fft(value, tmp_path):
         env["METAL_PJRT_DISABLE_FFT"] = value
     path = tmp_path / "out.npz"
     out = run_python(DISABLE_CHILD.replace("OUT", repr(str(path))),
-                     dict(env, JAX_PLATFORMS="mtl"))
+                     env)
     assert out.returncode == 0, out.stderr[-3000:]
     assert int(out.stdout.strip()) == (0 if value == "1" else 5)
     got = np.load(path)

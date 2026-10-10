@@ -15,7 +15,7 @@ pytestmark = pytest.mark.metal
 
 
 def test_backend_is_mtl():
-    # conftest sets JAX_PLATFORMS=mtl,cpu.
+    # Nothing selects it: conftest leaves JAX_PLATFORMS unset.
     assert jax.default_backend() == "mtl", jax.default_backend()
 
 

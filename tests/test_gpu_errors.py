@@ -43,8 +43,7 @@ step("fresh g(f(x))", lambda: g(f(x)), want + 1)
 # The program commits 5 command buffers (one queue per device): fail each.
 @pytest.mark.parametrize("n", range(6))
 def test_injected_command_buffer_failure(n):
-    env = dict(os.environ, JAX_PLATFORMS="mtl",
-               METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
+    env = dict(os.environ, METAL_PJRT_FAIL_COMMAND_BUFFER=str(n))
     # No timeout: never kill a process with GPU work in flight. The runtime's
     # own waits are bounded.
     out = run_python(CHILD, env)
@@ -85,8 +84,7 @@ try:
 except Exception as e:
     print("constant: RAISED", str(e).splitlines()[0][:120])
 """
-    env = dict(os.environ, JAX_PLATFORMS="mtl",
-               METAL_PJRT_FAIL_COMMAND_BUFFER="1")
+    env = dict(os.environ, METAL_PJRT_FAIL_COMMAND_BUFFER="1")
     out = run_python(child, env)
     assert out.returncode == 0, (out.returncode, out.stdout, out.stderr[-2000:])
     assert "constant: RAISED" in out.stdout, (out.stdout, out.stderr[-2000:])

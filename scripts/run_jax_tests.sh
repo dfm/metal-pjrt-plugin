@@ -35,7 +35,7 @@ fi
 # on sys.path, and in this repository that would be the source frontend
 # instead of an installed wheel under test.
 cd "$T"
-exec "$R/scripts/device_lock.py" -- env JAX_PLATFORMS=mtl,cpu JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
+exec "$R/scripts/device_lock.py" -- env -u JAX_PLATFORMS JAX_NUM_GENERATED_CASES=${JAX_NUM_GENERATED_CASES:-3} JAX_ENABLE_X64=0 \
   JAX_ENABLE_COMPILATION_CACHE=false JAX_TESTS_DUT=${JAX_TESTS_DUT-gpu} \
   PYTHONPATH="$R/scripts${PYTHONPATH:+:$PYTHONPATH}" \
   "$PY" -m pytest "$FILE" -p jax_tests_plugin -p no:cacheprovider -p no:xdist \

@@ -126,8 +126,7 @@ def test_donate_fresh_device_put_awaited():
     code = (f"import sys; sys.path.insert(0, {os.path.dirname(__file__)!r})\n"
             "import test_donation as t\n"
             "t.donate_fresh_device_put(32)\n")
-    out = run_python(code, dict(os.environ, JAX_PLATFORMS="mtl",
-                                METAL_PJRT_SNAPSHOT_MAX_MB="16"))
+    out = run_python(code, dict(os.environ, METAL_PJRT_SNAPSHOT_MAX_MB="16"))
     assert out.returncode == 0, out.stderr[-3000:]
 
 
@@ -221,6 +220,6 @@ del x; gc.collect()
 print("live MB after", stats()["live"] // MB)
 print("OK")
 """
-    out = run_python(code, dict(os.environ, JAX_PLATFORMS="mtl"))
+    out = run_python(code, os.environ)
     assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-3000:])
     assert "OK" in out.stdout, out.stdout

@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Prefill and decode throughput of the Qwen3 example on the current backend.
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/bench.py
+  .venv/bin/python examples/llm/bench.py
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 

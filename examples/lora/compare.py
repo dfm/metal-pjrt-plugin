@@ -44,7 +44,7 @@ def main():
               "--steps-per-eval", str(10 ** 6)] + (["--grad-checkpoint"] * args.grad_checkpoint)
     arms = {
         "jax": (wrap + [sys.executable, os.path.join(HERE, "train.py"), *common],
-                {**os.environ, "JAX_PLATFORMS": os.environ.get("JAX_PLATFORMS", "mtl,cpu")}),
+                None),
         "mlx-lm": (wrap + [args.mlx_python, os.path.join(HERE, "mlx_baseline.py"),
                            "--data", args.data, *common], None),
     }

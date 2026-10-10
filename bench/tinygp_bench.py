@@ -8,8 +8,6 @@ the dense solver. Needs tinygp installed (it is not a test dependency).
   scripts/device_lock.py -- .venv/bin/python bench/tinygp_bench.py
 """
 import os, time
-# mtl is opt-in (not the default backend).
-os.environ.setdefault("JAX_PLATFORMS", "mtl,cpu")
 import jax
 import jax.numpy as jnp
 import numpy as np

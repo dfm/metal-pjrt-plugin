@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Few-row bf16 GEMMs on the default JAX backend (batched LLM decode's case).
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/skinny_jax.py
+  .venv/bin/python examples/llm/skinny_jax.py
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run;
 skinny_mlx.py is the same measurement in MLX.)

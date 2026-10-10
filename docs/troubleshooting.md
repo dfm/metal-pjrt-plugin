@@ -10,7 +10,7 @@ Check `JAX_PLATFORMS`: with it unset (or naming `mtl` first) the plugin
 is JAX's default backend; `JAX_PLATFORMS=cpu` leaves it out.
 
 If `jax.devices("mtl")` raises, the backend failed to start, silently
-when `JAX_PLATFORMS` is unset, and JAX fell back to the CPU. Run with `JAX_PLATFORMS=mtl,cpu` to see
+when `JAX_PLATFORMS` is unset, and JAX fell back to the CPU. Run with `JAX_PLATFORMS=mtl` to see
 "Unable to initialize backend 'mtl'" and its reason.
 
 ## Warnings when JAX starts

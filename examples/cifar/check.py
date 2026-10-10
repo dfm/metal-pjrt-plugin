@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check airbench.py's training step on the default backend against CPU.
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/check.py
+  .venv/bin/python examples/cifar/check.py
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 

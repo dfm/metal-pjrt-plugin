@@ -79,7 +79,7 @@ def main():
                     help="where the sampler writes (default: a temporary file)")
     args = ap.parse_args()
     wrap = shlex.split(args.wrap)
-    env = {**os.environ, "JAX_PLATFORMS": os.environ.get("JAX_PLATFORMS", "mtl,cpu")}
+    env = None
     tenv = {**os.environ, "PYTORCH_MPS_HIGH_WATERMARK_RATIO": "0.8",
             "PYTORCH_MPS_LOW_WATERMARK_RATIO": "0.6"}
     extra = ["--epochs", str(args.epochs)] if args.epochs else []

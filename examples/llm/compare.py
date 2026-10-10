@@ -38,7 +38,7 @@ def main():
     ap.add_argument("--wrap", default="", help="command prefix for each arm")
     args = ap.parse_args()
     lock = shlex.split(args.wrap)
-    env = {**os.environ, "JAX_PLATFORMS": os.environ.get("JAX_PLATFORMS", "mtl,cpu")}
+    env = None
     common = ["--model", args.model, "--prompts", args.prompts]
     ms = collections.defaultdict(list)       # (impl, quant, case) -> [ms]
     for r in range(args.rounds):

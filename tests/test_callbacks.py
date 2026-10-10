@@ -252,8 +252,7 @@ assert np.asarray(jax.jit(with_callback)(x)).tolist() == [3.0] * 4
 assert np.asarray(jax.jit(plain)(x)).tolist() == [4.0] * 4
 print(sorted(f.split("-")[0] for f in os.listdir(os.environ["JAX_COMPILATION_CACHE_DIR"])))
 """
-    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu",
-               JAX_ENABLE_COMPILATION_CACHE="true",
+    env = dict(os.environ, JAX_ENABLE_COMPILATION_CACHE="true",
                JAX_COMPILATION_CACHE_DIR=str(tmp_path),
                JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="0",
                JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="0")

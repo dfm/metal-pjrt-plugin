@@ -89,7 +89,7 @@ def test_cache_key_fingerprints_parsed_settings():
                              "METAL_PJRT_DISABLE_FFT")}
         out = run_python("import jax\n"
                          "print(jax.devices('mtl')[0].client.platform_version)\n",
-                         dict(base, JAX_PLATFORMS="mtl", **env))
+                         dict(base, **env))
         assert out.returncode == 0, out.stderr[-2000:]
         return out.stdout.strip()
 
@@ -136,8 +136,7 @@ def test_cached_executable_runs_in_a_second_process(tmp_path):
     # mtl (pjrt/metal_pjrt_api.cc), which leaves the cache key as the only
     # guard: an executable one process wrote must load, and compute the same
     # values, in the next.
-    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu",
-               JAX_ENABLE_COMPILATION_CACHE="true",
+    env = dict(os.environ, JAX_ENABLE_COMPILATION_CACHE="true",
                JAX_COMPILATION_CACHE_DIR=str(tmp_path),
                JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS="0",
                JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES="0")

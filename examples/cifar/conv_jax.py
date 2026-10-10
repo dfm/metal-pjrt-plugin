@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """airbench94's convolutions, one at a time: forward, input and weight gradients.
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/conv_jax.py
+  .venv/bin/python examples/cifar/conv_jax.py
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run;
 conv_torch.py is the same measurement in PyTorch on MPS.)

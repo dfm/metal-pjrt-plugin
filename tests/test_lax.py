@@ -479,7 +479,7 @@ def test_x64_enabled():
     # float64 arithmetic and int64 mulhi (i128 in XLA) are refused by name
     # rather than miscompiled.
     import os
-    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="1")
+    env = dict(os.environ, JAX_ENABLE_X64="1")
     out = metal_testing.run_python(X64_CHILD, env)
     assert out.returncode == 0, out.stderr[-3000:]
     assert out.stdout.split() == ["True"] * 7, out.stdout
@@ -513,7 +513,7 @@ def test_scatter_64bit_overwrite_with_repeated_indices():
     # They must not tear: 2^20 updates with equal 32-bit halves into 1 or 64
     # slots leave every slot holding one of its updates, whole.
     import os
-    env = dict(os.environ, JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="1")
+    env = dict(os.environ, JAX_ENABLE_X64="1")
     out = metal_testing.run_python(SCATTER64_CHILD, env)
     assert out.returncode == 0, out.stderr[-3000:]
     assert out.stdout.split() == ["0", "0"], out.stdout
@@ -616,7 +616,7 @@ def test_max_pool_grad_matches_cpu_and_expander(tmp_path):
         path = tmp_path / f"{arm}.npz"
         env = {k: v for k, v in os.environ.items()
                if k != "METAL_PJRT_DISABLE_REWRITES"}
-        env.update(JAX_PLATFORMS="mtl,cpu", **extra)
+        env.update(extra)
         out = metal_testing.run_python(POOL_BWD_CHILD.replace("sys.argv[1]", repr(str(path))), env)
         assert out.returncode == 0, out.stderr[-3000:]
         results[arm] = dict(np.load(path))

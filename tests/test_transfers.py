@@ -82,8 +82,7 @@ def test_source_mutated_right_after_large_device_put():
             "for busy in (False, True):\n"
             "    for may_alias in (None, False):\n"
             "        t.mutate_right_after_device_put(busy, may_alias, 32)\n")
-    out = run_python(code, dict(os.environ, JAX_PLATFORMS="mtl",
-                                METAL_PJRT_SNAPSHOT_MAX_MB="16"))
+    out = run_python(code, dict(os.environ, METAL_PJRT_SNAPSHOT_MAX_MB="16"))
     assert out.returncode == 0, out.stderr[-3000:]
 
 

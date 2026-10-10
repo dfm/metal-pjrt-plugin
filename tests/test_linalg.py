@@ -290,7 +290,7 @@ def test_disable_lapack(value):
          if k != "METAL_PJRT_DISABLE_LAPACK"}
   if value is not None:
     env["METAL_PJRT_DISABLE_LAPACK"] = value
-  out = run_python(DISABLE_LAPACK_CHILD, dict(env, JAX_PLATFORMS="mtl"))
+  out = run_python(DISABLE_LAPACK_CHILD, env)
   assert out.returncode == 0, out.stderr[-3000:]
   want = [] if value in ("1", "yes") else sorted(
       ["metal$cholesky", "metal$triangular_solve", "metal$lapack_getrf",
@@ -378,7 +378,7 @@ run("bad result", lambda: jax.ffi.ffi_call(
 
 def test_lapack_failures_are_values():
   import os
-  env = dict(os.environ, JAX_PLATFORMS="mtl")
+  env = dict(os.environ)
   # No timeout: never kill a process with GPU work in flight.
   out = run_python(FAILURE_CHILD, env)
   got = dict(l.split(": ", 1) for l in out.stdout.splitlines() if ": " in l)
@@ -413,7 +413,7 @@ print("err:", np.abs(got - want).max() / np.abs(want).max())
 
 def test_eigh_workspace_above_2_24():
   import os
-  env = dict(os.environ, JAX_PLATFORMS="mtl,cpu")
+  env = dict(os.environ)
   out = run_python(BIG_EIGH_CHILD, env)
   assert out.returncode == 0 and "err:" in out.stdout, (out.returncode, out.stdout, out.stderr[-2000:])
   assert float(out.stdout.split("err:")[1]) < 1e-5, out.stdout

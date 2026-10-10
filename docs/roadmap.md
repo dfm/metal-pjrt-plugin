@@ -17,8 +17,7 @@ item not listed below as declined, next or deferred.
 The maintainer's standing decisions; `CHANGELOG.md` says when each was
 made.
 
-- **Names.** JAX platform "mtl" (`jax.devices("mtl")`,
-  `JAX_PLATFORMS=mtl,cpu`, environment variables `METAL_PJRT_*`), import
+- **Names.** JAX platform "mtl" (`jax.devices("mtl")`), environment variables `METAL_PJRT_*`), import
   package `metal_pjrt_plugin`, PyPI name `metal-pjrt-plugin`, Bazel tree
   `metal_pjrt/`, state directory `~/.cache/metal-pjrt`. XLA-internal names
   stay "METAL". The name "metal" collided with Apple's jax-metal.
