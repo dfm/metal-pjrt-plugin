@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 #ifndef METAL_PJRT_COMPILER_PASSES_CONV_REWRITER_H_

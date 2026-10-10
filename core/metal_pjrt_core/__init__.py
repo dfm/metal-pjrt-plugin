@@ -1,11 +1,11 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """metal-pjrt-core: the PJRT plugin library of metal-pjrt-plugin.
 
 Only the library, next to this file (a real file in the wheel, built by
 scripts/build_wheel.sh; a link into bazel-bin made by scripts/install_dev.sh
-in a source checkout). metal_pjrt_plugin finds it here and registers it with
+in a source checkout). jax_graft finds it here and registers it with
 JAX; nothing in this package is for users.
 """
 

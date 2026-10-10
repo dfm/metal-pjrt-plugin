@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Compile-time settings from the environment, read once per process. The
@@ -16,7 +16,7 @@ namespace metal_pjrt {
 struct CompileSettings {
   // METAL_PJRT_DISABLE_LAPACK, a boolean (runtime/env.h), turns off the
   // Accelerate LAPACK rewriter (linalg/linalg_rewriter.cc); XLA's expanders
-  // take linear algebra instead. metal_pjrt_plugin/_linalg_lowerings.py
+  // take linear algebra instead. jax_graft/_linalg_lowerings.py
   // reads it the same way (_env_flag).
   bool lapack = true;
   // METAL_PJRT_DISABLE_REWRITES, a comma-separated list: "scan" turns off
@@ -30,7 +30,7 @@ struct CompileSettings {
   bool conv_rewrite = true;
   bool pool_rewrite = true;
   // METAL_PJRT_DISABLE_FFT, a boolean: jax's fft lowers to the dense DFT
-  // instead of metal$fft. The switch acts in metal_pjrt_plugin/_lowerings.py
+  // instead of metal$fft. The switch acts in jax_graft/_lowerings.py
   // (so it shows in the HLO); it is read here only for the cache key.
   bool fft = true;
 

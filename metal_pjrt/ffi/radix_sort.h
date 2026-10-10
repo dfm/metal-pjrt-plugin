@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // An LSD radix sort of the rows of [batch, n] keys (and optional values) on

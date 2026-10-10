@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Host <-> device transfers without staging
@@ -225,8 +225,8 @@ def test_memory_kinds_inside_jit():
 
 
 def _memory_stats():
-    import metal_pjrt_plugin
-    lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
+    import jax_graft
+    lib = ctypes.CDLL(str(jax_graft._get_library_path()))
     out = (ctypes.c_uint64 * 8)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0
     return dict(zip(("live", "cached", "budget", "hits", "misses", "pressure",

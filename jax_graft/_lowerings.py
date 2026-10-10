@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """MLIR lowering rules for primitives whose upstream rules are registered only
@@ -28,12 +28,12 @@ Registered for platform "mtl":
   rule, which raises from a host callback, is not wired up (host callbacks
   work, see docs/callbacks.md; nobody has needed it).
 * ``debug_callback`` / ``debug_print``: the upstream cpu/gpu rule. Lowering
-  goes through ``emit_python_callback``, which metal_pjrt_plugin/_callbacks.py
+  goes through ``emit_python_callback``, which jax_graft/_callbacks.py
   redirects to the metal host-callback custom call. See docs/callbacks.md.
 
 Float32 cholesky, triangular_solve, lu, geqrf/householder_product (qr), eigh
 and svd go through Accelerate LAPACK instead (the C++ MetalLinalgRewriter and
-metal_pjrt_plugin/_linalg_lowerings.py, registered last; its docstring has
+jax_graft/_linalg_lowerings.py, registered last; its docstring has
 the ownership table). The generic rules and the TPU ``eigh`` rule
 (``_eigh_tpu_lowering``: Jacobi via EighExpander for n <= 256, QDWH above;
 ``svd``'s generic rule calls it) are their fallbacks for other dtypes,
@@ -58,7 +58,7 @@ import logging
 
 import numpy as np
 
-from metal_pjrt_plugin import PLATFORM, _env_flag  # "mtl"
+from jax_graft import PLATFORM, _env_flag  # "mtl"
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ def register() -> None:
     try:
       fn()
     except Exception as e:  # noqa: BLE001 - never break plugin init
-      logger.warning("metal-pjrt-plugin: could not register lowering for %s: %s", what, e)
+      logger.warning("jax-graft: could not register lowering for %s: %s", what, e)
 
   def _fft():
     from jax._src.lax import fft as lax_fft
@@ -348,5 +348,5 @@ def register() -> None:
   reg("empty", _empty)
   reg("check", _check)
   reg("debug_callback/debug_print", _debug)
-  from metal_pjrt_plugin import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702
+  from jax_graft import _linalg_lowerings; reg("lapack linalg", _linalg_lowerings.register)  # noqa: E702
   _registered = True

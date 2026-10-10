@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """GPU tests across JAX versions: this repository's suite and JAX's own tests
@@ -70,7 +70,7 @@ def wait_for_bazel():
 
 
 def jax_min():
-    text = (REPO / "metal_pjrt_plugin/__init__.py").read_text()
+    text = (REPO / "jax_graft/__init__.py").read_text()
     nums = re.search(r"_JAX_MIN = \(([\d, ]+)\)", text).group(1)
     return ".".join(n.strip() for n in nums.split(","))
 
@@ -107,9 +107,9 @@ def get_wheels(spec, out):
             # ci.yml's "wheels", or release.yml's "wheel-core"/"wheel-plugin".
             run(["gh", "run", "download", run_id, "--pattern", "wheel*", "--dir", src], cwd=REPO)
     newest = lambda pat: max(src.rglob(pat), key=os.path.getmtime, default=None)  # noqa: E731
-    plugin = newest("metal_pjrt_plugin-*.whl")
+    plugin = newest("jax_graft-*.whl")
     if plugin is None:
-        sys.exit(f"no metal_pjrt_plugin wheel in {src}")
+        sys.exit(f"no jax_graft wheel in {src}")
     # None: a release that reuses a published core; the frontend's exact
     # pin then installs it from PyPI.
     return newest("metal_pjrt_core-*.whl"), plugin
@@ -126,7 +126,7 @@ def make_venv(version, wheels):
         run(["uv", "venv", "-q", "--python", "3.12", venv])
     core, plugin = wheels
     run(["uv", "pip", "install", "-q", "--python", py, "--reinstall-package",
-         "metal-pjrt-core", "--reinstall-package", "metal-pjrt-plugin",
+         "metal-pjrt-core", "--reinstall-package", "jax-graft",
          *([core] if core else []), f"{plugin}[test]", *TEST_DEPS])
     run([py, REPO / "scripts/check_installed_wheels.py"], cwd="/")
     if version == "nightly":

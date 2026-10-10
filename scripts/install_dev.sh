@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 # Build the plugin dylib, link it into the metal-pjrt-core package (core/)
@@ -48,10 +48,10 @@ rm -f metal_pjrt_plugin/pjrt_c_api_mtl_plugin.dylib
 # Leftovers of earlier names, each of whose jax_plugins entry point would
 # load the same dylib a second time: dists "jax-metal-pjrt" (platform
 # "metal"), "jax-openmetal" and "openmetal_pjrt_plugin" (platform
-# "openmetal"), and the generated files left in their jax_plugins/metal and
-# jax_plugins/openmetal package directories (JAX also path-scans
-# jax_plugins/*).
-OLD_DISTS=(jax-metal-pjrt jax-openmetal openmetal_pjrt_plugin)
+# "openmetal"), "metal-pjrt-plugin" (jax-graft's earlier name), and the
+# generated files left in their jax_plugins/metal and jax_plugins/openmetal
+# package directories (JAX also path-scans jax_plugins/*).
+OLD_DISTS=(jax-metal-pjrt jax-openmetal openmetal_pjrt_plugin metal-pjrt-plugin)
 for d in jax_plugins/metal jax_plugins/openmetal; do
   rm -f "$d"/*.dylib
   rm -rf "$d/__pycache__"
@@ -59,7 +59,8 @@ for d in jax_plugins/metal jax_plugins/openmetal; do
 done
 rmdir jax_plugins 2>/dev/null || true
 # On sys.path when python runs from here.
-rm -rf jax_metal_pjrt.egg-info jax_openmetal.egg-info openmetal_pjrt_plugin.egg-info
+rm -rf jax_metal_pjrt.egg-info jax_openmetal.egg-info openmetal_pjrt_plugin.egg-info \
+  metal_pjrt_plugin.egg-info
 if command -v uv >/dev/null; then
   uv pip uninstall --python .venv/bin/python "${OLD_DISTS[@]}" >/dev/null 2>&1 || true
   uv pip install --python .venv/bin/python -e core -e ".[test]" >/dev/null

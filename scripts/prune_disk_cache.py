@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 """Shrink a Bazel disk cache to a size cap, least recently used first.
 

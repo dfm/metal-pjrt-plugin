@@ -1,16 +1,16 @@
 [project]
-name = "metal-pjrt-plugin"
+name = "jax-graft"
 version = "0.0.3"
 description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{name = "The metal-pjrt-plugin Authors"}]
+authors = [{name = "The jax-graft Authors"}]
 # PEP 639 (setuptools >= 77): both files land in the wheel's
 # dist-info/licenses/.
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 # jax/jaxlib: the lowest version tested, no upper bound (_JAX_MIN in
-# metal_pjrt_plugin/__init__.py). metal-pjrt-core: exactly the build this
+# jax_graft/__init__.py). metal-pjrt-core: exactly the build this
 # release was tested with (core/pyproject.toml), its frontend ABI version
 # also checked at startup. tests/test_packaging.py checks both.
 dependencies = [
@@ -27,8 +27,8 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/dfm/metal-pjrt-plugin"
-Issues = "https://github.com/dfm/metal-pjrt-plugin/issues"
+Repository = "https://github.com/dfm/jax-graft"
+Issues = "https://github.com/dfm/jax-graft/issues"
 
 [project.optional-dependencies]
 test = ["pytest"]
@@ -36,7 +36,7 @@ test = ["pytest"]
 examples = ["tokenizers", "huggingface_hub", "optax", "pyarrow"]
 
 [project.entry-points.jax_plugins]
-mtl = "metal_pjrt_plugin"
+mtl = "jax_graft"
 
 [build-system]
 requires = ["setuptools>=77"]
@@ -46,7 +46,7 @@ build-backend = "setuptools.build_meta"
 # the C++ tree metal_pjrt/ in as namespace packages. The library is in
 # metal-pjrt-core (core/), so this wheel is pure Python.
 [tool.setuptools.packages.find]
-include = ["metal_pjrt_plugin*"]
+include = ["jax_graft*"]
 namespaces = false
 
 # tests/: see tests/conftest.py. No pytest-timeout and no xdist: a timeout

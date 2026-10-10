@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """MLX's convolutions on bench/conv_bench.cc's cases, timed the same way.

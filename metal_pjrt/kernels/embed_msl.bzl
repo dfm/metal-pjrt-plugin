@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """embed_msl: a .metal file as a NUL-terminated char array in a header.

@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 """Qwen3 dense decoder in pure JAX: weights, prefill, decode and sampling.
 

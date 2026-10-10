@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Small (n <= 32) dense linear algebra on the GPU, one thread per matrix (per

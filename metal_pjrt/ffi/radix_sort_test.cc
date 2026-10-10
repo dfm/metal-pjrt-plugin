@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // RunRadixSort (radix_sort.h) against a CPU stable sort, bit for bit, on

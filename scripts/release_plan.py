@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """The release workflow's plan (.github/workflows/release.yml): checks the
@@ -43,11 +43,11 @@ ref = os.environ["REF"]
 tagged = ref.startswith("refs/tags/")
 if tagged:
     if ref != f"refs/tags/v{pv}":
-        fail(f"tag {ref} does not match metal-pjrt-plugin {pv}")
+        fail(f"tag {ref} does not match jax-graft {pv}")
     if git("merge-base", "--is-ancestor", "HEAD", "origin/main").returncode:
         fail(f"{ref} is not on main: tag a commit of main")
-if on_pypi("metal-pjrt-plugin", pv):
-    msg = f"metal-pjrt-plugin {pv} is already on PyPI: bump the version"
+if on_pypi("jax-graft", pv):
+    msg = f"jax-graft {pv} is already on PyPI: bump the version"
     if tagged:
         fail(msg)
     print(f"::notice::{msg} (dry run continues)", file=sys.stderr)
@@ -71,6 +71,6 @@ if not build_core:
 print(f"plugin_version={pv}")
 print(f"core_version={cv}")
 print(f"build_core={str(build_core).lower()}")
-print(f"metal-pjrt-plugin {pv}; metal-pjrt-core {cv} "
+print(f"jax-graft {pv}; metal-pjrt-core {cv} "
       f"({'new: build it' if build_core else 'on PyPI: reuse it'})",
       file=sys.stderr)

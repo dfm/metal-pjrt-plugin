@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Host-only checks of how the plugin's environment variables are parsed
@@ -11,7 +11,7 @@ import sys
 
 import pytest
 
-from metal_pjrt_plugin import _env_flag
+from jax_graft import _env_flag
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 

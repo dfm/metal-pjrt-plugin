@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Memory policy (runtime Device::Allocate behind XLA's platform allocator):
@@ -21,8 +21,8 @@ pytestmark = pytest.mark.metal
 PRELUDE = r"""
 import ctypes, gc, time
 import numpy as np, jax, jax.numpy as jnp
-import metal_pjrt_plugin
-lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
+import jax_graft
+lib = ctypes.CDLL(str(jax_graft._get_library_path()))
 def stats():
     out = (ctypes.c_uint64 * 8)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0

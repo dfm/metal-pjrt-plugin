@@ -1,9 +1,9 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // "xla_ffi_python_metal_callback": host (Python) callbacks on the Metal
 // platform, used by jax.pure_callback, io_callback, jax.debug.callback and
-// jax.debug.print (lowering in metal_pjrt_plugin/_callbacks.py).
+// jax.debug.print (lowering in jax_graft/_callbacks.py).
 //
 // Upstream JAX routes callbacks through FfiLoadedHostCallbacks user data that
 // jaxlib only attaches for the cpu/cuda/rocm/oneapi platform ids, so it never
@@ -66,7 +66,7 @@ absl::Status PythonCallback(stream_executor::Stream* stream,
   MetalPjrtPythonCallbackTrampoline trampoline = g_trampoline.load();
   if (trampoline == nullptr) {
     return absl::FailedPreconditionError(
-        "Metal: host callbacks are unavailable: metal_pjrt_plugin did not "
+        "Metal: host callbacks are unavailable: jax_graft did not "
         "install them (see the \"host callbacks unavailable\" warning logged "
         "when JAX initialized the plugin)");
   }

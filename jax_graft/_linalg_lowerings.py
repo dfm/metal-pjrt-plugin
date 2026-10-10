@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """LAPACK-backed lowerings of JAX's linear algebra primitives on "mtl".
@@ -48,7 +48,7 @@ import functools
 
 import numpy as np
 
-from metal_pjrt_plugin import PLATFORM, _env_flag  # "mtl"
+from jax_graft import PLATFORM, _env_flag  # "mtl"
 
 
 @functools.cache

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 # Build the two wheels in dist/:
@@ -7,10 +7,10 @@
 #   not the dev symlink into bazel-bin), py3-none-macosx_<MACOS_MIN>_arm64:
 #   a dylib loaded through ctypes/PJRT, so it depends on neither the Python
 #   nor the jax version.
-# - metal-pjrt-plugin (the root): the pure-Python frontend, py3-none-any.
+# - jax-graft (the root): the pure-Python frontend, py3-none-any.
 #   scripts/build_wheel.sh                 # bazel build, then both wheels
 #   scripts/build_wheel.sh --no-build      # both, from the existing bazel-bin dylib
-#   scripts/build_wheel.sh --frontend-only # only metal-pjrt-plugin (any OS)
+#   scripts/build_wheel.sh --frontend-only # only jax-graft (any OS)
 # MACOS_MIN is the dylib's deployment target (.bazelrc, --macos_minimum_os);
 # the script checks that the two agree. Release the two separately
 # (docs/development.md, "Packages and releases").
@@ -62,11 +62,11 @@ CFG
 
 build_frontend() {
   local plugin="$STAGE/plugin"
-  mkdir -p "$plugin/metal_pjrt_plugin"
+  mkdir -p "$plugin/jax_graft"
   cp pyproject.toml README.md LICENSE THIRD_PARTY_NOTICES "$plugin"/
-  cp metal_pjrt_plugin/*.py "$plugin/metal_pjrt_plugin/"
+  cp jax_graft/*.py "$plugin/jax_graft/"
   uv build --wheel --out-dir dist "$plugin"
-  ls -l dist/metal_pjrt_plugin-*-py3-none-any.whl
+  ls -l dist/jax_graft-*-py3-none-any.whl
 }
 
 [[ "$MODE" == "--frontend-only" ]] || build_core

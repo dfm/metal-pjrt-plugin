@@ -1,7 +1,7 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""Persistent compilation cache opt-in (metal_pjrt_plugin/__init__.py).
+"""Persistent compilation cache opt-in (jax_graft/__init__.py).
 
 No GPU work (the cache-key test creates the mtl client, so it is
 marked metal): .venv/bin/python -m pytest tests/test_compilation_cache.py
@@ -14,7 +14,7 @@ import pytest
 
 from jax._src import compilation_cache
 
-import metal_pjrt_plugin
+import jax_graft
 from metal_testing import run_python
 
 
@@ -42,7 +42,7 @@ def test_wrapper_presents_mtl_as_gpu_and_leaves_cpu_alone(monkeypatch):
         return backend.platform in ["tpu", "gpu", "cpu", "neuron"]
 
     monkeypatch.setattr(compilation_cache, "is_cache_used", upstream)
-    metal_pjrt_plugin._install_is_cache_used_wrapper()
+    jax_graft._install_is_cache_used_wrapper()
     wrapped = compilation_cache.is_cache_used
     assert wrapped is not upstream
 
@@ -58,7 +58,7 @@ def test_wrapper_presents_mtl_as_gpu_and_leaves_cpu_alone(monkeypatch):
     assert not hasattr(proxy, "supports_executable_serialization")
 
     # Installing twice does not stack wrappers.
-    metal_pjrt_plugin._install_is_cache_used_wrapper()
+    jax_graft._install_is_cache_used_wrapper()
     assert compilation_cache.is_cache_used is wrapped
 
 

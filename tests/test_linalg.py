@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Linear algebra / FFT on metal against a float64 CPU reference
@@ -6,7 +6,7 @@
 
 Float32 cholesky / triangular_solve go through Accelerate LAPACK (HLO
 rewriter), lu / qr / eigh / svd through the LAPACK JAX lowerings
-(metal_pjrt_plugin/_linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
+(jax_graft/_linalg_lowerings.py). METAL_PJRT_DISABLE_LAPACK=1 restores
 XLA's expanders / the pure-JAX paths for A/B comparisons. Timings:
 bench/linalg_bench.py.
 

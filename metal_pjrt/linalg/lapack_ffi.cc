@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // Dense linear algebra on the CPU (Apple Accelerate LAPACK/BLAS) for the
@@ -26,7 +26,7 @@
 //       TriangularSolveOptions::Transpose enum; ADJOINT == TRANSPOSE for
 //       real types).
 //
-// * Targets of the JAX lowerings in metal_pjrt_plugin/_linalg_lowerings.py.
+// * Targets of the JAX lowerings in jax_graft/_linalg_lowerings.py.
 //   These mirror jaxlib's lapack_*_ffi calls: the lowering requests
 //   column-major layouts for the matrix operands/results (XLA inserts the
 //   transposes), so the handlers see LAPACK's native layout. Batch dimensions

@@ -50,7 +50,7 @@ In short:
 
 Contributions are accepted under the project's license, Apache-2.0
 (`LICENSE`). New source files start with the two lines the others have
-(`Copyright 2026 The metal-pjrt-plugin Authors` and
+(`Copyright 2026 The jax-graft Authors` and
 `SPDX-License-Identifier: Apache-2.0`); add your name to `AUTHORS` with
 your first contribution. Code ported from another project keeps that
 project's copyright notice in the file and gets an entry in

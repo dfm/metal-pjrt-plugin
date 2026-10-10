@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 #
 # The latest main wheels against JAX nightly, without a GPU
@@ -68,7 +68,7 @@ jobs:
           # The files themselves: by name, an unbumped version could resolve
           # to the released wheel on PyPI.
           uv pip install --python "$V" "$RUNNER_TEMP"/dist/metal_pjrt_core-*.whl \
-            "$(ls "$RUNNER_TEMP"/dist/metal_pjrt_plugin-*.whl)[test]"
+            "$(ls "$RUNNER_TEMP"/dist/jax_graft-*.whl)[test]"
           if [[ "$JAX" == nightly ]]; then
             # JAX's nightly index (docs.jax.dev, "Installation"); everything
             # else still comes from PyPI.
@@ -87,7 +87,7 @@ jobs:
           } | sed 's/^/    /' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Host-only tests
-        # From outside the checkout, so that metal_pjrt_plugin is the
+        # From outside the checkout, so that jax_graft is the
         # installed wheel, not the source tree.
         working-directory: ${{ runner.temp }}
         run: |

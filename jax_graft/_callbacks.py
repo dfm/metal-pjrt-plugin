@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Host (Python) callbacks on the "mtl" platform.
@@ -58,7 +58,7 @@ import weakref
 
 import numpy as np
 
-from metal_pjrt_plugin import PLATFORM  # "mtl"
+from jax_graft import PLATFORM  # "mtl"
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +121,7 @@ def _view(buf: _Buffer):
   dtype = _DTYPES.get(buf.dtype)
   if dtype is None:
     name = _UNSUPPORTED.get(buf.dtype, f"XLA PrimitiveType {buf.dtype}")
-    raise TypeError(f"metal-pjrt-plugin: host callbacks do not support dtype "
+    raise TypeError(f"jax-graft: host callbacks do not support dtype "
                     f"{name} on platform mtl")
   shape = tuple(buf.dims[i] for i in range(buf.rank))
   n = int(np.prod(shape, dtype=np.int64))
@@ -148,7 +148,7 @@ def _trampoline(cb_id, nargs, args, nrets, rets, err_ptr, err_cap):
     fn = ref() if ref is not None else None
     if fn is None:
       raise RuntimeError(
-          f"metal-pjrt-plugin: unknown host callback id {cb_id:#x}: the "
+          f"jax-graft: unknown host callback id {cb_id:#x}: the "
           "callable is gone. This happens if an executable containing a "
           "callback was loaded from a persistent compilation cache written "
           "by another process (or an older plugin version). Clear the cache "

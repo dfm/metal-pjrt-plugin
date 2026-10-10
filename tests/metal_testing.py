@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared helpers for the metal tests: devices, references, ulp comparison.
@@ -28,7 +28,7 @@ import jax
 import jaxlib
 import ml_dtypes
 import numpy as np
-from metal_pjrt_plugin import _env_flag
+from jax_graft import _env_flag
 
 REPORT = _env_flag("METAL_TEST_REPORT_ULPS")
 

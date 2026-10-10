@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // The plugin's exported GetPjrtApi: XLA's GPU C API shim with the
@@ -360,7 +360,7 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
 }
 
 // The private contract between this library (the metal-pjrt-core wheel) and
-// the Python frontend (metal-pjrt-plugin, metal_pjrt_plugin/), which are
+// the Python frontend (metal-pjrt-plugin, jax_graft/), which are
 // released separately. It covers:
 // - the "mtl" platform name (MetalName()) and the PJRT client-creation
 //   options the frontend passes;
@@ -386,7 +386,7 @@ extern "C" PJRT_CAPI_EXPORT const PJRT_Api* GetPjrtApi() {
 // which the frontend's version range on metal-pjrt-core covers. Bump the
 // version on any incompatible change; the frontend refuses to register with
 // a library whose version differs from its own (_CORE_ABI_VERSION in
-// metal_pjrt_plugin/__init__.py).
+// jax_graft/__init__.py).
 extern "C" PJRT_CAPI_EXPORT int metal_pjrt_frontend_abi_version() {
   return 1;
 }

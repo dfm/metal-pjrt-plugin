@@ -1,4 +1,4 @@
-# metal-pjrt-core: the compiled half of metal-pjrt-plugin (the root
+# metal-pjrt-core: the compiled half of metal-pjrt-plugin (jax-graft, the root
 # pyproject.toml), released separately and rarely. It holds only the PJRT
 # plugin library and has no Python dependencies: the library talks to jaxlib
 # through the PJRT C API, StableHLO version negotiation and XLA FFI, so one
@@ -7,10 +7,10 @@
 [project]
 name = "metal-pjrt-core"
 version = "0.0.2"
-description = "The compiled PJRT library of metal-pjrt-plugin (JAX on Apple GPUs); install metal-pjrt-plugin"
+description = "The compiled PJRT library of metal-pjrt-plugin (JAX on Apple GPUs); install jax-graft"
 readme = "README.md"
 requires-python = ">=3.12"
-authors = [{name = "The metal-pjrt-plugin Authors"}]
+authors = [{name = "The jax-graft Authors"}]
 license = "Apache-2.0"
 license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 classifiers = [
@@ -19,7 +19,7 @@ classifiers = [
 ]
 
 [project.urls]
-Repository = "https://github.com/dfm/metal-pjrt-plugin"
+Repository = "https://github.com/dfm/jax-graft"
 
 [build-system]
 requires = ["setuptools>=77"]

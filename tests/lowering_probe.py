@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Lowers programs for "mtl" without a Metal device, for test_lowering.py.
@@ -25,7 +25,7 @@ class _Collect(logging.Handler):
             warnings.append(record.getMessage())
 
 
-logging.getLogger("metal_pjrt_plugin").addHandler(_Collect())
+logging.getLogger("jax_graft").addHandler(_Collect())
 
 import jax  # noqa: E402
 import jax.numpy as jnp  # noqa: E402

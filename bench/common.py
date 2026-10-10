@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Shared timing helpers for the benchmark scripts."""
@@ -21,7 +21,7 @@ def gpu_ms(fn, *, iters=5, sync=lambda r: None):
     """Mean GPU time in ms of fn() on the Metal plugin: the sum of its command
     buffers' GPUEndTime - GPUStartTime, read from the METAL_PJRT_TRACE=1 log
     lines (fd 2 is captured while it runs). None without the trace."""
-    from metal_pjrt_plugin import _env_flag
+    from jax_graft import _env_flag
     if not _env_flag("METAL_PJRT_TRACE"):
         return None
     time.sleep(0.05)  # completion handlers of earlier calls log late

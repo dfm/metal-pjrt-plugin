@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Host callbacks on metal vs cpu: pure_callback, io_callback (ordered and
@@ -208,7 +208,7 @@ def test_callback(fn):
 
 
 def test_unsupported_dtype_is_named():
-    from metal_pjrt_plugin import _callbacks as callbacks
+    from jax_graft import _callbacks as callbacks
     with pytest.raises(TypeError, match="do not support dtype int4 on platform mtl"):
         callbacks._view(callbacks._Buffer(dtype=21))
 
@@ -217,7 +217,7 @@ def test_unknown_callback_id_says_how_to_fix():
     # An executable from another process's persistent cache names a
     # callback id this process never registered.
     import ctypes
-    from metal_pjrt_plugin import _callbacks as callbacks
+    from jax_graft import _callbacks as callbacks
     err = ctypes.create_string_buffer(4096)
     assert callbacks._trampoline(0x1234, 0, None, 0, None,
                                  ctypes.addressof(err), len(err)) == 1

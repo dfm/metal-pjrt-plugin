@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Host-only packaging checks (no GPU)."""
@@ -11,7 +11,7 @@ import tomllib
 
 import pytest
 
-import metal_pjrt_plugin
+import jax_graft
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 
@@ -22,7 +22,7 @@ def _pyproject(path="pyproject.toml"):
 
 def test_jax_requirement_matches_pyproject():
     deps = _pyproject()["project"]["dependencies"]
-    want = metal_pjrt_plugin._jax_requirement()
+    want = jax_graft._jax_requirement()
     assert f"jax{want}" in deps and f"jaxlib{want}" in deps, (want, deps)
 
 
@@ -39,17 +39,19 @@ def test_core_dependency():
 
 
 def test_one_dist_registers_mtl():
-    # One installed dist, metal-pjrt-plugin, registers the plugin: a
-    # leftover older dist (openmetal_pjrt_plugin, jax-openmetal,
+    # One installed dist, jax-graft, registers the plugin: a leftover older
+    # dist (metal-pjrt-plugin, openmetal_pjrt_plugin, jax-openmetal,
     # jax-metal-pjrt) would load the dylib a second time.
     # scripts/install_dev.sh uninstalls those.
-    old = {"openmetal-pjrt-plugin", "openmetal_pjrt_plugin", "jax-openmetal",
-           "jax_openmetal", "jax-metal-pjrt", "jax_metal_pjrt"}
+    old = {"metal-pjrt-plugin", "metal_pjrt_plugin", "openmetal-pjrt-plugin",
+           "openmetal_pjrt_plugin", "jax-openmetal", "jax_openmetal",
+           "jax-metal-pjrt", "jax_metal_pjrt"}
     ours = [ep for ep in importlib.metadata.entry_points(group="jax_plugins")
-            if ep.value.startswith(("metal_pjrt_plugin", "jax_plugins.openmetal"))
+            if ep.value.startswith(("jax_graft", "metal_pjrt_plugin",
+                                         "jax_plugins.openmetal"))
             or ep.dist.name in old]
     assert [(ep.name, ep.value, ep.dist.name) for ep in ours] == [
-        ("mtl", "metal_pjrt_plugin", "metal-pjrt-plugin")], ours
+        ("mtl", "jax_graft", "jax-graft")], ours
 
 
 def test_version_warning(monkeypatch, caplog):
@@ -57,9 +59,9 @@ def test_version_warning(monkeypatch, caplog):
     # still loads (initialize() goes on).
     import jax
     monkeypatch.setattr(jax, "__version__", "0.0.0")
-    metal_pjrt_plugin._check_versions()
+    jax_graft._check_versions()
     assert "found jax 0.0.0" in caplog.text, caplog.text
-    assert metal_pjrt_plugin._jax_requirement() in caplog.text, caplog.text
+    assert jax_graft._jax_requirement() in caplog.text, caplog.text
 
 
 @pytest.mark.parametrize("version,warns", [
@@ -72,7 +74,7 @@ def test_version_range_edges(monkeypatch, caplog, version, warns):
     import jaxlib
     monkeypatch.setattr(jax, "__version__", version)
     monkeypatch.setattr(jaxlib, "__version__", version)
-    metal_pjrt_plugin._check_versions()
+    jax_graft._check_versions()
     assert bool(caplog.text) == warns, caplog.text
 
 
@@ -81,16 +83,16 @@ def test_version_warning_names_only_the_one_too_old(monkeypatch, caplog):
     import jaxlib
     monkeypatch.setattr(jax, "__version__", "0.11.2")
     monkeypatch.setattr(jaxlib, "__version__", "0.9.2")
-    metal_pjrt_plugin._check_versions()
+    jax_graft._check_versions()
     assert "found jaxlib 0.9.2;" in caplog.text, caplog.text
     assert "jax 0.11.2" not in caplog.text, caplog.text
 
 
 def test_core_abi_version_matches():
-    path = metal_pjrt_plugin._get_library_path()
-    assert path is not None, metal_pjrt_plugin._missing_library_message()
-    assert (metal_pjrt_plugin._core_abi_version(path)
-            == metal_pjrt_plugin._CORE_ABI_VERSION)
+    path = jax_graft._get_library_path()
+    assert path is not None, jax_graft._missing_library_message()
+    assert (jax_graft._core_abi_version(path)
+            == jax_graft._CORE_ABI_VERSION)
 
 
 def _initialize_registers(monkeypatch):
@@ -100,14 +102,14 @@ def _initialize_registers(monkeypatch):
     import jax._src.xla_bridge as xb
     monkeypatch.setattr(xb, "register_plugin",
                         lambda *a, **k: registered.append(a))
-    metal_pjrt_plugin.initialize()
+    jax_graft.initialize()
     return bool(registered)
 
 
 def test_core_abi_mismatch_is_refused(monkeypatch, caplog):
     # Another version of the private contract is a broken install, not an
     # untested combination: nothing is registered.
-    monkeypatch.setattr(metal_pjrt_plugin, "_CORE_ABI_VERSION", 999)
+    monkeypatch.setattr(jax_graft, "_CORE_ABI_VERSION", 999)
     assert not _initialize_registers(monkeypatch)
     assert "frontend ABI version 999" in caplog.text, caplog.text
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
@@ -119,7 +121,7 @@ def test_pre_split_library_is_refused(monkeypatch, caplog):
     class NoSymbol:
         def __init__(self, path):
             pass
-    monkeypatch.setattr(metal_pjrt_plugin.ctypes, "CDLL", NoSymbol)
+    monkeypatch.setattr(jax_graft.ctypes, "CDLL", NoSymbol)
     assert not _initialize_registers(monkeypatch)
     assert "has version 0" in caplog.text, caplog.text
 
@@ -129,7 +131,7 @@ def test_unloadable_library_is_refused(monkeypatch, tmp_path, caplog):
     # is registered, and initialize() does not raise.
     lib = tmp_path / "pjrt_c_api_mtl_plugin.dylib"
     lib.write_bytes(b"not a Mach-O file")
-    monkeypatch.setattr(metal_pjrt_plugin, "_library_candidate", lambda: lib)
+    monkeypatch.setattr(jax_graft, "_library_candidate", lambda: lib)
     assert not _initialize_registers(monkeypatch)
     assert "could not be loaded" in caplog.text, caplog.text
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
@@ -138,15 +140,15 @@ def test_unloadable_library_is_refused(monkeypatch, tmp_path, caplog):
 def test_public_surface():
     # Users need nothing from the package but PLATFORM; the implementation
     # modules and the jax pin are private.
-    assert metal_pjrt_plugin.__all__ == ["PLATFORM", "initialize", "__version__"]
-    assert metal_pjrt_plugin.PLATFORM == "mtl"
-    assert metal_pjrt_plugin.__version__ == importlib.metadata.version(
-        "metal-pjrt-plugin")
-    assert metal_pjrt_plugin.initialize.__doc__
-    assert not hasattr(metal_pjrt_plugin, "JAX_VERSION")
+    assert jax_graft.__all__ == ["PLATFORM", "initialize", "__version__"]
+    assert jax_graft.PLATFORM == "mtl"
+    assert jax_graft.__version__ == importlib.metadata.version(
+        "jax-graft")
+    assert jax_graft.initialize.__doc__
+    assert not hasattr(jax_graft, "JAX_VERSION")
     for name in ("callbacks", "lowerings", "linalg_lowerings"):
-        assert importlib.util.find_spec(f"metal_pjrt_plugin.{name}") is None
-        assert importlib.util.find_spec(f"metal_pjrt_plugin._{name}") is not None
+        assert importlib.util.find_spec(f"jax_graft.{name}") is None
+        assert importlib.util.find_spec(f"jax_graft._{name}") is not None
 
 
 @pytest.mark.parametrize("case", ["missing", "dangling", "no core"])
@@ -157,9 +159,9 @@ def test_missing_library_warning(monkeypatch, tmp_path, caplog, case):
     lib = tmp_path / "pjrt_c_api_mtl_plugin.dylib"
     if case == "dangling":
         lib.symlink_to(tmp_path / "bazel-bin" / "gone.dylib")
-    monkeypatch.setattr(metal_pjrt_plugin, "_library_candidate",
+    monkeypatch.setattr(jax_graft, "_library_candidate",
                         lambda: None if case == "no core" else lib)
-    metal_pjrt_plugin.initialize()
+    jax_graft.initialize()
     assert "'mtl' platform is unavailable" in caplog.text, caplog.text
     assert "scripts/install_dev.sh" in caplog.text, caplog.text
     assert ("which does not exist" in caplog.text) == (case == "dangling"), caplog.text

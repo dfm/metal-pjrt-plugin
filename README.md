@@ -1,4 +1,4 @@
-# metal-pjrt-plugin: run JAX on your Mac's GPU
+# jax-graft: run JAX on your Mac's GPU
 
 An open-source JAX plugin that runs JAX programs on Apple Silicon GPUs
 through Metal. It's for people who write JAX and want their Mac's GPU to
@@ -34,7 +34,7 @@ elsewhere, and please [report them](CONTRIBUTING.md).
 ## Install
 
 ```
-pip install metal-pjrt-plugin
+pip install jax-graft
 ```
 
 ## Quick start

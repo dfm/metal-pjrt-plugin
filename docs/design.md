@@ -24,7 +24,7 @@ Metal support is:
   `GetPjrtApi` (`pjrt/metal_pjrt_api.cc`), which drops the ABI-version
   extension so JAX's persistent cache works and finishes with
   `device_put`'s host data before returning.
-- The Python package `metal_pjrt_plugin`, modeled on `jax_plugins/cuda`.
+- The Python package `jax_graft`, modeled on `jax_plugins/cuda`.
 
 Like Intel's out-of-tree SYCL backend, the device reports a OneAPI
 compute capability, so XLA takes its generic non-NVIDIA branches.
