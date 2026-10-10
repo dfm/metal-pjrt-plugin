@@ -18,6 +18,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -357,15 +358,45 @@ absl::Status MetalRowNormEmitter::EmitEntryFunction(
     Value lane0 = emitters::CheckConstraints(row_map, ids, {}, b);
     SmallVector<Value> row_indices =
         emitters::ApplyIndexing(row_map, ids, {}, b);
-    absl::flat_hash_map<const HloInstruction*, ValueRange> values;
+    // The row epilogue runs in lane 0 of real rows only: it may read
+    // [rows...] parameters, which padding rows (the last threadgroup's, and
+    // the grid's extra blocks) would read past the end of.
+    absl::flat_hash_map<const HloInstruction*, Value> values;
     if (!epilogue_row_roots_.empty()) {
-      values = emitters::EmitEpilogue(row_epilogue_, computations,
-                                      entry_function, injected, row_indices, b);
+      SmallVector<mlir::Type> types;
+      for (const HloInstruction* root : epilogue_row_roots_) {
+        types.push_back(mlir::cast<mlir::RankedTensorType>(
+                            outputs[output_index.at(root)].getType())
+                            .getElementType());
+      }
+      auto if_op = mlir::scf::IfOp::create(b, types, lane0,
+                                           /*withElseRegion=*/true);
+      b.setInsertionPointToStart(if_op.thenBlock());
+      auto computed = emitters::EmitEpilogue(
+          row_epilogue_, computations, entry_function, injected, row_indices,
+          b);
+      SmallVector<Value> yielded;
+      for (const HloInstruction* root : epilogue_row_roots_) {
+        yielded.push_back(computed.at(root)[0]);
+      }
+      mlir::scf::YieldOp::create(b, yielded);
+      b.setInsertionPointToStart(if_op.elseBlock());
+      SmallVector<Value> zeros;
+      for (mlir::Type type : types) {
+        zeros.push_back(mlir::arith::ConstantOp::create(
+            b, type, mlir::cast<mlir::TypedAttr>(b.getZeroAttr(type))));
+      }
+      mlir::scf::YieldOp::create(b, zeros);
+      b.setInsertionPointAfter(if_op);
+      for (auto [root, result] :
+           llvm::zip(epilogue_row_roots_, if_op.getResults())) {
+        values[root] = result;
+      }
     }
     for (const HloInstruction* root : row_roots_) {
       Value value = root->opcode() == HloOpcode::kReduce
                         ? injected.at(root)[0]
-                        : values.at(root)[0];
+                        : values.at(root);
       int i = output_index.at(root);
       outputs[i] =
           PredicatedInsertOp::create(b, lane0, value, outputs[i], row_indices);

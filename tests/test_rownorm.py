@@ -139,20 +139,65 @@ def test_all_negative_rows(n):
 
 
 def test_non_identity_init_is_left_to_xla():
-    # jnp.max(initial=0) is a reduce with init 0 (combined once per thread
-    # in the fused kernel), so no fusion takes it.
-    fn = lambda x: x - jnp.max(x, axis=-1, keepdims=True, initial=0.0)
-    x = make_input((8, 256), np.float32) - 10
+    # A sum starting from 1 would add 1 once per thread in the fused kernel,
+    # so no fusion takes it. (XLA's own reduction emitter combines the init
+    # per thread too, so the result isn't CPU's either: HLO leaves reduce
+    # with a non-identity init unspecified.)
+    def fn(x):
+        s = jax.lax.reduce(x, jnp.ones((), x.dtype), jax.lax.add, (1,))
+        return x / s[:, None]
+    x = make_input((8, 256), np.float32) + 10
+    assert "metal_rownorm" not in compiled_text(fn, x)
+
+
+@pytest.mark.parametrize("n", [2, 7, 31])
+def test_tiny_rows(n):
+    for case in ("softmax", "layer_norm"):
+        fn = CASES[case]
+        x = make_input((37, n), np.float32)
+        assert "metal_rownorm" in compiled_text(fn, x)
+        assert_close(run_on(metal(), fn, x), f64_reference(fn, x),
+                     ULPS[case]["float32"], normwise=NORMWISE[case],
+                     name=f"{case} n={n}")
+
+
+def test_int32_row_reduction():
+    # A count per row (an s32 sum of a bool) scaling the row.
+    fn = lambda x: x * jnp.sum(x > 0, axis=-1, keepdims=True)
+    x = make_input((300, 700), np.float32)
+    assert "metal_rownorm" in compiled_text(fn, x)
     np.testing.assert_array_equal(run_on(metal(), fn, x), run_on(cpu(), fn, x))
+
+
+@pytest.mark.parametrize("shape", [(513, 256), (7, 1000), (1031, 32)],
+                         ids=lambda s: "x".join(map(str, s)))
+def test_row_outputs_with_padding_rows(shape):
+    # A [rows] output reading a [rows] parameter (computed in lane 0 of
+    # real rows only), with a last threadgroup that is partly padding.
+    def fn(x, p):
+        m = jnp.max(x, axis=-1)
+        return x - m[:, None], m * p
+    x = make_input(shape, np.float32)
+    p = make_input(shape[:1], np.float32, seed=2)
+    assert "metal_rownorm" in compiled_text(fn, x, p)
+    assert_close(run_on(metal(), fn, x, p), f64_reference(fn, x, p), 1)
 
 
 def test_kill_switch():
     env = dict(os.environ, METAL_PJRT_DISABLE_REWRITES="rownorm")
     code = (
-        "import jax, jax.numpy as jnp\n"
-        "x = jnp.ones((8, 128))\n"
-        "t = jax.jit(lambda x: jax.nn.softmax(x, -1)).lower(x).compile().as_text()\n"
-        "print('fused' if 'metal_rownorm' in t else 'unfused')\n")
+        "import jax, jax.numpy as jnp, numpy as np\n"
+        "x = jnp.asarray(np.linspace(-3, 3, 8 * 128, dtype=np.float32).reshape(8, 128))\n"
+        "f = jax.jit(lambda x: jax.nn.softmax(x, -1))\n"
+        "t = f.lower(x).compile().as_text()\n"
+        "print('fused' if 'metal_rownorm' in t else 'unfused')\n"
+        "print(repr(np.asarray(f(x)).tolist()))\n")
     out = run_python(code, env)
     assert out.returncode == 0, out.stderr
-    assert out.stdout.strip().endswith("unfused"), out.stdout
+    lines = out.stdout.strip().splitlines()
+    assert lines[-2] == "unfused", out.stdout
+    unfused = np.array(eval(lines[-1]), np.float32)
+    x = np.linspace(-3, 3, 8 * 128, dtype=np.float32).reshape(8, 128)
+    fn = lambda x: jax.nn.softmax(x, -1)
+    assert "metal_rownorm" in compiled_text(fn, x)
+    assert_close(run_on(metal(), fn, x), unfused, 38)
