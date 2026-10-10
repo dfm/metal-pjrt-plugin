@@ -1,6 +1,6 @@
 [project]
 name = "metal-pjrt-plugin"
-version = "0.0.2"
+version = "0.0.3"
 description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"

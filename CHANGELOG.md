@@ -6,6 +6,12 @@ change was made.
 
 ## Unreleased
 
+## 0.0.3 (2026-10-09)
+
+`metal-pjrt-plugin` 0.0.3, with `metal-pjrt-core` 0.0.2 unchanged. mtl is
+now JAX's default backend where a Metal device exists, and `lax.empty`
+no longer fills its buffer.
+
 ### 2026-10-09
 
 - mtl is JAX's default backend once the plugin is installed and a Metal
