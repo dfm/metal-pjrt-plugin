@@ -12,7 +12,7 @@ losses and accuracy at a similar speed.
 
 ```sh
 uv pip install --python .venv/bin/python -e '.[examples]'
-JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/train.py \
+.venv/bin/python examples/lora/train.py \
     --iters 200 --grad-checkpoint --save adapters.npz --test 100 --test-base
 ```
 
@@ -103,7 +103,6 @@ mlx-lm isn't a dependency of this repo, so it needs its own environment
 dataset from a directory that `lora.py` exports:
 
 ```sh
-export JAX_PLATFORMS=mtl,cpu
 .venv/bin/python examples/lora/gradcheck.py
 .venv/bin/python examples/lora/lora.py export ~/.cache/metal-pjrt-examples/wikisql
 uv venv ~/.venvs/mlx

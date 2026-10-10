@@ -5,7 +5,7 @@
 # LICENSE-airbench in this directory.
 """CIFAR-10 to 94% in pure JAX: a port of Keller Jordan's airbench94.
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/airbench.py --runs 5
+  .venv/bin/python examples/cifar/airbench.py --runs 5
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 

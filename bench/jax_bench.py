@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """JAX benchmark workloads. Run under any backend:
-  JAX_PLATFORMS=mtl python bench/jax_bench.py
+  python bench/jax_bench.py   (JAX_PLATFORMS=cpu for the CPU)
 Cases are chosen to separate memory-bound fusion, reductions, GEMM, linear
 algebra, and a small end-to-end transformer training step. Rows carry the
 commit, versions and knobs (common.run_info), TFLOPS where the flop count is
@@ -10,8 +10,6 @@ standard, and on metal with METAL_PJRT_TRACE=1 the GPU time (common.gpu_ms).
 """
 import functools, os, sys
 sys.path.insert(0, os.path.dirname(__file__))
-# mtl is opt-in (not the default backend); JAX_PLATFORMS=cpu for the CPU arm.
-os.environ.setdefault("JAX_PLATFORMS", "mtl")
 import numpy as np
 import jax, jax.numpy as jnp
 from common import timeit, emit, gpu_ms, selected

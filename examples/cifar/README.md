@@ -13,7 +13,7 @@ similar to the same algorithm in PyTorch on MPS.
 
 ```sh
 uv pip install --python .venv/bin/python -e '.[examples]'
-JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/cifar/airbench.py --runs 5
+.venv/bin/python examples/cifar/airbench.py --runs 5
 ```
 
 The first run downloads CIFAR-10 (163 MB) from the authors' site into
@@ -106,7 +106,6 @@ PyTorch isn't a dependency of this repo, so it needs its own environment
 warm-up, then JAX and PyTorch alternating, one process per run.
 
 ```sh
-export JAX_PLATFORMS=mtl,cpu
 .venv/bin/python examples/cifar/check.py
 uv venv ~/.venvs/torch
 uv pip install --python ~/.venvs/torch/bin/python torch numpy

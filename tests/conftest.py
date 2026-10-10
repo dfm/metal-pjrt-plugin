@@ -19,8 +19,10 @@ import importlib.util
 import os
 import pathlib
 
-os.environ.update(JAX_PLATFORMS="mtl,cpu", JAX_ENABLE_X64="0",
-                  JAX_ENABLE_COMPILATION_CACHE="false")
+# No JAX_PLATFORMS: the tests run on JAX's default backend, which the
+# installed plugin makes mtl (checked below for tests marked metal).
+os.environ.pop("JAX_PLATFORMS", None)
+os.environ.update(JAX_ENABLE_X64="0", JAX_ENABLE_COMPILATION_CACHE="false")
 
 # Plugin variables that change nothing a test checks: where the GPU reset
 # log lives (a scratch dir for runs from a fresh checkout), trace logging

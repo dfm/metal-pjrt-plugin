@@ -68,7 +68,7 @@ scripts/build_wheel.sh                                         # dist/: metal_pj
 
 `install_dev.sh` creates `.venv` (with uv, or `python3.12`), installs
 both packages editable (the frontend with its `test` extra), and links the
-dylib from `bazel-bin` into `core/metal_pjrt_core/`. Tests and scripts set `JAX_PLATFORMS=mtl,cpu` themselves.
+dylib from `bazel-bin` into `core/metal_pjrt_core/`.
 
 `run_jax_tests.sh` needs JAX's tests at the installed version, once
 (`jax_grid.py` fetches them itself):
@@ -350,8 +350,10 @@ with a warning.
 
 Variables of other tools:
 
-- `JAX_PLATFORMS`: `mtl,cpu` selects the plugin. `tests/conftest.py` and
-  `scripts/run_jax_tests.sh` set it.
+- `JAX_PLATFORMS`: unset, mtl is the default backend (JAX falls back to
+  CPU quietly if it can't start); `cpu` leaves it out. `tests/conftest.py`
+  and `scripts/run_jax_tests.sh` unset it, and refuse to run tests on any
+  other default backend.
 - `JAX_NUM_GENERATED_CASES`: cases per test in `scripts/run_jax_tests.sh`,
   default 3 (the known-failures list assumes 3).
 - `PYTEST_TIMEOUT` (`scripts/run_jax_tests.sh`): seconds before a slow

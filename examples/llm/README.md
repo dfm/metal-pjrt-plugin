@@ -11,7 +11,7 @@ int4. Decoding runs at about the same speed as
 
 ```sh
 uv pip install --python .venv/bin/python -e '.[examples]'
-JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/llm/generate.py \
+.venv/bin/python examples/llm/generate.py \
     "Give me three facts about Jupiter." --quant int4
 ```
 
@@ -148,7 +148,6 @@ attention), about 1 ms in int4.
 Run one GPU job at a time; `scripts/device_lock.py` serializes them.
 
 ```sh
-export JAX_PLATFORMS=mtl,cpu
 # numerics against float32 on CPU (exits 1 on a bf16 mismatch)
 scripts/device_lock.py -- .venv/bin/python examples/llm/check.py --quant int4
 # prefill and decode speed

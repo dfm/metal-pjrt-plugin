@@ -8,7 +8,7 @@ The guiding rules: mirror what XLA does on CUDA, measure before building,
 delete what doesn't earn its keep, and avoid new upstream patches unless
 there's no other way.
 
-Where it stands: the minimum viable product is done (an opt-in platform,
+Where it stands: the minimum viable product is done (a platform,
 a wheel, a fresh-clone install, a user README), along with every review
 item not listed below as declined, next or deferred.
 
@@ -17,12 +17,13 @@ item not listed below as declined, next or deferred.
 The maintainer's standing decisions; `CHANGELOG.md` says when each was
 made.
 
-- **Names.** JAX platform "mtl" (`jax.devices("mtl")`,
-  `JAX_PLATFORMS=mtl,cpu`, environment variables `METAL_PJRT_*`), import
+- **Names.** JAX platform "mtl" (`jax.devices("mtl")`), environment variables `METAL_PJRT_*`), import
   package `metal_pjrt_plugin`, PyPI name `metal-pjrt-plugin`, Bazel tree
   `metal_pjrt/`, state directory `~/.cache/metal-pjrt`. XLA-internal names
   stay "METAL". The name "metal" collided with Apple's jax-metal.
-- **Opt-in.** CPU stays JAX's default backend.
+- **Default backend.** Installed, mtl is JAX's default backend where a
+  Metal device can be created, as JAX's other GPU plugins are
+  (2026-10-09; it was opt-in before).
 - **Compilation cache.** The plugin never sets `jax_compilation_cache_dir`
   or its thresholds; the FAQ says how to turn the cache on.
 - **Versions.** A jax/jaxlib other than the one the plugin was built for

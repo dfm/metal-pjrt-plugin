@@ -22,7 +22,7 @@ Every number here comes from one machine: an M3 MacBook Air (10-core GPU,
   locally and not tracked. Each row records the commit, the JAX and MLX
   versions, the plugin's platform version and the `METAL_PJRT_*`,
   `XLA_FLAGS` and `JAX_PLATFORMS` settings. The arms keep their names from
-  before the platform rename: `metal` runs with `JAX_PLATFORMS=mtl`,
+  before the platform rename: `metal` runs on JAX's default backend (mtl),
   `metal-gpu` is the same with the GPU trace, and `cpu` runs on CPU.
 - **GPU time.** The `metal-gpu` arm is a second pass with
   `METAL_PJRT_TRACE=1`, which logs each command buffer's GPU start and end.

@@ -229,6 +229,6 @@ def test_disable_conv(value):
            if k != "METAL_PJRT_DISABLE_REWRITES"}
     if value is not None:
         env["METAL_PJRT_DISABLE_REWRITES"] = value
-    out = run_python(DISABLE_CONV_CHILD, dict(env, JAX_PLATFORMS="mtl,cpu"))
+    out = run_python(DISABLE_CONV_CHILD, env)
     assert out.returncode == 0, out.stderr[-3000:]
     assert out.stdout.split() == [str(value is None), "True"]

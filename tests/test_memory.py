@@ -41,7 +41,7 @@ jnp.zeros(1).block_until_ready()
 
 def run_child(code, **env):
     out = run_python(PRELUDE + code,
-                     dict(os.environ, JAX_PLATFORMS="mtl", **env))
+                     dict(os.environ, **env))
     assert out.returncode == 0, (out.stdout[-2000:], out.stderr[-3000:])
     return out.stdout
 
@@ -239,7 +239,7 @@ def test_bad_settings_warn_and_keep_defaults(fraction):
     out = run_python(PRELUDE + r"""
 print("budget", stats()["budget"])
 print(jax.jit(lambda x: x + 1)(1.0))
-""", dict(os.environ, JAX_PLATFORMS="mtl", METAL_PJRT_MEMORY_FRACTION=fraction,
+""", dict(os.environ, METAL_PJRT_MEMORY_FRACTION=fraction,
           METAL_PJRT_QUARANTINE_STRIKES="two",
           METAL_PJRT_DISABLE_REWRITES="scan,bogus"))
     assert out.returncode == 0, out.stderr[-3000:]

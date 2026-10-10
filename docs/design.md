@@ -38,8 +38,8 @@ a range of JAX versions and warns at discovery on anything else
 ([packages and releases](development.md#packages-and-releases)).
 
 With `JAX_PLATFORMS` unset, JAX initializes every installed backend, this
-one included; if the Metal device can't be set up, it fails quietly and
-CPU programs carry on. `JAX_PLATFORMS=cpu` creates no Metal device, but
+one included, and it becomes the default backend; if the Metal device
+can't be set up, it fails quietly and JAX falls back to the CPU. `JAX_PLATFORMS=cpu` creates no Metal device, but
 JAX still imports the plugin. So in every JAX process in the environment
 the plugin library is loaded and changes JAX's private state:
 

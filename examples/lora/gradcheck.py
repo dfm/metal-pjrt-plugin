@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Check the LoRA gradients on the default backend against float32 on CPU.
 
-  JAX_PLATFORMS=mtl,cpu .venv/bin/python examples/lora/gradcheck.py
+  .venv/bin/python examples/lora/gradcheck.py
 
 (prefix it with `scripts/device_lock.py --` when other GPU jobs may run).
 

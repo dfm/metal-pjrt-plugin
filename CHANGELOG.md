@@ -8,6 +8,11 @@ change was made.
 
 ### 2026-10-09
 
+- mtl is JAX's default backend once the plugin is installed and a Metal
+  device can be created, as JAX's other GPU plugins are (it was opt-in, a
+  priority below CPU's). Programs it can't run raise an error, as on cuda
+  or tpu; `JAX_PLATFORMS=cpu` keeps CPU. Without a usable Metal device JAX
+  still falls back to CPU quietly.
 - `lax.empty` (and so `jnp.empty`, `jnp.empty_like`) lowers to XLA's
   `AllocateBuffer` custom call, as on cuda and tpu: the buffer is allocated
   and not filled, where it was filled with zeros.

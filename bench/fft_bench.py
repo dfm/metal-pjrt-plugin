@@ -18,7 +18,6 @@ import statistics
 import sys
 import time
 
-os.environ.setdefault("JAX_PLATFORMS", "mtl,cpu")
 import jax
 import jax.numpy as jnp
 import mlx.core as mx

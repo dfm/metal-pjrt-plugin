@@ -6,12 +6,11 @@ names and source lines. Runtime failures arrive as
 
 ## My program still runs on the CPU
 
-The plugin is opt-in. Select it with `JAX_PLATFORMS=mtl,cpu`, with
-`jax.config.update("jax_platforms", "mtl,cpu")` before using any device,
-or by placing arrays on `jax.devices("mtl")[0]`.
+Check `JAX_PLATFORMS`: with it unset (or naming `mtl` first) the plugin
+is JAX's default backend; `JAX_PLATFORMS=cpu` leaves it out.
 
 If `jax.devices("mtl")` raises, the backend failed to start, silently
-when `JAX_PLATFORMS` is unset. Run with `JAX_PLATFORMS=mtl,cpu` to see
+when `JAX_PLATFORMS` is unset, and JAX fell back to the CPU. Run with `JAX_PLATFORMS=mtl` to see
 "Unable to initialize backend 'mtl'" and its reason.
 
 ## Warnings when JAX starts
