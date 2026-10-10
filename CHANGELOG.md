@@ -10,10 +10,7 @@ change was made.
 
 The first release as `jax-graft` (was `metal-pjrt-plugin`), with
 `metal-pjrt-core` 0.0.4 (skipping 0.0.3, so the two versions match): its
-sources changed with the rename's headers and messages. It also carries
-0.0.3's changes, which never reached PyPI.
-
-### 2026-10-10
+sources changed with the rename's headers and messages.
 
 - The frontend is renamed: PyPI dist `jax-graft` (was `metal-pjrt-plugin`),
   Python package `jax_graft` (was `metal_pjrt_plugin`). Its messages start
@@ -26,12 +23,11 @@ sources changed with the rename's headers and messages. It also carries
   metal-pjrt-plugin Authors"), in every SPDX header, `AUTHORS` and both
   packages' metadata.
 
-## 0.0.3 (2026-10-09, not published)
+## 0.0.3 (2026-10-09)
 
-`metal-pjrt-plugin` 0.0.3, with `metal-pjrt-core` 0.0.2 unchanged. Tagged,
-but the release run failed before uploading; 0.0.4 carries these changes.
-mtl is now JAX's default backend where a Metal device exists, and
-`lax.empty` no longer fills its buffer.
+`metal-pjrt-plugin` 0.0.3, with `metal-pjrt-core` 0.0.2 unchanged. mtl is
+now JAX's default backend where a Metal device exists, and `lax.empty`
+no longer fills its buffer.
 
 ### 2026-10-09
 
