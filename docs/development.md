@@ -350,7 +350,8 @@ with a warning.
 
 Variables of other tools:
 
-- `JAX_PLATFORMS`: `mtl,cpu` selects the plugin. `tests/conftest.py` and
+- `JAX_PLATFORMS`: `mtl,cpu` makes the plugin's failure to start an error
+  (unset, JAX falls back to CPU quietly); `cpu` leaves it out. `tests/conftest.py` and
   `scripts/run_jax_tests.sh` set it.
 - `JAX_NUM_GENERATED_CASES`: cases per test in `scripts/run_jax_tests.sh`,
   default 3 (the known-failures list assumes 3).

@@ -4,9 +4,10 @@
 """metal-pjrt-plugin: run JAX on Apple GPUs through Metal.
 
 Installing the package registers a JAX platform named "mtl" (not "metal",
-which is Apple's jax-metal plugin). It is opt-in: select it with
-JAX_PLATFORMS=mtl,cpu, jax.config.update("jax_platforms", "mtl,cpu") before
-the first use of a device or array, or pass jax.devices("mtl") explicitly.
+which is Apple's jax-metal plugin). Like JAX's other GPU plugins it is the
+default backend wherever its device can be created; JAX_PLATFORMS=cpu (or
+jax.config.update("jax_platforms", "cpu") before the first use of a device
+or array) keeps CPU.
 Nothing in this package needs to be imported or called by users; JAX finds
 it through its "jax_plugins" entry point. See docs/faq.md for what works.
 
@@ -234,16 +235,16 @@ def initialize():
         # explicit.)
         "should_stage_host_to_device_transfers": False,
     }
-    # Opt-in: a priority below CPU's (0), so installing the plugin does not
-    # change JAX's default backend. Select it with
-    # JAX_PLATFORMS=mtl,cpu (or jax.config.update("jax_platforms", ...))
-    # or use jax.devices("mtl") explicitly.
-    xb.register_plugin(PLATFORM, priority=-100, library_path=str(path), options=options)
+    # register_plugin's default priority (400, above CPU's 0), as JAX's
+    # other GPU plugins: where the device can be created, mtl is JAX's
+    # default backend. JAX_PLATFORMS=cpu keeps CPU.
+    xb.register_plugin(PLATFORM, library_path=str(path), options=options)
     # With JAX_PLATFORMS unset, JAX initializes every registered backend,
     # and register_plugin makes a plugin's failure fatal (fail_quietly=False):
     # every CPU-only program with this package installed would fail with
     # "Unable to initialize backend 'mtl'" wherever the Metal client cannot
-    # be created. The platform is opt-in, so fail quietly (logged at INFO;
+    # be created (no Metal device, a VM). So fail quietly and fall back to
+    # CPU, as JAX skips cuda without an NVIDIA GPU (logged at INFO;
     # jax.devices("mtl") then raises with the reason). Naming it in
     # JAX_PLATFORMS still fails loudly. tests/test_jax_private_api.py pins
     # the xla_bridge behaviour this relies on.

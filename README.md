@@ -67,7 +67,6 @@ interfaces, so one build works across the supported JAX versions.
 
 ```python
 import jax
-jax.config.update("jax_platforms", "mtl,cpu")  # before using any device
 import jax.numpy as jnp
 
 x = jnp.arange(4.0)
@@ -76,14 +75,11 @@ print(y, y.devices())  # [0. 2. 4. 6.] {MtlDevice(id=0)}
 ```
 
 JAX prints a warning that the "mtl" platform is experimental; that's
-expected. You can also pick the platform from the shell:
-
-```
-JAX_PLATFORMS=mtl,cpu python my_script.py
-```
-
-The plugin is opt-in: installing it doesn't change JAX's default (CPU).
-To keep CPU as the default and send only some work to the GPU, place it
+expected. Like JAX's other GPU plugins, once installed the plugin is JAX's
+default backend on a Mac with a Metal GPU, and programs it can't run
+(float64, for example) raise an error rather than falling back to the CPU.
+To keep CPU as the default, run with `JAX_PLATFORMS=cpu`; to keep it
+available too, use `JAX_PLATFORMS=cpu,mtl` and place work on the GPU
 explicitly with `jax.device_put(x, jax.devices("mtl")[0])`.
 
 Before running anything heavy, read [Is it safe for my

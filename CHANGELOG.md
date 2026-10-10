@@ -6,6 +6,14 @@ change was made.
 
 ## Unreleased
 
+### 2026-10-09
+
+- mtl is JAX's default backend once the plugin is installed and a Metal
+  device can be created, as JAX's other GPU plugins are (it was opt-in, a
+  priority below CPU's). Programs it can't run raise an error, as on cuda
+  or tpu; `JAX_PLATFORMS=cpu` keeps CPU. Without a usable Metal device JAX
+  still falls back to CPU quietly.
+
 ## 0.0.2 (2026-10-09)
 
 `metal-pjrt-plugin` 0.0.2 and `metal-pjrt-core` 0.0.2. Silent wrong
