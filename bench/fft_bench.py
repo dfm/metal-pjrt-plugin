@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """FFTs on metal: metal$fft (MLX's kernels, the default lowering) vs the dense
@@ -23,7 +23,7 @@ import jax.numpy as jnp
 import mlx.core as mx
 import numpy as np
 
-from metal_pjrt_plugin import _lowerings
+from jax_graft import _lowerings
 
 BURST = 10
 rounds = int(sys.argv[1]) if len(sys.argv) > 1 else 15

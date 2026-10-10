@@ -1,8 +1,8 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Tripwires for the private JAX APIs the plugin calls or replaces
-(metal_pjrt_plugin). The pinned jax version is checked at import
+(jax_graft). The pinned jax version is checked at import
 (test_packaging.py); these fail when a JAX upgrade changes a signature or
 removes a symbol, so the plugin's use of it can be re-checked. Parameter
 names, kinds and defaults are compared; annotations are not.
@@ -28,7 +28,7 @@ from jax._src.tpu.linalg import eigh as tpu_eigh
 from jax._src.tpu.linalg import svd as tpu_svd
 from jax.interpreters import mlir as public_mlir
 
-from metal_pjrt_plugin import _callbacks as callbacks
+from jax_graft import _callbacks as callbacks
 
 
 def params(fn):

@@ -1,9 +1,9 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // "metal$fft": 1-D FFTs over the minor dimension on MLX's kernels
 // (metal_pjrt/fft/fft.h), the target of the fft lowering in
-// metal_pjrt_plugin/_lowerings.py (XLA's FftThunk is cuFFT-only, and
+// jax_graft/_lowerings.py (XLA's FftThunk is cuFFT-only, and
 // hlo_checks refuses the HLO fft op).
 //
 // Operand [..., InputLength(type, n)] and result [..., OutputLength(type,
@@ -157,7 +157,7 @@ absl::Status Fft(stream_executor::Stream* stream, xffi::AnyBuffer x,
     return absl::InternalError(absl::StrCat(
         "metal$fft: workspace of ", workspace->size_bytes(),
         " bytes, the plan needs ", need,
-        " (metal_pjrt_plugin/_lowerings.py and FftWorkspaceBytes disagree)"));
+        " (jax_graft/_lowerings.py and FftWorkspaceBytes disagree)"));
   }
   ABSL_ASSIGN_OR_RETURN(MetalContext ctx, GetMetalContext(stream));
   // The tables (and the constants' device allocation) belong to the device

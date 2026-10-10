@@ -35,7 +35,7 @@ installing and using the plugin, see the README.
   on (`xla_tripwire_test`) and a list of XLA's OneAPI branches
   (`oneapi_callsites.py`); run both after moving the XLA pin.
   `tests/test_jax_private_api.py` does the same for private JAX APIs.
-- `metal_pjrt_plugin/`: the Python package (entry point `mtl`), modeled on
+- `jax_graft/`: the Python package (entry point `mtl`), modeled on
   `jax_plugins/cuda`, plus lowerings and host callbacks.
 - `core/`: the `metal-pjrt-core` package, which holds only the dylib
   ([Packages and releases](#packages-and-releases)).
@@ -63,7 +63,7 @@ scripts/run_jax_tests.sh tests/lax_test.py                     # JAX's own tests
 scripts/jax_grid.py                                            # fast: this suite + a few JAX test files, in .venv (Testing across JAX versions)
 scripts/jax_grid.py --tier slow --wheels ci                    # release: every JAX version x every JAX test file, CI's wheels
 bench/run_all.sh                                               # benchmarks vs cpu and MLX
-scripts/build_wheel.sh                                         # dist/: metal_pjrt_core-*-py3-none-macosx_26_0_arm64.whl (the dylib), metal_pjrt_plugin-*-py3-none-any.whl
+scripts/build_wheel.sh                                         # dist/: metal_pjrt_core-*-py3-none-macosx_26_0_arm64.whl (the dylib), jax_graft-*-py3-none-any.whl
 ```
 
 `install_dev.sh` creates `.venv` (with uv, or `python3.12`), installs
@@ -171,7 +171,7 @@ and `common --local_resources=memory=20000` on 32 GB.
 
 There are two packages, released separately:
 
-- **`metal-pjrt-plugin`** (the root `pyproject.toml`): the Python frontend
+- **`jax-graft`** (the root `pyproject.toml`): the Python frontend
   users install, a pure-Python `py3-none-any` wheel. It holds the
   `jax_plugins` entry point, the lowerings and the host callbacks. It
   requires `jax`/`jaxlib` at or above the lowest version tested, with no
@@ -193,13 +193,13 @@ The private contract between the two (platform name, client options, FFI
 targets and their attributes, the callback trampoline, environment
 variables read on both sides) has one version number,
 `metal_pjrt_frontend_abi_version()` in `metal_pjrt/pjrt/metal_pjrt_api.cc`,
-matched by `_CORE_ABI_VERSION` in `metal_pjrt_plugin/__init__.py`. Bump
+matched by `_CORE_ABI_VERSION` in `jax_graft/__init__.py`. Bump
 both on any incompatible change. The exact pin already keeps released
 pairs together; the check catches the rest (an editable install against a
 stale build, hand-installed wheels): with a mismatch the frontend logs why
 and does not register the platform.
 
-The lowest JAX is `_JAX_MIN` in `metal_pjrt_plugin/__init__.py`, the same
+The lowest JAX is `_JAX_MIN` in `jax_graft/__init__.py`, the same
 as `pyproject.toml` (`tests/test_packaging.py` checks). To test another
 JAX, install it with the current `metal-pjrt-core` in a scratch venv and
 run `tests/test_jax_private_api.py` (no GPU) and the whole suite. On

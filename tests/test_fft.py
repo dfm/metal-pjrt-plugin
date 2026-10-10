@@ -1,7 +1,7 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""jax.numpy.fft on metal: the fft lowering (metal_pjrt_plugin/_lowerings.py)
+"""jax.numpy.fft on metal: the fft lowering (jax_graft/_lowerings.py)
 sends each transformed axis to metal$fft (MLX's kernels,
 metal_pjrt/fft/fft.h; the kernels themselves are tested per path in
 //metal_pjrt/fft:fft_test) or, with METAL_PJRT_DISABLE_FFT=1 or a symbolic
@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 
 from metal_testing import REPORT, cpu, metal, run_on, run_python
-from metal_pjrt_plugin import _lowerings
+from jax_graft import _lowerings
 
 pytestmark = pytest.mark.metal
 

@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 # Derived from airbench94 (https://github.com/KellerJordan/cifar10-airbench):
 # Copyright (c) 2024 Keller Jordan. MIT License; the full notice is in

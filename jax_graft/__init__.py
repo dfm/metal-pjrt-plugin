@@ -1,7 +1,7 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
-"""metal-pjrt-plugin: run JAX on Apple GPUs through Metal.
+"""jax-graft: run JAX on Apple GPUs through Metal.
 
 Installing the package registers a JAX platform named "mtl" (not "metal",
 which is Apple's jax-metal plugin). Like JAX's other GPU plugins it is the
@@ -33,7 +33,7 @@ __all__ = ["PLATFORM", "initialize", "__version__"]
 logger = logging.getLogger(__name__)
 
 try:
-    __version__ = importlib.metadata.version("metal-pjrt-plugin")
+    __version__ = importlib.metadata.version("jax-graft")
 except importlib.metadata.PackageNotFoundError:  # a bare source tree
     __version__ = "0+unknown"
 
@@ -88,7 +88,7 @@ def _missing_library_message() -> str:
     if candidate is None:
         why = ("the metal-pjrt-core package, which holds it, is not "
                "installed. Install it (pip install metal-pjrt-core; "
-               "metal-pjrt-plugin depends on it), or run "
+               "jax-graft depends on it), or run "
                "scripts/install_dev.sh in a source checkout")
     elif candidate.is_symlink():  # exists() was False: a dangling link
         why = (f"{candidate} is a link to {os.readlink(candidate)}, which does "
@@ -97,7 +97,7 @@ def _missing_library_message() -> str:
     else:
         why = (f"{candidate} does not exist. Reinstall metal-pjrt-core, or run "
                "scripts/install_dev.sh in a source checkout")
-    return (f"metal-pjrt-plugin: the PJRT plugin library is missing, so the "
+    return (f"jax-graft: the PJRT plugin library is missing, so the "
             f"'{PLATFORM}' platform is unavailable: {why}.")
 
 
@@ -117,11 +117,11 @@ def _abi_mismatch_message(path: pathlib.Path, found: int) -> str:
         core = importlib.metadata.version("metal-pjrt-core")
     except importlib.metadata.PackageNotFoundError:
         core = "unknown"
-    return (f"metal-pjrt-plugin {__version__} needs a metal-pjrt-core library "
+    return (f"jax-graft {__version__} needs a metal-pjrt-core library "
             f"with frontend ABI version {_CORE_ABI_VERSION}, but {path} "
             f"(metal-pjrt-core {core}) has version {found}, so the "
             f"'{PLATFORM}' platform is unavailable. Install versions that "
-            "match (pip install -U metal-pjrt-plugin metal-pjrt-core), or "
+            "match (pip install -U jax-graft metal-pjrt-core), or "
             "rebuild with scripts/install_dev.sh in a source checkout.")
 
 
@@ -184,7 +184,7 @@ def _check_versions():
     other = {k: v for k, v in found.items() if _version_tuple(v) < _JAX_MIN}
     if other:
         logger.warning(
-            "metal-pjrt-plugin %s needs jax and jaxlib %s, found %s; "
+            "jax-graft %s needs jax and jaxlib %s, found %s; "
             "it may fail or compute wrong results.",
             __version__, _jax_requirement(),
             ", ".join(f"{k} {v}" for k, v in other.items()))
@@ -205,7 +205,7 @@ def initialize():
         abi = _core_abi_version(path)
     except OSError as e:  # wrong architecture, newer macOS, a broken build
         logger.warning(
-            "metal-pjrt-plugin: the PJRT plugin library %s could not be "
+            "jax-graft: the PJRT plugin library %s could not be "
             "loaded, so the '%s' platform is unavailable: %s", path, PLATFORM, e)
         return
     if abi != _CORE_ABI_VERSION:
@@ -262,20 +262,20 @@ def initialize():
         if PLATFORM not in mlir._platforms_with_donation:
             mlir._platforms_with_donation.append(PLATFORM)
     except Exception as e:  # noqa: BLE001 - never break plugin init
-        logger.warning("metal-pjrt-plugin: buffer donation unavailable: %s", e)
+        logger.warning("jax-graft: buffer donation unavailable: %s", e)
     # Only makes the cache usable for mtl. The cache directory is
     # process-wide JAX config (it would turn caching on for CPU too, and this
     # runs whenever the plugin is installed), so it is left to the user.
     try:
         _install_is_cache_used_wrapper()
     except Exception as e:  # noqa: BLE001 - never break plugin init
-        logger.warning("metal-pjrt-plugin: persistent compilation cache unavailable: %s", e)
+        logger.warning("jax-graft: persistent compilation cache unavailable: %s", e)
     # Lowering rules for primitives upstream only lowers on named platforms.
-    from metal_pjrt_plugin import _lowerings
+    from jax_graft import _lowerings
     _lowerings.register()
     # Host callbacks (pure_callback, io_callback, jax.debug.*).
     try:
-        from metal_pjrt_plugin import _callbacks
+        from jax_graft import _callbacks
         _callbacks.install(path)
     except Exception as e:  # noqa: BLE001 - never break plugin init
-        logger.warning("metal-pjrt-plugin: host callbacks unavailable: %s", e)
+        logger.warning("jax-graft: host callbacks unavailable: %s", e)

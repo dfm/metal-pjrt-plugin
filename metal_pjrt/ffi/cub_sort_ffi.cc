@@ -1,4 +1,4 @@
-// Copyright 2026 The metal-pjrt-plugin Authors
+// Copyright 2026 The jax-graft Authors
 // SPDX-License-Identifier: Apache-2.0
 
 // "xla.gpu.ext.cub_sort_keys" / "xla.gpu.ext.cub_sort_pairs": XLA's

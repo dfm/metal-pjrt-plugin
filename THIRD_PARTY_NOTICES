@@ -292,8 +292,8 @@ Apache License 2.0, the license of this project (LICENSE):
 - third_party/xla/patches are changes to XLA's own files; the abseil,
   protobuf and gRPC patches in third_party/ are copied from JAX's and
   XLA's third_party/ directories.
-- metal_pjrt_plugin/__init__.py follows JAX's jax_plugins/cuda plugin
-  module, and metal_pjrt_plugin/_callbacks.py repeats the result checks of
+- jax_graft/__init__.py follows JAX's jax_plugins/cuda plugin
+  module, and jax_graft/_callbacks.py repeats the result checks of
   jax/_src/callback.py.
 
 

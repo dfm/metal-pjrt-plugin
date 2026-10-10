@@ -19,7 +19,7 @@ a SPIR target against a golden list. Both have an `--update` mode.
 - **PJRT platform** (what JAX sees): "mtl" (`MetalName()`), id
   `tsl::Fingerprint64("mtl")`. "metal" belongs to Apple's jax-metal.
   JAX looks lowerings up by `backend.platform`, so `register_plugin` and
-  every `PLATFORM` in `metal_pjrt_plugin` must say exactly "mtl". The
+  every `PLATFORM` in `jax_graft` must say exactly "mtl". The
   StreamExecutor, FFI and XLA-internal names stay "METAL" in registries
   private to our dylib, which exports only `GetPjrtApi`, the callback
   trampoline and two unstable test hooks (`metal_pjrt_memory_stats`,

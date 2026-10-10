@@ -1,8 +1,8 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 """Buffer donation (donate_argnums) on mtl: the plugin adds "mtl" to JAX's
-list of platforms with donation (metal_pjrt_plugin.initialize), and XLA's
+list of platforms with donation (jax_graft.initialize), and XLA's
 GPU client aliases a donated input to an output.
 
 Checked here: the output reuses the donated buffer and the input is
@@ -174,8 +174,8 @@ def test_donated_buffer_is_not_recycled_while_the_output_lives():
     code = r"""
 import ctypes, gc
 import numpy as np, jax, jax.numpy as jnp
-import metal_pjrt_plugin
-lib = ctypes.CDLL(str(metal_pjrt_plugin._get_library_path()))
+import jax_graft
+lib = ctypes.CDLL(str(jax_graft._get_library_path()))
 def stats():
     out = (ctypes.c_uint64 * 8)()
     assert lib.metal_pjrt_memory_stats(0, out) == 0

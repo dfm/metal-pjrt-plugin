@@ -40,7 +40,7 @@ check is compiled into jaxlib. The plugin keeps its own table instead.
 
 ## How it works
 
-- **Lowering** (`metal_pjrt_plugin/_callbacks.py`): the plugin wraps
+- **Lowering** (`jax_graft/_callbacks.py`): the plugin wraps
   `emit_python_callback` (and its alias in `jax.interpreters.mlir`). For
   mtl-only modules it wraps the callable with upstream's shape and dtype
   checks, registers it under a fresh 64-bit `callback_id` (salted per
@@ -59,7 +59,7 @@ check is compiled into jaxlib. The plugin keeps its own table instead.
   exceptions into the error message.
 - **Compilation cache**: ids are per process, so the plugin wraps
   `compiler.compile_or_get_cached` to bypass the cache for executables
-  with callbacks. A stale cached one fails with "metal-pjrt-plugin:
+  with callbacks. A stale cached one fails with "jax-graft:
   unknown host callback id ...: the callable is gone" rather than calling
   the wrong function.
 

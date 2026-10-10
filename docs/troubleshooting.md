@@ -15,20 +15,20 @@ when `JAX_PLATFORMS` is unset, and JAX fell back to the CPU. Run with `JAX_PLATF
 
 ## Warnings when JAX starts
 
-- `metal-pjrt-plugin ... needs jax and jaxlib >=0.10.0, found jax ...; it
+- `jax-graft ... needs jax and jaxlib >=0.10.0, found jax ...; it
   may fail or compute wrong results.` Upgrade JAX.
-- `metal-pjrt-plugin: the PJRT plugin library is missing, so the 'mtl'
+- `jax-graft: the PJRT plugin library is missing, so the 'mtl'
   platform is unavailable: ...` In a source checkout, rerun
   `scripts/install_dev.sh` (the message says if the link into `bazel-bin`
   is dangling). Otherwise reinstall `metal-pjrt-core`.
-- `metal-pjrt-plugin ... needs a metal-pjrt-core library with frontend ABI
+- `jax-graft ... needs a metal-pjrt-core library with frontend ABI
   version N, but ... has version M, so the 'mtl' platform is
   unavailable.` The two packages don't match: upgrade both, or in a
   source checkout rebuild with `scripts/install_dev.sh`.
-- `metal-pjrt-plugin: host callbacks unavailable: ...` Callbacks will
+- `jax-graft: host callbacks unavailable: ...` Callbacks will
   fail; everything else works. Please report it.
-- `metal-pjrt-plugin: buffer donation unavailable: ...` or
-  `metal-pjrt-plugin: persistent compilation cache unavailable: ...` A
+- `jax-graft: buffer donation unavailable: ...` or
+  `jax-graft: persistent compilation cache unavailable: ...` A
   private JAX hook moved (a different JAX version). Programs still run,
   but donation copies and mtl compiles aren't cached. Install the pinned
   JAX, and please report it.
@@ -178,11 +178,11 @@ Converting into host compute"); `device_put` it to `device` first.
 ## Host callbacks
 
 - `host callback raised: ...` Your callback raised; its message follows.
-- `metal-pjrt-plugin: unknown host callback id ...: the callable is gone.
+- `jax-graft: unknown host callback id ...: the callable is gone.
   ...` A cached executable from another process. Clear the cache
   directory, or don't cache functions with callbacks.
-- `Metal: host callbacks are unavailable: metal_pjrt_plugin did not install
+- `Metal: host callbacks are unavailable: jax_graft did not install
   them (see the "host callbacks unavailable" warning logged when JAX
   initialized the plugin)` See that warning.
-- `metal-pjrt-plugin: host callbacks do not support dtype int4 on platform
+- `jax-graft: host callbacks do not support dtype int4 on platform
   mtl` Sub-byte types can't be passed to callbacks.

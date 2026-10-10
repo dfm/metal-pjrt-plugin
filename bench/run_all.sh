@@ -1,5 +1,5 @@
 #!/bin/bash
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 
 # Runs every backend ROUNDS times, interleaved (round 1: metal, metal-gpu,

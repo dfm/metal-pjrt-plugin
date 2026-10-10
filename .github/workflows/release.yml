@@ -1,8 +1,8 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 #
 # Release to PyPI with trusted publishing (docs/development.md, "Releasing").
-# Pushing a tag vX.Y.Z on main, where X.Y.Z is metal-pjrt-plugin's version,
+# Pushing a tag vX.Y.Z on main, where X.Y.Z is jax-graft's version,
 # builds and tests the wheels and publishes them once the `pypi`
 # environment's reviewer approves. metal-pjrt-core is built and published
 # only when its version isn't on PyPI yet; otherwise the frontend is tested
@@ -59,12 +59,12 @@ jobs:
       - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
         with:
           enable-cache: false   # the Actions cache quota is the Bazel cache's
-      - name: Build metal-pjrt-plugin
+      - name: Build jax-graft
         run: scripts/build_wheel.sh --frontend-only
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: wheel-plugin
-          path: dist/metal_pjrt_plugin-*.whl
+          path: dist/jax_graft-*.whl
           if-no-files-found: error
 
   core:
@@ -101,7 +101,7 @@ jobs:
         if: ${{ env.BUILD == 'true' }}
         run: |
           scripts/build_wheel.sh --no-build
-          rm dist/metal_pjrt_plugin-*.whl      # the frontend job's is the one published
+          rm dist/jax_graft-*.whl              # the frontend job's is the one published
 
       - name: Stop Bazel
         if: ${{ always() && env.BUILD == 'true' }}
@@ -135,10 +135,10 @@ jobs:
           shasum -a 256 dist/*.whl
           uv venv --python 3.12 "$RUNNER_TEMP/venv"
           uv pip install --python "$RUNNER_TEMP/venv/bin/python" --find-links dist \
-            "metal-pjrt-plugin[test]==${{ needs.plan.outputs.plugin_version }}"
+            "jax-graft[test]==${{ needs.plan.outputs.plugin_version }}"
           uv pip list --python "$RUNNER_TEMP/venv/bin/python" | grep -i -E 'metal|jax'
       - name: Python tests (host only)
-        # From outside the checkout, so that metal_pjrt_plugin is the
+        # From outside the checkout, so that jax_graft is the
         # installed wheel, not the source tree.
         working-directory: ${{ runner.temp }}
         run: |
@@ -153,7 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/metal-pjrt-plugin/
+      url: https://pypi.org/project/jax-graft/
     permissions:
       id-token: write                # trusted publishing
     steps:
@@ -186,7 +186,7 @@ jobs:
         with:
           packages-dir: dist/wheel-core/
           skip-existing: true
-      - name: Publish metal-pjrt-plugin
+      - name: Publish jax-graft
         uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33  # v1.14.2
         with:
           packages-dir: dist/wheel-plugin/

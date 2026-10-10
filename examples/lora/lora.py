@@ -1,4 +1,4 @@
-# Copyright 2026 The metal-pjrt-plugin Authors
+# Copyright 2026 The jax-graft Authors
 # SPDX-License-Identifier: Apache-2.0
 """LoRA fine-tuning of Qwen3 in pure JAX: data, adapters, loss, train step.
 

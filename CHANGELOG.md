@@ -6,6 +6,19 @@ change was made.
 
 ## Unreleased
 
+### 2026-10-10
+
+- The frontend is renamed: PyPI dist `jax-graft` (was `metal-pjrt-plugin`),
+  Python package `jax_graft` (was `metal_pjrt_plugin`). Its messages start
+  with `jax-graft:`. Uninstall `metal-pjrt-plugin` before installing
+  `jax-graft`: both register the `mtl` entry point.
+  `scripts/install_dev.sh` removes it. `metal-pjrt-core`, the JAX platform
+  `"mtl"`, the `METAL_PJRT_*` environment variables and the repository keep
+  their names.
+- The copyright holder is "The jax-graft Authors" (was "The
+  metal-pjrt-plugin Authors"), in every SPDX header, `AUTHORS` and both
+  packages' metadata.
+
 ## 0.0.3 (2026-10-09)
 
 `metal-pjrt-plugin` 0.0.3, with `metal-pjrt-core` 0.0.2 unchanged. mtl is
