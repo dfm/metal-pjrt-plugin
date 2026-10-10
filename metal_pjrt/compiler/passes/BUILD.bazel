@@ -272,6 +272,7 @@ cc_library(
         "@xla//xla:literal",
         "@xla//xla:literal_util",
         "@xla//xla:shape_util",
+        "@xla//xla:util",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla/hlo/analysis:hlo_reachability",
         "@xla//xla/hlo/ir:hlo",

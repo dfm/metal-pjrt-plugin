@@ -451,6 +451,52 @@ ENTRY e {
   ExpectSameResult(kHlo, /*tolerance=*/1e-2);
 }
 
+// The rows in two factorizations: a GEMM's [8, n] output and the [2, 4, n]
+// bitcast of it the rest of the loss sees.
+TEST_F(MetalRowNormFusionTest, FusesAcrossRowFactorizations) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  x = f32[8,40]{1,0} parameter(0)
+  ninf = f32[] constant(-inf)
+  mx = f32[8]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  x3 = f32[2,4,40]{2,1,0} bitcast(x)
+  mx3 = f32[2,4]{1,0} bitcast(mx)
+  mxb = f32[2,4,40]{2,1,0} broadcast(mx3), dimensions={0,1}
+  sub = f32[2,4,40]{2,1,0} subtract(x3, mxb)
+  ex = f32[2,4,40]{2,1,0} exponential(sub)
+  zero = f32[] constant(0)
+  sm = f32[2,4]{1,0} reduce(ex, zero), dimensions={2}, to_apply=add_f32
+  smb = f32[2,4,40]{2,1,0} broadcast(sm), dimensions={0,1}
+  y = f32[2,4,40]{2,1,0} divide(ex, smb)
+  y2 = f32[8,40]{1,0} bitcast(y)
+  ROOT t = (f32[2,4,40]{2,1,0}, f32[8]{0}, f32[8,40]{1,0}) tuple(y, mx, y2)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  std::vector<const HloInstruction*> fusions = RowNormFusions(*module);
+  ASSERT_EQ(fusions.size(), 1) << module->ToString();
+  EXPECT_EQ(
+      Count(fusions[0]->fused_instructions_computation(), HloOpcode::kReduce),
+      2);
+  EXPECT_EQ(CountAll(*module, HloOpcode::kReduce), 2) << module->ToString();
+  // y and mx: y's bitcast is redone outside, not a second output.
+  ASSERT_TRUE(fusions[0]->shape().IsTuple());
+  EXPECT_EQ(fusions[0]->shape().tuple_shapes().size(), 2)
+      << fusions[0]->ToString();
+  ExpectSameResult(kHlo);
+}
+
 // Layer norm of a square [n, n]: the row value is broadcast along
 // dimension 0 and the weights along dimension 1, both [n].
 TEST_F(MetalRowNormFusionTest, FusesSquareLayerNorm) {

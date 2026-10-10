@@ -210,6 +210,43 @@ def test_long_rows(what, n, dtype):
                  cpu32=run_on(cpu(), fn, z, labels))
 
 
+def gpt_style_loss(x, w, labels):
+    # Logits from a matmul over [B, T, d]: XLA reduces the GEMM's [B*T, V]
+    # output and computes the rest on the [B, T, V] bitcast of it.
+    logp = jax.nn.log_softmax(x @ w, axis=-1)
+    return -jnp.take_along_axis(logp, labels[..., None], axis=-1).mean()
+
+
+@pytest.mark.parametrize("v", [1000, 20000])
+def test_loss_over_matmul_logits(v):
+    rng = np.random.default_rng(3)
+    x = rng.standard_normal((2, 8, 16)).astype(np.float32)
+    w = (rng.standard_normal((16, v)) / 4).astype(np.float32)
+    labels = rng.integers(0, v, (2, 8)).astype(np.int32)
+    fn = jax.grad(gpt_style_loss, argnums=(0, 1))
+    text = compiled_text(fn, x, w, labels)
+    assert "metal_rownorm" in text
+    # The max joins the fusion: no reduction over V is left outside it.
+    assert_close(run_on(metal(), fn, x, w, labels),
+                 f64_reference(fn, x, w, labels), 16, normwise=True,
+                 cpu32=run_on(cpu(), fn, x, w, labels))
+
+
+def test_long_row_fusion_survives_the_stock_pipeline():
+    # The long-row instance runs before the stock post-layout pipeline
+    # (FloatNormalization, LayoutNormalization, ...); the compiled program
+    # still has the one fusion, taking the scatter and the logits and
+    # writing the gradient.
+    z = make_input((16, 50304), np.float32)
+    labels = np.arange(16, dtype=np.int32)
+    text = compiled_text(jax.grad(lm_loss), z, labels)
+    fusions = [l for l in text.splitlines()
+               if " fusion(" in l and "metal_rownorm" in l and "calls=" in l]
+    assert len(fusions) == 1, fusions
+    assert fusions[0].split("=")[1].strip().startswith("f32[16,50304]"), fusions[0]
+    assert fusions[0].count("%") - 2 == 2, fusions[0]  # operands
+
+
 def test_long_row_nan():
     z = make_input((4, 50304), np.float32)
     z[1, 40000] = np.nan

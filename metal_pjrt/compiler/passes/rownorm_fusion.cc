@@ -32,6 +32,7 @@
 #include "xla/shape_util.h"
 #include "xla/tsl/platform/errors.h"
 #include "xla/tsl/platform/statusor.h"
+#include "xla/util.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -122,19 +123,29 @@ bool IsIdentity(const Literal& value, HloOpcode op) {
   }
 }
 
-// The [rows..., n] shape a fusion works on; [rows...] holds row values.
+// The rows a fusion works on: `rows` rows of n values, in row-major order.
+// Values along the rows have shape [r..., n] and row values [r...], for any
+// leading dimensions r... with `rows` elements ([1024, n] and [4, 256, n]
+// are the same space: reshapes between them keep every row's index).
 struct RowSpace {
-  std::vector<int64_t> full;
+  int64_t rows = 0;
+  int64_t n = 0;
 
-  absl::Span<const int64_t> rows() const {
-    return absl::MakeConstSpan(full).first(full.size() - 1);
+  static RowSpace Of(const Shape& full) {
+    absl::Span<const int64_t> dims = full.dimensions();
+    return {Product(dims.first(dims.size() - 1)), dims.back()};
   }
-  int64_t n() const { return full.back(); }
+  bool operator==(const RowSpace& other) const {
+    return rows == other.rows && n == other.n;
+  }
   bool IsFull(const Shape& shape) const {
-    return HasDefaultLayout(shape) && absl::c_equal(shape.dimensions(), full);
+    absl::Span<const int64_t> dims = shape.dimensions();
+    return HasDefaultLayout(shape) && dims.size() >= 2 && dims.back() == n &&
+           Product(dims.first(dims.size() - 1)) == rows;
   }
   bool IsRow(const Shape& shape) const {
-    return HasDefaultLayout(shape) && absl::c_equal(shape.dimensions(), rows());
+    return HasDefaultLayout(shape) && !shape.dimensions().empty() &&
+           Product(shape.dimensions()) == rows;
   }
 };
 
@@ -161,9 +172,8 @@ std::optional<RowSpace> RowReduceSpace(const HloInstruction* instr,
                   instr->to_apply()->root_instruction()->opcode())) {
     return std::nullopt;
   }
-  RowSpace space{std::vector<int64_t>(input->shape().dimensions().begin(),
-                                      input->shape().dimensions().end())};
-  if (space.n() < 2 || space.n() > max_row_length) return std::nullopt;
+  RowSpace space = RowSpace::Of(input->shape());
+  if (space.n < 2 || space.n > max_row_length) return std::nullopt;
   return space;
 }
 
@@ -242,22 +252,33 @@ bool FitsRowSpace(const HloInstruction* instr, const RowSpace& space,
     case HloOpcode::kReduce: {
       std::optional<RowSpace> reduce_space =
           RowReduceSpace(instr, max_row_length);
-      return reduce_space.has_value() && reduce_space->full == space.full;
+      return reduce_space.has_value() && *reduce_space == space;
     }
     case HloOpcode::kBroadcast: {
       const Shape& in = instr->operand(0)->shape();
       if (ShapeUtil::IsScalar(in)) return full || row;
       if (!full || !HasDefaultLayout(in)) return false;
-      const int64_t rank = space.full.size();
-      if (space.IsRow(in) &&
-          IsRowBroadcastDims(instr->dimensions(), rank - 1)) {
+      const int64_t rank = shape.dimensions().size();
+      // Row values along the row: the operand's dimensions are the result's
+      // leading ones.
+      if (IsRowBroadcastDims(instr->dimensions(), rank - 1) &&
+          absl::c_equal(in.dimensions(),
+                        shape.dimensions().first(rank - 1))) {
         return true;
       }
       // A vector along the row, e.g. layer-norm weights. (For [n, n], a
       // [n] operand may be either, told apart by the dimensions.)
-      return in.dimensions().size() == 1 && in.dimensions(0) == space.n() &&
+      return in.dimensions().size() == 1 && in.dimensions(0) == space.n &&
              instr->dimensions().size() == 1 &&
              instr->dimensions(0) == rank - 1;
+    }
+    case HloOpcode::kBitcast:
+    case HloOpcode::kReshape: {
+      // Between shapes of the space, of the same kind: every row keeps its
+      // (row-major) index.
+      const Shape& in = instr->operand(0)->shape();
+      return in.element_type() == shape.element_type() &&
+             ((full && space.IsFull(in)) || (row && space.IsRow(in)));
     }
     case HloOpcode::kConstant:
       return ShapeUtil::IsScalar(shape);
@@ -269,7 +290,8 @@ bool FitsRowSpace(const HloInstruction* instr, const RowSpace& space,
       }
       return absl::c_all_of(instr->operands(), [&](const HloInstruction* op) {
         return IsMemberType(op->shape().element_type()) &&
-               (full ? space.IsFull(op->shape()) : space.IsRow(op->shape()));
+               HasDefaultLayout(op->shape()) &&
+               absl::c_equal(op->shape().dimensions(), shape.dimensions());
       });
   }
 }
@@ -377,12 +399,19 @@ class RegionBuilder {
     return used;
   }
 
-  // A broadcast of a member used outside: the fusion outputs its operand
-  // and the broadcast is redone outside (where it fuses into its users),
-  // rather than writing [rows..., n] copies of row values.
+  // A broadcast, bitcast or reshape of a member used outside: the fusion
+  // outputs its operand and it is redone outside (a broadcast fuses into
+  // its users, a bitcast is free), rather than writing [rows..., n] copies
+  // of row values or a second copy of an output.
   bool IsRebroadcast(const HloInstruction* instr) const {
-    return instr->opcode() == HloOpcode::kBroadcast && !instr->IsRoot() &&
-           members_.contains(instr->operand(0));
+    switch (instr->opcode()) {
+      case HloOpcode::kBroadcast:
+      case HloOpcode::kBitcast:
+      case HloOpcode::kReshape:
+        return !instr->IsRoot() && members_.contains(instr->operand(0));
+      default:
+        return false;
+    }
   }
 
   // The fusion's outputs: the members used outside, with rebroadcasts
@@ -520,6 +549,13 @@ absl::StatusOr<HloInstruction*> FuseRegion(HloComputation* computation,
     return parameter;
   };
   for (HloInstruction* instr : post_order) {
+    // Redone outside and unused inside: not part of the fused computation.
+    if (region.IsRebroadcast(instr) &&
+        absl::c_none_of(instr->users(), [&](const HloInstruction* user) {
+          return members.contains(user);
+        })) {
+      continue;
+    }
     std::vector<HloInstruction*> operands;
     for (HloInstruction* operand : instr->operands()) {
       operands.push_back(members.contains(operand) ? fused.at(operand)
@@ -620,7 +656,7 @@ absl::StatusOr<bool> MetalRowNormFusion::RunImpl(
       for (HloInstruction* instr : computation->MakeInstructionPostOrder()) {
         if (tried.contains(instr->unique_id())) continue;
         std::optional<RowSpace> space = RowReduceSpace(instr, max_row_length_);
-        if (!space.has_value() || space->n() < min_row_length_) continue;
+        if (!space.has_value() || space->n < min_row_length_) continue;
         tried.insert(instr->unique_id());
         RegionBuilder region(*space, max_row_length_, *reachability);
         if (region.Build(instr)) {

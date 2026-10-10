@@ -400,13 +400,19 @@ p10 of bursts, 16 MB of f32 or 8 MB of bf16 input):
 | RMS norm f32 4096x1024 | 0.39 / 0.57 | 1.5x |
 | causal softmax f32 4096x1024 | 0.49 / 0.75 | 1.5x |
 
-The fused kernels run at ~85 GB/s; rows of 32 to 16384 all gain, and
-small inputs (launch-bound) are unchanged. Whole programs gain little,
-since GEMMs dominate: the nanoGPT train step 167-169 vs 170-172 ms,
-GPT-2-vocab training and Qwen3-0.6B prefill unchanged (Qwen3's attention
-reduces over a non-minor dimension, which the fusion doesn't take, and
-the LM loss's 50304-wide rows are past the limit). Accuracy is the same
-or better than unfused, in ulps against float64 (`tests/test_rownorm.py`).
+Longer rows (up to 262144: vocabularies) are fused before XLA's
+TreeReductionRewriter would split them. An LM loss and its gradient over
+2048x50304 f32 logits take 22-23 vs 31-34 ms; XLA's zero fill and
+scatter of the one-hot stay outside.
+
+The fused kernels run at ~85 GB/s; rows of 32 to 262144 all gain, and
+small inputs (launch-bound) are unchanged. Whole programs gain less,
+since GEMMs dominate: a GPT-2-vocabulary train step (6 layers, d=384,
+4x256 tokens) 117-121 vs 121.5-123 ms, the nanoGPT train step 167-172 vs
+169-175 ms, Qwen3-0.6B prefill unchanged (its attention reduces over a
+non-minor dimension, which the fusion doesn't take). The machine was
+noisy for these (macOS indexing). Accuracy is the same or better than
+unfused, in ulps against float64 (`tests/test_rownorm.py`).
 
 ## Measured and dropped
 

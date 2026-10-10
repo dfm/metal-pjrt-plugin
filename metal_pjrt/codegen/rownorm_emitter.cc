@@ -104,13 +104,17 @@ MetalRowNormEmitter::MetalRowNormEmitter(const HloFusionAnalysis& analysis)
   row_dims_.assign(full_dims_.begin(), full_dims_.end() - 1);
   n_ = full_dims_.back();
   rows_ = Product(row_dims_);
+  // Values may factor the rows differently ([1024, n] and [4, 256, n]);
+  // the loops index the first reduction's input and map to each root's
+  // shape (GetBitcastMap).
   for (const HloInstructionAdaptor& root : analysis.fusion_roots()) {
     const HloInstruction* instr = &root.instruction();
-    if (absl::c_equal(instr->shape().dimensions(), full_dims_)) {
+    absl::Span<const int64_t> dims = instr->shape().dimensions();
+    if (dims.size() >= 2 && dims.back() == n_ &&
+        Product(dims) == rows_ * n_) {
       full_roots_.push_back(instr);
     } else {
-      CHECK(absl::c_equal(instr->shape().dimensions(), row_dims_))
-          << instr->ToString();
+      CHECK_EQ(Product(dims), rows_) << instr->ToString();
       row_roots_.push_back(instr);
     }
   }
@@ -222,7 +226,8 @@ MetalRowNormEmitter::GetEpilogues(const HloFusionInstruction& fusion,
     epilogue.index_ranges.assign(dims.begin(), dims.end());
     for (const HloInstruction* root : roots) {
       epilogue.roots.push_back(root);
-      epilogue.root_indexing.push_back(CreateIdentityMap(dims, mlir_context));
+      epilogue.root_indexing.push_back(
+          GetBitcastMap(dims, root->shape(), mlir_context));
     }
     return epilogue;
   };
@@ -343,8 +348,11 @@ absl::Status MetalRowNormEmitter::EmitEntryFunction(
                           ? input_value(root, indices, nb)
                           : values.at(root)[0];
         int i = output_index.at(root);
-        results[i] =
-            mlir::tensor::InsertOp::create(nb, value, results[i], indices);
+        results[i] = mlir::tensor::InsertOp::create(
+            nb, value, results[i],
+            emitters::ApplyIndexing(
+                GetBitcastMap(full_dims_, root->shape(), ctx), indices, {},
+                nb));
       }
       return results;
     };
@@ -398,8 +406,10 @@ absl::Status MetalRowNormEmitter::EmitEntryFunction(
                         ? injected.at(root)[0]
                         : values.at(root);
       int i = output_index.at(root);
-      outputs[i] =
-          PredicatedInsertOp::create(b, lane0, value, outputs[i], row_indices);
+      outputs[i] = PredicatedInsertOp::create(
+          b, lane0, value, outputs[i],
+          emitters::ApplyIndexing(GetBitcastMap(row_dims_, root->shape(), ctx),
+                                  row_indices, {}, b));
     }
   }
 
