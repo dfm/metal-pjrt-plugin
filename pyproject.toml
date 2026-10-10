@@ -1,6 +1,6 @@
 [project]
 name = "jax-graft"
-version = "0.0.3"
+version = "0.0.4"
 description = "A JAX PJRT plugin for Apple GPUs via Metal (JAX platform \"mtl\")"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -16,7 +16,7 @@ license-files = ["LICENSE", "THIRD_PARTY_NOTICES"]
 dependencies = [
     "jax>=0.10.0",
     "jaxlib>=0.10.0",
-    "metal-pjrt-core==0.0.2; sys_platform == 'darwin' and platform_machine == 'arm64'",
+    "metal-pjrt-core==0.0.4; sys_platform == 'darwin' and platform_machine == 'arm64'",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

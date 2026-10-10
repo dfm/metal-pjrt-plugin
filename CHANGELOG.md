@@ -6,7 +6,11 @@ change was made.
 
 ## Unreleased
 
-### 2026-10-10
+## 0.0.4 (2026-10-10)
+
+The first release as `jax-graft` (was `metal-pjrt-plugin`), with
+`metal-pjrt-core` 0.0.4 (skipping 0.0.3, so the two versions match): its
+sources changed with the rename's headers and messages.
 
 - The frontend is renamed: PyPI dist `jax-graft` (was `metal-pjrt-plugin`),
   Python package `jax_graft` (was `metal_pjrt_plugin`). Its messages start
