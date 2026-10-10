@@ -18,7 +18,7 @@ namespace metal_pjrt {
 std::string CompileSettings::Fingerprint() const {
   return absl::StrCat("lapack=", lapack, ";scan=", scan_rewrite,
                       ";cubsort=", cub_sort, ";conv=", conv_rewrite,
-                      ";pool=", pool_rewrite,
+                      ";pool=", pool_rewrite, ";rownorm=", rownorm_fusion,
                       ";fft=", fft);
 }
 
@@ -33,7 +33,7 @@ const CompileSettings& GetCompileSettings() {
         name = absl::StripAsciiWhitespace(name);
         if (name == "all") {
           s.scan_rewrite = s.cub_sort = s.conv_rewrite = s.pool_rewrite =
-              false;
+              s.rownorm_fusion = false;
         } else if (name == "scan") {
           s.scan_rewrite = false;
         } else if (name == "cubsort") {
@@ -42,10 +42,12 @@ const CompileSettings& GetCompileSettings() {
           s.conv_rewrite = false;
         } else if (name == "pool") {
           s.pool_rewrite = false;
+        } else if (name == "rownorm") {
+          s.rownorm_fusion = false;
         } else {
           LOG(WARNING) << "Ignoring \"" << name
                        << "\" in METAL_PJRT_DISABLE_REWRITES; the valid "
-                          "values are scan, cubsort, conv, pool and all";
+                          "values are scan, cubsort, conv, pool, rownorm and all";
         }
       }
     }

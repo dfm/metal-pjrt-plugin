@@ -382,6 +382,38 @@ XLA:CPU shows the same. For training loops over many input shapes,
 bucket the lengths: each distinct shape is its own executable (~230 MB
 for this model).
 
+## Row normalizations
+
+Softmax, log-softmax and layer/RMS norm over the minor dimension (rows up
+to 16384) run as one kernel each (`MetalRowNormFusion`, emitted by
+`MetalRowNormEmitter`), where XLA splits them into a reduction kernel
+per row reduction plus a loop kernel: each of a row's reductions reads
+the row (from cache after the first) and the result is written once.
+`METAL_PJRT_DISABLE_REWRITES=rownorm` turns it off. On 2026-10-09 (M3,
+p10 of bursts, 16 MB of f32 or 8 MB of bf16 input):
+
+| case | fused / unfused ms | |
+|---|---|---|
+| softmax f32 4096x1024 | 0.38 / 0.74 | 1.9x |
+| softmax bf16 4096x1024 | 0.24 / 0.34 | 1.5x |
+| layer norm f32 4096x1024 | 0.39 / 0.74 | 1.9x |
+| RMS norm f32 4096x1024 | 0.39 / 0.57 | 1.5x |
+| causal softmax f32 4096x1024 | 0.49 / 0.75 | 1.5x |
+
+Longer rows (up to 262144: vocabularies) are fused before XLA's
+TreeReductionRewriter would split them. An LM loss and its gradient over
+2048x50304 f32 logits take 22-23 vs 31-34 ms; XLA's zero fill and
+scatter of the one-hot stay outside.
+
+The fused kernels run at ~85 GB/s; rows of 32 to 262144 all gain, and
+small inputs (launch-bound) are unchanged. Whole programs gain less,
+since GEMMs dominate: a GPT-2-vocabulary train step (6 layers, d=384,
+4x256 tokens) 117-121 vs 121.5-123 ms, the nanoGPT train step 167-172 vs
+169-175 ms, Qwen3-0.6B prefill unchanged (its attention reduces over a
+non-minor dimension, which the fusion doesn't take). The machine was
+noisy for these (macOS indexing). Accuracy is the same or better than
+unfused, in ulps against float64 (`tests/test_rownorm.py`).
+
 ## Measured and dropped
 
 - **Indirect command buffers** (2026-09-26): replay cost 1.2-1.4 us of GPU

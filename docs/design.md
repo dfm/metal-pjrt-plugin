@@ -276,7 +276,7 @@ compile latency.
 - **Building XLA on an 8 GB laptop.** A cold build takes about 1.5-2
   hours; a shared local disk cache keeps rebuilds to minutes. (JAX's
   public remote cache had no hits for this build, measured 2026-10-01.)
-- **CUDA coupling** in XLA's GPU code: three patches against the pinned
+- **CUDA coupling** in XLA's GPU code: four patches against the pinned
   XLA (`third_party/xla/patches`) and a tripwire test on every pin bump.
 - **MSL limits**: 32-bit atomics only, no f64, 32 KB threadgroup memory,
   32-wide SIMD.

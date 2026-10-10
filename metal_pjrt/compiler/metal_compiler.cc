@@ -27,6 +27,7 @@
 #include "metal_pjrt/codegen/metal_kernel_compiler.h"
 #include "metal_pjrt/codegen/msl_kernel.h"
 #include "metal_pjrt/codegen/msl_llvm_bridge.h"
+#include "metal_pjrt/codegen/rownorm_emitter.h"
 #include "metal_pjrt/compiler/compile_settings.h"
 #include "metal_pjrt/compiler/report_bug.h"
 #include "metal_pjrt/runtime/constants_container.h"
@@ -37,11 +38,13 @@
 #include "metal_pjrt/compiler/passes/hlo_checks.h"
 #include "metal_pjrt/compiler/passes/conv_rewriter.h"
 #include "metal_pjrt/compiler/passes/pool_rewriter.h"
+#include "metal_pjrt/compiler/passes/rownorm_fusion.h"
 #include "metal_pjrt/compiler/passes/scan_rewriter.h"
 #include "metal_pjrt/compiler/passes/sort_expander.h"
 // --- begin linalg (Accelerate LAPACK) ---
 #include "metal_pjrt/linalg/linalg_rewriter.h"
 // --- end linalg ---
+#include "xla/backends/gpu/codegen/fusions.h"
 #include "xla/hlo/transforms/simplifiers/convolution_group_converter.h"
 #include "xla/hlo/transforms/simplifiers/hlo_dce.h"
 #include "xla/hlo/transforms/simplifiers/tuple_simplifier.h"
@@ -153,7 +156,10 @@ void ApplyMetalDefaults(DebugOptions& debug_options) {
 
 MetalCompiler::MetalCompiler()
     : GpuCompiler(stream_executor::metal::kMetalPlatformId,
-                  spir::TargetTriple(), spir::DataLayout()) {}
+                  spir::TargetTriple(), spir::DataLayout()) {
+  // The emitter of MetalRowNormFusion's fusions (XLA patch 0004).
+  SetCustomFusionEmitterFactory(&MetalRowNormEmitterFactory);
+}
 
 absl::Status MetalCompiler::OptimizeHloConvolutionCanonicalization(
     HloModule* hlo_module, const se::GpuComputeCapability& gpu_version,
@@ -269,12 +275,25 @@ absl::Status MetalCompiler::OptimizeHloPostLayoutAssignment(
     const CompileOptions& options, const GpuTopology& gpu_topology,
     const GpuAliasInfo* alias_info, tsl::thread::ThreadPool* thread_pool,
     CompilationStats* compilation_stats, mlir::MLIRContext* mlir_context) {
+  if (Settings().rownorm_fusion) {
+    // Rows longer than 16384 before the stock pipeline, whose
+    // TreeReductionRewriter splits them into two reductions; shorter ones
+    // after it, once layout normalization has run.
+    HloPassPipeline pipeline("metal-rownorm-long-rows", compilation_stats);
+    pipeline.AddPass<MetalRowNormFusion>(
+        MetalRowNormFusion::kMaxLongRowLength,
+        /*min_row_length=*/MetalRowNormFusion::kMaxRowLength + 1);
+    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  }
   TF_RETURN_IF_ERROR(GpuCompiler::OptimizeHloPostLayoutAssignment(
       hlo_module, stream_exec, options, gpu_topology, alias_info, thread_pool,
       compilation_stats, mlir_context));
   // After GemmRewriter, so only the dots left for the loop emitter change.
   HloPassPipeline pipeline("metal-post-gemm", compilation_stats);
   pipeline.AddPass<MetalDotOperandUpcaster>();
+  // After layout normalization, before fusion (priority fusion leaves its
+  // custom fusions alone).
+  if (Settings().rownorm_fusion) pipeline.AddPass<MetalRowNormFusion>();
   TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
   return CheckPostGemmRewriter(*hlo_module);
 }

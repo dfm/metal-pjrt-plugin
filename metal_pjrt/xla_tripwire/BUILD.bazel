@@ -9,6 +9,7 @@ load("@rules_python//python:defs.bzl", "py_test")
 filegroup(
     name = "xla_sources",
     srcs = [
+        "@xla//xla/backends/gpu/codegen:fusions.cc",
         "@xla//xla/backends/gpu/codegen/emitters:mlir_kernel_emitter.cc",
         "@xla//xla/backends/gpu/codegen/emitters:transpose.cc",
         "@xla//xla/backends/gpu/transforms:gemm_rewriter.cc",
@@ -19,6 +20,9 @@ filegroup(
         "@xla//xla/codegen/emitters/transforms:vectorize_loads_stores.cc",
         "@xla//xla/service:algorithm_util.cc",
         "@xla//xla/service/gpu:gpu_compiler.cc",
+        "@xla//xla/service/gpu:hlo_fusion_analysis.cc",
+        "@xla//xla/service/gpu:thunk_emitter.cc",
+        "@xla//xla/service/gpu/autotuning:config_assigner_pass.cc",
         "@xla//xla/service/gpu:matmul_utils.cc",
         "@xla//xla/hlo/transforms/expanders:cholesky_expander.cc",
         "@xla//xla/stream_executor/integrations:tf_allocator_adapter.cc",

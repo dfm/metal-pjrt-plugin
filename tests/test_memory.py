@@ -182,7 +182,8 @@ def f(x):
         y = op(x * 0.5)
         x = y / (1.0 + jnp.sum(y * y, axis=-1, keepdims=True))
     return x
-def run(p):  # a distinct shape: distinct kernels (8 or more)
+def run(p):  # a distinct shape: distinct kernels (1 or more: f's row
+            # normalizations are one fused kernel each, 8+ unfused)
     g = jax.jit(f)
     g(jnp.ones((16, 16 + p))).block_until_ready()
     return g
@@ -199,7 +200,7 @@ for r in range(2):
     s, used = stats(), libc.mstats().used
     print(f"kernels {base['kernels']} -> {grown['kernels']} -> {s['kernels']}; "
           f"malloc used MB {base_used / MB:.1f} -> {used / MB:.1f}")
-    assert grown["kernels"] >= base["kernels"] + n * 8, (base, grown)
+    assert grown["kernels"] >= base["kernels"] + n, (base, grown)
     assert s["kernels"] == base["kernels"], (base, s)
     assert s["kernel_msl_bytes"] == base["kernel_msl_bytes"], (base, s)
 per_program = (used - base_used) / n

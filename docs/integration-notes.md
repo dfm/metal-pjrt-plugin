@@ -42,6 +42,12 @@ a SPIR target against a golden list. Both have an `--update` mode.
     unchanged default, so `MetalCompiler` can return a
     `MetalKernelCompiler`.
   - **0003**: a macOS build fix in `record_ffi.cc`.
+  - **0004** (codegen): `GetFusionEmitter` is a closed switch over fusion
+    kinds, and its `kCustomFusion` case only returns Unimplemented since
+    the custom-kernel-fusion registry was removed. The patch adds
+    `SetCustomFusionEmitterFactory`, asked first for those fusions, so
+    `MetalCompiler` can emit its row-normalization (`metal_rownorm`)
+    fusions.
   - No patch: `ptx_custom_kernel_emitter` has no branch without a
     configured GPU, so our tree provides a stub
     (`metal_pjrt/compiler/ptx_custom_kernel_emitter_stub.cc`).
@@ -180,7 +186,7 @@ The handlers:
   runs Accelerate directly on the shared buffers. f32 only. The ownership
   table is in the `_linalg_lowerings.py` docstring.
 
-Switches for debugging: `METAL_PJRT_DISABLE_REWRITES=scan|cubsort|conv|pool|all`,
+Switches for debugging: `METAL_PJRT_DISABLE_REWRITES=scan|cubsort|conv|pool|rownorm|all`,
 `METAL_PJRT_DISABLE_FFT=1` (dense DFT for every axis) and
 `METAL_PJRT_DISABLE_LAPACK=1` (XLA's expanders and JAX's generic
 lowerings). The kernels are tested without XLA (`ffi:*_test`,
