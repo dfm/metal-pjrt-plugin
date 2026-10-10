@@ -16,7 +16,3 @@ AutodidaxTest::test_autodidax_smoketest
 JitTest::test_device_to_device_copy_between_backends
 JitTest::test_explicit_backend
 JitTest::test_mismatched_nested_backends
-
-# LABEL, jax 0.10.x: asserts the AllocateBuffer custom call that lax.empty
-# lowers to on cuda/tpu; on mtl it lowers to zeros (the test drops it in 0.11)
-APITest::test_lax_empty_vmap
