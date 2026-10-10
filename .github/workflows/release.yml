@@ -157,13 +157,21 @@ jobs:
     permissions:
       id-token: write                # trusted publishing
     steps:
+      # By name, each into its own directory: with `pattern`, a single match
+      # (a frontend-only release) lands in dist/ itself, not dist/wheel-plugin/.
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        if: ${{ needs.plan.outputs.build_core == 'true' }}
+        with:
+          name: wheel-core
+          path: dist/wheel-core
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          pattern: wheel-*
-          path: dist
+          name: wheel-plugin
+          path: dist/wheel-plugin
       - name: Wheels only, never an sdist
         run: |
           find dist -type f -exec shasum -a 256 {} +
+          shopt -s failglob
           for f in dist/*/*; do
             [[ "$f" == *.whl ]] || { echo "::error::only wheels are published: $f"; exit 1; }
           done
