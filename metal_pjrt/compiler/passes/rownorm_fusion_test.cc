@@ -312,6 +312,52 @@ ENTRY e {
   ExpectSameResult(kHlo);
 }
 
+// JAX's softmax gradient reads broadcast(row sum) and broadcast(1 / sum^2):
+// the fusion outputs the row values and the broadcasts are redone outside.
+TEST_F(MetalRowNormFusionTest, OutputsRowValuesOfBroadcastsUsedOutside) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  x = f32[4,40]{1,0} parameter(0)
+  g = f32[4,40]{1,0} parameter(1)
+  ninf = f32[] constant(-inf)
+  mx = f32[4]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[4,40]{1,0} broadcast(mx), dimensions={0}
+  sub = f32[4,40]{1,0} subtract(x, mxb)
+  ex = f32[4,40]{1,0} exponential(sub)
+  zero = f32[] constant(0)
+  sm = f32[4]{0} reduce(ex, zero), dimensions={1}, to_apply=add_f32
+  smb = f32[4,40]{1,0} broadcast(sm), dimensions={0}
+  y = f32[4,40]{1,0} divide(ex, smb)
+  t = f32[4,40]{1,0} transpose(smb), dimensions={0,1}
+  tg = f32[4,40]{1,0} multiply(t, g)
+  ROOT r = (f32[4,40]{1,0}, f32[4,40]{1,0}) tuple(y, tg)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  std::vector<const HloInstruction*> fusions = RowNormFusions(*module);
+  ASSERT_EQ(fusions.size(), 1) << module->ToString();
+  ASSERT_TRUE(fusions[0]->shape().IsTuple()) << module->ToString();
+  // y and the row sum (not its broadcast).
+  EXPECT_EQ(fusions[0]->shape().tuple_shapes().size(), 2);
+  int row_outputs = 0;
+  for (const Shape& shape : fusions[0]->shape().tuple_shapes()) {
+    row_outputs += shape.dimensions().size() == 1;
+  }
+  EXPECT_EQ(row_outputs, 1) << module->ToString();
+  ExpectSameResult(kHlo);
+}
+
 // A consumer whose other operand depends on the fusion would form a cycle;
 // it stays outside, and the softmax is still fused.
 TEST_F(MetalRowNormFusionTest, LeavesOutConsumersThatWouldFormCycles) {
@@ -361,6 +407,48 @@ TEST_F(MetalRowNormFusionTest, FusesBf16Softmax) {
   ASSERT_NE(module, nullptr);
   EXPECT_EQ(RowNormFusions(*module).size(), 1) << module->ToString();
   ExpectSameResult(hlo, /*tolerance=*/1e-2);
+}
+
+// bf16 softmax as JAX lowers it: upcast to f32, with the max's init a
+// convert of bf16 -inf.
+TEST_F(MetalRowNormFusionTest, FusesUpcastSoftmaxWithConvertedInit) {
+  constexpr absl::string_view kHlo = R"(
+HloModule m
+max_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT m = f32[] maximum(a, b)
+}
+add_f32 {
+  a = f32[] parameter(0)
+  b = f32[] parameter(1)
+  ROOT s = f32[] add(a, b)
+}
+ENTRY e {
+  xb = bf16[8,64]{1,0} parameter(0)
+  x = f32[8,64]{1,0} convert(xb)
+  ninfb = bf16[] constant(-inf)
+  ninf = f32[] convert(ninfb)
+  mx = f32[8]{0} reduce(x, ninf), dimensions={1}, to_apply=max_f32
+  mxb = f32[8,64]{1,0} broadcast(mx), dimensions={0}
+  sub = f32[8,64]{1,0} subtract(x, mxb)
+  ex = f32[8,64]{1,0} exponential(sub)
+  zero = f32[] constant(0)
+  sm = f32[8]{0} reduce(ex, zero), dimensions={1}, to_apply=add_f32
+  smb = f32[8,64]{1,0} broadcast(sm), dimensions={0}
+  y = f32[8,64]{1,0} divide(ex, smb)
+  ROOT yb = bf16[8,64]{1,0} convert(y)
+})";
+  std::unique_ptr<HloModule> module = Run(kHlo, /*expect_change=*/true);
+  ASSERT_NE(module, nullptr);
+  const HloInstruction* root = module->entry_computation()->root_instruction();
+  ASSERT_TRUE(IsMetalRowNormFusion(*root)) << module->ToString();
+  EXPECT_EQ(Count(root->fused_instructions_computation(), HloOpcode::kReduce),
+            2);
+  // The bf16 input, not an f32 copy of it, is read.
+  EXPECT_EQ(root->operand(0)->shape().element_type(), BF16)
+      << module->ToString();
+  ExpectSameResult(kHlo, /*tolerance=*/1e-2);
 }
 
 // Layer norm of a square [n, n]: the row value is broadcast along

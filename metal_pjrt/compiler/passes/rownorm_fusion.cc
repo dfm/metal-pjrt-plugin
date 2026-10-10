@@ -91,10 +91,23 @@ bool IsSimpleReducer(const HloComputation* reducer) {
          root->operand(0) != root->operand(1);
 }
 
-// Whether `init` is the identity of the reducer's op: each of the row's
+// The value of a reduction's init: a constant, or a convert of one (bf16
+// reductions upcast to f32 keep convert(bf16 -inf)).
+std::optional<Literal> InitValue(const HloInstruction* init) {
+  if (!ShapeUtil::IsScalar(init->shape())) return std::nullopt;
+  if (init->opcode() == HloOpcode::kConstant) return init->literal().Clone();
+  if (init->opcode() == HloOpcode::kConvert &&
+      init->operand(0)->opcode() == HloOpcode::kConstant) {
+    absl::StatusOr<Literal> converted =
+        init->operand(0)->literal().Convert(init->shape().element_type());
+    if (converted.ok()) return *std::move(converted);
+  }
+  return std::nullopt;
+}
+
+// Whether `value` is the identity of the reducer's op: each of the row's
 // threads starts from it, so it is combined once per thread, not once.
-bool IsIdentity(const HloInstruction* init, HloOpcode op) {
-  const Literal& value = init->literal();
+bool IsIdentity(const Literal& value, HloOpcode op) {
   switch (op) {
     case HloOpcode::kAdd:
       return value.IsAll(0);
@@ -137,11 +150,15 @@ std::optional<RowSpace> RowReduceSpace(const HloInstruction* instr,
   if (rank < 2 || !HasDefaultLayout(input->shape()) ||
       !HasDefaultLayout(instr->shape()) || instr->dimensions().size() != 1 ||
       instr->dimensions(0) != rank - 1 ||
-      init->opcode() != HloOpcode::kConstant ||
       !IsShuffleType(instr->shape().element_type()) ||
       input->shape().element_type() != instr->shape().element_type() ||
-      !IsSimpleReducer(instr->to_apply()) ||
-      !IsIdentity(init, instr->to_apply()->root_instruction()->opcode())) {
+      !IsSimpleReducer(instr->to_apply())) {
+    return std::nullopt;
+  }
+  std::optional<Literal> init_value = InitValue(init);
+  if (!init_value.has_value() ||
+      !IsIdentity(*init_value,
+                  instr->to_apply()->root_instruction()->opcode())) {
     return std::nullopt;
   }
   RowSpace space{std::vector<int64_t>(input->shape().dimensions().begin(),
@@ -270,6 +287,7 @@ bool IsCheap(const HloInstruction* instr, const RowSpace& space,
       // Reads at most a row's worth of values per row.
       return true;
     default:
+      if (!IsAllowedElementwise(instr->opcode())) return false;
       return absl::c_all_of(instr->operands(), [&](const HloInstruction* op) {
         return IsCheap(op, space, max_row_length, depth + 1);
       });
@@ -344,16 +362,38 @@ class RegionBuilder {
   }
 
   // Values used outside the region, in the order they were added.
-  std::vector<HloInstruction*> Outputs() const {
-    std::vector<HloInstruction*> outputs;
+  // Members used outside the region (or the computation's root).
+  std::vector<HloInstruction*> UsedOutside() const {
+    std::vector<HloInstruction*> used;
     for (HloInstruction* member : order_) {
       if (duplicated_.contains(member)) continue;
       if (member->IsRoot() ||
           absl::c_any_of(member->users(), [&](const HloInstruction* user) {
             return !members_.contains(user);
           })) {
-        outputs.push_back(member);
+        used.push_back(member);
       }
+    }
+    return used;
+  }
+
+  // A broadcast of a member used outside: the fusion outputs its operand
+  // and the broadcast is redone outside (where it fuses into its users),
+  // rather than writing [rows..., n] copies of row values.
+  bool IsRebroadcast(const HloInstruction* instr) const {
+    return instr->opcode() == HloOpcode::kBroadcast && !instr->IsRoot() &&
+           members_.contains(instr->operand(0));
+  }
+
+  // The fusion's outputs: the members used outside, with rebroadcasts
+  // replaced by their operands.
+  std::vector<HloInstruction*> Outputs() const {
+    std::vector<HloInstruction*> outputs;
+    absl::flat_hash_set<HloInstruction*> seen;
+    for (HloInstruction* member : UsedOutside()) {
+      HloInstruction* output =
+          IsRebroadcast(member) ? member->mutable_operand(0) : member;
+      if (seen.insert(output).second) outputs.push_back(output);
     }
     return outputs;
   }
@@ -519,20 +559,30 @@ absl::StatusOr<HloInstruction*> FuseRegion(HloComputation* computation,
       std::string(kMetalRowNormFusionName));
   TF_RETURN_IF_ERROR(fusion->set_backend_config(gpu_config));
 
+  absl::flat_hash_map<const HloInstruction*, HloInstruction*> value_of;
   for (int64_t i = 0; i < static_cast<int64_t>(outputs.size()); ++i) {
-    HloInstruction* output = outputs[i];
     HloInstruction* value =
         outputs.size() == 1
             ? fusion
             : computation->AddInstruction(
                   HloInstruction::CreateGetTupleElement(fusion, i));
-    value->set_metadata(output->metadata());
+    value->set_metadata(outputs[i]->metadata());
+    value_of[outputs[i]] = value;
+  }
+  for (HloInstruction* member : region.UsedOutside()) {
+    HloInstruction* value;
+    if (region.IsRebroadcast(member)) {
+      value = computation->AddInstruction(member->CloneWithNewOperands(
+          member->shape(), {value_of.at(member->operand(0))}));
+    } else {
+      value = value_of.at(member);
+    }
     std::vector<HloInstruction*> outside_users;
-    for (HloInstruction* user : output->users()) {
+    for (HloInstruction* user : member->users()) {
       if (!members.contains(user)) outside_users.push_back(user);
     }
-    TF_RETURN_IF_ERROR(output->ReplaceUsesWith(outside_users, value));
-    if (output->IsRoot()) computation->set_root_instruction(value);
+    TF_RETURN_IF_ERROR(member->ReplaceUsesWith(outside_users, value));
+    if (member->IsRoot()) computation->set_root_instruction(value);
   }
   for (auto it = post_order.rbegin(); it != post_order.rend(); ++it) {
     if ((*it)->user_count() == 0 && !(*it)->IsRoot()) {
