@@ -620,7 +620,7 @@ absl::StatusOr<bool> MetalRowNormFusion::RunImpl(
       for (HloInstruction* instr : computation->MakeInstructionPostOrder()) {
         if (tried.contains(instr->unique_id())) continue;
         std::optional<RowSpace> space = RowReduceSpace(instr, max_row_length_);
-        if (!space.has_value()) continue;
+        if (!space.has_value() || space->n() < min_row_length_) continue;
         tried.insert(instr->unique_id());
         RegionBuilder region(*space, max_row_length_, *reachability);
         if (region.Build(instr)) {

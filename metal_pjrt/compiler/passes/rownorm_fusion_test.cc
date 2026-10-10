@@ -672,6 +672,23 @@ TEST_F(MetalRowNormFusionTest, LeavesLongRowsAlone) {
   Run(kSoftmax, /*expect_change=*/false, /*max_row_length=*/32);
 }
 
+// The long-row instance (MetalCompiler runs it before the stock pipeline's
+// TreeReductionRewriter) takes only rows over its minimum.
+TEST_F(MetalRowNormFusionTest, LongRowInstanceTakesOnlyLongRows) {
+  auto module = ParseAndReturnVerifiedModule(kSoftmax);
+  ASSERT_TRUE(module.ok()) << module.status();
+  MetalRowNormFusion long_rows(MetalRowNormFusion::kMaxLongRowLength,
+                               /*min_row_length=*/41);
+  auto changed = RunHloPass(&long_rows, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_FALSE(*changed);
+  MetalRowNormFusion rows_of_40(MetalRowNormFusion::kMaxLongRowLength,
+                                /*min_row_length=*/40);
+  changed = RunHloPass(&rows_of_40, module->get());
+  ASSERT_TRUE(changed.ok()) << changed.status();
+  EXPECT_TRUE(*changed);
+}
+
 // Priority fusion, multi-output fusion and FusionWrapper (XLA's fusion
 // stage, which runs after this pass) leave the fusion exactly as built.
 TEST_F(MetalRowNormFusionTest, FusionStageLeavesFusionAlone) {

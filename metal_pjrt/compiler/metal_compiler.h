@@ -74,11 +74,12 @@ class MetalCompiler : public GpuCompiler {
       const se::SemanticVersion& toolkit_version,
       CompilationStats* compilation_stats) override;
 
-  // Runs the stock post-layout pipeline, then
+  // Runs MetalRowNormFusion for long rows (before TreeReductionRewriter
+  // splits them), the stock post-layout pipeline, then
   // MetalDotOperandUpcaster on the dots GemmRewriter left and
-  // MetalRowNormFusion (rownorm_fusion.h; emitted by MetalRowNormEmitter,
-  // registered in the constructor), then CheckPostGemmRewriter
-  // (hlo_checks.h).
+  // MetalRowNormFusion for rows of up to 16384 (rownorm_fusion.h; emitted
+  // by MetalRowNormEmitter, registered in the constructor), then
+  // CheckPostGemmRewriter (hlo_checks.h).
   absl::Status OptimizeHloPostLayoutAssignment(
       HloModule* hlo_module, se::StreamExecutor* stream_exec,
       const CompileOptions& options, const GpuTopology& gpu_topology,

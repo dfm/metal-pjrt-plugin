@@ -183,11 +183,51 @@ def test_row_outputs_with_padding_rows(shape):
     assert_close(run_on(metal(), fn, x, p), f64_reference(fn, x, p), 1)
 
 
-def test_kill_switch():
+def lm_loss(z, labels):
+    logp = jax.nn.log_softmax(z, axis=-1)
+    return -jnp.take_along_axis(logp, labels[:, None], axis=-1).mean()
+
+
+# Rows past 16384 (vocabularies) are fused before TreeReductionRewriter
+# would split them: the LM loss and its gradient (whose one-hot scatter and
+# zero fill stay outside), and a plain log-softmax.
+@pytest.mark.parametrize("dtype", ["float32", "bfloat16"])
+@pytest.mark.parametrize("n", [16385, 50304, 151936])
+@pytest.mark.parametrize("what", ["loss", "grad", "log_softmax"])
+def test_long_rows(what, n, dtype):
+    rows = 4 if n > 100000 else 16
+    z = make_input((rows, n), DTYPES[dtype])
+    labels = np.random.default_rng(1).integers(0, n, rows).astype(np.int32)
+    fn = {"loss": lm_loss, "grad": jax.grad(lm_loss),
+          "log_softmax": lambda z, labels: jax.nn.log_softmax(z, axis=-1)}[what]
+    assert "metal_rownorm" in compiled_text(fn, z, labels)
+    got = run_on(metal(), fn, z, labels)
+    want = f64_reference(fn, z, labels)
+    # Normwise, measured (M3) and doubled: the loss is a mean of n-term
+    # logsumexps.
+    ulps = {"float32": 8, "bfloat16": 2}[dtype]
+    assert_close(got, want, ulps, normwise=True, name=f"{what} {n} [{dtype}]",
+                 cpu32=run_on(cpu(), fn, z, labels))
+
+
+def test_long_row_nan():
+    z = make_input((4, 50304), np.float32)
+    z[1, 40000] = np.nan
+    got = run_on(metal(), CASES["log_softmax"], z)
+    assert np.isnan(got[1]).all()
+    assert_close(np.delete(got, 1, 0),
+                 np.delete(run_on(cpu(), CASES["log_softmax"], z), 1, 0), 4,
+                 normwise=True)
+
+
+@pytest.mark.parametrize("n", [128, 50304], ids=["short", "long"])
+def test_kill_switch(n):
+    # One switch for both instances (short rows after the stock post-layout
+    # pipeline, long rows before it).
     env = dict(os.environ, METAL_PJRT_DISABLE_REWRITES="rownorm")
     code = (
         "import jax, jax.numpy as jnp, numpy as np\n"
-        "x = jnp.asarray(np.linspace(-3, 3, 8 * 128, dtype=np.float32).reshape(8, 128))\n"
+        f"x = jnp.asarray(np.linspace(-3, 3, 8 * {n}, dtype=np.float32).reshape(8, {n}))\n"
         "f = jax.jit(lambda x: jax.nn.softmax(x, -1))\n"
         "t = f.lower(x).compile().as_text()\n"
         "print('fused' if 'metal_rownorm' in t else 'unfused')\n"
@@ -197,7 +237,7 @@ def test_kill_switch():
     lines = out.stdout.strip().splitlines()
     assert lines[-2] == "unfused", out.stdout
     unfused = np.array(eval(lines[-1]), np.float32)
-    x = np.linspace(-3, 3, 8 * 128, dtype=np.float32).reshape(8, 128)
+    x = np.linspace(-3, 3, 8 * n, dtype=np.float32).reshape(8, n)
     fn = lambda x: jax.nn.softmax(x, -1)
     assert "metal_rownorm" in compiled_text(fn, x)
     assert_close(run_on(metal(), fn, x), unfused, 38)

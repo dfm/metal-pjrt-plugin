@@ -275,6 +275,16 @@ absl::Status MetalCompiler::OptimizeHloPostLayoutAssignment(
     const CompileOptions& options, const GpuTopology& gpu_topology,
     const GpuAliasInfo* alias_info, tsl::thread::ThreadPool* thread_pool,
     CompilationStats* compilation_stats, mlir::MLIRContext* mlir_context) {
+  if (Settings().rownorm_fusion) {
+    // Rows longer than 16384 before the stock pipeline, whose
+    // TreeReductionRewriter splits them into two reductions; shorter ones
+    // after it, once layout normalization has run.
+    HloPassPipeline pipeline("metal-rownorm-long-rows", compilation_stats);
+    pipeline.AddPass<MetalRowNormFusion>(
+        MetalRowNormFusion::kMaxLongRowLength,
+        /*min_row_length=*/MetalRowNormFusion::kMaxRowLength + 1);
+    TF_RETURN_IF_ERROR(pipeline.Run(hlo_module).status());
+  }
   TF_RETURN_IF_ERROR(GpuCompiler::OptimizeHloPostLayoutAssignment(
       hlo_module, stream_exec, options, gpu_topology, alias_info, thread_pool,
       compilation_stats, mlir_context));

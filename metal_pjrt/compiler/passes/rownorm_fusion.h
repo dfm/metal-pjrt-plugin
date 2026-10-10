@@ -52,15 +52,22 @@ bool IsMetalRowNormFusion(const HloInstruction& instr);
 // A fusion is only built when some [rows..., n] value depends on a row
 // reduction (a reduction alone stays with XLA's reduction emitter).
 //
-// Must run after layout normalization (every value in a fusion has the
-// default layout) and before priority fusion, which leaves custom fusions
-// alone. Runs at the end of MetalCompiler::OptimizeHloPostLayoutAssignment.
+// Runs twice in MetalCompiler::OptimizeHloPostLayoutAssignment, after layout
+// assignment and before priority fusion (which leaves custom fusions alone):
+// for rows longer than kMaxRowLength before the stock post-layout pipeline,
+// whose TreeReductionRewriter would split them into two reductions, and for
+// the rest at its end, after layout normalization. Values with other than
+// the default layout are refused.
 class MetalRowNormFusion : public HloModulePass {
  public:
   static constexpr int64_t kMaxRowLength = 16384;
+  // Longer rows (vocabularies: LM losses, sampling) are fused by a second
+  // instance that runs before TreeReductionRewriter splits them.
+  static constexpr int64_t kMaxLongRowLength = 262144;
 
-  explicit MetalRowNormFusion(int64_t max_row_length = kMaxRowLength)
-      : max_row_length_(max_row_length) {}
+  explicit MetalRowNormFusion(int64_t max_row_length = kMaxRowLength,
+                              int64_t min_row_length = 2)
+      : max_row_length_(max_row_length), min_row_length_(min_row_length) {}
 
   absl::string_view name() const override { return "metal-rownorm-fusion"; }
 
@@ -71,6 +78,7 @@ class MetalRowNormFusion : public HloModulePass {
 
  private:
   int64_t max_row_length_;
+  int64_t min_row_length_;
 };
 
 }  // namespace gpu
