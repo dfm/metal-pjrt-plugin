@@ -6,6 +6,10 @@ change was made.
 
 ## Unreleased
 
+- Kernels compile as MSL 4.0 whatever SDK the Python interpreter was
+  linked against: Metal's default follows that SDK, so a conda-forge
+  Python (SDK 11, MSL 2.3) failed every kernel (#18). (2026-10-10)
+
 ## 0.0.4 (2026-10-10)
 
 The first release as `jax-graft` (was `metal-pjrt-plugin`), with

@@ -55,12 +55,14 @@ class KernelsTest : public ::testing::Test {
   }
 
   // The kernel functions in `source` (compiled directly, as GetKernel does:
-  // fast math off). Empty, with a test failure, if it does not compile.
+  // fast math off, MSL 4.0). Empty, with a test failure, if it does not
+  // compile.
   std::vector<std::string> FunctionNames(const char* source) {
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
     std::vector<std::string> names;
     MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
     opts->setFastMathEnabled(false);
+    opts->setLanguageVersion(MTL::LanguageVersion4_0);
     NS::Error* err = nullptr;
     MTL::Library* lib = dev_->mtl()->newLibrary(
         NS::String::string(source, NS::UTF8StringEncoding), opts, &err);
