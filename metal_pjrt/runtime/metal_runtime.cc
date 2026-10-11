@@ -1361,6 +1361,10 @@ absl::StatusOr<const Kernel*> Device::GetKernelImpl(
     NS::Error* err = nullptr;
     MTL::CompileOptions* opts = MTL::CompileOptions::alloc()->init();
     opts->setFastMathEnabled(false);
+    // Pinned: the default follows the SDK the host executable (the Python
+    // interpreter) was linked against, e.g. MSL 2.3 for SDK 11, which lacks
+    // atomic<T> and bfloat. 4.0 is available on every supported macOS (26+).
+    opts->setLanguageVersion(MTL::LanguageVersion4_0);
     MTL::Library* lib = device_->newLibrary(Str(source), opts, &err);
     opts->release();
     if (lib == nullptr) {
