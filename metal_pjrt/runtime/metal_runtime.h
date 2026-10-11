@@ -391,9 +391,9 @@ class Device {
   void EndWork(uint64_t ticket);
 
   // The kernel `function` of the Metal Shading Language source with
-  // `constants` bound. The one kernel cache: compiled (fast math off) on
-  // first use and kept, keyed by the full source, the function name and the
-  // constants, so the returned kernel lives as long as the device. A
+  // `constants` bound. The one kernel cache: compiled (fast math off, MSL
+  // 4.0) on first use and kept, keyed by the full source, the function name
+  // and the constants, so the returned kernel lives as long as the device. A
   // quarantined kernel (see RecordReset) is refused, also when cached.
   absl::StatusOr<const Kernel*> GetKernel(
       absl::string_view msl_source, absl::string_view function,
